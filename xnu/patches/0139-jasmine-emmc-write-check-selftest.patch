@@ -1,24 +1,26 @@
-From 722f20dd5a5687cfde18f88b71c17c46909ce618 Mon Sep 17 00:00:00 2001
+From b0ad87cc48a2fb0ab040a450e156e6f86388f18b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Tue, 20 Oct 2026 21:39:27 +0200
-Subject: [PATCH] jasmine-0139: eMMC R1 check re-read, write self-test before
- filesystem writes
+Date: Tue, 20 Oct 2026 22:24:48 +0200
+Subject: [PATCH] jasmine-0139: no FLUSH_CACHE without an eMMC cache; write
+ self-test
 
-The first CMD24 (HFS journal header) failed the R1 error check although
-the status printed right after was a clean 0x900, so the journal went
-invalid and every file write returned EINVAL. The check now re-reads the
-response once and logs both values. With ufsrw=1 the attach writes a
-pattern to the log header block (1 then 8 blocks), reads it back and keeps
-the disk read-only if anything differs.
+jasmine's eMMC reports CACHE_CTRL 0. HFS's DKIOCSYNCHRONIZE sent CMD6
+FLUSH_CACHE anyway, the card set SWITCH_ERROR, and the next command (the
+journal header CMD24) failed the R1 check with status 0x980, so the journal
+went invalid and every file write returned EINVAL. Flush now only with
+CACHE_SIZE > 0 and CACHE_CTRL on, like Linux. The R1 check logs the status
+twice with the interrupt state. With ufsrw=1 the attach writes a pattern to
+the log header block (1 then 8 blocks), reads it back and keeps the disk
+read-only if anything differs.
 ---
- bsd/dev/sweet_ufs.c | 52 +++++++++++++++++++++++++++++++++++++++++----
- 1 file changed, 48 insertions(+), 4 deletions(-)
+ bsd/dev/sweet_ufs.c | 70 ++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 63 insertions(+), 7 deletions(-)
 
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index f452a21..32fbbcb 100644
+index f452a21..f3bef45 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -660,10 +660,21 @@ emmc_cmd(unsigned idx, uint32_t arg, uint16_t flags, uint16_t mode)
+@@ -660,10 +660,22 @@ emmc_cmd(unsigned idx, uint32_t arg, uint16_t flags, uint16_t mode)
  	emmc_wr16(SD_XFERMODE, mode);
  	emmc_wr16(SD_CMD, (uint16_t)(idx << 8 | flags));
  	int error = emmc_wait(NIS_CMD_DONE, "command", idx);
@@ -29,9 +31,10 @@ index f452a21..32fbbcb 100644
 +	uint32_t r1 = error ? 0 : emmc_rd32(SD_RESP0);
 +	if (r1 & R1_ERRORS) {
 +		/*
-+		 * 2026-10-20: the first CMD24 failed this check, yet the status
-+		 * printed right after was a clean 0x900 (TRAN, ready for data).
-+		 * Read it again and fail only if the error bits are still there.
++		 * Log the status twice (with the interrupt state) for diagnosis
++		 * and fail only if the error bits are still there. 2026-10-20:
++		 * CMD24 saw 0x980 both times: SWITCH_ERROR left by a FLUSH_CACHE
++		 * CMD6 on a card without an enabled cache (see emmc_flush).
 +		 */
 +		delay(10);
 +		uint32_t again = emmc_rd32(SD_RESP0);
@@ -44,7 +47,41 @@ index f452a21..32fbbcb 100644
  	}
  	return error;
  }
-@@ -1097,6 +1108,39 @@ sweet_ufs_init(void)
+@@ -735,10 +747,19 @@ emmc_rw(uint64_t lba, uint32_t count, bool write)
+ 	return emmc_data(idx, (uint32_t)lba, count, write);
+ }
+ 
+-/* The one CMD6: EXT_CSD[32] FLUSH_CACHE = 1 (R1b, waits for the card). */
++static bool emmc_cache_on;              /* EXT_CSD CACHE_SIZE > 0 and CACHE_CTRL bit 0 */
++
++/*
++ * The one CMD6: EXT_CSD[32] FLUSH_CACHE = 1 (R1b, waits for the card), only
++ * when the cache is on. Without a cache the card rejects it and reports
++ * SWITCH_ERROR in the next command's status (seen as 0x980 on CMD24).
++ */
+ static int
+ emmc_flush(void)
+ {
++	if (!emmc_cache_on) {
++		return 0;
++	}
+ 	int error = emmc_cmd(6, 0x03200101, CMD_R1B, 0);
+ 	if (!error) {
+ 		error = emmc_wait(NIS_XFER_DONE, "flush", 6);
+@@ -776,8 +797,10 @@ emmc_take_over_host(void)
+ 		return error;
+ 	}
+ 	uint32_t sectors = (uint32_t)ext[212] | (uint32_t)ext[213] << 8 | (uint32_t)ext[214] << 16 | (uint32_t)ext[215] << 24;
+-	printf("SWEET EMMC: EXT_CSD rev %u, %u MiB, part_config %#x, cmdq %u, cache %u, hs_timing %#x, bus %#x\n",
+-	    ext[192], sectors >> 11, ext[179], ext[15], ext[33], ext[185], ext[183]);
++	uint32_t cache_kib = (uint32_t)ext[249] | (uint32_t)ext[250] << 8 | (uint32_t)ext[251] << 16 | (uint32_t)ext[252] << 24;
++	emmc_cache_on = cache_kib != 0 && (ext[33] & 1);
++	printf("SWEET EMMC: EXT_CSD rev %u, %u MiB, part_config %#x, cmdq %u, cache %u (%u KiB), hs_timing %#x, bus %#x\n",
++	    ext[192], sectors >> 11, ext[179], ext[15], ext[33], cache_kib, ext[185], ext[183]);
+ 	if ((ext[179] & 7) != 0 || ext[15] != 0) {
+ 		printf("SWEET EMMC: not on the user area with command queuing off, not touching it\n");
+ 		return ENXIO;
+@@ -1097,6 +1120,39 @@ sweet_ufs_init(void)
  	devfs_make_node(makedev(su.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rufsroot0");
  	/* Only now, with the partition bounds known, can writes be allowed. */
  	su.writable = (rw != 0);
