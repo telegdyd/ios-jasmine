@@ -106,7 +106,7 @@ static void delay_ms(unsigned ms)
 static void __attribute__((noreturn)) reset(unsigned after_s)
 {
 	con_skip();
-	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
+	con_str("RESET", after_s >= 120 ? "in 2 min" : after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
 	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
@@ -289,7 +289,7 @@ static void __attribute__((noreturn)) board_report(void)
 	con_hex2("WDT", "en=", rd32(APSS_WDT_BASE + 0x08), "sts=", rd32(APSS_WDT_BASE + 0x0c));
 	con_hex2("WDT", "bark=", rd32(APSS_WDT_BASE + 0x10), "bite=", rd32(APSS_WDT_BASE + 0x14));
 	stage = "done";
-	reset(40);
+	reset(120);	/* time to photograph the screen */
 }
 #endif
 

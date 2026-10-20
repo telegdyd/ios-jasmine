@@ -9,6 +9,7 @@
 #     and drops the v4 boot ramdisk, so the payload is appended to the Image
 #     behind _end (loader.c).
 set -euo pipefail
+PAYLOAD=${1:+$(realpath "$1")}	# before the cd: relative to the caller
 cd "$(dirname "$0")"
 BOARD=${BOARD:-jasmine}
 CC=aarch64-linux-gnu-gcc
@@ -43,7 +44,7 @@ if [ "$BOARD" = jasmine ]; then
 	DTB=${JASMINE_DTB:-../dtb/jasmine.dtb}
 	[ -f "$DTB" ] || { echo "error: no DTB at $DTB (see tools/extract-dtb.py)" >&2; exit 1; }
 	RD=out/ramdisk.bin
-	[ -n "${1:-}" ] && RD=$1
+	[ -n "$PAYLOAD" ] && RD=$PAYLOAD
 	gzip -9 -n -c out/Image > out/Image.gz
 	cat out/Image.gz "$DTB" > out/Image.gz-dtb
 	# Offsets as in the Nura boot.img (base 0); ABL uses its own load addresses.
@@ -51,9 +52,9 @@ if [ "$BOARD" = jasmine ]; then
 		--kernel_offset 0x8000 --ramdisk_offset 0x1000000 --second_offset 0xf00000 --tags_offset 0x100 \
 		--kernel out/Image.gz-dtb --ramdisk "$RD" --cmdline "console=null" -o out/shim-boot.img
 else
-	if [ -n "${1:-}" ]; then
+	if [ -n "$PAYLOAD" ]; then
 		truncate -s $(( (size + 0xfff) & ~0xfff )) out/Image
-		cat "$1" >> out/Image
+		cat "$PAYLOAD" >> out/Image
 		python3 -c 'import os,struct,sys; f=open(sys.argv[1],"r+b"); f.seek(16); f.write(struct.pack("<Q", os.path.getsize(sys.argv[1])))' out/Image
 	fi
 	${MKBOOTIMG:-python3 /home/makr/work/topaz/mkbootimg_src/mkbootimg.py} --header_version 4 --kernel out/Image --ramdisk out/ramdisk.bin \
