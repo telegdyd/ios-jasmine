@@ -1,4 +1,4 @@
-From 21556c0fdb8016452ea83d4751e885c54c895c52 Mon Sep 17 00:00:00 2001
+From ec8f63924317bd380e3ed0becaa8396c2d2debcc Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Tue, 20 Oct 2026 18:20:20 +0200
 Subject: [PATCH] jasmine-0136: board guards, early console on the jasmine
@@ -147,7 +147,7 @@ index 824c022..32bea7e 100644
  	poll();
  	if (fReal) {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index f469a3a..889c34a 100644
+index 6f29fba..6f174af 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -40,6 +40,8 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
@@ -159,7 +159,7 @@ index f469a3a..889c34a 100644
  extern "C" void sweet_busy_init(void);              /* iokit/Kernel/arm/SweetBusy.cpp (boot-arg sweetbusy=N) */             /* iokit/Kernel/arm/TopazModem.cpp (boot-arg modem=1) */
  extern "C" int sweet_console_copy_dirty(void *dst);
  
-@@ -254,7 +256,11 @@ AppleCLCD::start(IOService *provider)
+@@ -267,7 +269,11 @@ AppleCLCD::start(IOService *provider)
  	if (!IOService::start(provider)) {
  		return false;
  	}
@@ -172,7 +172,7 @@ index f469a3a..889c34a 100644
  	sweet_busy_init();
  	PE_current_console(&video);
  	fPhys = video.v_baseAddr;
-@@ -292,9 +298,14 @@ AppleCLCD::start(IOService *provider)
+@@ -305,9 +311,14 @@ AppleCLCD::start(IOService *provider)
  		IOLog("SWEET FB: no vsync timer\n");
  		return false;
  	}
@@ -190,9 +190,9 @@ index f469a3a..889c34a 100644
  	fDsiBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
  	    kIODirectionInOut | kIOMemoryPhysicallyContiguous, page_size, 0x00000000fffff000ull);
  	fDsiBufPhys = fDsiBuf ? fDsiBuf->getPhysicalSegment(0, NULL, kIOMemoryMapperNone) : 0;
-@@ -326,7 +337,7 @@ AppleCLCD::start(IOService *provider)
- 		OSSafeReleaseNULL(bl);
+@@ -350,7 +361,7 @@ AppleCLCD::start(IOService *provider)
  	}
+ 	OSSafeReleaseNULL(accel);
  	/* dpu sm6115 catalog: intf_1 at mdp+0x6a800, mdp at 0x5e01000 */
 -	fIntf1 = (volatile uint32_t *)ml_io_map(0x05e6b000, 0x1000);
 +	fIntf1 = topaz ? (volatile uint32_t *)ml_io_map(0x05e6b000, 0x1000) : NULL;

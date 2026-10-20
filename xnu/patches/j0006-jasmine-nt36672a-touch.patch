@@ -1,4 +1,4 @@
-From 328061f913a0ffd3997b56a19a0a823fbeca1882 Mon Sep 17 00:00:00 2001
+From 15fd760259e2d6e88f7c5b338c72f196ff7b28e8 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 01:07:42 +0200
 Subject: [PATCH] jasmine-0141: NT36672A touch on BLSP1 QUP1 (polled QUP v2
