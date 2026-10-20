@@ -1,0 +1,538 @@
+From 328061f913a0ffd3997b56a19a0a823fbeca1882 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 01:07:42 +0200
+Subject: [PATCH] jasmine-0141: NT36672A touch on BLSP1 QUP1 (polled QUP v2
+ I2C)
+
+bsd/dev/sweet_nvt.c reads ADT /sweet-touch: votes the BLSP1 AHB clock,
+runs the QUP1 I2C core clock from XO, muxes GPIO 2/3 to blsp_i2c1, drives
+the touch reset (GPIO 66) high and reads the Novatek parameters at 0x78
+(chip id 8). The QUP runs in FIFO mode with v2 tags, polled, one tag stream
+per transfer. Touch records (6 bytes at 0x00) are polled at 100 Hz, one
+record while idle and all while a finger is down, and go to SweetHID.
+sweettouch=0 disables it. SweetHIDTouch takes the panel size from the boot
+console instead of topaz's 1080x2400.
+---
+ bsd/conf/files                           |   1 +
+ bsd/dev/sweet_nvt.c                      | 419 +++++++++++++++++++++++
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
+ iokit/Kernel/arm/hid/SweetHID.cpp        |  23 +-
+ 4 files changed, 437 insertions(+), 9 deletions(-)
+ create mode 100644 bsd/dev/sweet_nvt.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index bd3b5d9..acc75a1 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -109,6 +109,7 @@ bsd/dev/sweet_board.c			standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_pmic.c			standard
++bsd/dev/sweet_nvt.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_i2c1.c			standard
+ bsd/dev/sweet_cpufreq.c			standard
+diff --git a/bsd/dev/sweet_nvt.c b/bsd/dev/sweet_nvt.c
+new file mode 100644
+index 0000000..2dd04cd
+--- /dev/null
++++ b/bsd/dev/sweet_nvt.c
+@@ -0,0 +1,419 @@
++/*
++ * jasmine (SDM660) touch: Novatek NT36672A (the panel's TDDI) at I2C address
++ * 0x01 on BLSP1 QUP1 (qcom,i2c-qup-v2.2.1), polled into SweetHID.
++ *
++ * ADT /sweet-touch:
++ *   reg       = <qup size gcc size> (u64)
++ *   gcc-clks  = <ahb-vote-reg ahb-vote-bit core-rcg-cmd core-cbcr> (u32, GCC
++ *               offsets: gcc_blsp1_ahb_clk vote, blsp1_qup1_i2c_apps RCG/branch)
++ *   pins      = <sda scl reset irq> (u64, TLMM GPIO CTL registers, physical)
++ *   i2c       = <function addr clk-ctl> (u32)
++ *
++ * Bring-up as Linux does it (gcc-sdm660.c, pinctrl-msm.c, i2c-qup.c,
++ * novatek-nvt-ts.c): vote the BLSP1 AHB clock, run the QUP core clock from XO
++ * (19.2 MHz), mux GPIO 2/3 to blsp_i2c1, drive the touch reset (GPIO 66) high
++ * and read the touch parameters at 0x78. The QUP runs in FIFO mode with v2
++ * tags and is polled: one tag stream per transfer (START, address, write the
++ * register byte, repeated START, read with STOP), as the BAM path sends it.
++ * A touch record is 6 bytes at 0x00: id/state, x[11:4], y[11:4], x[3:0]|y[3:0].
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern void sweet_hid_touch(int finger, int down, int x, int y);
++
++void sweet_nvt_init(void);
++
++#define QUP_CONFIG              0x000
++#define QUP_STATE               0x004
++#define QUP_IO_MODE             0x008
++#define QUP_SW_RESET            0x00c
++#define QUP_OPERATIONAL         0x018
++#define QUP_ERROR_FLAGS         0x01c
++#define QUP_HW_VERSION          0x030
++#define QUP_MX_OUTPUT_CNT       0x100
++#define QUP_OUT_FIFO_BASE       0x110
++#define QUP_MX_WRITE_CNT        0x150
++#define QUP_MX_INPUT_CNT        0x200
++#define QUP_MX_READ_CNT         0x208
++#define QUP_IN_FIFO_BASE        0x218
++#define QUP_I2C_CLK_CTL         0x400
++#define QUP_I2C_STATUS          0x404
++#define QUP_I2C_MASTER_GEN      0x408
++
++#define QUP_STATE_RESET         0
++#define QUP_STATE_RUN           1
++#define QUP_STATE_PAUSE         3
++#define QUP_STATE_VALID         (1u << 2)
++#define QUP_I2C_MAST_GEN        (1u << 4)
++#define QUP_IN_NOT_EMPTY        (1u << 5)
++#define QUP_CONFIG_I2C          ((2u << 8) | 7)         /* I2C mini core, N = 8 bits */
++#define QUP_REPACK_EN           (3u << 14)
++#define I2C_STATUS_ERROR_MASK   0x38000fcu
++#define I2C_STATUS_BUS_ACTIVE   (1u << 8)
++#define QUP_ERROR_MASK          0x7cu
++
++#define TAG_START               0x81
++#define TAG_DATAWR              0x82
++#define TAG_DATARD_STOP         0x87
++
++/* TLMM GPIO CTL: pull 1:0, function 5:2, drive 8:6 ((mA / 2) - 1), OE 9; IO +4 */
++#define TLMM_PULL_UP            3u
++#define TLMM_DRV(ma)            ((((ma) / 2u) - 1u) << 6)
++#define TLMM_OE                 (1u << 9)
++
++#define NVT_PARAMS              0x78
++#define NVT_MAX_TOUCH           10
++#define NVT_REC                 6
++
++static volatile uint32_t *qup;
++static volatile uint32_t *pin_sda, *pin_scl, *pin_rst, *pin_irq;
++static uint32_t nvt_addr, nvt_clk_ctl, in_fifo_sz, out_fifo_sz;
++static bool nvt_started;
++static int nvt_sleep_chan;
++
++static void
++nvt_sleep_ms(uint32_t ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&nvt_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static int
++qup_wait_state(uint32_t state, uint32_t mask)
++{
++	for (int i = 0; i < 1000; i++) {
++		uint32_t s = qup[QUP_STATE / 4];
++		if ((s & QUP_STATE_VALID) && (s & mask) == state) {
++			return 0;
++		}
++		delay(1);
++	}
++	return -1;
++}
++
++static int
++qup_set_state(uint32_t state)
++{
++	if (qup_wait_state(0, 0) != 0) {
++		return -1;
++	}
++	qup[QUP_STATE / 4] = state;
++	return qup_wait_state(state, 3);
++}
++
++/*
++ * Write wlen bytes (register address), then, if rlen, read rlen bytes with a
++ * repeated START. 0, or a negative step number / the I2C status on failure.
++ */
++static int
++qup_xfer(const uint8_t *wbuf, uint32_t wlen, uint8_t *rbuf, uint32_t rlen)
++{
++	uint8_t tags[16];
++	uint32_t nt = 0;
++
++	if (wlen + 8 > sizeof(tags) || rlen + 2 > in_fifo_sz || rlen > 255) {
++		return -1;
++	}
++	tags[nt++] = TAG_START;
++	tags[nt++] = (uint8_t)(nvt_addr << 1);
++	tags[nt++] = TAG_DATAWR;
++	tags[nt++] = (uint8_t)wlen;
++	for (uint32_t i = 0; i < wlen; i++) {
++		tags[nt++] = wbuf[i];
++	}
++	if (rlen) {
++		tags[nt++] = TAG_START;
++		tags[nt++] = (uint8_t)(nvt_addr << 1 | 1);
++		tags[nt++] = TAG_DATARD_STOP;
++		tags[nt++] = (uint8_t)rlen;
++	} else {
++		tags[2] = TAG_DATAWR + 1;       /* DATAWR_STOP */
++	}
++	if (nt > out_fifo_sz) {
++		return -2;
++	}
++
++	qup[QUP_SW_RESET / 4] = 1;
++	if (qup_wait_state(QUP_STATE_RESET, 3) != 0) {
++		return -3;
++	}
++	qup[QUP_CONFIG / 4] = QUP_CONFIG_I2C;
++	qup[QUP_I2C_MASTER_GEN / 4] = 1;        /* v2 tags */
++	if (qup_wait_state(QUP_I2C_MAST_GEN, QUP_I2C_MAST_GEN) != 0) {
++		return -4;
++	}
++	qup[QUP_MX_OUTPUT_CNT / 4] = 0;         /* FIFO mode both ways */
++	qup[QUP_MX_INPUT_CNT / 4] = 0;
++	qup[QUP_IO_MODE / 4] = QUP_REPACK_EN;
++	qup[QUP_MX_WRITE_CNT / 4] = nt;
++	qup[QUP_MX_READ_CNT / 4] = rlen ? rlen + 2 : 0;
++	qup[QUP_CONFIG / 4] = QUP_CONFIG_I2C | (rlen ? 0 : (1u << 7)); /* NO_INPUT */
++	if (qup_set_state(QUP_STATE_RUN) != 0) {
++		return -5;
++	}
++	qup[QUP_I2C_CLK_CTL / 4] = nvt_clk_ctl;
++	if (qup_set_state(QUP_STATE_PAUSE) != 0) {
++		return -6;
++	}
++	for (uint32_t i = 0; i < nt; i += 4) {
++		uint32_t w = 0;
++		for (uint32_t j = 0; j < 4 && i + j < nt; j++) {
++			w |= (uint32_t)tags[i + j] << (8 * j);
++		}
++		qup[QUP_OUT_FIFO_BASE / 4] = w;
++	}
++	if (qup_set_state(QUP_STATE_RUN) != 0) {
++		return -7;
++	}
++
++	/* ~25 us per byte at 400 kHz; give it 20 ms */
++	uint32_t got = 0, need = rlen ? rlen + 2 : 0;
++	int err = 0;
++	for (int t = 0; t < 400; t++) {
++		uint32_t st = qup[QUP_I2C_STATUS / 4] & I2C_STATUS_ERROR_MASK;
++		uint32_t qe = qup[QUP_ERROR_FLAGS / 4] & QUP_ERROR_MASK;
++		if (st || qe) {
++			err = (int)(st | qe << 24) | 0x40000000;
++			break;
++		}
++		while (got < need && (qup[QUP_OPERATIONAL / 4] & QUP_IN_NOT_EMPTY)) {
++			uint32_t w = qup[QUP_IN_FIFO_BASE / 4];
++			for (int j = 0; j < 4 && got < need; j++, got++, w >>= 8) {
++				if (got >= 2) {
++					rbuf[got - 2] = (uint8_t)w;
++				}
++			}
++		}
++		if (got >= need && !(qup[QUP_I2C_STATUS / 4] & I2C_STATUS_BUS_ACTIVE)) {
++			break;
++		}
++		delay(50);
++	}
++	if (!err && (got < need || (qup[QUP_I2C_STATUS / 4] & I2C_STATUS_BUS_ACTIVE))) {
++		err = -8;
++	}
++	qup[QUP_STATE / 4] = QUP_STATE_RESET;
++	return err;
++}
++
++static int
++nvt_read(uint8_t reg, uint8_t *buf, uint32_t len)
++{
++	return qup_xfer(&reg, 1, buf, len);
++}
++
++/* n touch records from 0x00, in pieces that fit the input FIFO (2 tag bytes) */
++static int
++nvt_read_records(uint8_t *buf, uint32_t n)
++{
++	uint32_t per = (in_fifo_sz - 2) / NVT_REC;
++	for (uint32_t i = 0; i < n; i += per) {
++		uint32_t k = n - i < per ? n - i : per;
++		int r = nvt_read((uint8_t)(i * NVT_REC), buf + i * NVT_REC, k * NVT_REC);
++		if (r != 0) {
++			return r;
++		}
++	}
++	return 0;
++}
++
++static void
++nvt_reset_pulse(void)
++{
++	pin_rst[1] = 0;                         /* IO: out low = reset */
++	nvt_sleep_ms(10);
++	pin_rst[1] = 2;
++}
++
++static void
++nvt_thread(void *arg, wait_result_t result)
++{
++	uint8_t p[16] = { 0 }, buf[NVT_MAX_TOUCH * NVT_REC] = { 0 };
++	int r = -1, max = 0, w = 0, h = 0, irq_type = 0;
++	bool down[NVT_MAX_TOUCH] = { false };
++	int px[NVT_MAX_TOUCH] = { 0 }, py[NVT_MAX_TOUCH] = { 0 };
++	PE_Video video;
++	(void)arg;
++	(void)result;
++
++	/* the controller may still be booting its firmware after the reset release */
++	for (int tries = 0; tries < 8; tries++) {
++		nvt_sleep_ms(tries ? 250 : 120);
++		r = nvt_read(NVT_PARAMS, p, 15);
++		printf("SWEET NVT: params read %d: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
++		    r, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14]);
++		if (r == 0 && p[0x0e] == 0x08) {
++			break;
++		}
++		if (tries == 3) {
++			printf("SWEET NVT: reset pulse\n");
++			nvt_reset_pulse();
++		}
++	}
++	w = p[4] << 8 | p[5];
++	h = p[6] << 8 | p[7];
++	max = p[9];
++	irq_type = p[0x0b];
++	if (r != 0 || p[0x0e] != 0x08 || w <= 0 || h <= 0 || w > 4096 || h > 4096 ||
++	    max <= 0 || max > NVT_MAX_TOUCH) {
++		printf("SWEET NVT: no NT36672A (chip id %#x), touch off\n", p[0x0e]);
++		return;
++	}
++	bzero(&video, sizeof(video));
++	(void)PE_current_console(&video);
++	int pw = video.v_width ? (int)video.v_width : w, ph = video.v_height ? (int)video.v_height : h;
++	printf("SWEET NVT: %dx%d, %d touches, irq type %d, wake %#x, panel %dx%d\n",
++	    w, h, max, irq_type, p[0x0c], pw, ph);
++
++	unsigned errors = 0;
++	bool any = false;
++	for (;;) {
++		/*
++		 * Idle: one record (the first finger lands in it), 100 Hz. With a
++		 * finger down: all records, so releases and other fingers are seen.
++		 */
++		uint32_t n = any ? (uint32_t)max : 1;
++		r = nvt_read_records(buf, n);
++		if (r != 0) {
++			if ((errors++ % 500u) == 0) {
++				printf("SWEET NVT: read error %d (status %#x)\n", r, qup[QUP_I2C_STATUS / 4]);
++			}
++			nvt_sleep_ms(20);
++			continue;
++		}
++		bool seen[NVT_MAX_TOUCH] = { false };
++		for (uint32_t i = 0; i < n; i++) {
++			uint8_t *t = &buf[i * NVT_REC];
++			int slot = t[0] >> 3, type = t[0] & 7;
++			if (t[0] == 0xff || slot < 1 || slot > max) {
++				continue;
++			}
++			slot--;
++			if (type == 1 || type == 2) {
++				int x = (t[1] << 4) | (t[3] >> 4);
++				int y = (t[2] << 4) | (t[3] & 0x0f);
++				px[slot] = x * pw / w;
++				py[slot] = y * ph / h;
++				seen[slot] = true;
++				down[slot] = true;
++				sweet_hid_touch(slot, 1, px[slot], py[slot]);
++			} else if (type == 3 && down[slot]) {
++				seen[slot] = true;
++				down[slot] = false;
++				sweet_hid_touch(slot, 0, px[slot], py[slot]);
++			}
++		}
++		/* full reads list every finger: one that is gone was released */
++		any = false;
++		for (int s = 0; s < max; s++) {
++			if (down[s] && n == (uint32_t)max && !seen[s]) {
++				down[s] = false;
++				sweet_hid_touch(s, 0, px[s], py[s]);
++			}
++			any |= down[s];
++		}
++		nvt_sleep_ms(10);
++	}
++}
++
++static volatile uint32_t *
++map_reg(uint64_t pa)
++{
++	return (volatile uint32_t *)ml_io_map((vm_offset_t)(pa & ~0xfffull), 0x1000) + (pa & 0xfff) / 4;
++}
++
++void
++sweet_nvt_init(void)
++{
++	DTEntry node;
++	uint64_t const *reg = NULL, *pins = NULL;
++	uint32_t const *clks = NULL, *i2c = NULL;
++	unsigned int rs = 0, ps = 0, cs = 0, is = 0;
++	int enabled = 1;
++	thread_t thread;
++
++	if (nvt_started) {
++		return;
++	}
++	nvt_started = true;
++	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
++	if (SecureDTLookupEntry(NULL, "/sweet-touch", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &rs) != kSuccess || rs < 4 * 8 ||
++	    SecureDTGetProperty(node, "pins", (void const **)&pins, &ps) != kSuccess || ps < 4 * 8 ||
++	    SecureDTGetProperty(node, "gcc-clks", (void const **)&clks, &cs) != kSuccess || cs < 4 * 4 ||
++	    SecureDTGetProperty(node, "i2c", (void const **)&i2c, &is) != kSuccess || is < 3 * 4) {
++		return;
++	}
++	if (!enabled) {
++		printf("SWEET NVT: disabled (sweettouch=0)\n");
++		return;
++	}
++	nvt_addr = i2c[1];
++	nvt_clk_ctl = i2c[2];
++
++	/* clocks: BLSP1 AHB vote, then the QUP core clock from XO (div 1) */
++	volatile uint32_t *vote = map_reg(reg[2] + clks[0]);
++	volatile uint32_t *rcg = map_reg(reg[2] + clks[2]);
++	volatile uint32_t *cbcr = map_reg(reg[2] + clks[3]);
++	printf("SWEET NVT: before: ahb vote %#x rcg %#x/%#x cbcr %#x\n", *vote, rcg[0], rcg[1], *cbcr);
++	*vote |= 1u << clks[1];
++	rcg[1] = 1;                             /* CFG: src XO, pre-div 1 (2 * 1 - 1) */
++	rcg[0] |= 1;                            /* CMD: UPDATE */
++	for (int i = 0; i < 1000 && (rcg[0] & 1); i++) {
++		delay(1);
++	}
++	*cbcr |= 1;
++	for (int i = 0; i < 1000 && (*cbcr & (1u << 31)); i++) {
++		delay(1);
++	}
++	printf("SWEET NVT: after: ahb vote %#x rcg %#x/%#x cbcr %#x\n", *vote, rcg[0], rcg[1], *cbcr);
++	if (*cbcr & (1u << 31)) {
++		printf("SWEET NVT: QUP core clock stays off, touch off\n");
++		return;
++	}
++
++	/* pins: I2C function on SDA/SCL, reset output high, interrupt input pull-up */
++	pin_sda = map_reg(pins[0]);
++	pin_scl = map_reg(pins[1]);
++	pin_rst = map_reg(pins[2]);
++	pin_irq = map_reg(pins[3]);
++	printf("SWEET NVT: pins before: sda %#x scl %#x rst %#x/%#x irq %#x/%#x\n",
++	    pin_sda[0], pin_scl[0], pin_rst[0], pin_rst[1], pin_irq[0], pin_irq[1]);
++	pin_sda[0] = i2c[0] << 2 | TLMM_DRV(2);
++	pin_scl[0] = i2c[0] << 2 | TLMM_DRV(2);
++	pin_irq[0] = TLMM_DRV(16) | TLMM_PULL_UP;
++	pin_rst[1] = 2;                         /* out high before enabling the driver */
++	pin_rst[0] = TLMM_OE | TLMM_DRV(16) | TLMM_PULL_UP;
++
++	qup = (volatile uint32_t *)ml_io_map((vm_offset_t)reg[0], (vm_size_t)reg[1]);
++	uint32_t io = qup[QUP_IO_MODE / 4];
++	static const uint32_t blk[] = { 4, 16, 32 };
++	uint32_t ob = (io & 3) < 3 ? blk[io & 3] : 4, ib = ((io >> 5) & 3) < 3 ? blk[(io >> 5) & 3] : 4;
++	out_fifo_sz = ob * (2u << ((io >> 2) & 7));
++	in_fifo_sz = ib * (2u << ((io >> 7) & 7));
++	printf("SWEET NVT: QUP version %#x io_mode %#x fifo out %u in %u, addr %#x clk_ctl %#x\n",
++	    qup[QUP_HW_VERSION / 4], io, out_fifo_sz, in_fifo_sz, nvt_addr, nvt_clk_ctl);
++	if (in_fifo_sz < 2 + 15 || out_fifo_sz < 12) {
++		printf("SWEET NVT: QUP FIFOs too small, touch off\n");
++		return;
++	}
++
++	kern_return_t kr = kernel_thread_start(nvt_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("SWEET NVT: kernel_thread_start failed %d\n", kr);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 554e309..6944572 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -18,6 +18,8 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern "C" int sweet_pmic_init(void);
+ extern "C" int sweet_rtc_get(uint64_t *secs);
+ extern "C" void sweet_rtc_set(uint64_t secs);
++/* bsd/dev/sweet_nvt.c: jasmine touch (ADT /sweet-touch) */
++extern "C" void sweet_nvt_init(void);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -232,6 +234,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	if (sweet_pmic_init()) {
+ 		publishResource("IORTC", this);
+ 	}
++	sweet_nvt_init();
+ 	return true;
+ }
+ 
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index d2f4fa1..1ee8981 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -367,7 +367,7 @@ protected:
+ 	virtual UInt32 getProductID() APPLE_KEXT_OVERRIDE { return 2; }
+ private:
+ 	IOLock *fLock;
+-	int fLogicalW, fLogicalH, fOffX, fOffY;
++	int fLogicalW, fLogicalH, fOffX, fOffY, fPanelW, fPanelH;
+ 	bool fDown[SWEET_TOUCH_FINGERS];
+ 	bool fEdge[SWEET_TOUCH_FINGERS];
+ 	IOFixed fX[SWEET_TOUCH_FINGERS];
+@@ -434,10 +434,15 @@ SweetHIDTouch::start(IOService *provider)
+ 	}
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
+-	fOffX = ((fLogicalW - 1080) / 2) & ~3;           /* as SweetFramebuffer.cpp */
+-	fOffY = (fLogicalH - 2400) / 2;
++	PE_Video video;
++	bzero(&video, sizeof(video));
++	(void)PE_current_console(&video);
++	fPanelW = video.v_width ? (int)video.v_width : 1080;
++	fPanelH = video.v_height ? (int)video.v_height : 2400;
++	fLogicalW = native ? fPanelW : 1125;
++	fLogicalH = native ? fPanelH : 2436;
++	fOffX = ((fLogicalW - fPanelW) / 2) & ~3;        /* as SweetFramebuffer.cpp */
++	fOffY = (fLogicalH - fPanelH) / 2;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+@@ -458,8 +463,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	if (finger < 0 || finger >= SWEET_TOUCH_FINGERS) {
+ 		return;
+ 	}
+-	x = x < 0 ? 0 : (x > 1079 ? 1079 : x);
+-	y = y < 0 ? 0 : (y > 2399 ? 2399 : y);
++	x = x < 0 ? 0 : (x > fPanelW - 1 ? fPanelW - 1 : x);
++	y = y < 0 ? 0 : (y > fPanelH - 1 ? fPanelH - 1 : y);
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+@@ -472,8 +477,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 		return;
+ 	}
+ 	if (!was && down) {
+-		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > 1079 - SWEET_TOUCH_EDGE_PX ||
+-		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_PX;
++		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > fPanelW - 1 - SWEET_TOUCH_EDGE_PX ||
++		    y < SWEET_TOUCH_EDGE_PX || y > fPanelH - 1 - SWEET_TOUCH_EDGE_PX;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
+-- 
+2.47.3
+

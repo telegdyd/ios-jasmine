@@ -52,7 +52,7 @@ COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
 RESET = None
-SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = None
+SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = None
 
 if BOARD == 'jasmine':
     # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
@@ -85,6 +85,16 @@ if BOARD == 'jasmine':
     # bit 0, active low (1). RTC: pm660 rtc@6000 (qcom,pm8941-rtc) RDATA0 0x6048.
     PMIC_KEYS = ((0, 0x810, 0, 0, 0), (2, 0xc610, 0, 1, 1), (0, 0x810, 1, 0, 2))
     PMIC_RTC = (0, 0x6048)
+    # bsd/dev/sweet_nvt.c: touchscreen@1 (novatek,nt36672a-ts) on i2c@c175000
+    # (BLSP1 QUP1, qcom,i2c-qup-v2.2.1, 400 kHz) and gcc@100000 (gcc-sdm660.c:
+    # gcc_blsp1_ahb_clk vote 0x52004 bit 17, blsp1_qup1_i2c_apps RCG 0x19020,
+    # branch 0x19008). TLMM tiles south 0x3100000 (GPIO 2/3 = blsp_i2c1,
+    # function 3), north 0x3900000 (GPIO 66 reset, 67 interrupt); 0x1000 per GPIO.
+    # clk-ctl = 400 kHz from 19.2 MHz as i2c-qup.c: fs_div 28, hs_div 3.
+    TOUCH = dict(reg=(0x0c175000, 0x1000, 0x00100000, 0x94000),
+                 clks=(0x52004, 17, 0x19020, 0x19008),
+                 pins=(0x03102000, 0x03103000, 0x03942000, 0x03943000),
+                 i2c=(3, 0x01, (14 << 16) | (3 << 8) | 28))
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -274,6 +284,12 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
                                 ('rtc', u32(*PMIC_RTC))])
             ] if PMIC_KEYS and not qemu else []
 
+    # bsd/dev/sweet_nvt.c: NT36672A touch on the BLSP1 QUP1 I2C bus
+    touch = [node('sweet-touch', [ph(), ('compatible', cstr('novatek,nt36672a-ts')),
+                                  ('reg', u64(*TOUCH['reg'])), ('gcc-clks', u32(*TOUCH['clks'])),
+                                  ('pins', u64(*TOUCH['pins'])), ('i2c', u32(*TOUCH['i2c']))])
+             ] if TOUCH and not qemu else []
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -310,7 +326,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch)
 
 
 if __name__ == '__main__':
