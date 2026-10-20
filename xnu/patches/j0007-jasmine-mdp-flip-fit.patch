@@ -1,0 +1,395 @@
+From 1fdfbe624dc72003ed39c7abad5b99521f38c78a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 01:28:51 +0200
+Subject: [PATCH] jasmine-j0007: tear-free MDP flips and fit-to-screen on
+ jasmine
+
+With topaz's MDP code guarded off, jasmine copied every frame straight into
+the boot framebuffer the panel scans (tearing). ADT /sweet-mdp gives the
+SDM660 MDP and two back buffers inside the firmware's splash reservation
+(below 4 GiB, which the MDP needs and XNU's RAM is not). At start the pipe
+fetching the boot framebuffer (VIG0/VIG1/DMA0-2) and the CTL staging it are
+found and logged; frames are composed into the back buffer (write-combined)
+and flipped with SSPP_SRC0_ADDR + CTL_FLUSH, as topaz does with VIG0/CTL0.
+sweetmdp=0 keeps the old copy. The console keeps drawing into the boot
+framebuffer, which a panic scans out again.
+
+Fit: the 1125x2436 frame is scaled uniformly (nearest sample) to the panel
+height, 997x2160 centred, instead of cropping the status bar and home
+indicator; SweetHIDTouch maps touches through the same fit. sweetfb_fit=0
+crops as before.
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 221 +++++++++++++++++++++++---
+ iokit/Kernel/arm/hid/SweetHID.cpp     |  10 ++
+ 2 files changed, 213 insertions(+), 18 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 6f174af..c72100d 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -35,6 +35,9 @@
+  * the first swap on (it still reaches the persistent log; panics draw).
+  */
+ #include "SweetSurface.h"
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <mach/vm_param.h>
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ extern "C" void sweet_console_retarget(vm_offset_t va);   /* osfmk/console/video_console.c */
+@@ -70,11 +73,14 @@ sweet_hold_set(SweetSurface **set, bool on)
+ }
+ class AppleCLCD;
+ static AppleCLCD *sweet_cons_fb;
++/* jasmine fit geometry for SweetHIDTouch (0 = no fit) */
++extern "C" { uint32_t sweet_fit_x, sweet_fit_w; }
+ static void sweet_cons_show(void);
+ class OSDictionary;
+ static void sweet_bl_log(const char *who, OSDictionary *d);
+ extern "C" void sweet_dcache_clean(vm_offset_t addr, unsigned length);  /* osfmk/arm/caches.c */
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+ 
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+@@ -173,11 +179,20 @@ public:
+ 	/* kernel-drawn frames (console, fade) are double buffered like iOS's:
+ 	 * built in the back buffer, then the MDP flips to it at vsync */
+ 	IOBufferMemoryDescriptor *fFlip[2];
++	uint8_t      *fFlipVA[2];     /* back buffers' kernel addresses (both boards) */
++	bool          fFlipWC;        /* jasmine: write-combined, no cache clean */
++	uint32_t      fFlushMask;     /* CTL_FLUSH bits: the pipe's and the CTL's */
++	/* jasmine fit: the 1125x2436 frame scaled into fFitW x fHeight at column fFitX */
++	uint32_t      fFitX, fFitW;
++	uint16_t     *fFitXMap, *fFitYMap;  /* panel column / row -> logical x / y */
++	bool          jasmineMdp(void);
++	void          composeFit(uint8_t *dst, SweetSurface *s, int32_t sx, int32_t sy,
++	    int32_t dx, int32_t dy, int32_t w, int32_t h);
+ 	uint64_t      fFlipPhys[2];
+ 	uint32_t      fFlipIdx;
+ 	bool          fConsShown;     /* console frames on the panel (no iOS frame yet) */
+ 	void          flipFrom(const uint8_t *src, uint32_t srcStride);
+-	uint8_t      *backBuffer(void) { return (uint8_t *)fFlip[fFlipIdx ^ 1]->getBytesNoCopy(); }
++	uint8_t      *backBuffer(void) { return fFlipVA[fFlipIdx ^ 1]; }
+ 	void          flipBack(void);
+ 	IOBufferMemoryDescriptor *fCons;    /* console shadow frame (cached, contiguous) */
+ 	uint64_t      fConsPhys;
+@@ -315,9 +330,10 @@ AppleCLCD::start(IOService *provider)
+ 		fVig0 = (volatile uint32_t *)ml_io_map(0x05e05000, 0x1000);
+ 		fCtl0 = (volatile uint32_t *)ml_io_map(0x05e02000, 0x1000);
+ 		fDsi = (volatile uint8_t *)ml_io_map(0x05e94000, 0x1000);
+-	} else {
++		fFlushMask = 0x20001;   /* VIG0 + CTL */
++	} else if (!jasmineMdp()) {
+ 		/* CPU copy into the ABL framebuffer only (the sweet path) */
+-		IOLog("SWEET FB: not a topaz ADT: no MDP scanout, DSI or INTF access\n");
++		IOLog("SWEET FB: not a topaz ADT and no /sweet-mdp pipe: CPU copy into the boot framebuffer\n");
+ 	}
+ 	fDsiBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryPhysicallyContiguous, page_size, 0x00000000fffff000ull);
+@@ -376,19 +392,24 @@ AppleCLCD::start(IOService *provider)
+ 		fScanStride = fBootStride;
+ 		IOLog("SWEET FB: MDP VIG0 src %#x stride %u (boot), direct scanout ready\n",
+ 		    fBootSrc, fBootStride);
+-		sweet_scanout_set_geometry(fWidth, fHeight, fLogicalW, fLogicalH);
+ 		vm_size_t fsz = (vm_size_t)fRowBytes * fHeight;
+-		for (int i = 0; i < 2; i++) {
+-			fFlip[i] = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+-			    kIODirectionInOut | kIOMemoryPhysicallyContiguous, fsz, 0x00000000fffff000ull);
+-			fFlipPhys[i] = fFlip[i] ? fFlip[i]->getPhysicalSegment(0, NULL, kIOMemoryMapperNone) : 0;
++		if (topaz) {
++			sweet_scanout_set_geometry(fWidth, fHeight, fLogicalW, fLogicalH);
++			for (int i = 0; i < 2; i++) {
++				fFlip[i] = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
++				    kIODirectionInOut | kIOMemoryPhysicallyContiguous, fsz, 0x00000000fffff000ull);
++				fFlipPhys[i] = fFlip[i] ? fFlip[i]->getPhysicalSegment(0, NULL, kIOMemoryMapperNone) : 0;
++				fFlipVA[i] = fFlip[i] ? (uint8_t *)fFlip[i]->getBytesNoCopy() : NULL;
++			}
+ 		}
+ 		fFadeOrig = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut, fsz, page_size);
+-		fCons = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
++		/* jasmine: XNU has no RAM below 4 GiB, so no console shadow there */
++		fCons = !topaz ? NULL : IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 		    kIODirectionInOut | kIOMemoryPhysicallyContiguous, fsz, 0x00000000fffff000ull);
+-		if (fFlip[0] == NULL || fFlip[1] == NULL || fFadeOrig == NULL) {
++		if (fFlipVA[0] == NULL || fFlipVA[1] == NULL || fFadeOrig == NULL) {
+ 			OSSafeReleaseNULL(fFlip[0]);
+ 			OSSafeReleaseNULL(fFlip[1]);
++			fFlipVA[0] = fFlipVA[1] = NULL;
+ 			OSSafeReleaseNULL(fFadeOrig);
+ 			OSSafeReleaseNULL(fCons);
+ 		}
+@@ -405,6 +426,16 @@ AppleCLCD::start(IOService *provider)
+ 			IOLog("SWEET FB: console double buffered (shadow %#llx)\n", fConsPhys);
+ 		} else {
+ 			OSSafeReleaseNULL(fCons);
++			if (fFlipVA[0] != NULL) {
++				/*
++				 * jasmine: no contiguous memory below 4 GiB for a console
++				 * shadow. The console keeps drawing into the boot framebuffer,
++				 * which a panic scans out again (sweet_cons_show).
++				 */
++				fConsPhys = fBootSrc;
++				sweet_cons_fb = this;
++				sweet_console_show_hook = sweet_cons_show;
++			}
+ 		}
+ 	}
+ 	uint32_t hz = 10;
+@@ -421,6 +452,149 @@ AppleCLCD::start(IOService *provider)
+ 	return true;
+ }
+ 
++/*
++ * jasmine (SDM660, DPU 3.2: dpu_3_2_sdm660.h): ABL's splash pipe is one of
++ * VIG0/VIG1/DMA0-2 with SSPP_SRC0_ADDR (0x14) = the boot framebuffer, staged
++ * by one of CTL_0-4 (CTL_LAYER(LM0..2) 0x00-0x08 hold the pipe's stage, CTL_FLUSH
++ * 0x18 takes the pipe's bit and bit 17 for the CTL). ADT /sweet-mdp:
++ * reg = <mdp size>, flip = <pa size pa size>: two back buffers inside the
++ * firmware's splash reservation (below 4 GiB, which the MDP needs and XNU's
++ * RAM is not). sweetmdp=0 keeps the CPU copy into the boot framebuffer.
++ */
++bool
++AppleCLCD::jasmineMdp(void)
++{
++	static const struct { const char *name; uint32_t off, flush, shift; } pipes[] = {
++		{ "VIG0", 0x4000, 1u << 0, 0 }, { "VIG1", 0x6000, 1u << 1, 3 },
++		{ "DMA0", 0x24000, 1u << 11, 18 }, { "DMA1", 0x26000, 1u << 12, 21 },
++		{ "DMA2", 0x28000, 1u << 24, 32 },     /* stage in CTL_LAYER_EXT */
++	};
++	DTEntry node;
++	uint64_t const *reg = NULL, *flip = NULL;
++	unsigned int rs = 0, fs = 0;
++	uint32_t on = 1;
++
++	(void)PE_parse_boot_argn("sweetmdp", &on, sizeof(on));
++	if (SecureDTLookupEntry(NULL, "/sweet-mdp", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &rs) != kSuccess || rs < 2 * 8 ||
++	    SecureDTGetProperty(node, "flip", (void const **)&flip, &fs) != kSuccess || fs < 4 * 8) {
++		return false;
++	}
++	volatile uint32_t *mdp = (volatile uint32_t *)ml_io_map((vm_offset_t)reg[0], (vm_size_t)reg[1]);
++	if (mdp == NULL) {
++		return false;
++	}
++	int pipe = -1, n = 0;
++	for (int i = 0; i < (int)(sizeof(pipes) / sizeof(pipes[0])); i++) {
++		volatile uint32_t *p = mdp + pipes[i].off / 4;
++		IOLog("SWEET MDP: %s src %#x ystride %#x size %#x out %#x format %#x op %#x\n", pipes[i].name,
++		    p[0x14 / 4], p[0x24 / 4], p[0x00 / 4], p[0x08 / 4], p[0x30 / 4], p[0x38 / 4]);
++		if (p[0x14 / 4] == (uint32_t)fPhys) {
++			pipe = i;
++			n++;
++		}
++	}
++	int ctl = -1, nc = 0;
++	for (int c = 0; c < 5; c++) {
++		volatile uint32_t *r = mdp + (0x1000 + 0x200 * c) / 4;
++		uint32_t l0 = r[0x00 / 4], l1 = r[0x04 / 4], l2 = r[0x08 / 4], ext = r[0x40 / 4];
++		IOLog("SWEET MDP: CTL_%d layer %#x %#x %#x ext %#x top %#x flush %#x\n", c, l0, l1, l2, ext,
++		    r[0x14 / 4], r[0x18 / 4]);
++		uint32_t stage = 0;
++		if (pipe >= 0) {
++			stage = pipes[pipe].shift < 32 ? ((l0 | l1 | l2) >> pipes[pipe].shift) & 7 : (ext != 0);
++		}
++		if (stage != 0) {
++			ctl = c;
++			nc++;
++		}
++	}
++	uint32_t fsz = fRowBytes * fHeight;
++	bool ok = on && n == 1 && nc == 1 && flip[1] >= fsz && flip[3] >= fsz &&
++	    flip[0] + flip[1] <= (1ull << 32) && flip[2] + flip[3] <= (1ull << 32);
++	IOLog("SWEET MDP: boot framebuffer on %s (%d match), CTL_%d (%d match)%s\n",
++	    pipe >= 0 ? pipes[pipe].name : "no pipe", n, ctl, nc,
++	    ok ? ", double buffered" : on ? ", CPU copy" : ", CPU copy (sweetmdp=0)");
++	if (!ok) {
++		return false;
++	}
++	for (int i = 0; i < 2; i++) {
++		fFlipPhys[i] = flip[2 * i];
++		fFlipVA[i] = (uint8_t *)ml_io_map_wcomb((vm_offset_t)flip[2 * i], round_page(fsz));
++		if (fFlipVA[i] == NULL) {
++			fFlipVA[0] = fFlipVA[1] = NULL;
++			return false;
++		}
++		bzero(fFlipVA[i], fsz);
++	}
++	fFlipWC = true;
++	fVig0 = mdp + pipes[pipe].off / 4;
++	fCtl0 = mdp + (0x1000 + 0x200 * ctl) / 4;
++	fFlushMask = pipes[pipe].flush | (1u << 17);
++
++	/* fit: uniform scale to the panel height, centred (sweetfb_fit=0: crop) */
++	uint32_t fit = fHeight * 100 < fLogicalH * 95;
++	(void)PE_parse_boot_argn("sweetfb_fit", &fit, sizeof(fit));
++	if (fit && fLogicalH > fHeight) {
++		fFitW = (fLogicalW * fHeight / fLogicalH) & ~1u;
++		fFitX = ((fWidth - fFitW) / 2) & ~3u;
++		fFitXMap = (uint16_t *)IOMalloc(fFitW * sizeof(uint16_t));
++		fFitYMap = (uint16_t *)IOMalloc(fHeight * sizeof(uint16_t));
++		if (fFitXMap == NULL || fFitYMap == NULL) {
++			fFitW = 0;
++		} else {
++			for (uint32_t x = 0; x < fFitW; x++) {
++				fFitXMap[x] = (uint16_t)(((2 * x + 1) * fLogicalW) / (2 * fFitW));
++			}
++			for (uint32_t y = 0; y < fHeight; y++) {
++				fFitYMap[y] = (uint16_t)(((2 * y + 1) * fLogicalH) / (2 * fHeight));
++			}
++			sweet_fit_x = fFitX;
++			sweet_fit_w = fFitW;
++			IOLog("SWEET MDP: %ux%u fitted into %ux%u at x %u\n", fLogicalW, fLogicalH, fFitW, fHeight, fFitX);
++		}
++	}
++	return true;
++}
++
++/*
++ * One layer in logical coordinates (source sx,sy; destination dx,dy, w x h)
++ * scaled into the fitted panel area, nearest sample.
++ */
++void
++AppleCLCD::composeFit(uint8_t *dst, SweetSurface *s, int32_t sx, int32_t sy,
++    int32_t dx, int32_t dy, int32_t w, int32_t h)
++{
++	uintptr_t src = s->kernelAddress();
++	if (src == 0 || s->bytesPerElement != 4 || s->elementWidth != 1 || s->elementHeight != 1 ||
++	    s->memory == NULL || sx < 0 || sy < 0 || w <= 0 || h <= 0 ||
++	    sx + w > (int32_t)s->width || sy + h > (int32_t)s->height ||
++	    (uint64_t)s->offset + (uint64_t)(sy + h - 1) * s->bytesPerRow + (uint64_t)(sx + w) * 4 > s->memory->getLength()) {
++		return;
++	}
++	const uint8_t *base = (const uint8_t *)src + s->offset;
++	for (uint32_t py = 0; py < fHeight; py++) {
++		int32_t ly = fFitYMap[py];
++		if (ly < dy || ly >= dy + h) {
++			continue;
++		}
++		const uint32_t *srow = (const uint32_t *)(base + (uint64_t)(sy + ly - dy) * s->bytesPerRow) + sx - dx;
++		uint32_t *drow = (uint32_t *)(dst + (uint64_t)py * fRowBytes) + fFitX;
++		if (dx <= 0 && dx + w >= (int32_t)fLogicalW) {
++			for (uint32_t px = 0; px < fFitW; px++) {
++				drow[px] = srow[fFitXMap[px]];
++			}
++		} else {
++			for (uint32_t px = 0; px < fFitW; px++) {
++				int32_t lx = fFitXMap[px];
++				if (lx >= dx && lx < dx + w) {
++					drow[px] = srow[lx];
++				}
++			}
++		}
++	}
++}
++
+ void
+ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ {
+@@ -461,8 +635,8 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 			if (step <= SWEET_FB_FADE_STEPS) {
+ 				fb->fFadeStep = step + 1;
+ 			}
+-			bool front = fb->fFlip[0] != NULL && fb->fScanPhys == fb->fFlipPhys[fb->fFlipIdx];
+-			const uint8_t *src = front ? (const uint8_t *)fb->fFlip[fb->fFlipIdx]->getBytesNoCopy() :
++			bool front = fb->fFlipVA[0] != NULL && fb->fScanPhys == fb->fFlipPhys[fb->fFlipIdx];
++			const uint8_t *src = front ? (const uint8_t *)fb->fFlipVA[fb->fFlipIdx] :
+ 			    fb->fLastVA ? fb->fLastVA :
+ 			    fb->fConsShown ?
+ 			    (const uint8_t *)fb->fCons->getBytesNoCopy() : (const uint8_t *)fb->fPixels;
+@@ -593,7 +767,7 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+ 	fVig0[0x14 / 4] = (uint32_t)pa;
+ 	fVig0[0x24 / 4] = stride;
+ 	__asm__ volatile("dsb sy" ::: "memory");
+-	fCtl0[0x18 / 4] = 0x20001;      /* flush VIG0 + CTL: latched at the next vsync */
++	fCtl0[0x18 / 4] = fFlushMask;   /* flush the pipe + CTL: latched at the next vsync */
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	fScanPhys = pa;
+ 	fScanStride = stride;
+@@ -824,7 +998,9 @@ void
+ AppleCLCD::flipBack(void)
+ {
+ 	uint32_t idx = fFlipIdx ^ 1;
+-	sweet_dcache_clean((vm_offset_t)(uintptr_t)fFlip[idx]->getBytesNoCopy(), (unsigned)fFlip[idx]->getLength());
++	if (!fFlipWC) {
++		sweet_dcache_clean((vm_offset_t)(uintptr_t)fFlipVA[idx], (unsigned)fFlip[idx]->getLength());
++	}
+ 	scanFrom(fFlipPhys[idx], fRowBytes);
+ 	fFlipIdx = idx;
+ }
+@@ -886,7 +1062,7 @@ AppleCLCD::directPresent(const uint8_t *rec)
+ 				 * next frame in this surface at once, so scanning it directly let
+ 				 * the panel show frames half drawn. Cached to cached, a few ms.
+ 				 */
+-				if (fFlip[0] != NULL) {
++				if (fFlipVA[0] != NULL) {
+ 					flipFrom((const uint8_t *)(va + s->offset + (uint64_t)oy * s->bytesPerRow + (uint64_t)ox * 4),
+ 					    s->bytesPerRow);
+ 				} else {
+@@ -946,8 +1122,8 @@ AppleCLCD::present(const uint8_t *rec)
+ 	 * flip, like the direct path. Composing into the scanned, uncached boot
+ 	 * framebuffer showed every multi-layer frame (dims, apps) drawn top-down.
+ 	 */
+-	uint8_t *dst = fFlip[0] != NULL ? backBuffer() : (uint8_t *)fPixels;
+-	if (fFlip[0] == NULL && fVig0 != NULL && fScanPhys != fBootSrc) {
++	uint8_t *dst = fFlipVA[0] != NULL ? backBuffer() : (uint8_t *)fPixels;
++	if (fFlipVA[0] == NULL && fVig0 != NULL && fScanPhys != fBootSrc) {
+ 		scanFrom(fBootSrc, fBootStride);
+ 	}
+ 
+@@ -985,6 +1161,15 @@ AppleCLCD::present(const uint8_t *rec)
+ 			OSSafeReleaseNULL(s);
+ 			continue;
+ 		}
++		if (fFitW != 0 && dst != (uint8_t *)fPixels) {
++			if (w <= 0 || h <= 0) {
++				w = (int32_t)s->width;
++				h = (int32_t)s->height;
++			}
++			composeFit(dst, s, sx < 0 ? 0 : sx, sy < 0 ? 0 : sy, dx, dy, w, h);
++			s->release();
++			continue;
++		}
+ 		uintptr_t src = s->kernelAddress();
+ 		uint32_t bpe = s->bytesPerElement ? s->bytesPerElement : 4;
+ 		if (w <= 0 || h <= 0) {
+@@ -1037,7 +1222,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 		}
+ 		s->release();
+ 	}
+-	if (fFlip[0] != NULL) {
++	if (fFlipVA[0] != NULL) {
+ 		flipBack();
+ 	}
+ }
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 1ee8981..ef1e334 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -356,6 +356,9 @@ OSDefineMetaClassAndStructors(SweetHIDButtons, IOHIDEventService);
+  * app-switcher gesture.
+  */
+ #define SWEET_TOUCH_EDGE_PX 48
++/* iokit/Kernel/arm/SweetFramebuffer.cpp: jasmine fit (0 = none) */
++extern "C" uint32_t sweet_fit_x, sweet_fit_w;
++
+ class SweetHIDTouch : public IOHIDEventService {
+ 	OSDeclareDefaultStructors(SweetHIDTouch);
+ public:
+@@ -471,6 +474,13 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	/* Panel pixels -> the presented 1125x2436 display (SweetFramebuffer.cpp). */
+ 	IOFixed nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
+ 	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	if (sweet_fit_w != 0) {
++		/* SweetFramebuffer fits the whole logical frame: fFitW columns from fFitX, all rows */
++		int64_t fx = (int64_t)x - (int64_t)sweet_fit_x;
++		fx = fx < 0 ? 0 : (fx >= (int64_t)sweet_fit_w ? (int64_t)sweet_fit_w - 1 : fx);
++		nx = (IOFixed)((fx << 16) / sweet_fit_w);
++		ny = (IOFixed)(((int64_t)y << 16) / fPanelH);
++	}
+ 	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
+ 	if (was == down && !moved) {
+ 		IOLockUnlock(fLock);
+-- 
+2.47.3
+

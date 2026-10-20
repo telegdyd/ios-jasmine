@@ -52,7 +52,7 @@ COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
 RESET = None
-SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = None
+SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = None
 
 if BOARD == 'jasmine':
     # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
@@ -95,6 +95,12 @@ if BOARD == 'jasmine':
                  clks=(0x52004, 17, 0x19020, 0x19008),
                  pins=(0x03102000, 0x03103000, 0x03942000, 0x03943000),
                  i2c=(3, 0x01, (14 << 16) | (3 << 8) | 28))
+    # SweetFramebuffer jasmineMdp: display-controller@c901000 (DPU 3.2,
+    # dpu_3_2_sdm660.h) and two back buffers in the splash reservation
+    # memory@9d400000 (0x23ff000: the boot framebuffer + room for two more
+    # 1080x2160x4 frames, below 4 GiB as the MDP needs).
+    MDP = dict(reg=(0x0c901000, 0x90000),
+               flip=(0x9dd00000, 0x900000, 0x9e600000, 0x900000))
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -290,6 +296,10 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
                                   ('pins', u64(*TOUCH['pins'])), ('i2c', u32(*TOUCH['i2c']))])
              ] if TOUCH and not qemu else []
 
+    # SweetFramebuffer: the MDP pipe ABL scans and the flip buffers
+    mdp = [node('sweet-mdp', [ph(), ('reg', u64(*MDP['reg'])), ('flip', u64(*MDP['flip']))])
+           ] if MDP and not qemu else []
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -326,7 +336,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch + mdp)
 
 
 if __name__ == '__main__':
