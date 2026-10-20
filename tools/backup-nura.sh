@@ -11,7 +11,7 @@
 #     timer that unfreezes them after 30 minutes if this script dies.
 set -euo pipefail
 
-PHONE=teleg@192.168.1.149
+PHONE=${PHONE:-teleg@192.168.1.149}   # over USB: PHONE=teleg@172.16.42.1
 OUT=${1:-"$(cd "$(dirname "$0")/../.." && pwd)/backup/nura-full-$(date +%Y%m%d)"}
 DISK=/dev/mmcblk1
 mkdir -p "$OUT"
@@ -33,18 +33,10 @@ r "sudo dd if=$DISK bs=512 skip=$((TOTAL - 33)) count=33 2>/dev/null" > gpt-tail
 for b in boot0 boot1; do r "sudo dd if=${DISK}$b bs=4M 2>/dev/null" > "emmc-$b.bin"; done
 log "GPT and boot0/boot1 saved"
 
-# --- raw partitions (all but userdata) ------------------------------------------------------
-: > SHA256SUMS.phone
+# resumable: everything already listed here (with its file present) is skipped
+touch SHA256SUMS.phone
+done_() { [ -s "$1" ] && grep -q " $1\$" SHA256SUMS.phone; }
 trap 'r "sudo systemctl start docker mia2-monitor" || true' EXIT
-while read -r n name start size; do
-	[ "$name" = userdata ] && continue
-	f=$(printf "p%02d_%s.img.gz" "$n" "$name")
-	if [ -s "$f" ] && grep -q " $f\$" SHA256SUMS.phone 2>/dev/null; then continue; fi
-	r "sudo dd if=${DISK}p$n bs=4M 2>/dev/null | gzip -1" > "$f"
-	sum=$(r "sudo sha256sum ${DISK}p$n" | cut -d' ' -f1)
-	echo "$sum  $f" >> SHA256SUMS.phone
-	log "$f ($((size / 2048)) MiB raw, $(( $(stat -c %s "$f") / 1048576 )) MiB gz)"
-done < partitions.txt
 
 # --- userdata: Nura's disk ------------------------------------------------------------------
 UD=$(awk '$2 == "userdata" {print $1}' partitions.txt)
@@ -53,9 +45,17 @@ r "sudo dd if=${DISK}p$UD bs=512 count=2048 2>/dev/null" > userdata-head-1MiB.bi
 r "sudo dd if=${DISK}p$UD bs=512 skip=$((UDSIZE - 33)) count=33 2>/dev/null" > userdata-tail-last33.bin
 r "sudo fdisk -l ${DISK}p$UD" > userdata-layout.txt
 
+if done_ userdata-p2-root.e2i.gz && done_ userdata-p1-boot.e2i.gz; then
+	log "userdata images already saved"
+else
+sed -i "/ userdata-p/d" SHA256SUMS.phone
 log "freezing / and /boot for the e2image step (failsafe unfreeze in 30 min)"
 # One sudo for the whole frozen section: nothing in here may need to write to / or /boot.
 # Only the gzip stream goes to stdout (fd 3); everything else goes to stderr.
+# e2image checks that a filesystem mounted on / is writable by creating
+# /.ismount-test-file, which blocks forever on a frozen /: start it first and
+# freeze / as soon as it reads (services are stopped, so nothing changes meanwhile).
+# The EXIT trap keeps the script's status (busybox sh returns the trap's).
 r "sudo sh -c '
 exec 3>&1 1>&2
 set -e
@@ -67,12 +67,16 @@ sync
 rm -f /dev/shm/nura-root.fifo /dev/shm/nura-root.sha /dev/shm/nura-boot.e2i
 mkfifo /dev/shm/nura-root.fifo
 systemd-run --unit=nura-unfreeze --on-active=30min /bin/sh -c \"fsfreeze -u /boot; fsfreeze -u /\"
-trap \"fsfreeze -u / 2>/dev/null; fsfreeze -u /boot 2>/dev/null\" EXIT
+trap \"rc=\\\$?; fsfreeze -u / 2>/dev/null; fsfreeze -u /boot 2>/dev/null; exit \\\$rc\" EXIT
 fsfreeze -f /boot
-fsfreeze -f /
 e2image -fra /dev/loop0p1 /dev/shm/nura-boot.e2i
 sha256sum < /dev/shm/nura-root.fifo > /dev/shm/nura-root.sha &
-e2image -fra /dev/loop0p2 - | tee /dev/shm/nura-root.fifo | gzip -1 >&3
+e2image -fra /dev/loop0p2 - | tee /dev/shm/nura-root.fifo | gzip -1 >&3 &
+for i in \$(seq 200); do
+	e=\$(pidof e2image) && grep -q \"^read_bytes: [1-9]\" /proc/\$e/io && break
+	sleep 0.1
+done
+fsfreeze -f /
 wait
 fsfreeze -u /
 fsfreeze -u /boot
@@ -80,10 +84,23 @@ systemctl stop nura-unfreeze.timer 2>/dev/null || true
 '" > userdata-p2-root.e2i.gz
 log "unfrozen"
 r "sudo systemctl start docker mia2-monitor" || log "WARN: service restart failed"
-r "cat /dev/shm/nura-root.sha" | awk '{print $1"  userdata-p2-root.e2i.gz"}' >> SHA256SUMS.phone
-r "sha256sum /dev/shm/nura-boot.e2i" | awk '{print $1"  userdata-p1-boot.e2i.gz"}' >> SHA256SUMS.phone
-r "gzip -1 -c /dev/shm/nura-boot.e2i" > userdata-p1-boot.e2i.gz
-r "rm -f /dev/shm/nura-root.fifo /dev/shm/nura-root.sha /dev/shm/nura-boot.e2i"
+r "sudo cat /dev/shm/nura-root.sha" | awk '{print $1"  userdata-p2-root.e2i.gz"}' >> SHA256SUMS.phone
+r "sudo sha256sum /dev/shm/nura-boot.e2i" | awk '{print $1"  userdata-p1-boot.e2i.gz"}' >> SHA256SUMS.phone
+r "sudo cat /dev/shm/nura-boot.e2i" | gzip -1 > userdata-p1-boot.e2i.gz
+r "sudo rm -f /dev/shm/nura-root.fifo /dev/shm/nura-root.sha /dev/shm/nura-boot.e2i"
+fi
+
+# --- raw partitions (all but userdata), after userdata: on 2026-10-20 sustained reads hung
+# the eMMC (CQE timeout) after ~3 GiB, so Nura's own data goes first ---------------------
+while read -r n name start size; do
+	[ "$name" = userdata ] && continue
+	f=$(printf "p%02d_%s.img.gz" "$n" "$name")
+	done_ "$f" && continue
+	r "sudo dd if=${DISK}p$n bs=4M 2>/dev/null" | gzip -1 > "$f"   # compress on the PC: phone gzip is ~4 MB/s
+	sum=$(r "sudo sha256sum ${DISK}p$n" | cut -d' ' -f1)
+	echo "$sum  $f" >> SHA256SUMS.phone
+	log "$f ($((size / 2048)) MiB raw, $(( $(stat -c %s "$f") / 1048576 )) MiB gz)"
+done < partitions.txt
 
 # --- verify locally -------------------------------------------------------------------------
 log "verifying"
