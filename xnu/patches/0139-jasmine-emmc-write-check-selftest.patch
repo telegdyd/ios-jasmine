@@ -1,0 +1,89 @@
+From 722f20dd5a5687cfde18f88b71c17c46909ce618 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 20 Oct 2026 21:39:27 +0200
+Subject: [PATCH] jasmine-0139: eMMC R1 check re-read, write self-test before
+ filesystem writes
+
+The first CMD24 (HFS journal header) failed the R1 error check although
+the status printed right after was a clean 0x900, so the journal went
+invalid and every file write returned EINVAL. The check now re-reads the
+response once and logs both values. With ufsrw=1 the attach writes a
+pattern to the log header block (1 then 8 blocks), reads it back and keeps
+the disk read-only if anything differs.
+---
+ bsd/dev/sweet_ufs.c | 52 +++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 48 insertions(+), 4 deletions(-)
+
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index f452a21..32fbbcb 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -660,10 +660,21 @@ emmc_cmd(unsigned idx, uint32_t arg, uint16_t flags, uint16_t mode)
+ 	emmc_wr16(SD_XFERMODE, mode);
+ 	emmc_wr16(SD_CMD, (uint16_t)(idx << 8 | flags));
+ 	int error = emmc_wait(NIS_CMD_DONE, "command", idx);
+-	if (!error && (emmc_rd32(SD_RESP0) & R1_ERRORS)) {
+-		printf("SWEET EMMC: CMD%u arg %#x: card status %#x\n", idx, arg, emmc_rd32(SD_RESP0));
+-		emmc_recover();
+-		error = EIO;
++	uint32_t r1 = error ? 0 : emmc_rd32(SD_RESP0);
++	if (r1 & R1_ERRORS) {
++		/*
++		 * 2026-10-20: the first CMD24 failed this check, yet the status
++		 * printed right after was a clean 0x900 (TRAN, ready for data).
++		 * Read it again and fail only if the error bits are still there.
++		 */
++		delay(10);
++		uint32_t again = emmc_rd32(SD_RESP0);
++		printf("SWEET EMMC: CMD%u arg %#x: card status %#x, reread %#x (nis %#x eis %#x)\n",
++		    idx, arg, r1, again, emmc_rd16(SD_NIS), emmc_rd16(SD_EIS));
++		if (again & R1_ERRORS) {
++			emmc_recover();
++			error = EIO;
++		}
+ 	}
+ 	return error;
+ }
+@@ -1097,6 +1108,39 @@ sweet_ufs_init(void)
+ 	devfs_make_node(makedev(su.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rufsroot0");
+ 	/* Only now, with the partition bounds known, can writes be allowed. */
+ 	su.writable = (rw != 0);
++	if (su.emmc && su.writable) {
++		/*
++		 * eMMC write self-test before any filesystem write: a pattern into the
++		 * persistent log area at the end of the partition (single block, then
++		 * 8 blocks), read back and compared. The log header block is rewritten
++		 * by sweet_log_thread anyway.
++		 */
++		uint8_t *b = (uint8_t *)(su.dma + DMA_BOUNCE);
++		uint64_t t = su.first_block + su.nblocks - (1 + (4u << 20) / UFS_BLOCK);
++		int werr = 0, rerr = 0, bad = -1;
++		lck_mtx_lock(&sweet_ufs_lock);
++		for (uint32_t n = 1; n <= 8 && bad < 0 && !werr && !rerr; n += 7) {
++			for (uint32_t i = 0; i < n * 512; i++) {
++				b[i] = (uint8_t)(i * 7 + n);
++			}
++			werr = ufs_write_blocks(t, n);
++			bzero(b, n * 512);
++			rerr = werr ? 0 : ufs_read_blocks(t, n);
++			for (uint32_t i = 0; !werr && !rerr && i < n * 512; i++) {
++				if (b[i] != (uint8_t)(i * 7 + n)) {
++					bad = (int)i;
++					break;
++				}
++			}
++			printf("SWEET EMMC: write test %u block(s) at 0x%llx: write %d read %d %s\n",
++			    n, t, werr, rerr, (werr || rerr) ? "-" : bad < 0 ? "data OK" : "DATA MISMATCH");
++		}
++		lck_mtx_unlock(&sweet_ufs_lock);
++		if (werr || rerr || bad >= 0) {
++			printf("SWEET EMMC: write test failed, disk stays read-only\n");
++			su.writable = false;
++		}
++	}
+ 	su.ready = true;
+ 	printf("SWEET UFS: \"%s\" on LUN %u: first block 0x%llx, %llu MiB, %s, DMA at 0x%llx\n",
+ 	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
+-- 
+2.47.3
+
