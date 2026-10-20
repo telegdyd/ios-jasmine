@@ -1,0 +1,65 @@
+From 0c3535e3e1c63bdc1f27b2c79ce24ce7322b139a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 01:36:09 +0200
+Subject: [PATCH] jasmine-j0008: log every swap layout change
+
+The Spotlight screen showed a static misplaced frame with a black band
+and wrong colours; only the first 16 swaps (all from boot) were logged.
+Log each change of a layer's surface size, format, bytes per element and
+row, source and destination rects or the enable mask (up to 400 lines),
+with four words of the swap record after the mask.
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 22 +++++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index c72100d..e205744 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -728,6 +728,8 @@ get32(const uint8_t *p, uint32_t off)
+ }
+ 
+ static uint32_t sweet_fb_swaps_logged;
++static uint64_t sweet_fb_layer_sig[SWEET_FB_LAYERS];
++static uint32_t sweet_fb_last_mask = ~0u;
+ static uint64_t sweet_fb_swap_count;
+ 
+ /* Copy each enabled layer's surface into the panel memory (no scaling). */
+@@ -1150,12 +1152,21 @@ AppleCLCD::present(const uint8_t *rec)
+ 			continue;
+ 		}
+ 		SweetSurface *s = sweet_surface_copy(id);
+-		if (sweet_fb_swaps_logged < 16) {
++		uint64_t sig = (uint64_t)(s ? s->pixelFormat : 0) * 0x9e3779b97f4a7c15ull;
++		const uint32_t parts[] = { s ? s->width : 0, s ? s->height : 0, s ? s->bytesPerElement : 0,
++			                   s ? s->bytesPerRow : 0, (uint32_t)sx, (uint32_t)sy, get32(a, 8), get32(a, 12),
++			                   (uint32_t)dx, (uint32_t)dy, (uint32_t)w, (uint32_t)h };
++		for (uint32_t k = 0; k < sizeof(parts) / sizeof(parts[0]); k++) {
++			sig = (sig ^ parts[k]) * 0x100000001b3ull;
++		}
++		if ((sig != sweet_fb_layer_sig[layer] || mask != sweet_fb_last_mask) && sweet_fb_swaps_logged < 400) {
+ 			sweet_fb_swaps_logged++;
+-			IOLog("SWEET FB: swap %u layer %u surface %u %ux%u fmt 0x%x bpr %u a %d,%d %ux%u b %d,%d %dx%d\n",
+-			    get32(rec, 0x50), layer, id, s ? s->width : 0, s ? s->height : 0,
+-			    s ? s->pixelFormat : 0, s ? s->bytesPerRow : 0, sx, sy, get32(a, 8),
+-			    get32(a, 12), dx, dy, w, h);
++			sweet_fb_layer_sig[layer] = sig;
++			IOLog("SWEET FB: swap %u mask %#x layer %u surface %u %ux%u fmt 0x%x bpe %u bpr %u a %d,%d %ux%u b %d,%d %dx%d raw %08x %08x %08x %08x\n",
++			    get32(rec, 0x50), mask, layer, id, s ? s->width : 0, s ? s->height : 0,
++			    s ? s->pixelFormat : 0, s ? s->bytesPerElement : 0, s ? s->bytesPerRow : 0, sx, sy, get32(a, 8),
++			    get32(a, 12), dx, dy, w, h, get32(rec, 0x108 + 16 * layer), get32(rec, 0x10c + 16 * layer),
++			    get32(rec, 0x110 + 16 * layer), get32(rec, 0x114 + 16 * layer));
+ 		}
+ 		if (s == NULL || s == fSurface) {
+ 			OSSafeReleaseNULL(s);
+@@ -1222,6 +1233,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 		}
+ 		s->release();
+ 	}
++	sweet_fb_last_mask = mask;
+ 	if (fFlipVA[0] != NULL) {
+ 		flipBack();
+ 	}
+-- 
+2.47.3
+
