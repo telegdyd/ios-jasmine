@@ -1,0 +1,402 @@
+From a76f3174bd85d7c8d6033ca20cd064138199d9c0 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 20 Oct 2026 22:59:28 +0200
+Subject: [PATCH] jasmine-0140: PMIC keys and RTC over the SPMI arbiter v3
+
+bsd/dev/sweet_pmic.c reads ADT /sweet-pmic: power (PM660 PON KPDPWR),
+volume down (PON RESIN) and volume up (PM660L GPIO7, active low) are polled
+every 20 ms on the arbiter's observer channels and fed to SweetHID. A GPIO
+key is used only if firmware left the pin an enabled input. The PM660 RTC
+(RDATA 0x6048) plus rtcoffset= is the calendar clock: SweetPlatformExpert
+overrides get/setUTCTimeOfDay and publishes IORTC, so IOKitInitializeTime no
+longer waits 30 s and the date is no longer 1970. settimeofday moves the
+offset in memory only; no PMIC register is ever written here.
+---
+ bsd/conf/files                           |   1 +
+ bsd/dev/sweet_pmic.c                     | 299 +++++++++++++++++++++++
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |  30 +++
+ 3 files changed, 330 insertions(+)
+ create mode 100644 bsd/dev/sweet_pmic.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 740d10e..bd3b5d9 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -108,6 +108,7 @@ bsd/dev/sweet_ufs.c			standard
+ bsd/dev/sweet_board.c			standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
++bsd/dev/sweet_pmic.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_i2c1.c			standard
+ bsd/dev/sweet_cpufreq.c			standard
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+new file mode 100644
+index 0000000..dfc30be
+--- /dev/null
++++ b/bsd/dev/sweet_pmic.c
+@@ -0,0 +1,299 @@
++/*
++ * jasmine (SDM660) PMIC inputs over the SPMI PMIC arbiter v3, read only:
++ * the keys (PM660 PON KPDPWR and RESIN, PM660L GPIO7 volume up), polled every
++ * 20 ms into SweetHID, and the PM660 RTC for the calendar clock.
++ *
++ * ADT /sweet-pmic:
++ *   spmi-reg = <core size chnls size obsrvr size> (u64), as /sweet-reset
++ *   keys     = <sid addr bit active-low hid-key> (u32) per key; hid-key is
++ *              sweet_hid_key()'s: 0 power, 1 volume up, 2 volume down
++ *   rtc      = <sid RDATA0> (u32), 4 bytes of seconds, little endian
++ *
++ * Arbiter v3 uses the v2 layout (Linux spmi-pmic-arb.c, see
++ * SweetPlatformExpert.cpp): the APID map at core + 0x800 + 4 * n holds the
++ * PPID (sid << 8 | peripheral) in bits 19:8; reads go to the observer channel
++ * of that APID, obsrvr + 0x8000 * n: CMD 0x00 = 1 << 27 (extended read long)
++ * | (addr & 0xff) << 4 | (bytes - 1), STATUS 0x08 (bit 0 done, 3:1 failure,
++ * denied, dropped), RDATA0 0x18. Nothing here writes a PMIC register.
++ *
++ * The PMIC RTC is not wall-clock time on Qualcomm phones (Android keeps an
++ * offset in userspace): rtcoffset= (seconds, signed) is added to it, and
++ * settimeofday only moves that offset, in memory.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/locks.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern void sweet_hid_key(int key, int down);
++
++int sweet_pmic_init(void);
++int sweet_rtc_get(uint64_t *secs);
++void sweet_rtc_set(uint64_t secs);
++
++#define PMIC_MAX_KEYS   4
++#define PMIC_NO_APID    0xffffu
++
++struct pmic_key {
++	uint32_t sid, addr, bit, active_low, hid;
++	uint16_t apid;
++	volatile uint32_t *ch;
++	int state;
++};
++
++static volatile uint32_t *pmic_core;
++static uint64_t pmic_core_size, pmic_obs_pa, pmic_obs_size;
++static struct pmic_key pmic_keys[PMIC_MAX_KEYS];
++static unsigned pmic_nkeys;
++static volatile uint32_t *pmic_rtc_ch;
++static uint32_t pmic_rtc_addr;
++static int64_t pmic_rtc_offset;
++static bool pmic_started;
++static int pmic_sleep_chan;
++static LCK_GRP_DECLARE(sweet_pmic_grp, "sweet_pmic");
++static LCK_SPIN_DECLARE(sweet_pmic_lock, &sweet_pmic_grp);
++
++static uint16_t
++pmic_find_apid(uint32_t sid, uint32_t addr)
++{
++	uint32_t ppid = sid << 8 | ((addr >> 8) & 0xff);
++	for (uint32_t n = 0; 0x800 + 4 * n < pmic_core_size; n++) {
++		uint32_t v = pmic_core[(0x800 + 4 * n) / 4];
++		if (v != 0 && ((v >> 8) & 0xfff) == ppid) {
++			return (uint16_t)n;
++		}
++	}
++	return PMIC_NO_APID;
++}
++
++/* Observer channel of the peripheral holding (sid, addr), or NULL. */
++static volatile uint32_t *
++pmic_channel(uint32_t sid, uint32_t addr, uint16_t *apid_out)
++{
++	uint16_t apid = pmic_find_apid(sid, addr);
++	if (apid_out) {
++		*apid_out = apid;
++	}
++	if (apid == PMIC_NO_APID || 0x8000ull * apid + 0x1000 > pmic_obs_size) {
++		return NULL;
++	}
++	return (volatile uint32_t *)ml_io_map(pmic_obs_pa + 0x8000ull * apid, 0x1000);
++}
++
++/* Read n (1..4) bytes at addr, little endian. 0 or the arbiter status. */
++static int
++pmic_read(volatile uint32_t *ch, uint32_t addr, unsigned n, uint32_t *out)
++{
++	__asm__ volatile ("dmb oshst" ::: "memory");
++	ch[0x00 / 4] = 1u << 27 | (addr & 0xff) << 4 | (n - 1);
++	__asm__ volatile ("dsb osh" ::: "memory");
++	for (int i = 0; i < 1000; i++) {
++		uint32_t st = ch[0x08 / 4];
++		if (st & 1) {
++			if (st & 0xe) {
++				return (int)st;
++			}
++			uint32_t v = ch[0x18 / 4];
++			*out = n == 4 ? v : v & ((1u << (8 * n)) - 1);
++			return 0;
++		}
++		delay(1);
++	}
++	return -1;
++}
++
++/* RTC seconds, read until two reads agree (the counter can carry mid-read). */
++static int
++pmic_rtc_raw(uint32_t *secs)
++{
++	uint32_t a = 0, b = 0;
++	int r = -1;
++	if (pmic_rtc_ch == NULL) {
++		return -1;
++	}
++	lck_spin_lock(&sweet_pmic_lock);
++	for (int i = 0; i < 4; i++) {
++		r = pmic_read(pmic_rtc_ch, pmic_rtc_addr, 4, &a);
++		if (r == 0) {
++			r = pmic_read(pmic_rtc_ch, pmic_rtc_addr, 4, &b);
++		}
++		if (r == 0 && a == b) {
++			*secs = a;
++			break;
++		}
++		r = r ? r : -2;
++	}
++	lck_spin_unlock(&sweet_pmic_lock);
++	return r;
++}
++
++int
++sweet_rtc_get(uint64_t *secs)
++{
++	uint32_t raw = 0;
++	if (pmic_rtc_raw(&raw) != 0) {
++		return -1;
++	}
++	*secs = (uint64_t)((int64_t)raw + pmic_rtc_offset);
++	return 0;
++}
++
++void
++sweet_rtc_set(uint64_t secs)
++{
++	uint32_t raw = 0;
++	if (pmic_rtc_raw(&raw) == 0) {
++		pmic_rtc_offset = (int64_t)secs - raw;
++		printf("SWEET PMIC: clock set, rtcoffset=%lld\n", pmic_rtc_offset);
++	}
++}
++
++static void
++pmic_wait(void)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(20, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&pmic_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static void
++pmic_keys_thread(void *arg, wait_result_t result)
++{
++	unsigned errors = 0;
++	(void)arg;
++	(void)result;
++	for (;;) {
++		for (unsigned k = 0; k < pmic_nkeys; k++) {
++			struct pmic_key *key = &pmic_keys[k];
++			uint32_t v = 0;
++			lck_spin_lock(&sweet_pmic_lock);
++			int r = pmic_read(key->ch, key->addr, 1, &v);
++			lck_spin_unlock(&sweet_pmic_lock);
++			if (r != 0) {
++				if ((errors++ % 250u) == 0) {
++					printf("SWEET PMIC: key %u read error %d\n", key->hid, r);
++				}
++				continue;
++			}
++			int down = !!(v & (1u << key->bit)) != !!key->active_low;
++			if (down != key->state) {
++				key->state = down;
++				printf("SWEET PMIC: key %u %s (%#x)\n", key->hid, down ? "down" : "up", v);
++				sweet_hid_key((int)key->hid, down);
++			}
++		}
++		pmic_wait();
++	}
++}
++
++/*
++ * A PMIC GPIO key needs firmware to have left the pin an enabled digital
++ * input: MODE_CTL (0x40) direction input (LV/MV subtypes: bits 1:0, older:
++ * bits 6:4; 0 input, 2 input+output), EN_CTL (0x46) bit 7. Report, never fix.
++ */
++static bool
++pmic_gpio_is_input(struct pmic_key *key)
++{
++	uint32_t base = key->addr & ~0xffu, subtype = 0, mode = 0, en = 0;
++	int r = pmic_read(key->ch, base | 0x05, 1, &subtype);
++	r = r ? r : pmic_read(key->ch, base | 0x40, 1, &mode);
++	r = r ? r : pmic_read(key->ch, base | 0x46, 1, &en);
++	unsigned dir = subtype >= 0x10 && subtype <= 0x13 ? mode & 3 : (mode >> 4) & 7;
++	printf("SWEET PMIC: gpio sid %u %#x: subtype %#x mode %#x en %#x (read %d)\n",
++	    key->sid, base, subtype, mode, en, r);
++	return r == 0 && (en & 0x80) && (dir == 0 || dir == 2);
++}
++
++int
++sweet_pmic_init(void)
++{
++	DTEntry node;
++	uint64_t const *spmi = NULL;
++	uint32_t const *keys = NULL, *rtc = NULL;
++	unsigned int size = 0, ksize = 0, rsize = 0;
++	int enabled = 1;
++	thread_t thread;
++
++	if (pmic_started) {
++		return pmic_rtc_ch != NULL;
++	}
++	pmic_started = true;
++	if (SecureDTLookupEntry(NULL, "/sweet-pmic", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "spmi-reg", (void const **)&spmi, &size) != kSuccess ||
++	    size < 6 * sizeof(uint64_t)) {
++		return 0;
++	}
++	pmic_core_size = spmi[1];
++	pmic_obs_pa = spmi[4];
++	pmic_obs_size = spmi[5];
++	pmic_core = (volatile uint32_t *)ml_io_map(spmi[0], spmi[1]);
++	if (pmic_core == NULL) {
++		printf("SWEET PMIC: arbiter mapping failed\n");
++		return 0;
++	}
++
++	if (SecureDTGetProperty(node, "rtc", (void const **)&rtc, &rsize) == kSuccess &&
++	    rsize >= 2 * sizeof(uint32_t)) {
++		uint16_t apid = PMIC_NO_APID;
++		volatile uint32_t *ch = pmic_channel(rtc[0], rtc[1], &apid);
++		uint32_t ctrl = 0, raw = 0;
++		/* RTC_EN_CTRL (peripheral + 0x46) bit 7: the counter runs */
++		int r = ch ? pmic_read(ch, (rtc[1] & ~0xffu) | 0x46, 1, &ctrl) : -1;
++		if (r == 0 && (ctrl & 0x80)) {
++			pmic_rtc_ch = ch;
++			pmic_rtc_addr = rtc[1];
++			(void)PE_parse_boot_argn("rtcoffset", &pmic_rtc_offset, sizeof(pmic_rtc_offset));
++			r = pmic_rtc_raw(&raw);
++			if (r != 0) {
++				pmic_rtc_ch = NULL;
++			}
++		}
++		printf("SWEET PMIC: RTC apid %u ctrl %#x raw %u offset %lld (read %d)%s\n",
++		    apid, ctrl, raw, pmic_rtc_offset, r, pmic_rtc_ch ? "" : ", no clock");
++	}
++
++	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
++	if (!enabled ||
++	    SecureDTGetProperty(node, "keys", (void const **)&keys, &ksize) != kSuccess) {
++		printf("SWEET PMIC: keys %s\n", enabled ? "not in the ADT" : "disabled (sweetkeys=0)");
++		return pmic_rtc_ch != NULL;
++	}
++	for (unsigned i = 0; i + 5 <= ksize / sizeof(uint32_t) && pmic_nkeys < PMIC_MAX_KEYS; i += 5) {
++		struct pmic_key *key = &pmic_keys[pmic_nkeys];
++		key->sid = keys[i];
++		key->addr = keys[i + 1];
++		key->bit = keys[i + 2];
++		key->active_low = keys[i + 3];
++		key->hid = keys[i + 4];
++		key->ch = pmic_channel(key->sid, key->addr, &key->apid);
++		uint32_t v = 0;
++		int r = key->ch ? pmic_read(key->ch, key->addr, 1, &v) : -1;
++		/* gpio peripherals (0xc0..0xcf) must be inputs already */
++		bool ok = r == 0 && (((key->addr >> 12) != 0xc) || pmic_gpio_is_input(key));
++		printf("SWEET PMIC: key %u: sid %u %#x bit %u%s apid %u = %#x (read %d)%s\n",
++		    key->hid, key->sid, key->addr, key->bit, key->active_low ? " low" : "",
++		    key->apid, v, r, ok ? "" : ", skipped");
++		if (ok) {
++			key->state = !!(v & (1u << key->bit)) != !!key->active_low;
++			pmic_nkeys++;
++		}
++	}
++	if (pmic_nkeys != 0) {
++		kern_return_t kr = kernel_thread_start(pmic_keys_thread, NULL, &thread);
++		if (kr == KERN_SUCCESS) {
++			thread_deallocate(thread);
++		} else {
++			printf("SWEET PMIC: kernel_thread_start failed %d\n", kr);
++		}
++	}
++	return pmic_rtc_ch != NULL;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index b37aae8..554e309 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -14,6 +14,10 @@
+ #include <kern/clock.h>
+ 
+ extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++/* bsd/dev/sweet_pmic.c: jasmine PMIC keys and RTC (ADT /sweet-pmic) */
++extern "C" int sweet_pmic_init(void);
++extern "C" int sweet_rtc_get(uint64_t *secs);
++extern "C" void sweet_rtc_set(uint64_t secs);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -24,6 +28,8 @@ public:
+ 	const char *deleteList(void) APPLE_KEXT_OVERRIDE;
+ 	const char *excludeList(void) APPLE_KEXT_OVERRIDE;
+ 	int haltRestart(unsigned int type) APPLE_KEXT_OVERRIDE;
++	void getUTCTimeOfDay(clock_sec_t *secs, clock_nsec_t *nsecs) APPLE_KEXT_OVERRIDE;
++	void setUTCTimeOfDay(clock_sec_t secs, clock_nsec_t nsecs) APPLE_KEXT_OVERRIDE;
+ };
+ 
+ /*
+@@ -192,6 +198,26 @@ SweetPlatformExpert::haltRestart(unsigned int type)
+ 
+ OSDefineMetaClassAndStructors(SweetPlatformExpert, IODTPlatformExpert);
+ 
++/* The calendar clock from the PMIC RTC (plus rtcoffset=), when there is one. */
++void
++SweetPlatformExpert::getUTCTimeOfDay(clock_sec_t *secs, clock_nsec_t *nsecs)
++{
++	uint64_t s = 0;
++	if (sweet_rtc_get(&s) == 0) {
++		*secs = (clock_sec_t)s;
++		*nsecs = 0;
++		return;
++	}
++	IODTPlatformExpert::getUTCTimeOfDay(secs, nsecs);
++}
++
++void
++SweetPlatformExpert::setUTCTimeOfDay(clock_sec_t secs, clock_nsec_t nsecs)
++{
++	sweet_rtc_set(secs);
++	IODTPlatformExpert::setUTCTimeOfDay(secs, nsecs);
++}
++
+ bool
+ SweetPlatformExpert::start(IOService *provider)
+ {
+@@ -202,6 +228,10 @@ SweetPlatformExpert::start(IOService *provider)
+ 	}
+ 	registerService();
+ 	IOLog("SWEET: platform expert registered\n");
++	/* IOKitInitializeTime waits up to 30 s for IORTC before reading the clock */
++	if (sweet_pmic_init()) {
++		publishResource("IORTC", this);
++	}
+ 	return true;
+ }
+ 
+-- 
+2.47.3
+

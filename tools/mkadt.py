@@ -52,7 +52,7 @@ COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
 RESET = None
-SPMI = PON_REBOOT = None
+SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = None
 
 if BOARD == 'jasmine':
     # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
@@ -79,6 +79,12 @@ if BOARD == 'jasmine':
     # spmi@800f000 (qcom,spmi-pmic-arb v3, EE 0); pm660 pon@800 (qcom,pm8998-pon: shift 1, mode-bootloader 2)
     SPMI = (0x0800f000, 0x1000, 0x08400000, 0x1000000, 0x09400000, 0x1000000)
     PON_REBOOT = (0, 0x88f, 1, 2)
+    # bsd/dev/sweet_pmic.c keys <sid addr bit active-low hid-key>: pm660 pon@800
+    # PON_RT_STS 0x810 bit 0 KPDPWR (power, 0), bit 1 RESIN (volume down, 2);
+    # gpio-keys volume up = pm660l (sid 2) gpio7 at 0xc600, INT_RT_STS 0xc610
+    # bit 0, active low (1). RTC: pm660 rtc@6000 (qcom,pm8941-rtc) RDATA0 0x6048.
+    PMIC_KEYS = ((0, 0x810, 0, 0, 0), (2, 0xc610, 0, 1, 1), (0, 0x810, 1, 0, 2))
+    PMIC_RTC = (0, 0x6048)
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -262,6 +268,12 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
                   ([('spmi-reg', u64(*SPMI)), ('pon-reboot', u32(*PON_REBOOT))] if SPMI else []))
              ] if RESET and not qemu else []
 
+    # bsd/dev/sweet_pmic.c: PMIC keys and RTC, read through the same arbiter
+    pmic = [node('sweet-pmic', [ph(), ('spmi-reg', u64(*SPMI)),
+                                ('keys', u32(*(v for k in PMIC_KEYS for v in k))),
+                                ('rtc', u32(*PMIC_RTC))])
+            ] if PMIC_KEYS and not qemu else []
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -298,7 +310,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic)
 
 
 if __name__ == '__main__':
