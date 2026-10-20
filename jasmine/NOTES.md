@@ -3,7 +3,7 @@
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
 `NOTES.md` at the repo root is sweet's/topaz's log, kept for reference.
 
-## State (2026-10-20 ~21:15)
+## State (2026-10-20 ~22:45)
 
 | Phase | State |
 | --- | --- |
@@ -11,12 +11,14 @@ Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
 | 1 Shim | Works. Silver `51AF8014` tg16=0, Gold `51AF8002` tg16=1, GIC/vtimer/SGI OK on Gold, PSCI 1.0, APSS WDT off |
 | 2 XNU | Boots on 4 Gold cores (`cpus=4`), console on the 0x9d400000 splash. Panic/reboot/halt reset into **fastboot** (0138, PMIC PON) |
 | 3 eMMC | Read path works (0137, ADMA2): EXT_CSD rev 8, 29820 MiB, HS200 8-bit, userdata at block 0x16c0000, 18171 MiB. Write path written, not yet exercised |
-| 4 iOS root | iPhone10,3 iOS 16.7.16 (20H392) root built (17 GiB HFS+, 12 GB used, fsck OK). **Flashing to userdata 2026-10-20 21:12** |
+| 4 iOS root | **iOS 16 LOCK SCREEN on the Mi A2, 2026-10-20 ~22:40** (kernel 0139, `shim/out/shim-boot-ios-rwf139.img`, image `~/ios-work/root-build/ios16-root.simg` flashed to userdata 21:12). iPhone10,3 iOS 16.7.16 (20H392), 17 GiB HFS+ root. Writes verified: self-test OK, GPT copies unchanged after rw sessions |
+| 5 Input | Next: touch (NT36672A on BLSP QUP I2C 0xc175000), keys (PM660 PON over SPMI, arbiter code exists in 0138), RTC (PM660 rtc@6000) |
 
 ## Kernel patches (ours, on top of topaz 0001-0135)
 
 - **0136** board guards (SM6225-only drivers only on a `xiaomi,topaz` ADT), early console on jasmine's splash, `/sweet-reset` (PS_HOLD + IMEM) for reboot/halt/panic (`panicwait=` s, default 60).
 - **0137** eMMC backend in `bsd/dev/sweet_ufs.c` for ADT `/sweet-emmc`: SDHCI ADMA2 (64-bit, 12-byte descriptors), polled, Auto CMD12, 512-byte blocks. PIO did **not** work on this host (CMD8 never completed). Refuses if CQE is on or EXT_CSD is not user area / CMDQ off. Only CMD6 is FLUSH_CACHE.
+- **0139** eMMC: FLUSH_CACHE only when EXT_CSD reports an enabled cache (this card: CACHE_CTRL 0; a flush left SWITCH_ERROR, status 0x980, on the next write = the journal header, and HFS returned EINVAL for everything); R1 check logs twice; write self-test at attach with `ufsrw=1`.
 - **0138** reset into fastboot: PM660 PON SOFT_RB_SPARE 0x88f = bootloader (2 << 1) through the SPMI arbiter v3 (apid 4). jasmine's ABL ignores the IMEM restart reason.
 
 Build: `gh workflow run xnu.yml -R telegdyd/ios-jasmine --ref jasmine` (macOS runner, ~6-8 min), artifact `xnu-kernel`. Patches are written against a local patched tree in WSL `~/xnu-8796` (topaz series applied after running `xnu/patches/*.sh` with `MACHINE_CONFIG=SWEET MACOS_VERSION=13.5`).
