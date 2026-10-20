@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Build the minimal Apple Device Tree that the TOPAZ xnu needs to boot.
+"""Build the minimal Apple Device Tree that the SWEET-config xnu needs to boot.
 
-Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the topaz (Redmi Note 12 4G, SM6225 khaje) live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
+Only what the early boot path actually reads (see NOTES.md). Every MMIO
+address comes from the board's live FDT: jasmine (Xiaomi Mi A2, SDM660; the
+default, see jasmine/HARDWARE.md) or topaz (Redmi Note 12 4G, SM6225 khaje).
+Usage:  mkadt.py OUT.adt [--board jasmine|topaz] [--dump] [--qemu] [--highmem]
 """
 import hashlib, os, struct, sys
 
@@ -26,6 +28,10 @@ MID_MEM_SIZE = int(__import__("os").environ.get("MIDSIZE", "0x1c0000000"), 16)
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
+BOARD = sys.argv[sys.argv.index('--board') + 1] if '--board' in sys.argv else 'jasmine'
+if BOARD not in ('jasmine', 'topaz'):
+    raise SystemExit(f'unknown --board {BOARD}')
+
 # interrupt-controller@f200000 (redistributor-stride 0x20000, 8 cores)
 GICD, GICD_SIZE = 0x0f200000, 0x10000
 GICR, GICR_SIZE = 0x0f300000, 0x100000
@@ -42,6 +48,30 @@ QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'topaz boot manifest').digest()
+COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
+CPU_HZ = 2803200000
+RESET = None
+
+if BOARD == 'jasmine':
+    # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
+    # is the largest range above every carve-out (gpu@fed00000 ends at
+    # 0xff6fffff). The kernel gets 0x1_00000000.. (1.97 GiB, 16K aligned).
+    HIGH_PHYS_BASE, HIGH_MEM_SIZE = 0x100000000, 0x7e4c0000
+    # Without --highmem: the 880 MiB range c0000000-f5ffffff (testing only)
+    PHYS_BASE, MEM_SIZE = 0xc0000000, 0x36000000
+    # interrupt-controller@17a00000 (redistributor-stride 0x20000, 8 cores)
+    GICD, GICD_SIZE = 0x17a00000, 0x10000
+    GICR, GICR_SIZE = 0x17b00000, 0x100000
+    # ABL splash (simple-framebuffer in the mainline DT), 1080x2160 a8r8g8b8
+    FB, FB_SIZE = 0x9d400000, 0x900000
+    FB_W, FB_H, FB_STRIDE = 1080, 2160, 1080 * 4
+    SWEET_ECID = 0x4a41534d494e0001  # 'JASMIN' + 1, synthetic
+    UFS = None  # eMMC, no UFS host
+    BOOT_MANIFEST_HASH = hashlib.sha384(b'jasmine boot manifest').digest()
+    COMPAT = (b'xiaomi,jasmine', b'qcom,sdm660')
+    CPU_HZ = 2208000000  # Kryo 260 Gold max
+    # qcom,pshold restart@10ac000; stock DT qcom,msm-imem@146bf000 restart_reason@65c
+    RESET = (0x010ac000, 0x146bf65c)
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -91,8 +121,8 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('dram-size', u64(mem_size)),
         ('random-seed', seed),
         ('debug-enabled', u32(1)),
-        ('firmware-version', cstr('topaz-shim')),
-        ('system-firmware-version', cstr('topaz-shim')),
+        ('firmware-version', cstr(f'{BOARD}-shim')),
+        ('system-firmware-version', cstr(f'{BOARD}-shim')),
         # iBoot's SHA-384 of the boot manifest; /sbin/mount -P 1 exits unless
         # it exists (bind mounts /private/preboot/<hex>/usr/standalone/firmware,
         # tolerating a missing directory). Fixed stand-in value.
@@ -149,7 +179,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
             ('l3-cache-id', u32(0)),
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2803200000)),
+            ('clock-frequency', u32(CPU_HZ)),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -183,11 +213,11 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         # the kernel's AppleCLCD matches the compatible string.
         # launchd starts wifid only when the device tree has a "wlan" node
         # (com.apple.wifid _LimitLoadToDeviceTree = wlan, marconi-wifi)
-        node('wlan', [
+        *([node('wlan', [
             ph(),
             ('device_type', cstr('wlan')),
             ('compatible', cstr('topaz,wcn3988')),
-        ]),
+        ])] if BOARD == 'topaz' else []),
         node('disp0', [
             ph(),
             ('device_type', cstr('display-subsystem')),
@@ -208,11 +238,15 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     ])
 
     # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
-    ufs = node('sweet-ufs', [
+    ufs = [node('sweet-ufs', [
         ph(),
         ('compatible', cstr('qcom,ufshc')),
         ('reg', u64(UFS, UFS_SIZE)),
-    ])
+    ])] if UFS and not qemu else []
+
+    # SweetPlatformExpert::haltRestart: PS_HOLD and the IMEM restart reason
+    # (absolute physical) for reboot, halt and panic -> ABL fastboot.
+    reset = [node('sweet-reset', [ph(), ('reg', u64(RESET[0], 4, RESET[1], 4))])] if RESET and not qemu else []
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
@@ -243,14 +277,14 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     # SweetPlatformExpert and CPU IONameMatch still use them.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,topaz') + cstr('xiaomi,sweet') + cstr('qcom,khaje') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + COMPAT[0] + b'\0' + cstr('xiaomi,sweet') + COMPAT[1] + b'\0' + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + reset)
 
 
 if __name__ == '__main__':

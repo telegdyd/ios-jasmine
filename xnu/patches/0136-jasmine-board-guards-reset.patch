@@ -1,0 +1,387 @@
+From e555ef08d1d2884266cd61910d162761d7cf1fcc Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 20 Oct 2026 18:10:33 +0200
+Subject: [PATCH] jasmine-0136: board guards, early console on the jasmine
+ splash, panic/reboot reset
+
+SM6225-only drivers (touch, keys, cpufreq-hw, gauge I2C, MDP/DSI/INTF,
+modem) start only when the ADT root is xiaomi,topaz. The bootstrap
+console draws at 0x9d400000 (1080x2160). A /sweet-reset ADT node (PS_HOLD,
+IMEM restart reason) makes reboot, halt and panic (after panicwait= s)
+reset into ABL fastboot.
+---
+ bsd/conf/files                           |  1 +
+ bsd/dev/sweet_board.c                    | 31 ++++++++++
+ bsd/dev/sweet_board.h                    |  9 +++
+ bsd/dev/sweet_ufs.c                      |  9 ++-
+ iokit/Kernel/arm/SweetBattery.cpp        |  9 ++-
+ iokit/Kernel/arm/SweetFramebuffer.cpp    | 20 ++++--
+ iokit/Kernel/arm/SweetPlatformExpert.cpp | 77 ++++++++++++++++++++++++
+ osfmk/arm64/arm_vm_init.c                |  2 +-
+ osfmk/arm64/start.s                      |  4 +-
+ osfmk/arm64/sweet_early.c                |  6 +-
+ pexpert/pexpert/arm64/SWEET.h            | 10 +++
+ 11 files changed, 163 insertions(+), 15 deletions(-)
+ create mode 100644 bsd/dev/sweet_board.c
+ create mode 100644 bsd/dev/sweet_board.h
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 21cdb5c..740d10e 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -105,6 +105,7 @@ bsd/dev/random/randomdev.c		standard
+ 
+ bsd/dev/memdev.c			standard
+ bsd/dev/sweet_ufs.c			standard
++bsd/dev/sweet_board.c			standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
+diff --git a/bsd/dev/sweet_board.c b/bsd/dev/sweet_board.c
+new file mode 100644
+index 0000000..b037ad8
+--- /dev/null
++++ b/bsd/dev/sweet_board.c
+@@ -0,0 +1,31 @@
++/*
++ * Which board the ADT describes. Some drivers have one SoC's MMIO addresses
++ * built in (topaz: SM6225). On another SoC those addresses are unrelated
++ * blocks or holes, and a stray access can hang the bus, so they only start
++ * when the ADT root says it is that board (tools/mkadt.py writes it).
++ */
++#include <pexpert/device_tree.h>
++#include <string.h>
++#include <dev/sweet_board.h>
++
++int
++sweet_board_is(const char *compat)
++{
++	DTEntry root;
++	void const *prop;
++	unsigned int size;
++	size_t want = strlen(compat);
++
++	if (SecureDTLookupEntry(NULL, "/", &root) != kSuccess ||
++	    SecureDTGetProperty(root, "compatible", &prop, &size) != kSuccess) {
++		return 0;
++	}
++	for (const char *s = prop, *end = s + size; s < end;) {
++		size_t n = strnlen(s, (size_t)(end - s));
++		if (n == want && strncmp(s, compat, n) == 0) {
++			return 1;
++		}
++		s += n + 1;
++	}
++	return 0;
++}
+diff --git a/bsd/dev/sweet_board.h b/bsd/dev/sweet_board.h
+new file mode 100644
+index 0000000..cf5a65e
+--- /dev/null
++++ b/bsd/dev/sweet_board.h
+@@ -0,0 +1,9 @@
++#pragma once
++#include <sys/cdefs.h>
++
++__BEGIN_DECLS
++/* 1 if the ADT root compatible list contains compat ("xiaomi,topaz", "xiaomi,jasmine") */
++int sweet_board_is(const char *compat);
++__END_DECLS
++
++#define SWEET_BOARD_TOPAZ() sweet_board_is("xiaomi,topaz")
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 143db60..1c37484 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -51,6 +51,7 @@ extern int hz;
+ static void sweet_log_start(void);
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
++#include <dev/sweet_board.h>
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
+ 
+@@ -821,8 +822,12 @@ sweet_ufs_init(void)
+ 	 */
+ 	int hw = 0;
+ 	(void)PE_parse_boot_argn("sweethw", &hw, sizeof(hw));
+-	sweet_touch_init();
+-	sweet_keys_init();
++	if (SWEET_BOARD_TOPAZ()) {
++		sweet_touch_init();
++		sweet_keys_init();
++	} else {
++		printf("SWEET UFS: topaz touch/keys skipped (not a topaz ADT)\n");
++	}
+ 	if (hw == 1) {
+ 		sweet_usb_probe();
+ 	} else {
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 824c022..1374ac7 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -12,6 +12,7 @@
+ #include <IOKit/pwr_mgt/IOPMPowerSource.h>
+ #include <libkern/c++/OSCollectionIterator.h>
+ #include <pexpert/pexpert.h>
++#include <dev/sweet_board.h>
+ /* bsd/dev/sweet_spmi.c */
+ extern "C" int sweet_spmi_init(void);
+ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+@@ -323,10 +324,14 @@ SweetBattery::start(IOService *provider)
+ 	if (!IOPMPowerSource::start(provider)) {
+ 		return false;
+ 	}
+-	(void)sweet_cpufreq_max();
++	/* cpufreq-hw and the QUP0 SE1 gauge bus are SM6225 blocks: topaz only */
++	bool topaz = SWEET_BOARD_TOPAZ();
++	if (topaz) {
++		(void)sweet_cpufreq_max();
++	}
+ 	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+-	fReal = real == 1 && sweet_i2c1_init() == 0;
++	fReal = topaz && real == 1 && sweet_i2c1_init() == 0;
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+ 	if (fReal) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index f469a3a..43f0406 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -40,6 +40,7 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ extern "C" void sweet_console_retarget(vm_offset_t va);   /* osfmk/console/video_console.c */
+ extern "C" void (*sweet_console_show_hook)(void);
+ extern "C" void topaz_modem_init(void);
++#include <dev/sweet_board.h>
+ extern "C" void sweet_busy_init(void);              /* iokit/Kernel/arm/SweetBusy.cpp (boot-arg sweetbusy=N) */             /* iokit/Kernel/arm/TopazModem.cpp (boot-arg modem=1) */
+ extern "C" int sweet_console_copy_dirty(void *dst);
+ 
+@@ -254,7 +255,11 @@ AppleCLCD::start(IOService *provider)
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
+-	topaz_modem_init();
++	/* MDP, DSI and modem register blocks below are SM6225 (topaz) addresses */
++	bool topaz = SWEET_BOARD_TOPAZ();
++	if (topaz) {
++		topaz_modem_init();
++	}
+ 	sweet_busy_init();
+ 	PE_current_console(&video);
+ 	fPhys = video.v_baseAddr;
+@@ -292,9 +297,14 @@ AppleCLCD::start(IOService *provider)
+ 		IOLog("SWEET FB: no vsync timer\n");
+ 		return false;
+ 	}
+-	fVig0 = (volatile uint32_t *)ml_io_map(0x05e05000, 0x1000);
+-	fCtl0 = (volatile uint32_t *)ml_io_map(0x05e02000, 0x1000);
+-	fDsi = (volatile uint8_t *)ml_io_map(0x05e94000, 0x1000);
++	if (topaz) {
++		fVig0 = (volatile uint32_t *)ml_io_map(0x05e05000, 0x1000);
++		fCtl0 = (volatile uint32_t *)ml_io_map(0x05e02000, 0x1000);
++		fDsi = (volatile uint8_t *)ml_io_map(0x05e94000, 0x1000);
++	} else {
++		/* CPU copy into the ABL framebuffer only (the sweet path) */
++		IOLog("SWEET FB: not a topaz ADT: no MDP scanout, DSI or INTF access\n");
++	}
+ 	fDsiBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryPhysicallyContiguous, page_size, 0x00000000fffff000ull);
+ 	fDsiBufPhys = fDsiBuf ? fDsiBuf->getPhysicalSegment(0, NULL, kIOMemoryMapperNone) : 0;
+@@ -326,7 +336,7 @@ AppleCLCD::start(IOService *provider)
+ 		OSSafeReleaseNULL(bl);
+ 	}
+ 	/* dpu sm6115 catalog: intf_1 at mdp+0x6a800, mdp at 0x5e01000 */
+-	fIntf1 = (volatile uint32_t *)ml_io_map(0x05e6b000, 0x1000);
++	fIntf1 = topaz ? (volatile uint32_t *)ml_io_map(0x05e6b000, 0x1000) : NULL;
+ 	if (fIntf1 != NULL) {
+ 		volatile uint32_t *r = fIntf1 + 0x800 / 4;
+ 		r[0x0a8 / 4] = 0x3;     /* FRAME_LINE_COUNT_EN */
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 0631685..cec5464 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -9,6 +9,11 @@
+ #include <IOKit/IOPlatformExpert.h>
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <kern/clock.h>
++
++extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -18,14 +23,86 @@ public:
+ 	void processTopLevel(IORegistryEntry *root) APPLE_KEXT_OVERRIDE;
+ 	const char *deleteList(void) APPLE_KEXT_OVERRIDE;
+ 	const char *excludeList(void) APPLE_KEXT_OVERRIDE;
++	int haltRestart(unsigned int type) APPLE_KEXT_OVERRIDE;
+ };
+ 
++/*
++ * Reset through the ADT node /sweet-reset (jasmine): reg = <PS_HOLD 4>,
++ * <IMEM restart_reason 4> (absolute physical). Reboot, halt and panic go back
++ * to ABL's fastboot (restart reason 0x77665500), so the next `fastboot boot`
++ * needs no buttons. A panic first keeps the screen for panicwait= seconds
++ * (default 60); panicwait=-1 hangs as before. Mapped in start(): nothing may
++ * be allocated on the panic path.
++ */
++static volatile uint32_t *sweet_pshold, *sweet_restart_reason;
++
++static void
++sweet_map_reset(void)
++{
++	DTEntry node;
++	uintptr_t const *reg = NULL;
++	unsigned int size = 0;
++
++	if (SecureDTLookupEntry(NULL, "/sweet-reset", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
++	    size < 4 * sizeof(uintptr_t)) {
++		IOLog("SWEET: no /sweet-reset node, reboot and panic do not reset\n");
++		return;
++	}
++	sweet_pshold = (volatile uint32_t *)(ml_io_map(reg[0] & ~(uintptr_t)0xfff, 0x1000) + (reg[0] & 0xfff));
++	sweet_restart_reason = (volatile uint32_t *)(ml_io_map(reg[2] & ~(uintptr_t)0xfff, 0x1000) + (reg[2] & 0xfff));
++	IOLog("SWEET: reset via PS_HOLD %#lx, restart reason %#lx\n", reg[0], reg[2]);
++}
++
++static void __attribute__((noreturn))
++sweet_reset_now(void)
++{
++	*sweet_restart_reason = 0x77665500;     /* ABL: stay in fastboot */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	/* PSCI SYSTEM_RESET; the Qualcomm TZ keeps IMEM and ABL reads the reason */
++	register uint64_t x0 __asm__("x0") = 0x84000009;
++	__asm__ volatile ("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
++	*sweet_pshold = 0;                      /* PSCI returned: drop PS_HOLD */
++	for (;;) {
++		__asm__ volatile ("wfe");
++	}
++}
++
++int
++SweetPlatformExpert::haltRestart(unsigned int type)
++{
++	if (sweet_pshold == NULL) {
++		return IODTPlatformExpert::haltRestart(type);
++	}
++	switch (type) {
++	case kPEPanicRestartCPU:
++	case kPEPanicRestartCPUNoCallouts:
++	case kPEPanicDiagnosticsDone: {
++		int wait = 60;
++		(void)PE_parse_boot_argn("panicwait", &wait, sizeof(wait));
++		if (wait < 0) {
++			return IODTPlatformExpert::haltRestart(type);
++		}
++		uint64_t end = mach_absolute_time() + (uint64_t)wait * 19200000ull;  /* 19.2 MHz timebase */
++		while (mach_absolute_time() < end) {
++		}
++		sweet_reset_now();
++	}
++	case kPERestartCPU:
++	case kPEHaltCPU:
++		sweet_reset_now();
++	default:
++		return IODTPlatformExpert::haltRestart(type);
++	}
++}
++
+ OSDefineMetaClassAndStructors(SweetPlatformExpert, IODTPlatformExpert);
+ 
+ bool
+ SweetPlatformExpert::start(IOService *provider)
+ {
+ 	IOLog("SWEET: starting device-tree platform expert\n");
++	sweet_map_reset();
+ 	if (!IODTPlatformExpert::start(provider)) {
+ 		return false;
+ 	}
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index 06bb568..1537de9 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1843,7 +1843,7 @@ sweet_early_map_final(void)
+ 	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
+ 	tt_entry_t *slot = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
+ 	assert(*slot == ARM_TTE_EMPTY);
+-	*slot = 0x9c000000ULL | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	*slot = (uint64_t)SWEET_EARLY_FB_BLOCK | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+ 	    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+ 	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+ 	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 023086f..ea7a2b6 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -515,7 +515,7 @@ LEXT(start_first_cpu)
+ 
+ #if defined(SWEET)
+ 	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-	MOV64	x0, (0x9c000000 + 2368 * 4320)
++	MOV64	x0, (SWEET_EARLY_FB_BLOCK + SWEET_EARLY_FB_OFFSET + (SWEET_EARLY_FB_HEIGHT - 32) * 4320)
+ 	mov		w1, #-1
+ 	mov		x2, #32
+ 	mov		x4, #4320
+@@ -686,7 +686,7 @@ Lkernelcache_base_found:
+ 	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
+ 	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
+ 	 */
+-	MOV64	x10, 0x9c000000
++	MOV64	x10, SWEET_EARLY_FB_BLOCK
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+ 	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 6928957..530e7eb 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -11,10 +11,10 @@
+ #include <stdint.h>
+ #include <kern/misc_protos.h>
+ 
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
++static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)(SWEET_EARLY_FB_BLOCK + SWEET_EARLY_FB_OFFSET);
+ #define EARLY_FB early_fb
+ #define EARLY_WIDTH 1080u
+-#define EARLY_HEIGHT 2400u
++#define EARLY_HEIGHT ((unsigned int)SWEET_EARLY_FB_HEIGHT)
+ #define EARLY_STRIDE (4320u / 4)
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)
+@@ -129,7 +129,7 @@ void
+ sweet_early_relocate(uint64_t base)
+ {
+ 	sweet_early_mark(8, "leaving bootstrap TTBR0");
+-	early_fb = (volatile uint32_t *)(uintptr_t)base;
++	early_fb = (volatile uint32_t *)(uintptr_t)(base + SWEET_EARLY_FB_OFFSET);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	sweet_early_mark(9, "kernel framebuffer VA live");
+ }
+diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
+index 424e1c0..6da12df 100644
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -26,6 +26,16 @@
+  */
+ #define SWEET_SMP_MAX_CPUS         8
+ 
++/*
++ * Bootstrap console: ABL's splash framebuffer, 1080 pixels wide (stride 4320),
++ * mapped as the one 32MB block at SWEET_EARLY_FB_BLOCK. jasmine (Mi A2,
++ * SDM660): splash at 0x9d400000, 1080x2160. sweet used 0x9c000000 + 0, 2400
++ * lines; topaz's 0x5c000000 was never drawn by this console.
++ */
++#define SWEET_EARLY_FB_BLOCK      0x9c000000
++#define SWEET_EARLY_FB_OFFSET     0x01400000
++#define SWEET_EARLY_FB_HEIGHT     2160
++
+ #define ARM_ARCH_TIMER
+ #define __ARM_ARCH__              8
+ #define __ARM_VMSA__              8
+-- 
+2.47.3
+
