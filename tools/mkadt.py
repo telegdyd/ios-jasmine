@@ -49,6 +49,7 @@ QEMU_VTIMER_INTID = 27
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'topaz boot manifest').digest()
 COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
+EMMC = None
 CPU_HZ = 2803200000
 RESET = None
 
@@ -67,6 +68,8 @@ if BOARD == 'jasmine':
     FB_W, FB_H, FB_STRIDE = 1080, 2160, 1080 * 4
     SWEET_ECID = 0x4a41534d494e0001  # 'JASMIN' + 1, synthetic
     UFS = None  # eMMC, no UFS host
+    # sdhc_1 (qcom,sdhci-msm-v5): SDHCI host 0xc0c4000, CQHCI 0xc0c5000
+    EMMC = (0x0c0c4000, 0x1000, 0x0c0c5000, 0x1000)
     BOOT_MANIFEST_HASH = hashlib.sha384(b'jasmine boot manifest').digest()
     COMPAT = (b'xiaomi,jasmine', b'qcom,sdm660')
     CPU_HZ = 2208000000  # Kryo 260 Gold max
@@ -246,6 +249,9 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
 
     # SweetPlatformExpert::haltRestart: PS_HOLD and the IMEM restart reason
     # (absolute physical) for reboot, halt and panic -> ABL fastboot.
+    # bsd/dev/sweet_ufs.c eMMC backend: the SDHCI host ABL leaves running
+    emmc = [node('sweet-emmc', [ph(), ('compatible', cstr('qcom,sdhci-msm-v5')), ('reg', u64(*EMMC))])] if EMMC and not qemu else []
+
     reset = [node('sweet-reset', [ph(), ('reg', u64(RESET[0], 4, RESET[1], 4))])] if RESET and not qemu else []
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
@@ -284,7 +290,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + reset)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset)
 
 
 if __name__ == '__main__':
