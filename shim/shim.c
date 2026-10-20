@@ -10,14 +10,13 @@
 #include "console.h"
 #include "mmu.h"
 #include "loader.h"
+#include "board.h"
+#if BOARD_HAS_UFS
 #include "ufs.h"
+#endif
 
-#define IMEM_RESTART_REASON	0x0c12565cUL	/* qcom,msm-imem@c125000 restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
-#define PSHOLD			0x0440b000UL
 
-#define GICD_BASE		0x0f200000UL
-#define GICR_BASE		0x0f300000UL
 #define GICR_SIZE		0x100000UL
 #define GICR_PE_SIZE		0x20000UL
 #define GICR_TYPER		0x08
@@ -240,6 +239,7 @@ static uint64_t speed_ticks(void)
 	return t;
 }
 
+#if BOARD_HAS_CPUFREQ_HW
 /*
  * Gold cluster to its top cpufreq-hw level before xnu (which has no cpufreq
  * driver): freq-domain1 0xf523000, LUT +0x110 (32-byte rows), PERF_STATE +0x920.
@@ -264,6 +264,34 @@ static void gold_cpufreq_max(void)
 	__asm__ volatile("dsb sy" ::: "memory");
 	con_hex2("CPUFREQ", "old=", old, "mhz=", best_khz / 1000);
 }
+#endif
+
+#if !BOARD_HAS_UFS
+static void psci_line(const char *label, uint64_t fn);
+
+/*
+ * jasmine bring-up (no xnu payload): everything the XNU port needs to know
+ * about this board that Linux can't tell us, then back to fastboot.
+ * The watchdog read goes last: if that block is secure-only, the fault
+ * paints the panic screen with everything else already shown.
+ */
+static void __attribute__((noreturn)) board_report(void)
+{
+	stage = "report";
+	con_hex2("EL", "cur=", (uint32_t)(rsr("currentel") >> 2), "frq=", (uint32_t)rsr("cntfrq_el0"));
+	con_hex2("PSCI", "ver=", smc(PSCI_VERSION, 0, 0, 0), "smccc=", smc(SMCCC_VERSION, 0, 0, 0));
+	psci_line("F ON", PSCI_CPU_ON);
+	psci_line("F OFF", PSCI_CPU_OFF);
+	psci_line("F RESET", PSCI_SYSTEM_RESET);
+	psci_line("F RESET2", PSCI_SYSTEM_RESET2);
+	psci_line("F SUSP", PSCI_CPU_SUSPEND);
+	stage = "watchdog";
+	con_hex2("WDT", "en=", rd32(APSS_WDT_BASE + 0x08), "sts=", rd32(APSS_WDT_BASE + 0x0c));
+	con_hex2("WDT", "bark=", rd32(APSS_WDT_BASE + 0x10), "bite=", rd32(APSS_WDT_BASE + 0x14));
+	stage = "done";
+	reset(40);
+}
+#endif
 
 static void __attribute__((noreturn)) gold_main(uint64_t dtb)
 {
@@ -283,12 +311,18 @@ static void __attribute__((noreturn)) gold_main(uint64_t dtb)
 		 */
 		test_gic();
 		gold_gicr_prepare();
+#if BOARD_HAS_CPUFREQ_HW
 		gold_cpufreq_max();
+#endif
 		uint64_t gt = speed_ticks();
 		con_hex2("SPEED", "silver=", (uint32_t)silver_ticks, "gold=", (uint32_t)gt);
 		delay_ms(1000);
 		con_skip();
 		con_str("LOADER", loader_boot(dtb));
+#if !BOARD_HAS_UFS
+		con_skip();
+		board_report();
+#endif
 	}
 	for (;;)
 		__asm__ volatile("wfe");
@@ -508,7 +542,7 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", BOARD_NAME " shim: xnu loader");
 	/* topaz: xnu needs the 16K granule (TGran16 != 0); Cortex-A53 may lack it */
 	uint64_t mmfr0 = rsr("id_aa64mmfr0_el1");
 	con_hex2("MMFR0", "lo=", (uint32_t)mmfr0, "tg16=", (mmfr0 >> 20) & 0xf);
@@ -532,6 +566,9 @@ void shim_main(uint64_t dtb)
 	con_str("LOADER", why);
 	con_skip();
 
+#if !BOARD_HAS_UFS
+	board_report();	/* no 16K hand-off happened (Gold refused or we started there) */
+#else
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
 	test_ufs();
@@ -540,6 +577,7 @@ void shim_main(uint64_t dtb)
 	con_str("UFS", "probe done, reset in ~3 min");
 	delay_ms(180000);
 	reset(20);
+#endif
 
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);
