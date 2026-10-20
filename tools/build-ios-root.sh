@@ -23,6 +23,9 @@ mkdir -p "$work"
 work=$(realpath "$work")
 cd "$work"
 
+# WSL2's kernel has no hfsplus: build it once against the running kernel
+# (jasmine/NOTES.md); a WSL restart unloads it, so load it again here.
+grep -q hfsplus /proc/filesystems || sudo modprobe hfsplus 2>/dev/null || true
 grep -q hfsplus /proc/filesystems || { echo "no hfsplus filesystem in this kernel" >&2; exit 1; }
 
 unzip -o -q "$ipsw" BuildManifest.plist
@@ -41,7 +44,9 @@ else:
 PY
 )
 echo "OS $os, SystemOS $sysos, AppOS $appos, DeviceTree $dt"
-unzip -o -q "$ipsw" "$os" "$sysos" "$appos" "$dt"
+for m in "$os" "$sysos" "$appos" "$dt"; do
+	[[ -s $m ]] || unzip -o -q "$ipsw" "$m"
+done
 
 mkdir -p "$repo/research/ipsw-x"
 python3 -I "$repo/tools/im4p-extract.py" "$dt" "$repo/research/ipsw-x/d22ap.adt"
