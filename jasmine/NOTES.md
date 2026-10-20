@@ -12,13 +12,14 @@ Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
 | 2 XNU | Boots on 4 Gold cores (`cpus=4`), console on the 0x9d400000 splash. Panic/reboot/halt reset into **fastboot** (0138, PMIC PON) |
 | 3 eMMC | Read path works (0137, ADMA2): EXT_CSD rev 8, 29820 MiB, HS200 8-bit, userdata at block 0x16c0000, 18171 MiB. Write path written, not yet exercised |
 | 4 iOS root | **iOS 16 LOCK SCREEN on the Mi A2, 2026-10-20 ~22:40** (kernel 0139, `shim/out/shim-boot-ios-rwf139.img`, image `~/ios-work/root-build/ios16-root.simg` flashed to userdata 21:12). iPhone10,3 iOS 16.7.16 (20H392), 17 GiB HFS+ root. Writes verified: self-test OK, GPT copies unchanged after rw sessions |
-| 5 Input | Next: touch (NT36672A on BLSP QUP I2C 0xc175000), keys (PM660 PON over SPMI, arbiter code exists in 0138), RTC (PM660 rtc@6000) |
+| 5 Input | **Keys + clock work (0140, 2026-10-21 ~01:00)**: power, volume up/down reach backboardd; date correct with `rtcoffset=1790955133` (PMIC RTC raw + offset, measured 2026-10-21 00:16). Next: touch (NT36672A on BLSP QUP I2C 0xc175000) |
 
 ## Kernel patches (ours, on top of topaz 0001-0135)
 
 - **0136** board guards (SM6225-only drivers only on a `xiaomi,topaz` ADT), early console on jasmine's splash, `/sweet-reset` (PS_HOLD + IMEM) for reboot/halt/panic (`panicwait=` s, default 60).
 - **0137** eMMC backend in `bsd/dev/sweet_ufs.c` for ADT `/sweet-emmc`: SDHCI ADMA2 (64-bit, 12-byte descriptors), polled, Auto CMD12, 512-byte blocks. PIO did **not** work on this host (CMD8 never completed). Refuses if CQE is on or EXT_CSD is not user area / CMDQ off. Only CMD6 is FLUSH_CACHE.
 - **0139** eMMC: FLUSH_CACHE only when EXT_CSD reports an enabled cache (this card: CACHE_CTRL 0; a flush left SWITCH_ERROR, status 0x980, on the next write = the journal header, and HFS returned EINVAL for everything); R1 check logs twice; write self-test at attach with `ufsrw=1`.
+- **0140** `bsd/dev/sweet_pmic.c` (ADT `/sweet-pmic`): keys polled every 20 ms on the arbiter observer channels (PON 0x810 bit 0 power, bit 1 volume down; PM660L GPIO7 0xc610 volume up, active low), PM660 RTC (RDATA 0x6048) + `rtcoffset=` as the calendar clock (SweetPlatformExpert get/setUTCTimeOfDay, publishes IORTC). Read only.
 - **0138** reset into fastboot: PM660 PON SOFT_RB_SPARE 0x88f = bootloader (2 << 1) through the SPMI arbiter v3 (apid 4). jasmine's ABL ignores the IMEM restart reason.
 
 Build: `gh workflow run xnu.yml -R telegdyd/ios-jasmine --ref jasmine` (macOS runner, ~6-8 min), artifact `xnu-kernel`. Patches are written against a local patched tree in WSL `~/xnu-8796` (topaz series applied after running `xnu/patches/*.sh` with `MACHINE_CONFIG=SWEET MACOS_VERSION=13.5`).
@@ -42,6 +43,10 @@ Build: `gh workflow run xnu.yml -R telegdyd/ios-jasmine --ref jasmine` (macOS ru
 - Run WSL commands from script files (inline variables get lost through `wsl.exe`), and write files on Windows in binary mode (CRLF breaks bash).
 
 ## Known issues / findings
+
+- **Battery: XNU has no charger driver and no low-battery shutdown.** 2026-10-20 the lock screen ran the battery flat on PC USB. Keep sessions short. When the phone auto-boots on a charger (`oem off-mode-charge 0`) it lands in Nura's initramfs debug shell (no root), where the patched charger driver does charge; turn the screen off there: `tools/pmos-shell.py 'echo 0 > /sys/class/backlight/backlight/brightness'`. `fastboot getvar battery-voltage` reads the cell in fastboot.
+- iOS log of the lock screen boot: `logs/boot-0139-lockscreen.txt` (`tools/sweet-log.py` on the ring pulled with `dd if=/dev/mmcblk1 bs=512 skip=61063134 count=8193`). PosterBoard crashes with SIGTRAP (no wallpaper); bluetoothd and fairplayd.H2 respawn ~140 times each.
+- `sweetlog=WORD,...` has no effect (conflicts with 0047's integer parse of the same boot-arg).
 
 - Under Nura's Linux, sustained eMMC reads hung the controller (CQE timeout, "cqhci: Failed to halt") and twice `reboot bootloader` from Nura hung. Linux sdhci-msm CQE on this Hynix eMMC; our XNU driver keeps CQE off.
 - Shim speed probe: Gold looks 55x slower than Silver with the MMU off; under Linux Gold is about Silver's speed, so it is an MMU-off artifact, but the Gold clock is probably lowish (no CPU clock driver).
