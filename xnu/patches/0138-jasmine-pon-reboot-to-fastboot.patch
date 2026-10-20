@@ -1,0 +1,137 @@
+From 030b5b87f0daac975bd70190df28dcf39dfa51a6 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 20 Oct 2026 20:23:37 +0200
+Subject: [PATCH] jasmine-0138: reboot and panic land in fastboot via the PMIC
+ PON reboot mode
+
+jasmine's ABL ignores the IMEM restart reason. The platform expert finds
+the PON peripheral in the SPMI PMIC arbiter (v3, v2 layout), reads PON
+SOFT_RB_SPARE once at start (logged), and the reset path writes
+bootloader mode (2 << 1) there before PSCI SYSTEM_RESET, like Linux's
+qcom-pon reboot-mode.
+---
+ iokit/Kernel/arm/SweetPlatformExpert.cpp | 96 +++++++++++++++++++++++-
+ 1 file changed, 95 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index cec5464..b37aae8 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -36,6 +36,98 @@ public:
+  */
+ static volatile uint32_t *sweet_pshold, *sweet_restart_reason;
+ 
++/*
++ * jasmine's ABL ignores the IMEM restart reason: "stay in fastboot" is the PMIC
++ * PON SOFT_RB_SPARE register (pm660 0x88f, value mode << 1, bootloader = 2),
++ * what Linux's qcom-pon reboot-mode writes. It is reached through the SPMI
++ * PMIC arbiter v3, which uses the v2 layout (Linux spmi-pmic-arb.c): APID map
++ * at core + 0x800 + 4 * n with the PPID (sid << 8 | addr >> 8) in bits 19:8;
++ * channel n at chnls (writes) / obsrvr (reads) + 0x8000 * n for EE 0;
++ * CMD 0x00, STATUS 0x08 (done, failure, denied, dropped), WDATA0 0x10,
++ * RDATA0 0x18; command = opcode << 27 | (addr & 0xff) << 4 | (bytes - 1),
++ * opcode 0 = extended write long, 1 = extended read long.
++ * ADT /sweet-reset: spmi-reg = <core 0x1000 chnls size obsrvr size>,
++ * pon-reboot = <sid reg shift bootloader-mode> (u32).
++ */
++static volatile uint32_t *sweet_spmi_wr, *sweet_spmi_rd;
++static uint32_t sweet_pon_reg, sweet_pon_shift, sweet_pon_magic;
++
++static int
++sweet_spmi_cmd(volatile uint32_t *ch, uint32_t opc, uint32_t addr)
++{
++	ch[0x00 / 4] = opc << 27 | (addr & 0xff) << 4;         /* one byte */
++	for (int i = 0; i < 1000000; i++) {
++		uint32_t st = ch[0x08 / 4];
++		if (st & 1) {
++			return (st & 0xe) ? -(int)st : 0;
++		}
++	}
++	return -1000;
++}
++
++static int
++sweet_pon_read(uint8_t *v)
++{
++	int r = sweet_spmi_cmd(sweet_spmi_rd, 1, sweet_pon_reg);
++	if (r == 0) {
++		*v = (uint8_t)sweet_spmi_rd[0x18 / 4];
++	}
++	return r;
++}
++
++/* Reboot mode "bootloader" into PON SOFT_RB_SPARE, keeping the bits below the shift. */
++static int
++sweet_pon_set_bootloader(void)
++{
++	uint8_t v = 0;
++	if (sweet_spmi_wr == NULL || sweet_pon_read(&v) != 0) {
++		return -1;
++	}
++	v = (uint8_t)((v & ((1u << sweet_pon_shift) - 1)) | (sweet_pon_magic << sweet_pon_shift));
++	sweet_spmi_wr[0x10 / 4] = v;
++	return sweet_spmi_cmd(sweet_spmi_wr, 0, sweet_pon_reg);
++}
++
++static void
++sweet_map_pon(DTEntry node)
++{
++	uint64_t const *spmi = NULL;
++	uint32_t const *pon = NULL;
++	unsigned int size = 0, psize = 0;
++
++	if (SecureDTGetProperty(node, "spmi-reg", (void const **)&spmi, &size) != kSuccess ||
++	    size < 6 * sizeof(uint64_t) ||
++	    SecureDTGetProperty(node, "pon-reboot", (void const **)&pon, &psize) != kSuccess ||
++	    psize < 4 * sizeof(uint32_t)) {
++		return;
++	}
++	uint32_t ppid = pon[0] << 8 | ((pon[1] >> 8) & 0xff);
++	volatile uint32_t *core = (volatile uint32_t *)ml_io_map(spmi[0], spmi[1]);
++	uint32_t apid = 0xffff;
++	for (uint32_t n = 0; 0x800 + 4 * n < spmi[1]; n++) {
++		uint32_t v = core[(0x800 + 4 * n) / 4];
++		if (v != 0 && ((v >> 8) & 0xfff) == ppid) {
++			apid = n;
++			break;
++		}
++	}
++	if (apid == 0xffff || 0x8000ull * apid + 0x1000 > spmi[3] || 0x8000ull * apid + 0x1000 > spmi[5]) {
++		IOLog("SWEET: PON ppid %#x not in the SPMI arbiter map\n", ppid);
++		return;
++	}
++	sweet_spmi_wr = (volatile uint32_t *)ml_io_map(spmi[2] + 0x8000ull * apid, 0x1000);
++	sweet_spmi_rd = (volatile uint32_t *)ml_io_map(spmi[4] + 0x8000ull * apid, 0x1000);
++	sweet_pon_reg = pon[1];
++	sweet_pon_shift = pon[2];
++	sweet_pon_magic = pon[3];
++	uint8_t v = 0;
++	int r = sweet_pon_read(&v);
++	IOLog("SWEET: PON reboot mode via SPMI apid %u: reg %#x = %#x (read %d)\n", apid, pon[1], v, r);
++	if (r != 0) {
++		sweet_spmi_wr = NULL;
++	}
++}
++
+ static void
+ sweet_map_reset(void)
+ {
+@@ -52,12 +144,14 @@ sweet_map_reset(void)
+ 	sweet_pshold = (volatile uint32_t *)(ml_io_map(reg[0] & ~(uintptr_t)0xfff, 0x1000) + (reg[0] & 0xfff));
+ 	sweet_restart_reason = (volatile uint32_t *)(ml_io_map(reg[2] & ~(uintptr_t)0xfff, 0x1000) + (reg[2] & 0xfff));
+ 	IOLog("SWEET: reset via PS_HOLD %#lx, restart reason %#lx\n", reg[0], reg[2]);
++	sweet_map_pon(node);
+ }
+ 
+ static void __attribute__((noreturn))
+ sweet_reset_now(void)
+ {
+-	*sweet_restart_reason = 0x77665500;     /* ABL: stay in fastboot */
++	(void)sweet_pon_set_bootloader();       /* jasmine ABL: stay in fastboot */
++	*sweet_restart_reason = 0x77665500;     /* the same for ABLs that read IMEM */
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	/* PSCI SYSTEM_RESET; the Qualcomm TZ keeps IMEM and ABL reads the reason */
+ 	register uint64_t x0 __asm__("x0") = 0x84000009;
+-- 
+2.47.3
+

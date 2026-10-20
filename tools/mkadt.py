@@ -52,6 +52,7 @@ COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
 RESET = None
+SPMI = PON_REBOOT = None
 
 if BOARD == 'jasmine':
     # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
@@ -75,6 +76,9 @@ if BOARD == 'jasmine':
     CPU_HZ = 2208000000  # Kryo 260 Gold max
     # qcom,pshold restart@10ac000; stock DT qcom,msm-imem@146bf000 restart_reason@65c
     RESET = (0x010ac000, 0x146bf65c)
+    # spmi@800f000 (qcom,spmi-pmic-arb v3, EE 0); pm660 pon@800 (qcom,pm8998-pon: shift 1, mode-bootloader 2)
+    SPMI = (0x0800f000, 0x1000, 0x08400000, 0x1000000, 0x09400000, 0x1000000)
+    PON_REBOOT = (0, 0x88f, 1, 2)
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -252,7 +256,11 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     # bsd/dev/sweet_ufs.c eMMC backend: the SDHCI host ABL leaves running
     emmc = [node('sweet-emmc', [ph(), ('compatible', cstr('qcom,sdhci-msm-v5')), ('reg', u64(*EMMC))])] if EMMC and not qemu else []
 
-    reset = [node('sweet-reset', [ph(), ('reg', u64(RESET[0], 4, RESET[1], 4))])] if RESET and not qemu else []
+    # + the PMIC PON reboot mode jasmine's ABL reads (SweetPlatformExpert):
+    # SPMI arbiter core/chnls/obsrvr and <sid, PON SOFT_RB_SPARE, shift, bootloader>
+    reset = [node('sweet-reset', [ph(), ('reg', u64(RESET[0], 4, RESET[1], 4))] +
+                  ([('spmi-reg', u64(*SPMI)), ('pon-reboot', u32(*PON_REBOOT))] if SPMI else []))
+             ] if RESET and not qemu else []
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
