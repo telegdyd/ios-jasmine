@@ -1,6 +1,6 @@
-From 0c3535e3e1c63bdc1f27b2c79ce24ce7322b139a Mon Sep 17 00:00:00 2001
+From 3daca0147b94492aeefc4cf7f0ef0a10535d9f23 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 01:36:09 +0200
+Date: Wed, 21 Oct 2026 01:41:13 +0200
 Subject: [PATCH] jasmine-j0008: log every swap layout change
 
 The Spotlight screen showed a static misplaced frame with a black band
@@ -9,11 +9,11 @@ Log each change of a layer's surface size, format, bytes per element and
 row, source and destination rects or the enable mask (up to 400 lines),
 with four words of the swap record after the mask.
 ---
- iokit/Kernel/arm/SweetFramebuffer.cpp | 22 +++++++++++++++++-----
- 1 file changed, 17 insertions(+), 5 deletions(-)
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
 
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index c72100d..e205744 100644
+index c72100d..24f833e 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -728,6 +728,8 @@ get32(const uint8_t *p, uint32_t off)
@@ -25,14 +25,15 @@ index c72100d..e205744 100644
  static uint64_t sweet_fb_swap_count;
  
  /* Copy each enabled layer's surface into the panel memory (no scaling). */
-@@ -1150,12 +1152,21 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1150,12 +1152,22 @@ AppleCLCD::present(const uint8_t *rec)
  			continue;
  		}
  		SweetSurface *s = sweet_surface_copy(id);
 -		if (sweet_fb_swaps_logged < 16) {
 +		uint64_t sig = (uint64_t)(s ? s->pixelFormat : 0) * 0x9e3779b97f4a7c15ull;
-+		const uint32_t parts[] = { s ? s->width : 0, s ? s->height : 0, s ? s->bytesPerElement : 0,
-+			                   s ? s->bytesPerRow : 0, (uint32_t)sx, (uint32_t)sy, get32(a, 8), get32(a, 12),
++		const uint32_t parts[] = { (uint32_t)(s ? s->width : 0), (uint32_t)(s ? s->height : 0),
++			                   (uint32_t)(s ? s->bytesPerElement : 0), (uint32_t)(s ? s->bytesPerRow : 0),
++			                   (uint32_t)sx, (uint32_t)sy, get32(a, 8), get32(a, 12),
 +			                   (uint32_t)dx, (uint32_t)dy, (uint32_t)w, (uint32_t)h };
 +		for (uint32_t k = 0; k < sizeof(parts) / sizeof(parts[0]); k++) {
 +			sig = (sig ^ parts[k]) * 0x100000001b3ull;
@@ -52,7 +53,7 @@ index c72100d..e205744 100644
  		}
  		if (s == NULL || s == fSurface) {
  			OSSafeReleaseNULL(s);
-@@ -1222,6 +1233,7 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1222,6 +1234,7 @@ AppleCLCD::present(const uint8_t *rec)
  		}
  		s->release();
  	}
