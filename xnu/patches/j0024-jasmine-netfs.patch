@@ -1,0 +1,480 @@
+From 81df22b195ae028c7f656df1f23ca65404940489 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 15:22:05 +0200
+Subject: [PATCH] jasmine-j0024: file access to the iOS root over USB Ethernet
+ (port 5142)
+
+bsd/dev/sweet_netfs.c: a TCP server started with the USB Ethernet gadget,
+one request per connection, kernel credentials: PUT (with mode, owner,
+parent directories; unlink + create + fsync), GET, LS, MKDIR, RM. For
+pushing builds into the root and pulling logs without reflashing userdata
+(tools/sweet-fs.py). sweetusbfs=0 disables it.
+---
+ bsd/conf/files        |   1 +
+ bsd/dev/sweet_netfs.c | 420 ++++++++++++++++++++++++++++++++++++++++++
+ bsd/dev/sweet_usb.c   |   4 +
+ 3 files changed, 425 insertions(+)
+ create mode 100644 bsd/dev/sweet_netfs.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 0f71085..1e855a5 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -110,6 +110,7 @@ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_pmic.c			standard
+ bsd/dev/sweet_gpu.c			standard
++bsd/dev/sweet_netfs.c			standard
+ bsd/dev/sweet_nvt.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_i2c1.c			standard
+diff --git a/bsd/dev/sweet_netfs.c b/bsd/dev/sweet_netfs.c
+new file mode 100644
+index 0000000..d1aaa32
+--- /dev/null
++++ b/bsd/dev/sweet_netfs.c
+@@ -0,0 +1,420 @@
++/*
++ * File access to the iOS root over USB Ethernet (jasmine; tools/sweet-fs.py):
++ * a TCP server on port 5142 started by bsd/dev/sweet_usb.c, one request per
++ * connection, kernel credentials (root), absolute paths:
++ *
++ *   PUT path mode uid gid size\n <size bytes>  -> OK size | ERR errno what
++ *       creates missing parent directories (0755 root:wheel), unlinks an
++ *       old path (a running program keeps its inode), writes a new file and
++ *       fsyncs it; a failed write removes it again
++ *   GET path\n                                 -> OK size\n <size bytes> | ERR
++ *   LS path\n                                  -> OK\n then "type name\n"
++ *       lines (d, f, l or ?) and END\n
++ *   MKDIR path\n                               -> OK | ERR (with parents)
++ *   RM path\n                                  -> OK | ERR (files only)
++ *
++ * For pushing builds (G2's GL renderer, Mesa) and pulling logs without
++ * reflashing userdata. There is no authentication: the link is a USB cable
++ * to one PC. Boot-arg sweetusbfs=0 disables it.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <sys/fcntl.h>
++#include <sys/kauth.h>
++#include <sys/kpi_socket.h>
++#include <sys/namei.h>
++#include <sys/proc.h>
++#include <sys/uio.h>
++#include <sys/vnode.h>
++#include <sys/vnode_internal.h>
++#include <sys/dirent.h>
++#include <kern/clock.h>
++#include <kern/kalloc.h>
++#include <kern/sched_prim.h>
++#include <kern/thread.h>
++#include <netinet/in.h>
++#include <pexpert/pexpert.h>
++#include <libkern/libkern.h>
++#include <stdbool.h>
++
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++extern int unlink1(vfs_context_t, vnode_t, user_addr_t, enum uio_seg, int);
++extern unsigned long strtoul(const char *, char **, int);       /* iokit/Kernel/IOStringFuncs.c */
++extern u_quad_t strtouq(const char *, char **, int);
++
++void sweet_netfs_start(void);
++
++#define NETFS_PORT      5142
++#define NETFS_BUF       (64u * 1024)
++#define NETFS_PATH      1024
++
++static int netfs_chan;
++
++static void
++netfs_sleep_ms(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&netfs_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static int
++netfs_send(socket_t so, const void *buf, size_t len)
++{
++	for (size_t off = 0; off < len;) {
++		struct iovec iov = { .iov_base = (char *)(uintptr_t)buf + off, .iov_len = len - off };
++		struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++		size_t sent = 0;
++		int err = sock_send(so, &msg, 0, &sent);
++		if (err || sent == 0) {
++			return err ? err : EPIPE;
++		}
++		off += sent;
++	}
++	return 0;
++}
++
++static void
++netfs_reply(socket_t so, int err, const char *what)
++{
++	char line[160];
++	if (err) {
++		snprintf(line, sizeof(line), "ERR %d %s\n", err, what);
++	} else {
++		snprintf(line, sizeof(line), "OK\n");
++	}
++	(void)netfs_send(so, line, strlen(line));
++}
++
++/* Exactly len bytes (len 0 = up to len_max bytes until a newline, which is dropped). */
++static int
++netfs_recv(socket_t so, char *buf, size_t len)
++{
++	for (size_t got = 0; got < len;) {
++		struct iovec iov = { .iov_base = buf + got, .iov_len = len - got };
++		struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++		size_t n = 0;
++		int err = sock_receive(so, &msg, MSG_WAITALL, &n);
++		if (err || n == 0) {
++			return err ? err : ECONNRESET;
++		}
++		got += n;
++	}
++	return 0;
++}
++
++static int
++netfs_recv_line(socket_t so, char *buf, size_t max)
++{
++	for (size_t got = 0; got < max - 1; got++) {
++		int err = netfs_recv(so, buf + got, 1);
++		if (err) {
++			return err;
++		}
++		if (buf[got] == '\n') {
++			buf[got] = 0;
++			return 0;
++		}
++	}
++	return ENAMETOOLONG;
++}
++
++/* mkdir one directory; EEXIST is fine */
++static int
++netfs_mkdir1(const char *path, vfs_context_t ctx)
++{
++	struct nameidata nd;
++	struct vnode_attr va;
++	vnode_t vp = NULLVP;
++	int err;
++
++	NDINIT(&nd, CREATE, OP_MKDIR, LOCKPARENT, UIO_SYSSPACE, CAST_USER_ADDR_T(path), ctx);
++	nd.ni_cnd.cn_flags |= WILLBEDIR;
++	err = namei(&nd);
++	if (err) {
++		return err;
++	}
++	if (nd.ni_vp != NULLVP) {
++		vp = nd.ni_vp;
++		err = vnode_isdir(vp) ? 0 : EEXIST;
++	} else {
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_type, VDIR);
++		VATTR_SET(&va, va_mode, 0755);
++		err = vn_create(nd.ni_dvp, &vp, &nd, &va, 0, 0, NULL, ctx);
++	}
++	nameidone(&nd);
++	if (vp != NULLVP) {
++		vnode_put(vp);
++	}
++	vnode_put(nd.ni_dvp);
++	return err;
++}
++
++/* mkdir -p of path itself (parents = 1: only its parent directories) */
++static int
++netfs_mkdirs(const char *path, bool parents, vfs_context_t ctx)
++{
++	char p[NETFS_PATH];
++	strlcpy(p, path, sizeof(p));
++	for (char *s = p + 1; *s; s++) {
++		if (*s == '/') {
++			*s = 0;
++			int err = netfs_mkdir1(p, ctx);
++			*s = '/';
++			if (err) {
++				return err;
++			}
++		}
++	}
++	return parents ? 0 : netfs_mkdir1(p, ctx);
++}
++
++static void
++netfs_put(socket_t so, char *args, vfs_context_t ctx, char *buf)
++{
++	char path[NETFS_PATH];
++	unsigned mode = 0, uid = 0, gid = 0;
++	unsigned long long size = 0;
++	char *sp = strchr(args, ' ');
++	if (sp == NULL || sp - args >= (long)sizeof(path)) {
++		netfs_reply(so, EINVAL, "usage: PUT path mode uid gid size");
++		return;
++	}
++	*sp = 0;
++	strlcpy(path, args, sizeof(path));
++	/* mode is octal, the rest decimal */
++	char *q = sp + 1;
++	mode = (unsigned)strtoul(q, &q, 8);
++	uid = (unsigned)strtoul(q, &q, 10);
++	gid = (unsigned)strtoul(q, &q, 10);
++	size = strtouq(q, &q, 10);
++	if (path[0] != '/' || mode > 07777) {
++		netfs_reply(so, EINVAL, "bad path or mode");
++		return;
++	}
++	int err = netfs_mkdirs(path, true, ctx);
++	vnode_t vp = NULLVP;
++	if (!err) {
++		err = unlink1(ctx, NULLVP, CAST_USER_ADDR_T(path), UIO_SYSSPACE, 0);
++		err = err == ENOENT ? 0 : err;
++	}
++	if (!err) {
++		err = vnode_open(path, O_CREAT | O_EXCL | FWRITE, mode, 0, &vp, ctx);
++	}
++	if (err) {
++		netfs_reply(so, err, "create");
++		return;
++	}
++	unsigned long long done = 0;
++	while (!err && done < size) {
++		size_t n = MIN((unsigned long long)NETFS_BUF, size - done);
++		err = netfs_recv(so, buf, n);
++		if (!err) {
++			int resid = 0;
++			err = vn_rdwr(UIO_WRITE, vp, buf, (int)n, (off_t)done, UIO_SYSSPACE, IO_NOAUTH | IO_UNIT,
++			    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++			if (!err && resid) {
++				err = EIO;
++			}
++		}
++		done += n;
++	}
++	if (!err) {
++		struct vnode_attr va;
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_mode, mode);
++		VATTR_SET(&va, va_uid, uid);
++		VATTR_SET(&va, va_gid, gid);
++		err = vnode_setattr(vp, &va, ctx);
++	}
++	if (!err) {
++		err = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++	}
++	vnode_close(vp, FWRITE, ctx);
++	if (err) {
++		(void)unlink1(ctx, NULLVP, CAST_USER_ADDR_T(path), UIO_SYSSPACE, 0);
++	}
++	if (err) {
++		netfs_reply(so, err, "write");
++		return;
++	}
++	char line[64];
++	snprintf(line, sizeof(line), "OK %llu\n", size);
++	(void)netfs_send(so, line, strlen(line));
++	printf("SWEET NETFS: put %s (%llu bytes, %o %u:%u)\n", path, size, mode, uid, gid);
++}
++
++static void
++netfs_get(socket_t so, const char *path, vfs_context_t ctx, char *buf)
++{
++	vnode_t vp = NULLVP;
++	off_t size = 0;
++	int err = vnode_open(path, FREAD, 0, 0, &vp, ctx);
++	if (!err) {
++		err = vnode_isreg(vp) ? vnode_size(vp, &size, ctx) : EISDIR;
++		if (err) {
++			vnode_close(vp, FREAD, ctx);
++		}
++	}
++	if (err) {
++		netfs_reply(so, err, "open");
++		return;
++	}
++	char line[64];
++	snprintf(line, sizeof(line), "OK %lld\n", (long long)size);
++	err = netfs_send(so, line, strlen(line));
++	for (off_t off = 0; !err && off < size;) {
++		int n = (int)MIN((off_t)NETFS_BUF, size - off), resid = 0;
++		err = vn_rdwr(UIO_READ, vp, buf, n, off, UIO_SYSSPACE, IO_NOAUTH, vfs_context_ucred(ctx), &resid,
++		    vfs_context_proc(ctx));
++		if (!err) {
++			if (resid) {
++				bzero(buf + n - resid, (size_t)resid);  /* file shrank: keep the promised length */
++			}
++			err = netfs_send(so, buf, (size_t)n);
++		}
++		off += n;
++	}
++	vnode_close(vp, FREAD, ctx);
++}
++
++static void
++netfs_ls(socket_t so, const char *path, vfs_context_t ctx, char *buf)
++{
++	vnode_t vp = NULLVP;
++	int err = vnode_lookup(path, 0, &vp, ctx);
++	if (!err && !vnode_isdir(vp)) {
++		vnode_put(vp);
++		err = ENOTDIR;
++	}
++	if (err) {
++		netfs_reply(so, err, "lookup");
++		return;
++	}
++	(void)netfs_send(so, "OK\n", 3);
++	char *out = buf + NETFS_BUF / 2;
++	uio_t uio = uio_create(1, 0, UIO_SYSSPACE, UIO_READ);
++	int eof = 0;
++	while (uio != NULL && !eof && !err) {
++		int count = 0;
++		uio_reset(uio, uio_offset(uio), UIO_SYSSPACE, UIO_READ);
++		uio_addiov(uio, CAST_USER_ADDR_T(buf), NETFS_BUF / 2);
++		err = VNOP_READDIR(vp, uio, 0, &eof, &count, ctx);
++		size_t got = NETFS_BUF / 2 - (size_t)uio_resid(uio);
++		if (err || got == 0) {
++			break;
++		}
++		size_t o = 0;
++		for (size_t off = 0; off + 8 <= got;) {
++			const struct dirent *d = (const struct dirent *)(void *)(buf + off);
++			if (d->d_reclen == 0) {
++				break;
++			}
++			if (d->d_ino != 0 && !(d->d_namlen == 1 && d->d_name[0] == '.') &&
++			    !(d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.') &&
++			    o + d->d_namlen + 4 < NETFS_BUF / 2) {
++				out[o++] = d->d_type == DT_DIR ? 'd' : d->d_type == DT_REG ? 'f' : d->d_type == DT_LNK ? 'l' : '?';
++				out[o++] = ' ';
++				memcpy(out + o, d->d_name, d->d_namlen);
++				o += d->d_namlen;
++				out[o++] = '\n';
++			}
++			off += d->d_reclen;
++		}
++		err = netfs_send(so, out, o);
++	}
++	if (uio != NULL) {
++		uio_free(uio);
++	}
++	vnode_put(vp);
++	(void)netfs_send(so, "END\n", 4);
++}
++
++static void
++netfs_client(socket_t so, char *buf)
++{
++	char line[NETFS_PATH + 128];
++	vfs_context_t ctx = vfs_context_kernel();
++	if (netfs_recv_line(so, line, sizeof(line)) != 0) {
++		return;
++	}
++	char *arg = strchr(line, ' ');
++	if (arg == NULL) {
++		netfs_reply(so, EINVAL, "no argument");
++		return;
++	}
++	*arg++ = 0;
++	if (arg[0] != '/') {
++		netfs_reply(so, EINVAL, "absolute paths only");
++		return;
++	}
++	if (strcmp(line, "PUT") == 0) {
++		netfs_put(so, arg, ctx, buf);
++	} else if (strcmp(line, "GET") == 0) {
++		netfs_get(so, arg, ctx, buf);
++	} else if (strcmp(line, "LS") == 0) {
++		netfs_ls(so, arg, ctx, buf);
++	} else if (strcmp(line, "MKDIR") == 0) {
++		netfs_reply(so, netfs_mkdirs(arg, false, ctx), "mkdir");
++	} else if (strcmp(line, "RM") == 0) {
++		netfs_reply(so, unlink1(ctx, NULLVP, CAST_USER_ADDR_T(arg), UIO_SYSSPACE, 0), "unlink");
++	} else {
++		netfs_reply(so, EINVAL, "unknown command");
++	}
++}
++
++static void
++netfs_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	socket_t ls = NULL;
++	struct sockaddr_in me;
++	char *buf = kalloc_data(NETFS_BUF, Z_WAITOK);
++
++	if (buf == NULL) {
++		return;
++	}
++	bzero(&me, sizeof(me));
++	me.sin_len = sizeof(me);
++	me.sin_family = AF_INET;
++	me.sin_port = htons(NETFS_PORT);
++	me.sin_addr.s_addr = htonl(INADDR_ANY);
++	while (ls == NULL) {
++		netfs_sleep_ms(500);
++		int on = 1;
++		if (sock_socket(PF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, NULL, &ls) != 0) {
++			ls = NULL;
++			continue;
++		}
++		(void)sock_setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
++		if (sock_bind(ls, (struct sockaddr *)&me) != 0 || sock_listen(ls, 1) != 0) {
++			sock_close(ls);
++			ls = NULL;
++		}
++	}
++	for (;;) {
++		socket_t cs = NULL;
++		if (sock_accept(ls, NULL, 0, 0, NULL, NULL, &cs) != 0 || cs == NULL) {
++			netfs_sleep_ms(500);
++			continue;
++		}
++		netfs_client(cs, buf);
++		sock_close(cs);
++	}
++}
++
++void
++sweet_netfs_start(void)
++{
++	int on = 1;
++	thread_t thread;
++	PE_parse_boot_argn("sweetusbfs", &on, sizeof(on));
++	if (on && kernel_thread_start(netfs_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 3557421..7d673a3 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -155,6 +155,7 @@ static const uint32_t qusb2_sdm660_tbl[][2] = {
+ };
+ 
+ extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
++extern void sweet_netfs_start(void);   /* bsd/dev/sweet_netfs.c: files over port 5142 */
+ 
+ static void
+ usb_log_supply(const char *name, uint32_t sid, uint32_t base)
+@@ -1297,5 +1298,8 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	if (cmd && ud.ifp != NULL && kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	if (ud.ifp != NULL) {
++		sweet_netfs_start();
++	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+-- 
+2.47.3
+
