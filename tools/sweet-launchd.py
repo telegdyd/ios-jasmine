@@ -8,12 +8,15 @@ cache with tools/sweet-fs.py (j0024), keeps the first copy it ever saw in
 research/launchd.plist.orig, edits it and puts it back. The change applies
 at the next boot.
 
-    sweet-launchd.py add-sweetd        /usr/local/bin/sweetd as root, kept alive
+    sweet-launchd.py add-sweetd        /usr/local/bin/sweetd as root, kept alive; also
+                                       makes research/sweetd.token (once) and puts it
+                                       on the phone (/private/var/root, mode 0600)
     sweet-launchd.py remove LABEL
     sweet-launchd.py show LABEL
 """
 import os
 import plistlib
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -32,6 +35,8 @@ SWEETD = {
     'StandardErrorPath': '/private/var/log/sweetd.log',
 }
 SWEETD_KEY = '/Library/LaunchDaemons/com.jasmine.sweetd.plist'
+TOKEN = os.path.join(HERE, '..', 'research', 'sweetd.token')
+TOKEN_ON_PHONE = '/private/var/root/sweetd.token'
 
 
 def fs(*args):
@@ -64,6 +69,10 @@ def main():
         jobs = cache['LaunchDaemons']
         cmd = sys.argv[1]
         if cmd == 'add-sweetd':
+            if not os.path.exists(TOKEN):
+                open(TOKEN, 'w').write(secrets.token_hex(24) + '\n')
+                print(f'new token in {os.path.normpath(TOKEN)}')
+            fs('put', TOKEN, TOKEN_ON_PHONE, '--mode', '600', '--owner', '0:0')
             jobs[SWEETD_KEY] = SWEETD
             store(tmp, cache)
             print(f'{SWEETD["Label"]} added ({len(jobs)} jobs); reboot to start it')

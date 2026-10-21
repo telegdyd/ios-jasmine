@@ -5,14 +5,17 @@
 
 Prints the program's output (stdout and stderr merged) as it comes and exits
 with its status (128 + signal when it was killed). From Git Bash, set
-MSYS_NO_PATHCONV=1 so absolute phone paths are not rewritten.
+MSYS_NO_PATHCONV=1 so absolute phone paths are not rewritten. The token
+sweetd wants is research/sweetd.token (made by sweet-launchd.py add-sweetd).
 """
+import os
 import socket
 import sys
 
 HOSTS = ('192.168.7.2', '169.254.7.2')
 PORT = 5143
 END = b'__SWEETD_END__'
+TOKEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'research', 'sweetd.token')
 
 
 def main():
@@ -32,7 +35,8 @@ def main():
     if s is None:
         sys.exit(f'no sweetd at {" or ".join(HOSTS)}:{PORT}')
     s.settimeout(timeout + 30)
-    s.sendall(f'RUN {timeout} {len(args)}\n'.encode() + b''.join(a.encode() + b'\n' for a in args))
+    token = open(TOKEN).read().strip()
+    s.sendall(f'RUN {token} {timeout} {len(args)}\n'.encode() + b''.join(a.encode() + b'\n' for a in args))
     buf = b''
     while True:
         chunk = s.recv(65536)
