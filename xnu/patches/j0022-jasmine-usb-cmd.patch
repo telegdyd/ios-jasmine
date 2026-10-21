@@ -1,0 +1,141 @@
+From b89341c050b1984dad4a1464e48020b2049df670 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 14:42:40 +0200
+Subject: [PATCH] jasmine-j0022: command port (TCP 5141, "reboot"); USB device
+ on by default on jasmine
+
+j0021 worked at the first boot: Windows bound its inbox UsbNcm driver,
+gave the adapter a 169.254 address, and the log server at 169.254.7.2:5140
+streamed the console. A second server on port 5141 takes one line per
+connection; "reboot" reboots cleanly, which on jasmine lands in fastboot,
+so the PC can run the next test without anyone touching the phone.
+sweetusb defaults to 2 where the ADT has /sweet-usb.
+---
+ bsd/dev/sweet_usb.c | 91 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 90 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index c10b8f4..eaf2654 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -41,6 +41,7 @@
+ #include <net/kpi_interface.h>
+ #include <net/kpi_protocol.h>
+ #include <netinet/in.h>
++#include <sys/reboot.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+@@ -118,7 +119,12 @@ sweet_usb_probe(void)
+ 	uint32_t gdscr, cbcr[sizeof(usb_cbcr) / sizeof(usb_cbcr[0])];
+ 	bool clocks_on = true;
+ 
+-	/* sweetusb=0 off, 1 (default) report state only, 2 also start the USB device */
++	/*
++	 * sweetusb=0 off, 1 report state only, 2 also start the USB device.
++	 * Default 1 on sweet, 2 on boards with /sweet-usb (jasmine: the live
++	 * log and command ports are the test loop).
++	 */
++	enabled = usb_from_dt ? 2 : 1;
+ 	PE_parse_boot_argn("sweetusb", &enabled, sizeof(enabled));
+ 	if (!enabled) {
+ 		return;
+@@ -1008,6 +1014,84 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ }
+ 
++/*
++ * Command port, TCP 5141 (tools/sweet-cmd.py): one line per connection.
++ *   reboot   clean reboot (filesystems synced); on jasmine every reboot ends
++ *            in fastboot (PON reboot mode, j0003), so the PC can boot the
++ *            next test image without anyone touching the phone
++ * Anything else is answered with "?". Boot-arg sweetusbcmd=0 disables it.
++ */
++static void
++ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	socket_t ls = NULL;
++	struct sockaddr_in me;
++
++	bzero(&me, sizeof(me));
++	me.sin_len = sizeof(me);
++	me.sin_family = AF_INET;
++	me.sin_port = htons(5141);
++	me.sin_addr.s_addr = htonl(INADDR_ANY);
++	while (ls == NULL) {
++		ud_sleep_ms(500);
++		int on = 1;
++		if (sock_socket(PF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, NULL, &ls) != 0) {
++			ls = NULL;
++			continue;
++		}
++		(void)sock_setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
++		if (sock_bind(ls, (struct sockaddr *)&me) != 0 || sock_listen(ls, 1) != 0) {
++			sock_close(ls);
++			ls = NULL;
++		}
++	}
++	for (;;) {
++		socket_t cs = NULL;
++		if (sock_accept(ls, NULL, 0, 0, NULL, NULL, &cs) != 0 || cs == NULL) {
++			ud_sleep_ms(500);
++			continue;
++		}
++		char line[64];
++		size_t got = 0;
++		while (got < sizeof(line) - 1) {
++			struct iovec iov = { .iov_base = line + got, .iov_len = sizeof(line) - 1 - got };
++			struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++			size_t n = 0;
++			if (sock_receive(cs, &msg, 0, &n) != 0 || n == 0) {
++				break;
++			}
++			bool eol = false;
++			for (size_t i = got; i < got + n; i++) {
++				eol |= line[i] == '\n';
++			}
++			got += n;
++			if (eol) {
++				break;
++			}
++		}
++		line[got] = 0;
++		char *nl = strchr(line, '\n');
++		if (nl != NULL) {
++			*nl = 0;
++		}
++		if (got > 0 && line[strlen(line) - 1] == '\r') {
++			line[strlen(line) - 1] = 0;
++		}
++		bool reboot = strcmp(line, "reboot") == 0;
++		const char *reply = reboot ? "rebooting\n" : "?\n";
++		struct iovec iov = { .iov_base = (void *)(uintptr_t)reply, .iov_len = strlen(reply) };
++		struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++		size_t sent = 0;
++		(void)sock_send(cs, &msg, 0, &sent);
++		sock_close(cs);
++		if (reboot) {
++			printf("SWEET USB: reboot requested over the command port\n");
++			ud_sleep_ms(300);       /* let the reply and the log line out */
++			reboot_kernel(RB_AUTOBOOT, NULL);
++		}
++	}
++}
++
+ static void
+ sweet_usb_gadget_start(vm_offset_t dwc)
+ {
+@@ -1087,5 +1171,10 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	if (livelog && ud.ifp != NULL && kernel_thread_start(ud_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	int cmd = 1;
++	PE_parse_boot_argn("sweetusbcmd", &cmd, sizeof(cmd));
++	if (cmd && ud.ifp != NULL && kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+-- 
+2.47.3
+
