@@ -56,6 +56,10 @@ Build: `gh workflow run xnu.yml -R telegdyd/ios-jasmine --ref jasmine` (macOS ru
 
 ## Test loop
 
+**Hands-free since 2026-10-21 14:51 (j0021 + j0022):** with any j0022+ kernel running (or the phone in fastboot), `python tools/sweet-run.py IMAGE logs/OUT.txt --secs N` asks the kernel to reboot over USB Ethernet (command port 5141; every reboot lands in fastboot), `fastboot boot`s IMAGE and records the live console log (port 5140) for N seconds. Windows binds its inbox UsbNcm driver to the phone ("ios-sweet Sweet iOS (USB Ethernet)") and gives it a 169.254 address; the phone answers on 169.254.7.2 and 192.168.7.2. `tools/sweet-netlog.py` alone attaches to a running phone. Only a hung boot still needs Power + Volume Down.
+
+Old manual loop:
+
 1. Phone in fastboot (after any XNU reset it is there by itself; otherwise Power + Volume Down).
 2. `fastboot boot shim/out/<image>.img` (RAM only, nothing flashed).
 3. Images: `tools/mkadt.py shim/out/jasmine.adt --highmem`, `tools/mkpayload.py KERNEL ADT PAYLOAD --cmdline '...'`, `shim/build.sh PAYLOAD` (BOARD=jasmine default; v0 boot image with the Nura DTB from `dtb/jasmine.dtb`).

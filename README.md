@@ -22,7 +22,7 @@ As of **2026-10-21** the phone **boots iOS by itself** (power on, reboot or char
 | Touch | Novatek NT36672A on the old QUP v2 I2C (BLSP1 QUP1), polled, mapped through the same fit as the display |
 | Keys and clock | Power and volume down from the PM660 PON, volume up from PM660L GPIO 7, all over the SPMI arbiter v3; the calendar from the PM660 RTC plus `rtcoffset=` |
 | Battery | PM660 charger set up like Linux's `qcom_smbx` (1.5 A input, 3.95 V float, ~0.6–0.8 A into the cell), fuel gauge read out (voltage, current, temperature), percent shown in iOS; the PM660L WLED backlight goes off with the display |
-| USB | The DWC3 ABL leaves running is a **CDC-NCM Ethernet gadget** (Windows, Linux and macOS drivers built in). The kernel log streams live over TCP (`tools/sweet-netlog.py`, 192.168.7.2 or 169.254.7.2 port 5140); a command port (5141, `tools/sweet-cmd.py reboot`) is in testing |
+| USB | The DWC3 ABL leaves running is a **CDC-NCM Ethernet gadget** (Windows, Linux and macOS drivers built in). The kernel log streams live over TCP (`tools/sweet-netlog.py`, 192.168.7.2 or 169.254.7.2 port 5140); a command port (5141) reboots the phone into fastboot on request, so `tools/sweet-run.py IMAGE LOG` runs a whole test round (reboot, `fastboot boot`, live log) without touching the phone |
 | GPU (kernel only) | Adreno 512 power-up (GFX head switch, GPU GDSCs), GPU PLL at 266 MHz, GPU SMMU page tables, microcode, command ring, zap shader loaded through TrustZone: the GPU executes our command streams. Opt-in (`sweetgpu=`), not used for rendering yet |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
@@ -108,7 +108,7 @@ You need a Mi A2 (`jasmine`, SDM660) with an **unlocked bootloader**, a PC with 
 3. **GPU (Adreno 512), in progress** (`jasmine/GPU.md`):
    - G1, the GPU in the kernel: ~~power~~, ~~command processor~~, ~~zap shader~~, ~~266 MHz~~. Next: an RPM client for the voltage vote (up to 750 MHz), then a first real job.
    - G2, CoreAnimation on the GPU: Mesa freedreno (Gallium, a5xx) built for iOS, behind iOS's OpenGL ES. iOS picks its GL renderer bundle by the `IOGLESBundleName` property of the kernel's `IOAcceleratorES` service, so our own `gld*` renderer plugs in without changing iOS binaries.
-4. **USB**: ~~Ethernet and live log~~. Next: the command port, file transfer into the iOS root, and a hands-free test loop with a hardware watchdog.
+4. **USB**: ~~Ethernet, live log, command port, hands-free test loop~~. Next: file transfer into the iOS root, and a hardware watchdog so a hung test also comes back by itself.
 5. **Wi-Fi** (WCN3990 behind the modem DSP; topaz's `TopazModem` is the model).
 6. Brightness over DSI DCS, stopping the `bluetoothd` respawn loop, audio.
 
