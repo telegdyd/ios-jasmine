@@ -1,0 +1,774 @@
+From 99fe88d0a455a9dcfa2864d88bee9daa9df64618 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 16:30:26 +0200
+Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
+ (ios-jasmine)
+
+---
+ src/freedreno/drm/darwin/darwin_bo.c          | 108 +++++++++
+ src/freedreno/drm/darwin/darwin_device.c      |  80 +++++++
+ src/freedreno/drm/darwin/darwin_pipe.c        | 205 ++++++++++++++++++
+ src/freedreno/drm/darwin/darwin_priv.h        | 103 +++++++++
+ src/freedreno/drm/freedreno_device.c          |  15 ++
+ src/freedreno/drm/meson.build                 |  11 +
+ src/gallium/drivers/freedreno/meson.build     |  29 +++
+ .../drivers/freedreno/sweetgpu_fdtest.c       | 124 +++++++++++
+ 8 files changed, 675 insertions(+)
+ create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
+ create mode 100644 src/freedreno/drm/darwin/darwin_device.c
+ create mode 100644 src/freedreno/drm/darwin/darwin_pipe.c
+ create mode 100644 src/freedreno/drm/darwin/darwin_priv.h
+ create mode 100644 src/gallium/drivers/freedreno/sweetgpu_fdtest.c
+
+diff --git a/src/freedreno/drm/darwin/darwin_bo.c b/src/freedreno/drm/darwin/darwin_bo.c
+new file mode 100644
+index 0000000..77eb82a
+--- /dev/null
++++ b/src/freedreno/drm/darwin/darwin_bo.c
+@@ -0,0 +1,108 @@
++/*
++ * Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "darwin_priv.h"
++
++static int
++darwin_bo_offset(struct fd_bo *bo, uint64_t *offset)
++{
++   *offset = 0;
++   return 0;
++}
++
++/* SweetGPU maps a buffer by its handle (write-combined, like the GPU's view) */
++static void *
++darwin_bo_map(struct fd_bo *bo)
++{
++   mach_vm_address_t addr = 0;
++   mach_vm_size_t size = 0;
++   IOReturn ret = IOConnectMapMemory64(to_darwin_device(bo->dev)->conn, bo->handle,
++                                       mach_task_self(), &addr, &size, DARWIN_kIOMapAnywhere);
++   if (ret) {
++      ERROR_MSG("map of buffer %u failed: 0x%x", bo->handle, ret);
++      return NULL;
++   }
++   return (void *)(uintptr_t)addr;
++}
++
++/* Only reached for shared buffers (fd_bo_cpu_prep waits on the userspace
++ * fences first), and nothing is shared across processes yet.
++ */
++static int
++darwin_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op)
++{
++   return 0;
++}
++
++static int
++darwin_bo_madvise(struct fd_bo *bo, int willneed)
++{
++   return willneed;
++}
++
++static uint64_t
++darwin_bo_iova(struct fd_bo *bo)
++{
++   return to_darwin_bo(bo)->iova;
++}
++
++static void
++darwin_bo_set_name(struct fd_bo *bo, const char *fmt, va_list ap)
++{
++}
++
++static void
++darwin_bo_destroy(struct fd_bo *bo)
++{
++   /* unmap here: fd_bo_fini_common would munmap() an IOKit mapping */
++   if (bo->map) {
++      IOConnectUnmapMemory64(to_darwin_device(bo->dev)->conn, bo->handle, mach_task_self(),
++                             (mach_vm_address_t)(uintptr_t)bo->map);
++      bo->map = NULL;
++   }
++   fd_bo_fini_common(bo);
++}
++
++static const struct fd_bo_funcs funcs = {
++   .offset = darwin_bo_offset,
++   .map = darwin_bo_map,
++   .cpu_prep = darwin_bo_cpu_prep,
++   .madvise = darwin_bo_madvise,
++   .iova = darwin_bo_iova,
++   .set_name = darwin_bo_set_name,
++   .destroy = darwin_bo_destroy,
++};
++
++struct fd_bo *
++darwin_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags)
++{
++   uint64_t in[2] = { size, (flags & FD_BO_GPUREADONLY) ? 1 : 0 };
++   uint64_t out[2] = { 0, 0 };
++   uint32_t nout = 2;
++
++   IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_BUFFER_NEW,
++                                            in, 2, out, &nout);
++   if (ret || !out[0]) {
++      ERROR_MSG("buffer of %u bytes not allocated: 0x%x", size, ret);
++      return NULL;
++   }
++
++   struct darwin_bo *darwin_bo = calloc(1, sizeof(*darwin_bo));
++   if (!darwin_bo) {
++      IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_BUFFER_FREE, out, 1,
++                                NULL, NULL);
++      return NULL;
++   }
++
++   struct fd_bo *bo = &darwin_bo->base;
++   bo->size = size;
++   bo->handle = (uint32_t)out[0];
++   bo->funcs = &funcs;
++   darwin_bo->iova = out[1];
++
++   fd_bo_init_common(bo, dev);
++
++   return bo;
++}
+diff --git a/src/freedreno/drm/darwin/darwin_device.c b/src/freedreno/drm/darwin/darwin_device.c
+new file mode 100644
+index 0000000..68a5c3c
+--- /dev/null
++++ b/src/freedreno/drm/darwin/darwin_device.c
+@@ -0,0 +1,80 @@
++/*
++ * Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "darwin_priv.h"
++
++int
++darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value)
++{
++   uint64_t in = param;
++   uint32_t nout = 1;
++   IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_GET_PARAM,
++                                            &in, 1, value, &nout);
++   return ret ? -EIO : 0;
++}
++
++static void
++darwin_bo_close_handle(struct fd_bo *bo)
++{
++   uint64_t in = bo->handle;
++   IOConnectCallScalarMethod(to_darwin_device(bo->dev)->conn, SWEETGPU_BUFFER_FREE, &in, 1,
++                             NULL, NULL);
++}
++
++static void
++darwin_device_destroy(struct fd_device *dev)
++{
++   IOServiceClose(to_darwin_device(dev)->conn);
++}
++
++static const struct fd_device_funcs funcs = {
++   .bo_new = darwin_bo_new,
++   .bo_close_handle = darwin_bo_close_handle,
++   .pipe_new = darwin_pipe_new,
++   .destroy = darwin_device_destroy,
++};
++
++/* fd is not used: the device is the SweetGPU IOKit service */
++struct fd_device *
++darwin_device_new(int fd)
++{
++   io_service_t service =
++      IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("SweetGPU"));
++   if (!service) {
++      ERROR_MSG("no SweetGPU service (kernel without sweetgpu=4?)");
++      return NULL;
++   }
++
++   io_connect_t conn = 0;
++   IOReturn ret = IOServiceOpen(service, mach_task_self(), 0, &conn);
++   IOObjectRelease(service);
++   if (ret) {
++      ERROR_MSG("cannot open SweetGPU: 0x%x", ret);
++      return NULL;
++   }
++
++   struct darwin_device *darwin_dev = calloc(1, sizeof(*darwin_dev));
++   if (!darwin_dev) {
++      IOServiceClose(conn);
++      return NULL;
++   }
++   darwin_dev->conn = conn;
++
++   struct fd_device *dev = &darwin_dev->base;
++   dev->funcs = &funcs;
++   /* softpin, GMEM base and VA size queries: what SweetGPU offers */
++   dev->version = FD_VERSION_VA_SIZE;
++   dev->bo_size = sizeof(struct darwin_bo);
++
++   uint64_t ready = 0;
++   if (darwin_get_param(dev, SWEETGPU_PARAM_READY, &ready) || !ready) {
++      ERROR_MSG("SweetGPU is not ready");
++      IOServiceClose(conn);
++      free(darwin_dev);
++      return NULL;
++   }
++
++   return dev;
++}
+diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
+new file mode 100644
+index 0000000..bb58578
+--- /dev/null
++++ b/src/freedreno/drm/darwin/darwin_pipe.c
+@@ -0,0 +1,205 @@
++/*
++ * Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "util/os_time.h"
++
++#include "freedreno_ringbuffer_sp.h"
++#include "darwin_priv.h"
++
++/* sweet_gpu.c's UCHE_TRAP_BASE and the GPU clock it runs at (gpumhz=266) */
++#define DARWIN_UCHE_TRAP_BASE 0x0001ffffffff0000ull
++#define DARWIN_MAX_FREQ       266000000ull
++
++static int
++darwin_pipe_get_param(struct fd_pipe *pipe, enum fd_param_id param, uint64_t *value)
++{
++   struct darwin_pipe *darwin_pipe = to_darwin_pipe(pipe);
++   switch (param) {
++   case FD_DEVICE_ID:
++   case FD_GPU_ID:
++      *value = darwin_pipe->gpu_id;
++      return 0;
++   case FD_GMEM_SIZE:
++      *value = darwin_pipe->gmem;
++      return 0;
++   case FD_GMEM_BASE:
++      *value = darwin_pipe->gmem_base;
++      return 0;
++   case FD_CHIP_ID:
++      *value = darwin_pipe->chip_id;
++      return 0;
++   case FD_MAX_FREQ:
++      *value = DARWIN_MAX_FREQ;
++      return 0;
++   case FD_TIMESTAMP:
++      return darwin_get_param(pipe->dev, SWEETGPU_PARAM_TIMESTAMP, value);
++   case FD_NR_PRIORITIES:
++      *value = 1;
++      return 0;
++   case FD_CTX_FAULTS:
++   case FD_GLOBAL_FAULTS:
++   case FD_SUSPEND_COUNT:
++      *value = 0;
++      return 0;
++   case FD_VA_SIZE:
++      return darwin_get_param(pipe->dev, SWEETGPU_PARAM_VA_SIZE, value);
++   case FD_UCHE_TRAP_BASE:
++      *value = DARWIN_UCHE_TRAP_BASE;
++      return 0;
++   default:
++      ERROR_MSG("invalid param id: %d", param);
++      return -1;
++   }
++}
++
++static int
++darwin_pipe_set_param(struct fd_pipe *pipe, enum fd_param_id param, uint64_t value)
++{
++   return -1;
++}
++
++static int
++darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
++{
++   uint64_t ms = timeout == OS_TIMEOUT_INFINITE ? 60000 : timeout / 1000000;
++   uint64_t in[2] = { fence->kfence, ms };
++   IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_WAIT,
++                                            in, 2, NULL, NULL);
++   if (ret == DARWIN_kIOReturnTimeout)
++      return -ETIMEDOUT;
++   if (ret) {
++      ERROR_MSG("wait for fence %u failed: 0x%x", fence->kfence, ret);
++      return -EIO;
++   }
++   return 0;
++}
++
++struct darwin_ib {
++   uint64_t iova;
++   uint32_t dwords;
++   uint32_t pad;
++};
++
++/* As msm_ringbuffer_sp.c's flush_submit_list, minus the kernel BO table:
++ * every buffer is always mapped, so only the command buffers' GPU
++ * addresses go to the kernel.
++ */
++static int
++flush_submit_list(struct list_head *submit_list)
++{
++   struct fd_submit_sp *fd_submit = to_fd_submit_sp(last_submit(submit_list));
++   struct fd_pipe *pipe = fd_submit->base.pipe;
++   unsigned nr_cmds = 0;
++
++   foreach_submit (submit, submit_list)
++      nr_cmds += to_fd_ringbuffer_sp(submit->primary)->u.nr_cmds;
++
++   size_t len = 8 + nr_cmds * sizeof(struct darwin_ib);
++   uint8_t *req = calloc(1, len);
++   if (!req)
++      return -ENOMEM;
++   *(uint32_t *)req = nr_cmds;
++   struct darwin_ib *ibs = (struct darwin_ib *)(req + 8);
++
++   unsigned cmd_idx = 0;
++   foreach_submit_safe (submit, submit_list) {
++      struct fd_ringbuffer_sp *deferred_primary = to_fd_ringbuffer_sp(submit->primary);
++
++      for (unsigned i = 0; i < deferred_primary->u.nr_cmds; i++) {
++         struct fd_bo *ring_bo = deferred_primary->u.cmds[i].ring_bo;
++         fd_submit_append_bo(fd_submit, ring_bo);
++         ibs[cmd_idx].iova = fd_bo_get_iova(ring_bo) + submit_offset(ring_bo, deferred_primary->offset);
++         ibs[cmd_idx].dwords = deferred_primary->u.cmds[i].size / 4;
++         cmd_idx++;
++      }
++
++      if (submit == last_submit(submit_list))
++         break;
++
++      struct fd_submit_sp *fd_deferred_submit = to_fd_submit_sp(submit);
++      for (unsigned i = 0; i < fd_deferred_submit->nr_bos; i++)
++         fd_submit_append_bo(fd_submit, fd_deferred_submit->bos[i]);
++
++      list_del(&submit->node);
++      fd_submit_del(submit);
++   }
++
++   uint64_t seqno = 0;
++   uint32_t nout = 1;
++   IOReturn ret = IOConnectCallMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_SUBMIT, NULL, 0,
++                                      req, len, &seqno, &nout, NULL, NULL);
++   free(req);
++   if (ret) {
++      ERROR_MSG("submit of %u command buffers failed: 0x%x", nr_cmds, ret);
++      return -EIO;
++   }
++   fd_submit->out_fence->kfence = (uint32_t)seqno;
++   fd_submit->out_fence->fence_fd = -1;
++
++   if (fd_submit->in_fence_fd != -1)
++      close(fd_submit->in_fence_fd);
++
++   return 0;
++}
++
++static struct fd_submit *
++darwin_submit_sp_new(struct fd_pipe *pipe)
++{
++   return fd_submit_sp_new(pipe, flush_submit_list);
++}
++
++static void
++darwin_pipe_destroy(struct fd_pipe *pipe)
++{
++   fd_pipe_sp_ringpool_fini(pipe);
++   free(to_darwin_pipe(pipe));
++}
++
++static const struct fd_pipe_funcs sp_funcs = {
++   .ringbuffer_new_object = fd_ringbuffer_sp_new_object,
++   .submit_new = darwin_submit_sp_new,
++   .flush = fd_pipe_sp_flush,
++   .get_param = darwin_pipe_get_param,
++   .set_param = darwin_pipe_set_param,
++   .wait = darwin_pipe_wait,
++   .destroy = darwin_pipe_destroy,
++};
++
++struct fd_pipe *
++darwin_pipe_new(struct fd_device *dev, enum fd_pipe_id id, uint32_t prio)
++{
++   if (id != FD_PIPE_3D)
++      return NULL;
++
++   struct darwin_pipe *darwin_pipe = calloc(1, sizeof(*darwin_pipe));
++   if (!darwin_pipe)
++      return NULL;
++
++   struct fd_pipe *pipe = &darwin_pipe->base;
++   pipe->dev = dev;
++   pipe->funcs = &sp_funcs;
++
++   uint64_t v = 0;
++   if (!darwin_get_param(dev, SWEETGPU_PARAM_GPU_ID, &v))
++      darwin_pipe->gpu_id = v;
++   if (!darwin_get_param(dev, SWEETGPU_PARAM_CHIP_ID, &v))
++      darwin_pipe->chip_id = v;
++   if (!darwin_get_param(dev, SWEETGPU_PARAM_GMEM_SIZE, &v))
++      darwin_pipe->gmem = v;
++   if (!darwin_get_param(dev, SWEETGPU_PARAM_GMEM_BASE, &v))
++      darwin_pipe->gmem_base = v;
++
++   if (!(darwin_pipe->gpu_id || darwin_pipe->chip_id)) {
++      free(darwin_pipe);
++      return NULL;
++   }
++
++   INFO_MSG("SweetGPU pipe: GPU-id %u, chip-id 0x%016" PRIx64 ", GMEM 0x%08x", darwin_pipe->gpu_id,
++            darwin_pipe->chip_id, darwin_pipe->gmem);
++
++   fd_pipe_sp_ringpool_init(pipe);
++
++   return pipe;
++}
+diff --git a/src/freedreno/drm/darwin/darwin_priv.h b/src/freedreno/drm/darwin/darwin_priv.h
+new file mode 100644
+index 0000000..db894f5
+--- /dev/null
++++ b/src/freedreno/drm/darwin/darwin_priv.h
+@@ -0,0 +1,103 @@
++/*
++ * Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ *
++ * freedreno backend for the SweetGPU kernel driver of ios-jasmine (XNU on a
++ * Snapdragon 660, Adreno 512): instead of Linux's msm DRM ioctls, an IOKit
++ * user client (iokit/Kernel/arm/SweetGPU.cpp in ios-jasmine's j0026):
++ *
++ *   selector 0  get param     in: param                 out: value
++ *   selector 1  buffer new    in: size, flags           out: handle, GPU VA
++ *   selector 2  buffer free   in: handle
++ *   selector 3  submit        struct in: u32 n, u32 0, n x {u64 iova, u32 dwords, u32 0}
++ *                                                       out: seqno
++ *   selector 4  wait          in: seqno, timeout ms     kIOReturnTimeout
++ *   selector 5  completed                               out: last seqno done
++ *   memory type = handle      IOConnectMapMemory64 maps a buffer
++ *
++ * Every buffer stays mapped in the one GPU address space, so submits carry
++ * only the command buffers' GPU addresses (no BO list, no relocations).
++ */
++
++#ifndef DARWIN_PRIV_H_
++#define DARWIN_PRIV_H_
++
++#include "freedreno_drmif.h"
++#include "freedreno_priv.h"
++
++#include <mach/mach.h>
++
++/* IOKit user-client calls: the library is in the iPhoneOS SDK, its headers are not */
++typedef mach_port_t io_object_t;
++typedef io_object_t io_service_t;
++typedef io_object_t io_connect_t;
++typedef int IOReturn;
++typedef struct __CFDictionary *CFMutableDictionaryRef;
++extern const mach_port_t kIOMainPortDefault;
++CFMutableDictionaryRef IOServiceMatching(const char *name);
++io_service_t IOServiceGetMatchingService(mach_port_t main, CFMutableDictionaryRef matching);
++IOReturn IOServiceOpen(io_service_t service, task_port_t owning, uint32_t type, io_connect_t *connect);
++IOReturn IOServiceClose(io_connect_t connect);
++IOReturn IOObjectRelease(io_object_t object);
++IOReturn IOConnectCallScalarMethod(io_connect_t connection, uint32_t selector, const uint64_t *input,
++                                   uint32_t inputCnt, uint64_t *output, uint32_t *outputCnt);
++IOReturn IOConnectCallMethod(io_connect_t connection, uint32_t selector, const uint64_t *input,
++                             uint32_t inputCnt, const void *inputStruct, size_t inputStructCnt,
++                             uint64_t *output, uint32_t *outputCnt, void *outputStruct,
++                             size_t *outputStructCnt);
++IOReturn IOConnectMapMemory64(io_connect_t connect, uint32_t memoryType, task_port_t intoTask,
++                              mach_vm_address_t *atAddress, mach_vm_size_t *ofSize, uint32_t options);
++IOReturn IOConnectUnmapMemory64(io_connect_t connect, uint32_t memoryType, task_port_t fromTask,
++                                mach_vm_address_t atAddress);
++#define DARWIN_kIOMapAnywhere      0x00000001
++#define DARWIN_kIOReturnTimeout    ((IOReturn)0xe00002d6)
++
++enum sweetgpu_selector {
++   SWEETGPU_GET_PARAM = 0,
++   SWEETGPU_BUFFER_NEW = 1,
++   SWEETGPU_BUFFER_FREE = 2,
++   SWEETGPU_SUBMIT = 3,
++   SWEETGPU_WAIT = 4,
++   SWEETGPU_COMPLETED = 5,
++};
++
++/* sweet_gpu_param() numbers */
++enum sweetgpu_param {
++   SWEETGPU_PARAM_READY = 0,
++   SWEETGPU_PARAM_CHIP_ID = 1,
++   SWEETGPU_PARAM_GPU_ID = 2,
++   SWEETGPU_PARAM_GMEM_SIZE = 3,
++   SWEETGPU_PARAM_GMEM_BASE = 4,
++   SWEETGPU_PARAM_VA_START = 5,
++   SWEETGPU_PARAM_VA_SIZE = 6,
++   SWEETGPU_PARAM_NR_RINGS = 7,
++   SWEETGPU_PARAM_TIMESTAMP = 8,
++};
++
++struct darwin_device {
++   struct fd_device base;
++   io_connect_t conn;
++};
++FD_DEFINE_CAST(fd_device, darwin_device);
++
++struct darwin_pipe {
++   struct fd_pipe base;
++   uint32_t gpu_id;
++   uint64_t chip_id;
++   uint64_t gmem_base;
++   uint32_t gmem;
++};
++FD_DEFINE_CAST(fd_pipe, darwin_pipe);
++
++struct darwin_bo {
++   struct fd_bo base;
++   uint64_t iova;
++};
++FD_DEFINE_CAST(fd_bo, darwin_bo);
++
++struct fd_device *darwin_device_new(int fd);
++struct fd_pipe *darwin_pipe_new(struct fd_device *dev, enum fd_pipe_id id, uint32_t prio);
++struct fd_bo *darwin_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags);
++int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value);
++
++#endif /* DARWIN_PRIV_H_ */
+diff --git a/src/freedreno/drm/freedreno_device.c b/src/freedreno/drm/freedreno_device.c
+index 6c64e64..2309f5f 100644
+--- a/src/freedreno/drm/freedreno_device.c
++++ b/src/freedreno/drm/freedreno_device.c
+@@ -20,6 +20,10 @@
+ #include "freedreno_priv.h"
+ 
+ struct fd_device *msm_device_new(int fd, drmVersionPtr version);
++#ifdef __APPLE__
++/* darwin/: the SweetGPU IOKit driver of ios-jasmine; the fd is not used */
++struct fd_device *darwin_device_new(int fd);
++#endif
+ #ifdef HAVE_FREEDRENO_VIRTIO
+ struct fd_device *virtio_device_new(int fd, drmVersionPtr version);
+ #endif
+@@ -35,6 +39,14 @@ fd_device_new(int fd)
+ 
+    os_get_page_size(&os_page_size);
+ 
++#ifdef __APPLE__
++   (void)version;
++   dev = darwin_device_new(fd);
++   if (!dev)
++      return NULL;
++   goto init;
++#endif
++
+    /* figure out if we are kgsl or msm drm driver: */
+    version = drmGetVersion(fd);
+    if (!version) {
+@@ -84,6 +96,9 @@ out:
+    if (!dev)
+       return NULL;
+ 
++#ifdef __APPLE__
++init:
++#endif
+    fd_drm_perfetto_init();
+ 
+    fd_rd_dump_env_init();
+diff --git a/src/freedreno/drm/meson.build b/src/freedreno/drm/meson.build
+index d2baf58..445e18a 100644
+--- a/src/freedreno/drm/meson.build
++++ b/src/freedreno/drm/meson.build
+@@ -47,6 +47,17 @@ libfreedreno_drm_msm_files = files(
+ )
+ libfreedreno_drm_files += libfreedreno_drm_msm_files
+ 
++# ios-jasmine: the SweetGPU IOKit driver instead of a DRM device
++if host_machine.system() == 'darwin'
++  libfreedreno_drm_files += files(
++    'darwin/darwin_bo.c',
++    'darwin/darwin_device.c',
++    'darwin/darwin_pipe.c',
++    'darwin/darwin_priv.h',
++  )
++  libfreedreno_drm_deps += dependency('appleframeworks', modules : ['IOKit', 'CoreFoundation'])
++endif
++
+ libfreedreno_drm_virtio_files = files(
+   'virtio/virtio_bo.c',
+   'virtio/virtio_device.c',
+diff --git a/src/gallium/drivers/freedreno/meson.build b/src/gallium/drivers/freedreno/meson.build
+index b04379b..1a27aab 100644
+--- a/src/gallium/drivers/freedreno/meson.build
++++ b/src/gallium/drivers/freedreno/meson.build
+@@ -322,3 +322,32 @@ gmemtool = executable(
+   build_by_default : with_tools.contains('freedreno'),
+   install : false,
+ )
++
++# ios-jasmine: the first test of freedreno on the SweetGPU kernel driver
++if host_machine.system() == 'darwin'
++  sweetgpu_fdtest = executable(
++    'sweetgpu_fdtest',
++    [
++      'sweetgpu_fdtest.c',
++      freedreno_tracepoints[1],
++      freedreno_xml_header_files,
++    ],
++    include_directories : [freedreno_includes, inc_util],
++    dependencies : [
++      idep_nir,
++      idep_mesautil,
++      idep_u_tracepoints,
++      idep_xmlconfig,
++    ],
++    link_with : [
++      libfreedreno,
++      libfreedreno_drm,
++      libfreedreno_ir2,
++      libfreedreno_ir3,
++      libfreedreno_layout,
++      libgallium,
++      libfreedreno_perfcntrs,
++    ],
++    install : false,
++  )
++endif
+diff --git a/src/gallium/drivers/freedreno/sweetgpu_fdtest.c b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
+new file mode 100644
+index 0000000..50a170f
+--- /dev/null
++++ b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
+@@ -0,0 +1,124 @@
++/*
++ * Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ *
++ * sweetgpu_fdtest: the first test of Mesa freedreno on ios-jasmine's SweetGPU
++ * kernel driver (G2). Gallium only, no GL: creates the freedreno screen on
++ * the darwin backend, clears a 64x64 RGBA8 render target to a color on the
++ * GPU (a5xx: GMEM tiles, then a resolve to memory), waits for the fence and
++ * reads the pixels back. Prints PASS or FAIL and exits 0 or 1.
++ */
++
++#include <fcntl.h>
++#include <stdio.h>
++#include <unistd.h>
++
++#include "pipe/p_context.h"
++#include "pipe/p_defines.h"
++#include "pipe/p_screen.h"
++#include "pipe/p_state.h"
++#include "frontend/drm_driver.h"
++#include "util/os_time.h"
++#include "util/u_inlines.h"
++#include "util/xmlconfig.h"
++
++#include "freedreno_screen.h"
++
++static const driOptionDescription fd_driconf[] = {
++#include "driinfo_freedreno.h"
++};
++
++int
++main(void)
++{
++   driOptionCache options, options_info;
++   driParseOptionInfo(&options_info, fd_driconf, ARRAY_SIZE(fd_driconf));
++   driParseOptionInfo(&options, fd_driconf, ARRAY_SIZE(fd_driconf));
++   struct pipe_screen_config config = {
++      .options = &options,
++      .options_info = &options_info,
++   };
++
++   /* the darwin backend ignores the fd; fd_screen_create dup()s it */
++   int fd = open("/dev/null", O_RDWR);
++   struct pipe_screen *screen = fd_screen_create(fd, &config, NULL);
++   if (!screen) {
++      printf("FAIL: no freedreno screen (is SweetGPU up? sweetgpu=4)\n");
++      return 1;
++   }
++   printf("screen: %s (%s)\n", screen->get_name(screen), screen->get_vendor(screen));
++
++   struct pipe_context *pipe = screen->context_create(screen, NULL, 0);
++   if (!pipe) {
++      printf("FAIL: no context\n");
++      return 1;
++   }
++
++   const unsigned w = 64, h = 64;
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++      .width0 = w,
++      .height0 = h,
++      .depth0 = 1,
++      .array_size = 1,
++      .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
++      .usage = PIPE_USAGE_DEFAULT,
++   };
++   struct pipe_resource *rt = screen->resource_create(screen, &templ);
++   if (!rt) {
++      printf("FAIL: no render target\n");
++      return 1;
++   }
++
++   struct pipe_framebuffer_state fb = {
++      .width = w,
++      .height = h,
++      .layers = 1,
++      .nr_cbufs = 1,
++   };
++   fb.cbufs[0].format = templ.format;
++   fb.cbufs[0].texture = rt;
++   pipe->set_framebuffer_state(pipe, &fb);
++
++   /* RGBA (0.25, 0.5, 0.75, 1.0) -> bytes 0x40 0x80 0xbf 0xff */
++   union pipe_color_union color = { .f = { 0.25f, 0.5f, 0.75f, 1.0f } };
++   int64_t t0 = os_time_get_nano();
++   pipe->clear(pipe, PIPE_CLEAR_COLOR0, 0xffffffff, 0, NULL, &color, 0.0, 0);
++
++   struct pipe_fence_handle *fence = NULL;
++   pipe->flush(pipe, &fence, 0);
++   bool done = screen->fence_finish(screen, NULL, fence, 5ull * 1000 * 1000 * 1000);
++   screen->fence_reference(screen, &fence, NULL);
++   int64_t t1 = os_time_get_nano();
++   printf("clear + flush + fence: %s after %.3f ms\n", done ? "done" : "TIMEOUT", (t1 - t0) / 1e6);
++
++   struct pipe_box box = { .width = w, .height = h, .depth = 1 };
++   struct pipe_transfer *xfer = NULL;
++   const uint8_t *px = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ, &box, &xfer);
++   if (!px) {
++      printf("FAIL: render target not mappable\n");
++      return 1;
++   }
++   unsigned bad = 0;
++   for (unsigned y = 0; y < h; y++) {
++      const uint8_t *row = px + y * xfer->stride;
++      for (unsigned x = 0; x < w; x++) {
++         const uint8_t *p = row + 4 * x;
++         if (p[0] != 0x40 || p[1] != 0x80 || p[2] != 0xbf || p[3] != 0xff)
++            bad++;
++      }
++   }
++   printf("pixel (0,0) %02x %02x %02x %02x, (63,63) %02x %02x %02x %02x, stride %u; %u of %u wrong\n",
++          px[0], px[1], px[2], px[3], px[63 * xfer->stride + 252], px[63 * xfer->stride + 253],
++          px[63 * xfer->stride + 254], px[63 * xfer->stride + 255], xfer->stride, bad, w * h);
++   pipe->texture_unmap(pipe, xfer);
++
++   pipe_resource_reference(&rt, NULL);
++   pipe->destroy(pipe);
++   screen->destroy(screen);
++   close(fd);
++
++   printf("%s\n", done && bad == 0 ? "PASS: the GPU cleared the render target" : "FAIL");
++   return done && bad == 0 ? 0 : 1;
++}
+-- 
+2.47.3
+
