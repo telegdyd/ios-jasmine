@@ -1,0 +1,289 @@
+From 653625822fe883376a4c3d3ee2321e8f3a62f16c Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 02:52:27 +0200
+Subject: [PATCH] jasmine-j0010: battery readout from the PM660 fuel gauge
+
+SweetBattery published a fixed 100 % / 4200 mV (and topaz's 5020 mAh) on
+jasmine. sweet_pmic.c now reads the PM660 FG (pmi8998_fg.c registers,
+ADT /sweet-pmic fg = <0 0x4000>, read only): voltage, current, temperature
+and the gauge's monotonic SOC, plus USB online / charging / full from the
+charger. SweetBattery on jasmine publishes them every 10 s with the design
+capacity 3000 mAh and the measured temperature; the percent comes from the
+voltage curve at an IR-corrected voltage, because this gauge's own SOC is
+badly skewed (1 % at 3.57 V); it is logged alongside once a minute.
+---
+ bsd/dev/sweet_pmic.c              | 88 +++++++++++++++++++++++++++++++
+ iokit/Kernel/arm/SweetBattery.cpp | 78 ++++++++++++++++++++++-----
+ 2 files changed, 152 insertions(+), 14 deletions(-)
+
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index c512365..104819d 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -9,6 +9,7 @@
+  *              sweet_hid_key()'s: 0 power, 1 volume up, 2 volume down
+  *   rtc      = <sid RDATA0> (u32), 4 bytes of seconds, little endian
+  *   charger  = <sid base> (u32), the PM660 charger (qcom,pm660-charger)
++ *   fg       = <sid base> (u32), the PM660 fuel gauge (read only)
+  *
+  * Arbiter v3 uses the v2 layout (Linux spmi-pmic-arb.c, see
+  * SweetPlatformExpert.cpp): the APID map at core + 0x800 + 4 * n holds the
+@@ -478,6 +479,92 @@ pmic_charger_init(DTEntry node)
+ 	}
+ }
+ 
++/*
++ * PM660 fuel gauge (pmi8998_fg.c, FG base 0x4000 at SID 0), read only, for
++ * SweetBattery: MONOTONIC_SOC 0x009 (2 bytes), BATT_TEMP 0x150 (0.25 K),
++ * BATT_VOLTAGE 0x1a0 (122.07 uV), BATT_CURRENT 0x1a2 (s16, 488.28 uA,
++ * negative = charging). ADT /sweet-pmic fg = <sid base>.
++ */
++struct sweet_fg {
++	int mv, ma;             /* ma > 0: charging */
++	int temp_dc;            /* 0.1 C */
++	int fg_soc;             /* the gauge's own (monotonic) SOC, percent */
++	int online, charging, full;
++};
++int sweet_fg_read(struct sweet_fg *out);
++
++static uint32_t fg_base;
++static volatile uint32_t *fg_soc_ch, *fg_info_ch;
++
++static int
++fg_rd16(volatile uint32_t *ch, uint32_t addr, uint32_t *v)
++{
++	uint32_t a = 0, b = 0;
++	int r = -1;
++	/* two equal reads: the 16-bit value is not latched */
++	for (int i = 0; i < 4; i++) {
++		lck_spin_lock(&sweet_pmic_lock);
++		r = pmic_read(ch, addr, 2, &a);
++		if (r == 0) {
++			r = pmic_read(ch, addr, 2, &b);
++		}
++		lck_spin_unlock(&sweet_pmic_lock);
++		if (r == 0 && a == b) {
++			*v = a;
++			return 0;
++		}
++	}
++	return r ? r : -2;
++}
++
++int
++sweet_fg_read(struct sweet_fg *out)
++{
++	uint32_t soc = 0, t = 0, v = 0, c = 0, pp = 0, st1 = 0;
++	if (fg_soc_ch == NULL || fg_info_ch == NULL ||
++	    fg_rd16(fg_soc_ch, fg_base + 0x009, &soc) != 0 ||
++	    fg_rd16(fg_info_ch, fg_base + 0x150, &t) != 0 ||
++	    fg_rd16(fg_info_ch, fg_base + 0x1a0, &v) != 0 ||
++	    fg_rd16(fg_info_ch, fg_base + 0x1a2, &c) != 0) {
++		return -1;
++	}
++	uint32_t s0 = soc & 0xff, s1 = (soc >> 8) & 0xff, sm = s0 < s1 ? s0 : s1;
++	out->fg_soc = sm == 0xff ? 100 : sm == 0 ? 0 : (int)(((sm - 1) * 98 + 126) / 253 + 1);
++	out->temp_dc = (int)(((t & 0x7ff) * 10 + 2) / 4) - 2730;
++	out->mv = (int)(((uint64_t)v * 122070) / 1000000);
++	out->ma = -(int)(((int64_t)(int16_t)c * 488281) / 1000000);
++	out->online = out->charging = out->full = 0;
++	if (chg_rd[0] != NULL && chg_rd8(CHG_POWER_PATH_STATUS, &pp) == 0 && chg_rd8(CHG_STATUS_1, &st1) == 0) {
++		out->online = (pp & 0x11) == 0x11;
++		out->charging = out->online && (st1 & 7) <= 4;
++		out->full = out->online && ((st1 & 7) == 5 || (st1 & 7) == 6);
++	}
++	return 0;
++}
++
++static void
++pmic_fg_init(DTEntry node)
++{
++	uint32_t const *fg = NULL;
++	unsigned int size = 0;
++	if (SecureDTGetProperty(node, "fg", (void const **)&fg, &size) != kSuccess ||
++	    size < 2 * sizeof(uint32_t)) {
++		return;
++	}
++	fg_base = fg[1];
++	fg_soc_ch = pmic_channel(fg[0], fg[1], NULL);          /* BATT_SOC 0x40 */
++	fg_info_ch = pmic_channel(fg[0], fg[1] + 0x100, NULL); /* BATT_INFO 0x41 */
++	struct sweet_fg f;
++	if (sweet_fg_read(&f) == 0) {
++		printf("SWEET FG: %d mV %d mA %d.%d C, gauge SOC %d%%, usb %d charging %d full %d\n",
++		    f.mv, f.ma, f.temp_dc / 10, (f.temp_dc < 0 ? -f.temp_dc : f.temp_dc) % 10, f.fg_soc,
++		    f.online, f.charging, f.full);
++	} else {
++		printf("SWEET FG: not readable\n");
++		fg_soc_ch = fg_info_ch = NULL;
++	}
++}
++
+ int
+ sweet_pmic_init(void)
+ {
+@@ -529,6 +616,7 @@ sweet_pmic_init(void)
+ 	}
+ 
+ 	pmic_charger_init(node);
++	pmic_fg_init(node);
+ 
+ 	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
+ 	if (!enabled ||
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 32bea7e..4a5bc41 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -21,6 +21,14 @@ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+ extern "C" int sweet_i2c1_init(void);
+ extern "C" int sweet_cpufreq_max(void);    /* bsd/dev/sweet_cpufreq.c */
+ extern "C" int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
++/* bsd/dev/sweet_pmic.c: jasmine PM660 fuel gauge + charger state (same layout) */
++struct sweet_fg {
++	int mv, ma;             /* ma > 0: charging */
++	int temp_dc;            /* 0.1 C */
++	int fg_soc;             /* the gauge's own (monotonic) SOC, percent */
++	int online, charging, full;
++};
++extern "C" int sweet_fg_read(struct sweet_fg *out);
+ 
+ class SweetBattery : public IOPMPowerSource {
+ 	OSDeclareDefaultStructors(SweetBattery);
+@@ -32,8 +40,11 @@ public:
+ private:
+ 	IOWorkLoop *fLoop;
+ 	IOTimerEventSource *fTimer;
+-	bool fTimerAdded, fRunning, fReal;
++	bool fTimerAdded, fRunning, fReal, fJasmine;
+ 	int fLastMode;
++	unsigned fDesign;       /* mAh: topaz 5020, jasmine 3000 (DT charge-full-design) */
++	int fTempC100;          /* centidegrees C; 2500 when not measured */
++	bool pollJasmine(void);
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+ 	void publish(unsigned percent, unsigned mv, int ma, bool external,
+@@ -58,7 +69,9 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	}
+ 	fLoop = NULL;
+ 	fTimer = NULL;
+-	fTimerAdded = fRunning = fReal = false;
++	fTimerAdded = fRunning = fReal = fJasmine = false;
++	fDesign = 5020;
++	fTempC100 = 2500;
+ 	if (dictionary) {
+ 		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
+ 		if (!it) {
+@@ -108,11 +121,11 @@ void
+ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+     bool capable, bool charging, bool full, bool measured, bool currentValid)
+ {
+-	/* Use consistent mAh units (DT nominal=5020). powerd computes C*100/M. */
+-	const unsigned capacity = (5020u * percent + 50u) / 100u;
++	/* Use consistent mAh units (DT nominal). powerd computes C*100/M. */
++	const unsigned capacity = (fDesign * percent + 50u) / 100u;
+ 	setBatteryInstalled(true);
+ 	setCurrentCapacity(capacity);
+-	setMaxCapacity(5020);
++	setMaxCapacity(fDesign);
+ 	setExternalConnected(external);
+ 	setExternalChargeCapable(capable);
+ 	setIsCharging(charging);
+@@ -126,15 +139,15 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	putBool("FullyCharged", full);
+ 	putBool("AppleRawExternalConnected", external);
+ 	putNumber("AppleRawCurrentCapacity", capacity);
+-	putNumber("AppleRawMaxCapacity", 5020);
+-	putNumber("DesignCapacity", 5020);
++	putNumber("AppleRawMaxCapacity", fDesign);
++	putNumber("DesignCapacity", fDesign);
+ 	putNumber("InstantAmperage", (UInt32)ma);
+-	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
+-	putNumber("Temperature", 2500);
++	/* iOS battery convention: centidegrees C (jasmine: measured, else fixed 25 C) */
++	putNumber("Temperature", (UInt32)fTempC100);
+ 	putBool("SweetBatteryHardwareSampleValid", measured);
+ 	putBool("SweetBatteryCurrentValid", currentValid);
+ 	putBool("SweetBatterySOCEstimated", measured);
+-	putBool("SweetBatteryTemperatureEstimated", true);
++	putBool("SweetBatteryTemperatureEstimated", !fJasmine);
+ 	putBool("SweetBatteryFallback", !measured);
+ 	putNumber("SweetBatteryPercent", percent);
+ 
+@@ -144,7 +157,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 		const char *keys[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
+ 		    kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
+ 		    kIOBatteryFlagsKey};
+-		UInt32 values[] = {capacity, 5020, mv, (UInt32)ma, 0,
++		UInt32 values[] = {capacity, fDesign, mv, (UInt32)ma, 0,
+ 		    (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
+ 		    (charging ? kIOBatteryCharge : 0))};
+ 		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+@@ -161,7 +174,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	int mode = measured ? 1 : 0;
+ 	if (mode != fLastMode) {
+ 		IOLog("SWEET BATTERY: %s, %u%% %umV external=%d charging=%d\n",
+-		    measured ? "PM6150 / estimated SOC" : "static fallback",
++		    !measured ? "static fallback" : fJasmine ? "PM660 FG / estimated SOC" : "PM6150 / estimated SOC",
+ 		    percent, mv, external, charging);
+ 		fLastMode = mode;
+ 	}
+@@ -259,10 +272,40 @@ SweetBattery::pollTopaz(void)
+ 	return true;
+ }
+ 
++/*
++ * jasmine: the PM660 fuel gauge's voltage, current and temperature and the
++ * charger state. Percent is the voltage curve at an IR-corrected voltage
++ * (~150 mOhm): the gauge's own SOC on this phone is badly skewed (1 % at
++ * 3.57 V, see the Nura FG notes), so it is only logged. Never below 1 %.
++ */
++bool
++SweetBattery::pollJasmine(void)
++{
++	struct sweet_fg f;
++	if (sweet_fg_read(&f) != 0 || f.mv < 2800 || f.mv > 4600) {
++		return false;
++	}
++	int ocv = f.mv - f.ma * 15 / 100;
++	unsigned percent = estimatePercent(ocv < 0 ? 0 : (unsigned)ocv);
++	fTempC100 = f.temp_dc * 10;
++	publish(percent, (unsigned)f.mv, f.ma, f.online != 0, f.online != 0, f.charging != 0,
++	    f.full != 0, true, true);
++	static unsigned logs;
++	if (logs++ % 6 == 0) {
++		IOLog("SWEET BATTERY: jasmine %d mV %d mA (ocv ~%d mV) %d.%d C -> %u%% (gauge %d%%) usb %d charging %d full %d\n",
++		    f.mv, f.ma, ocv, f.temp_dc / 10, (f.temp_dc < 0 ? -f.temp_dc : f.temp_dc) % 10,
++		    percent, f.fg_soc, f.online, f.charging, f.full);
++	}
++	return true;
++}
++
+ void
+ SweetBattery::poll(void)
+ {
+-	if (fReal && pollTopaz()) {
++	if (fReal && fJasmine && pollJasmine()) {
++		return;
++	}
++	if (fReal && !fJasmine && pollTopaz()) {
+ 		return;
+ 	}
+ 	if (fReal) {
+@@ -332,7 +375,14 @@ SweetBattery::start(IOService *provider)
+ 	}
+ 	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+-	fReal = topaz && real == 1 && sweet_i2c1_init() == 0;
++	fJasmine = sweet_board_is("xiaomi,jasmine") != 0;
++	if (fJasmine) {
++		struct sweet_fg f;
++		fDesign = 3000;
++		fReal = real == 1 && sweet_fg_read(&f) == 0;
++	} else {
++		fReal = topaz && real == 1 && sweet_i2c1_init() == 0;
++	}
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+ 	if (fReal) {
+-- 
+2.47.3
+

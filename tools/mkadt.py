@@ -87,6 +87,8 @@ if BOARD == 'jasmine':
     PMIC_RTC = (0, 0x6048)
     # pm660 charger@1000 (qcom,pm660-charger, qcom_smbx.c): sweet_pmic.c charger setup
     PMIC_CHARGER = (0, 0x1000)
+    # pm660 battery@4000 (qcom,pmi8998-fg): sweet_pmic.c fuel gauge reads
+    PMIC_FG = (0, 0x4000)
     # bsd/dev/sweet_nvt.c: touchscreen@1 (novatek,nt36672a-ts) on i2c@c175000
     # (BLSP1 QUP1, qcom,i2c-qup-v2.2.1, 400 kHz) and gcc@100000 (gcc-sdm660.c:
     # gcc_blsp1_ahb_clk vote 0x52004 bit 17, blsp1_qup1_i2c_apps RCG 0x19020,
@@ -289,7 +291,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     # bsd/dev/sweet_pmic.c: PMIC keys and RTC, read through the same arbiter
     pmic = [node('sweet-pmic', [ph(), ('spmi-reg', u64(*SPMI)),
                                 ('keys', u32(*(v for k in PMIC_KEYS for v in k))),
-                                ('rtc', u32(*PMIC_RTC)), ('charger', u32(*PMIC_CHARGER))])
+                                ('rtc', u32(*PMIC_RTC)), ('charger', u32(*PMIC_CHARGER)), ('fg', u32(*PMIC_FG))])
             ] if PMIC_KEYS and not qemu else []
 
     # bsd/dev/sweet_nvt.c: NT36672A touch on the BLSP1 QUP1 I2C bus
