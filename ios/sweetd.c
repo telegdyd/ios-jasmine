@@ -5,14 +5,16 @@
  * /System/Library/xpc/launchd.plist), it listens on TCP port 5143 of the USB
  * Ethernet link (j0021) and runs one command per connection:
  *
- *   request:  "RUN <timeout-seconds> <argc>\n" then argc lines, one argument
- *             each (argv[0] is an absolute path)
+ *   request:  "RUN <token> <timeout-seconds> <argc>\n" then argc lines, one
+ *             argument each (argv[0] is an absolute path)
  *   reply:    the command's stdout and stderr, merged, as they come, then
  *             "\n" SWEETD_END " <status>\n" where status is the exit code,
  *             -SIGNAL when killed, or -1000 when it could not be started
  *
- * The client is tools/sweet-sh.py. No authentication: the link is a USB
- * cable to one PC. Clients are served one at a time.
+ * The client is tools/sweet-sh.py. Only peers on the USB Ethernet link
+ * (192.168.7.0/24, 169.254.0.0/16) are served, and only with the token in
+ * TOKEN_PATH (generated on the PC, research/sweetd.token, mode 0600 on the
+ * phone); without that file nothing runs. Clients are served one at a time.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -33,6 +35,7 @@
 #define MAX_ARGS        64
 #define MAX_LINE        4096
 #define SWEETD_END      "__SWEETD_END__"
+#define TOKEN_PATH      "/private/var/root/sweetd.token"
 
 extern char **environ;
 
@@ -68,16 +71,52 @@ send_all(int fd, const char *buf, size_t len)
 	}
 }
 
+/* The token from TOKEN_PATH (first line, at most 64 characters), or "" when there is none. */
+static void
+load_token(char *out, size_t max)
+{
+	out[0] = 0;
+	FILE *f = fopen(TOKEN_PATH, "r");
+	if (f == NULL) {
+		return;
+	}
+	if (fgets(out, (int)max, f) == NULL) {
+		out[0] = 0;
+	}
+	fclose(f);
+	out[strcspn(out, "\r\n")] = 0;
+}
+
+/* Constant-time comparison, so the token cannot be found byte by byte. */
+static bool
+token_ok(const char *got, const char *want)
+{
+	size_t n = strlen(want);
+	if (n < 16 || strlen(got) != n) {
+		return false;
+	}
+	unsigned char d = 0;
+	for (size_t i = 0; i < n; i++) {
+		d |= (unsigned char)(got[i] ^ want[i]);
+	}
+	return d == 0;
+}
+
 static void
 serve(int cs)
 {
-	char line[MAX_LINE];
+	char line[MAX_LINE], token[80], want[80];
 	char *argv[MAX_ARGS + 1];
 	int timeout = 0, argc = 0;
 
-	if (read_line(cs, line, sizeof(line)) < 0 || sscanf(line, "RUN %d %d", &timeout, &argc) != 2 ||
+	load_token(want, sizeof(want));
+	if (read_line(cs, line, sizeof(line)) < 0 || sscanf(line, "RUN %79s %d %d", token, &timeout, &argc) != 3 ||
 	    argc < 1 || argc > MAX_ARGS) {
 		dprintf(cs, "bad request\n%s -1000\n", SWEETD_END);
+		return;
+	}
+	if (!token_ok(token, want)) {
+		dprintf(cs, "sweetd: wrong or missing token\n%s -1000\n", SWEETD_END);
 		return;
 	}
 	for (int i = 0; i < argc; i++) {
@@ -155,11 +194,17 @@ main(void)
 	}
 	fprintf(stderr, "sweetd: listening on port %d\n", PORT);
 	for (;;) {
-		int cs = accept(ls, NULL, NULL);
+		struct sockaddr_in peer;
+		socklen_t plen = sizeof(peer);
+		int cs = accept(ls, (struct sockaddr *)&peer, &plen);
 		if (cs < 0) {
 			continue;
 		}
-		serve(cs);
+		/* the USB Ethernet link only */
+		uint32_t pa = ntohl(peer.sin_addr.s_addr);
+		if (peer.sin_family == AF_INET && ((pa >> 8) == 0xc0a807 || (pa >> 16) == 0xa9fe)) {
+			serve(cs);
+		}
 		close(cs);
 	}
 }
