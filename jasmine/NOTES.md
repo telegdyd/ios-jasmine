@@ -1,6 +1,6 @@
 # jasmine (Mi A2) working notes
 
-Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
+Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
 `NOTES.md` at the repo root is sweet's/topaz's log, kept for reference.
 
 ## State (2026-10-20 ~22:45)
