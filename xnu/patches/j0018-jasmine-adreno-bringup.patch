@@ -1,6 +1,6 @@
-From e944c1c8edcd1c7a14fe3a377050ce25607c3217 Mon Sep 17 00:00:00 2001
+From ad4828056fee2009bd7639be06bf515f754e4cbd Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 07:08:22 +0200
+Date: Wed, 21 Oct 2026 07:26:34 +0200
 Subject: [PATCH] jasmine-j0018: Adreno 512 bring-up, power and command
  processor (sweetgpu=)
 
@@ -13,9 +13,9 @@ above 4 GiB). Mainline Linux, which has no driver for the head switch,
 locked a CPU up on the first GPU register access.
 ---
  bsd/conf/files                           |   1 +
- bsd/dev/sweet_gpu.c                      | 633 +++++++++++++++++++++++
+ bsd/dev/sweet_gpu.c                      | 647 +++++++++++++++++++++++
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   2 +
- 3 files changed, 636 insertions(+)
+ 3 files changed, 650 insertions(+)
  create mode 100755 bsd/dev/sweet_gpu.c
 
 diff --git a/bsd/conf/files b/bsd/conf/files
@@ -32,10 +32,10 @@ index acc75a1..0f71085 100644
  bsd/dev/sweet_i2c1.c			standard
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
 new file mode 100755
-index 0000000..4abe9ba
+index 0000000..d784984
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu.c
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,647 @@
 +/*
 + * Adreno 512 bring-up (jasmine, SDM660): step G1 of jasmine/GPU.md, "the GPU
 + * executes our commands". Off unless sweetgpu= is set; a kernel thread does
@@ -57,7 +57,8 @@ index 0000000..4abe9ba
 + * if its PWR_ON bit is set is any GPU register touched.
 + *
 + * Memory: the CP fetches through the GPU SMMU (kgsl-smmu@5040000), which
-+ * comes out of reset with every context bank off; its state is logged first.
++ * comes out of the GX power-up faulting every stream; level 2 lets unmatched
++ * streams bypass it (physical addresses).
 + * The ring and the microcode copies sit in GPU memory below 4 GiB (/sweet-gpu
 + * mem, the free end of the splash reservation), mapped write-combined.
 + * The CP init follows a5xx_gpu.c a5xx_hw_init without clock gating, perf
@@ -434,11 +435,12 @@ index 0000000..4abe9ba
 +	for (int i = 0; i < 3; i++) {
 +		printf("SWEET GPU: SMMU SMR%d %08x S2CR%d %08x\n", i, s[(0x800 + 4 * i) / 4], i, s[(0xc00 + 4 * i) / 4]);
 +	}
-+	if (pgsz != 0x1000 || cbbase + 5 * pgsz > 0x10000) {
++	if (pgsz != 0x1000 || cbbase + 2 * pgsz > 0x10000) {
 +		printf("SWEET GPU: SMMU context banks at %x, outside the mapping\n", cbbase);
 +		return;
 +	}
-+	for (int i = 0; i < 5; i++) {
++	/* CB0 and CB1 only: reading CB2 hung the core (a secure bank, kgsl's gfx3d_secure) */
++	for (int i = 0; i < 2; i++) {
 +		volatile uint32_t *cb = s + (cbbase + pgsz * i) / 4;
 +		printf("SWEET GPU: SMMU CB%d CBAR %08x CBA2R %08x SCTLR %08x TTBR0 %08x%08x FSR %08x\n", i,
 +		    s[(pgsz + 4 * i) / 4], s[(pgsz + 0x800 + 4 * i) / 4], cb[0], cb[0x24 / 4], cb[0x20 / 4], cb[0x58 / 4]);
@@ -580,6 +582,18 @@ index 0000000..4abe9ba
 +	gpu_wr(CP_RB_CNTL, 12 | (2u << 8) | (1u << 27));
 +	gpu_wr(RBBM_INT_0_MASK, A5XX_INT_MASK);
 +	sg.wptr = 0;
++
++	/*
++	 * The SMMU comes out of the GX power-up faulting everything: no valid
++	 * SMR, every S2CR of type fault, sCR0.USFCFG set (unmatched streams
++	 * fault). For this test unmatched streams bypass it instead, so the CP
++	 * fetches physical addresses. Page tables come with a real GPU VM.
++	 */
++	volatile uint32_t *s = sg.smmu;
++	s[0x048 / 4] = s[0x048 / 4];                    /* sGFSR: write 1 to clear */
++	s[0x000 / 4] = s[0x000 / 4] & ~(1u << 10);      /* sCR0.USFCFG = 0: bypass */
++	__builtin_arm_dsb(0xf);
++	printf("SWEET GPU: SMMU sCR0 now %08x (unmatched streams bypass)\n", s[0x000 / 4]);
 +
 +	gpu_pause(4, "starting the CP (PFP/ME out of halt) next");
 +	gpu_wr(CP_PFP_ME_CNTL, 0);
