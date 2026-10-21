@@ -171,6 +171,12 @@ in the one GPU address space), so instead of emulating the DRM ioctls Mesa gets 
     brings the old path back). Costly for big buffers; write-combined user mappings of pages the kernel keeps
     cacheable, or buffers from memory XNU does not manage, are the later fix.
   - fdtest must call `glsl_type_singleton_init_or_ref()` (a GL frontend's job; ir3 builds GLSL types).
+- **2026-10-21 20:49: first triangle.** fdtest's second stage clears the target again and draws one triangle
+  with red, green and blue corners (gallium's TGSI pass-through shaders, so tgsi_to_nir + ir3 compile them):
+  0 of 4032 checked pixels off by more than 3 from the interpolated color or the clear color (the 64 pixels on
+  the hypotenuse are skipped), e.g. (16,16) = 7c 42 42 ff as computed. `PASS: the GPU drew the triangle`
+  (`logs/netlog-j31-tri.txt`, same j0031 kernel). ir3 code, vertex fetch, viewport, rasterizer and varyings
+  work on the first try. Next: a GL ES context (Mesa's GLES frontend on Darwin) and a GLSL test.
 - **Panics are visible now (j0030):** this board has no iBoot panic region, so `SavePanicInfo()` spins forever
   and a panic looked like a hang (ios-sapphire found the same). The panic text now goes out on the live log
   connection; `sweetpanic_test=SECS` checks it (passed 2026-10-21 20:32, `logs/netlog-j30-ptest.txt`).
