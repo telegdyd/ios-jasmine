@@ -8,8 +8,8 @@ cache with tools/sweet-fs.py (j0024), keeps the first copy it ever saw in
 research/launchd.plist.orig, edits it and puts it back. The change applies
 at the next boot.
 
-    sweet-launchd.py add-sweetd        /usr/local/bin/sweetd as root, kept alive; also
-                                       makes research/sweetd.token (once) and puts it
+    sweet-launchd.py add-sweetd        installs the sweetd plist and launchd cache entry;
+                                       also makes research/sweetd.token (once) and puts it
                                        on the phone (/private/var/root, mode 0600)
     sweet-launchd.py remove LABEL
     sweet-launchd.py show LABEL
@@ -61,6 +61,14 @@ def store(tmp, cache):
     fs('put', local, CACHE, '--mode', '644', '--owner', '0:0')
 
 
+def store_job_file(tmp, path, job):
+    """Install the plist itself; launchd imports cached jobs by their file path."""
+    local = os.path.join(tmp, 'sweetd.plist')
+    with open(local, 'wb') as f:
+        f.write(plistlib.dumps(job, fmt=plistlib.FMT_BINARY))
+    fs('put', local, path, '--mode', '644', '--owner', '0:0')
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -74,6 +82,7 @@ def main():
                 print(f'new token in {os.path.normpath(TOKEN)}')
             fs('put', TOKEN, TOKEN_ON_PHONE, '--mode', '600', '--owner', '0:0')
             jobs[SWEETD_KEY] = SWEETD
+            store_job_file(tmp, SWEETD_KEY, SWEETD)
             store(tmp, cache)
             print(f'{SWEETD["Label"]} added ({len(jobs)} jobs); reboot to start it')
         elif cmd in ('remove', 'show') and len(sys.argv) == 3:
@@ -87,6 +96,8 @@ def main():
             for k in keys:
                 del jobs[k]
             store(tmp, cache)
+            if SWEETD_KEY in keys:
+                fs('rm', SWEETD_KEY)
             print(f'{sys.argv[2]} removed; reboot to apply')
         else:
             sys.exit(__doc__)

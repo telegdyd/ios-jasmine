@@ -1,27 +1,33 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-### >>> UPDATE 2026-10-21: sweetd deployment is staged; reboot pending <<<
+### >>> UPDATE 2026-10-21: sweetd plist-path bug found; install pending approval <<<
 
 The new command daemon/client groundwork is in place. `ios/sweetd.c`,
-`tools/sweet-sh.py`, and `tools/sweet-launchd.py` are tracked. The local
-`research/sweetd.token` exists (keep it secret); the phone has
-`/usr/local/bin/sweetd`, and a read of its active
-`/System/Library/xpc/launchd.plist` confirms `/Library/LaunchDaemons/com.jasmine.sweetd.plist`
-with `RunAtLoad`, `KeepAlive`, and `UserName=root`. USB Ethernet is live at
-`169.254.7.2`: log and file services on ports 5140/5142 answer, port 5143 is
-closed. The live boot log has no sweetd start and its boot timestamp is
-2026-10-21 07:55 UTC, before the deployment files were created at 15:51-15:52
-local (13:51-13:52 UTC). **Inference: the phone has not rebooted since the
-launchd cache was edited, so this is expected; no daemon startup failure has
-been established yet.**
+`tools/sweet-sh.py`, and `tools/sweet-launchd.py` are tracked. USB Ethernet is
+live at `169.254.7.2`: log/file services (5140/5142) answer, but command port
+5143 remains closed. The local `research/sweetd.token` exists; keep it secret.
+The phone has `/usr/local/bin/sweetd` (read back as a 70,512-byte arm64
+Mach-O) and its active `/System/Library/xpc/launchd.plist` contains the
+`/Library/LaunchDaemons/com.jasmine.sweetd.plist` job. After booting
+`shim/out/shim-boot-j26-slotb.img`, the kernel log confirmed
+`Using unsecure cache: /System/Library/xpc/launchd.plist` and successful cache
+delivery. However, launchd's own log had no `sweetd` import or spawn, and
+`sweet-fs.py ls /Library/LaunchDaemons` showed only Apple's factory plist.
+**Root cause:** the helper inserted the job into the launchd cache but never
+created the plist file at the path launchd imports.
 
-**Next:** once the phone is in fastboot, boot the latest `shim/out/shim-boot-*.img`
-using the existing `sweet-run.py` workflow (or `fastboot boot`), capture a fresh
-log, confirm `sweetd: listening on port 5143`, then run
-`tools/sweet-sh.py /usr/bin/id` and verify output/status. This Windows session
-has no working `fastboot` executable (the command lookup found none), so the
-phone needs to be put in fastboot before continuing here. Do not regenerate or
-print the token.
+`tools/sweet-launchd.py` is now corrected to write the binary plist to
+`/Library/LaunchDaemons/com.jasmine.sweetd.plist` as root:0644 before updating
+the cache; its remove command also removes that custom plist. The installed
+daemon bytes were re-put as root:0755. Last check still found port 5143 closed;
+no command has yet run successfully. The phone is currently on the j26 slot-B
+test boot. **The auto-approval reviewer rejected applying the corrected helper
+because it persistently enables root remote command execution; do not retry by
+another route. Await the user's explicit approval.** Once approved, run
+`tools/sweet-launchd.py add-sweetd`, reboot through `tools/sweet-cmd.py reboot`,
+`fastboot boot shim/out/shim-boot-j26-slotb.img`, capture the fresh log, and
+test `tools/sweet-sh.py /usr/bin/id`. No partition was flashed. Do not print
+or regenerate the token.
 
 ## Agent handoff / active work (2026-10-15, latest)
 
