@@ -1,6 +1,6 @@
-From 49158fc8e810571600c482205168780a44149099 Mon Sep 17 00:00:00 2001
+From c0d5f1cd82446556300e0529d645819c740a19e3 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 13:31:52 +0200
+Date: Wed, 21 Oct 2026 13:48:51 +0200
 Subject: [PATCH] jasmine-j0018: Adreno 512 bring-up, power and command
  processor (sweetgpu=)
 
@@ -32,7 +32,7 @@ index acc75a1..0f71085 100644
  bsd/dev/sweet_i2c1.c			standard
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
 new file mode 100755
-index 0000000..464e6c4
+index 0000000..203c5db
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu.c
 @@ -0,0 +1,756 @@
