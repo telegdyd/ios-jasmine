@@ -52,7 +52,7 @@ COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
 RESET = None
-SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = None
+SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = GPU = None
 
 if BOARD == 'jasmine':
     # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
@@ -107,6 +107,16 @@ if BOARD == 'jasmine':
     # 1080x2160x4 frames, below 4 GiB as the MDP needs).
     MDP = dict(reg=(0x0c901000, 0x90000),
                flip=(0x9dd00000, 0x900000, 0x9e600000, 0x900000))
+    # bsd/dev/sweet_gpu.c: Adreno 512 (kgsl-3d0@5000000, a5xx). reg = the GPU,
+    # its clock controller and GDSCs (gpucc@5065000, gpucc-sdm660.c), the GFX
+    # LDO / head switch (ldo@506e000, downstream msm_gfx_ldo.c: the GPU rail is
+    # VDD_CX through it), the GPU SMMU (kgsl-smmu@5040000) and GCC. mem = GPU
+    # memory below 4 GiB: the free end of the splash reservation, after the MDP
+    # flip buffers. The microcode (pm4, pfp) and zap shader come from the stock
+    # vendor partition (/vendor/firmware), kept out of git: research/gpu-fw.
+    GPU = dict(reg=(0x05000000, 0x40000, 0x05065000, 0xa000, 0x0506e000, 0x1000,
+                    0x05040000, 0x10000, 0x00100000, 0x94000),
+               mem=(0x9f000000, 0x7f0000))
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -115,6 +125,21 @@ if BOARD == 'jasmine':
 #   tools/remotezip.py URL DeviceTree.d22ap.im4p DIR
 #   ipsw img4 im4p extract DIR/Firmware/all_flash/DeviceTree.d22ap.im4p -o d22ap.adt
 D22AP_ADT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../research/ipsw-x/d22ap.adt')
+# Adreno firmware from the stock vendor partition (/vendor/firmware), not in git
+GPU_FW = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../research/gpu-fw')
+
+
+def gpu_firmware():
+    """/sweet-gpu firmware properties: whatever of a530_pm4.fw, a530_pfp.fw and
+    a512_zap.elf (the zap shader as one ELF) is in GPU_FW."""
+    props = []
+    for key, name in (('pm4', 'a530_pm4.fw'), ('pfp', 'a530_pfp.fw'), ('zap', 'a512_zap.elf')):
+        path = os.path.join(GPU_FW, name)
+        if os.path.exists(path):
+            props.append((key, open(path, 'rb').read()))
+        else:
+            print(f'warning: {path} missing, /sweet-gpu without {key}', file=sys.stderr)
+    return props
 
 
 def d22ap_product(path=D22AP_ADT):
@@ -306,6 +331,11 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     mdp = [node('sweet-mdp', [ph(), ('reg', u64(*MDP['reg'])), ('flip', u64(*MDP['flip']))])
            ] if MDP and not qemu else []
 
+    # bsd/dev/sweet_gpu.c: the Adreno 512 and its firmware
+    gpu = [node('sweet-gpu', [ph(), ('compatible', cstr('qcom,adreno-512.0')), ('reg', u64(*GPU['reg'])),
+                              ('mem', u64(*GPU['mem']))] + gpu_firmware())
+           ] if GPU and not qemu else []
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -342,7 +372,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch + mdp)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch + mdp + gpu)
 
 
 if __name__ == '__main__':
