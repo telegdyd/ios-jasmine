@@ -1,4 +1,4 @@
-From 96cbc835bba89d1878f6bbd1febd13a1242b27ee Mon Sep 17 00:00:00 2001
+From 82f1c1f81217f3197cfc587e85a2cf1cfb722b71 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 21:17:44 +0200
 Subject: [PATCH] jasmine-j0032: SweetGPU imports IOSurfaces into the GPU
@@ -15,11 +15,11 @@ Selector 7 returns a buffer's GPU VA and size (Mesa's bo_from_handle).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- iokit/Kernel/arm/SweetGPU.cpp | 237 +++++++++++++++++++++++++++-------
- 1 file changed, 187 insertions(+), 50 deletions(-)
+ iokit/Kernel/arm/SweetGPU.cpp | 236 +++++++++++++++++++++++++++-------
+ 1 file changed, 186 insertions(+), 50 deletions(-)
 
 diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
-index 299cedc..b54c990 100644
+index 299cedc..1f5fcce 100644
 --- a/iokit/Kernel/arm/SweetGPU.cpp
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
 @@ -14,8 +14,18 @@
@@ -319,12 +319,12 @@ index 299cedc..b54c990 100644
  				GPULOG("IB %u/%u at %llx, %u dwords: %08x %08x %08x %08x %08x %08x %08x %08x", i + 1, n, e.iova,
  				    e.dwords, w[0], e.dwords > 1 ? w[1] : 0, e.dwords > 2 ? w[2] : 0, e.dwords > 3 ? w[3] : 0,
  				    e.dwords > 4 ? w[4] : 0, e.dwords > 5 ? w[5] : 0, e.dwords > 6 ? w[6] : 0,
-@@ -401,6 +495,49 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+@@ -401,6 +495,48 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
  		args->scalarOutput[0] = sweet_gpu_completed();
  		flushBuffers();
  		return kIOReturnSuccess;
 +	case 6: {       /* import IOSurface */
-+		if (nin < 2 || in[0] == 0 || in[0] > UINT32_MAX || args->scalarOutputCount < 4) {
++		if (nin < 2 || in[0] == 0 || in[0] > 0xffffffffull || args->scalarOutputCount < 4) {
 +			return kIOReturnBadArgument;
 +		}
 +		SweetSurface *surface = sweet_surface_copy((uint32_t)in[0]);
@@ -340,8 +340,7 @@ index 299cedc..b54c990 100644
 +		uint32_t delta = surface->wrapDelta;
 +		surface->release();
 +		if (b == NULL) {
-+			IOLog("SWEET GPU uc: IOSurface %llu not imported
-+", in[0]);
++			IOLog("SWEET GPU uc: IOSurface %llu not imported\n", in[0]);
 +			return kIOReturnNoMemory;
 +		}
 +		args->scalarOutput[0] = handle;
