@@ -1,5 +1,28 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### >>> UPDATE 2026-10-21: sweetd deployment is staged; reboot pending <<<
+
+The new command daemon/client groundwork is in place. `ios/sweetd.c`,
+`tools/sweet-sh.py`, and `tools/sweet-launchd.py` are tracked. The local
+`research/sweetd.token` exists (keep it secret); the phone has
+`/usr/local/bin/sweetd`, and a read of its active
+`/System/Library/xpc/launchd.plist` confirms `/Library/LaunchDaemons/com.jasmine.sweetd.plist`
+with `RunAtLoad`, `KeepAlive`, and `UserName=root`. USB Ethernet is live at
+`169.254.7.2`: log and file services on ports 5140/5142 answer, port 5143 is
+closed. The live boot log has no sweetd start and its boot timestamp is
+2026-10-21 07:55 UTC, before the deployment files were created at 15:51-15:52
+local (13:51-13:52 UTC). **Inference: the phone has not rebooted since the
+launchd cache was edited, so this is expected; no daemon startup failure has
+been established yet.**
+
+**Next:** once the phone is in fastboot, boot the latest `shim/out/shim-boot-*.img`
+using the existing `sweet-run.py` workflow (or `fastboot boot`), capture a fresh
+log, confirm `sweetd: listening on port 5143`, then run
+`tools/sweet-sh.py /usr/bin/id` and verify output/status. This Windows session
+has no working `fastboot` executable (the command lookup found none), so the
+phone needs to be put in fastboot before continuing here. Do not regenerate or
+print the token.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
