@@ -95,7 +95,9 @@ jobs:
       - name: Build
         run: |
           export PATH="$RUNNER_TEMP/venv/bin:$PATH"
-          ninja -C mesa-src/build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest 2>&1 | tail -150
+          ninja -C mesa-src/build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest > build.log 2>&1 || true
+          grep -E -A12 "^FAILED|error:|Undefined symbols" build.log | grep -v "warning:" | head -300 || true
+          tail -15 build.log
           test -f mesa-src/build/src/gallium/drivers/freedreno/sweetgpu_fdtest
       - name: Sign
         run: |
