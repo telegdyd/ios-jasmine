@@ -97,6 +97,17 @@ Each stage is useful on its own.
   (0x5066004, status in 0x5066008); RBBM timer, RBCPR and gfx3d RCGs from XO (19.2 MHz: no PLL, no vote);
   GX GDSC (0x5066094) with BCR reset (0x5066090), AON reset and unclamp (0x5065130 bits 4 and 0); then the
   gfx3d branch (0x5066098). GPU registers are touched only once GX reports PWR_ON.
+- **The GPU SMMU** (SMMU-v2 at 0x5040000, 3 stream groups, 5 context banks) comes out of the GX power-up
+  faulting every stream (sCR0 `00200626`: USFCFG set; all S2CRs type fault). Context banks 2-4 belong to TZ:
+  reading CB2 hung a core and the boot (Linux hides them too: arm-smmu-qcom.c "TZ protects several last
+  context banks"). The hypervisor traps the global register space: it silently ignores a bypass request
+  (clearing sCR0.USFCFG), and a store from WZR (any `= 0` in C) hangs it; Linux works around the same bug with
+  `QCOM_DUMMY_VAL`. j0018 writes the SMMU through an asm helper with a real register only.
+- **MILESTONE 2026-10-21 13:40: the GPU executes our commands** (j0018, `sweetgpu=2`,
+  [logs/boot-j18-gpu2c.txt](../logs/boot-j18-gpu2c.txt)). CB0 gets a stage 1 table (AArch64 4K, 36-bit VA,
+  2 MiB identity blocks) for stream 0; microcode from `/sweet-gpu`; CP on a 32 KiB ring at 0x9f000000:
+  `CP_ME_INIT` done in 100 us, `CP_MEM_WRITE` to 0x9f018000 (below 4 GiB) and to a kernel page at
+  0x1_04508000 (above 4 GiB) both landed, with the GPU clocked from XO (19.2 MHz) and still in secure mode.
 - **Zap shader (next step):** PAS id 13 through SCM (SMCCC SIP calls, `0x42000000 | svc << 8 | cmd`, x1 =
   arginfo): `INIT_IMAGE` (2/1, metadata = ELF header + program headers + hash segment), `MEM_SETUP` (2/2,
   the reserved region `gpu@fed00000`, 10 MiB, outside XNU's RAM), copy the PT_LOAD segment,
