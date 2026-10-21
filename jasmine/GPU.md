@@ -114,6 +114,10 @@ Each stage is useful on its own.
   (549 us), and a `CP_MEM_WRITE` after it landed. `mem_setup` with the exact image size 0x1334 (what mainline's
   `qcom_mdt_load` passes) fails with ret `0xffffffe0`: the size must be 4 KiB aligned, as downstream
   `pil_setup_region` does ("iommus and XPUs that operate on 4K chunks").
+- **2026-10-21 14:25: GPU clock from GPU PLL0** (j0020, `gpumhz=160|266`): measured 159 and 266 MHz with the
+  CP cycle counter (CP_ALWAYS_COUNT against the 19.2 MHz always-on counter), whole CP/zap sequence OK at both
+  ([logs/boot-j20-c160.txt](../logs/boot-j20-c160.txt), [logs/boot-j20-c266.txt](../logs/boot-j20-c266.txt)).
+  Higher levels (370..750 MHz) need a CX corner vote through RPM first.
 - **Zap shader (how):** PAS id 13 through SCM (SMCCC SIP calls, `0x42000000 | svc << 8 | cmd`, x1 =
   arginfo): `INIT_IMAGE` (2/1, metadata = ELF header + program headers + hash segment), `MEM_SETUP` (2/2,
   the reserved region `gpu@fed00000`, 10 MiB, outside XNU's RAM), copy the PT_LOAD segment,
