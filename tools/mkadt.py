@@ -116,7 +116,8 @@ if BOARD == 'jasmine':
     # vendor partition (/vendor/firmware), kept out of git: research/gpu-fw.
     GPU = dict(reg=(0x05000000, 0x40000, 0x05065000, 0xa000, 0x0506e000, 0x1000,
                     0x05040000, 0x10000, 0x00100000, 0x94000),
-               mem=(0x9f000000, 0x7f0000))
+               mem=(0x9f000000, 0x7f0000),
+               zap=(0xfed00000, 0xa00000))   # reserved gpu@fed00000 (zap-shader memory-region)
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -333,7 +334,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
 
     # bsd/dev/sweet_gpu.c: the Adreno 512 and its firmware
     gpu = [node('sweet-gpu', [ph(), ('compatible', cstr('qcom,adreno-512.0')), ('reg', u64(*GPU['reg'])),
-                              ('mem', u64(*GPU['mem']))] + gpu_firmware())
+                              ('mem', u64(*GPU['mem'])), ('zap-mem', u64(*GPU['zap']))] + gpu_firmware())
            ] if GPU and not qemu else []
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
