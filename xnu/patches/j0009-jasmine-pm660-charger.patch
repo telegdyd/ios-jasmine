@@ -1,0 +1,348 @@
+From 9863df55ec3c78dbe2a22e1ebdab5827548aeb36 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 02:49:16 +0200
+Subject: [PATCH] jasmine-j0009: PM660 charger setup (high-current input, 3.95
+ V float)
+
+Under XNU the PM660 charger stayed in its bootloader state (USB51 500 mA
+input), and the lock screen ran the battery flat on a charger.
+sweet_pmic.c now applies Linux qcom_smbx.c's init sequence with the Nura
+fixes (kernel/0001): charger watchdog off, only the die comparator as a
+thermal regulation source, float voltage 3.95 V (chgmv=), fast-charge
+current 1 A (chgfcc=). A thread polls the power path every 2 s; on a
+plug-in it reads APSD and sets the input limit: SDP 500 mA, CDP 1.5 A,
+DCP/float chgicl= (1.5 A), above 500 mA in high-current mode with ICL
+override and an AICL restart. It logs the charger state once a minute.
+sweetchg=0 leaves the charger alone. Writes go through the APID's owner
+channel (chnls + 0x8000 * apid).
+---
+ bsd/dev/sweet_pmic.c | 272 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 271 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index dfc30be..c512365 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -8,13 +8,16 @@
+  *   keys     = <sid addr bit active-low hid-key> (u32) per key; hid-key is
+  *              sweet_hid_key()'s: 0 power, 1 volume up, 2 volume down
+  *   rtc      = <sid RDATA0> (u32), 4 bytes of seconds, little endian
++ *   charger  = <sid base> (u32), the PM660 charger (qcom,pm660-charger)
+  *
+  * Arbiter v3 uses the v2 layout (Linux spmi-pmic-arb.c, see
+  * SweetPlatformExpert.cpp): the APID map at core + 0x800 + 4 * n holds the
+  * PPID (sid << 8 | peripheral) in bits 19:8; reads go to the observer channel
+  * of that APID, obsrvr + 0x8000 * n: CMD 0x00 = 1 << 27 (extended read long)
+  * | (addr & 0xff) << 4 | (bytes - 1), STATUS 0x08 (bit 0 done, 3:1 failure,
+- * denied, dropped), RDATA0 0x18. Nothing here writes a PMIC register.
++ * denied, dropped), RDATA0 0x18. Keys and RTC are read only; the charger
++ * setup below writes through the APID's owner channel, chnls + 0x8000 * n
++ * (WDATA0 0x10, opcode 0 = extended write long), as Linux does.
+  *
+  * The PMIC RTC is not wall-clock time on Qualcomm phones (Android keeps an
+  * offset in userspace): rtcoffset= (seconds, signed) is added to it, and
+@@ -57,6 +60,7 @@ static uint32_t pmic_rtc_addr;
+ static int64_t pmic_rtc_offset;
+ static bool pmic_started;
+ static int pmic_sleep_chan;
++static uint64_t pmic_chnls_pa, pmic_chnls_size;
+ static LCK_GRP_DECLARE(sweet_pmic_grp, "sweet_pmic");
+ static LCK_SPIN_DECLARE(sweet_pmic_lock, &sweet_pmic_grp);
+ 
+@@ -164,6 +168,15 @@ pmic_wait(void)
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
++static void
++pmic_sleep_ms(uint32_t ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&pmic_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
+ static void
+ pmic_keys_thread(void *arg, wait_result_t result)
+ {
+@@ -212,6 +225,259 @@ pmic_gpio_is_input(struct pmic_key *key)
+ 	return r == 0 && (en & 0x80) && (dir == 0 || dir == 2);
+ }
+ 
++/*
++ * PM660 charger (qcom,pm660-charger at SID 0 0x1000): Linux's qcom_smbx.c
++ * init sequence plus the Nura fixes (kernel/0001: high-current mode with ICL
++ * override and an AICL restart above 500 mA, no skin/die ADC thermal
++ * regulation sources, float voltage rounded down). Without it the stock
++ * state charges at most 500 mA and the phone ran flat under iOS.
++ * Boot-args: chgmv= float voltage in mV (default 3950, the Nura limit;
++ * 3600..4400), chgfcc= fast-charge current in mA (default 1000, Linux's cap;
++ * 100..1500), chgicl= wall-charger input limit in mA (default 1500;
++ * 500..2000), sweetchg=0 leaves the charger alone. Registers are offsets
++ * from the charger base, as in qcom_smbx.c.
++ */
++#define CHG_STATUS_1            0x006   /* BATTERY_CHARGER_STATUS_1, 2:0 state */
++#define CHG_STATUS_2            0x007
++#define CHG_STATUS_7            0x00d
++#define CHG_ENABLE_CMD          0x042
++#define CHG_CFG2                0x051
++#define CHG_PRE_CURRENT         0x060
++#define CHG_FAST_CURRENT        0x061
++#define CHG_FLOAT_VOLTAGE       0x070
++#define CHG_FG_UPDATE_CFG_2     0x07d
++#define CHG_OTG_CFG             0x153
++#define CHG_APSD_STATUS         0x307
++#define CHG_APSD_RESULT         0x308
++#define CHG_CMD_APSD            0x341
++#define CHG_TYPE_C_CFG          0x358
++#define CHG_USBIN_OPTIONS_1     0x362
++#define CHG_USBIN_LOAD_CFG      0x365
++#define CHG_USBIN_ICL_OPTIONS   0x366
++#define CHG_TYPEC_SW_CTRL       0x368
++#define CHG_USBIN_ICL_CFG       0x370
++#define CHG_USBIN_AICL_OPTIONS  0x380
++#define CHG_USBIN_5V_AICL_THR   0x381
++#define CHG_USBIN_CONT_AICL_THR 0x384
++#define CHG_ICL_STATUS          0x607
++#define CHG_POWER_PATH_STATUS   0x60b
++#define CHG_WD_CFG              0x651
++#define CHG_SNARL_BARK_BITE_WD  0x653
++#define CHG_AICL_RERUN_TIME     0x661
++#define CHG_THERMREG_SRC_CFG    0x670
++#define CHG_STAT_CFG            0x690
++
++#define CHG_PERIPHS             8       /* CHGR 0x10 .. MISC 0x16 */
++
++static uint32_t chg_sid, chg_base;
++static volatile uint32_t *chg_rd[CHG_PERIPHS], *chg_wr[CHG_PERIPHS];
++
++/* Owner (write) channel of the APID, chnls + 0x8000 * apid (EE 0) */
++static volatile uint32_t *
++pmic_wchannel(uint16_t apid)
++{
++	if (apid == PMIC_NO_APID || 0x8000ull * apid + 0x1000 > pmic_chnls_size) {
++		return NULL;
++	}
++	return (volatile uint32_t *)ml_io_map(pmic_chnls_pa + 0x8000ull * apid, 0x1000);
++}
++
++static int
++pmic_write(volatile uint32_t *ch, uint32_t addr, uint8_t val)
++{
++	ch[0x10 / 4] = val;                     /* WDATA0 */
++	__asm__ volatile ("dmb oshst" ::: "memory");
++	ch[0x00 / 4] = 0u << 27 | (addr & 0xff) << 4;   /* extended write long, 1 byte */
++	__asm__ volatile ("dsb osh" ::: "memory");
++	for (int i = 0; i < 1000; i++) {
++		uint32_t st = ch[0x08 / 4];
++		if (st & 1) {
++			return (st & 0xe) ? (int)st : 0;
++		}
++		delay(1);
++	}
++	return -1;
++}
++
++static int
++chg_rd8(uint32_t off, uint32_t *v)
++{
++	uint32_t p = ((chg_base + off) >> 8) & 0xff;
++	volatile uint32_t *ch = (p >= 0x10 && p < 0x10 + CHG_PERIPHS) ? chg_rd[p - 0x10] : NULL;
++	if (ch == NULL) {
++		return -1;
++	}
++	lck_spin_lock(&sweet_pmic_lock);
++	int r = pmic_read(ch, chg_base + off, 1, v);
++	lck_spin_unlock(&sweet_pmic_lock);
++	return r;
++}
++
++static int
++chg_update(uint32_t off, uint8_t mask, uint8_t val)
++{
++	uint32_t p = ((chg_base + off) >> 8) & 0xff, old = 0;
++	volatile uint32_t *ch = (p >= 0x10 && p < 0x10 + CHG_PERIPHS) ? chg_wr[p - 0x10] : NULL;
++	int r = chg_rd8(off, &old);
++	if (r != 0 || ch == NULL) {
++		return r ? r : -1;
++	}
++	uint8_t nv = (uint8_t)((old & ~mask) | (val & mask));
++	if (nv == old) {
++		return 0;
++	}
++	lck_spin_lock(&sweet_pmic_lock);
++	r = pmic_write(ch, chg_base + off, nv);
++	lck_spin_unlock(&sweet_pmic_lock);
++	return r;
++}
++
++/* qcom_smbx.c smb_init_seq (+ THERMREG_SRC_CFG from the Nura patch) */
++static const struct { uint16_t off; uint8_t mask, val; } chg_init_seq[] = {
++	{ CHG_AICL_RERUN_TIME, 0x03, 0x00 },
++	{ CHG_TYPEC_SW_CTRL, 0x07 | 0x10 | 0x08, 0x10 },        /* UFP by default, VCONN_EN_SRC */
++	{ CHG_TYPE_C_CFG, 0x20 | 0x02, 0x00 },                  /* no factory mode, stay on VCONN OC */
++	{ CHG_OTG_CFG, 0x02, 0x00 },                            /* VBUS under software control */
++	{ CHG_FG_UPDATE_CFG_2, 0x04 | 0x02, 0x02 },             /* recharge threshold by VBAT */
++	{ CHG_USBIN_OPTIONS_1, 0x04, 0x00 },                    /* no HVDCP */
++	{ CHG_ENABLE_CMD, 0x01, 0x01 },
++	{ CHG_CFG2, 0xff, 0x01 },                               /* software enable, inhibit by VBAT */
++	{ CHG_STAT_CFG, 0x40, 0x40 },
++	{ CHG_USBIN_ICL_OPTIONS, 0x03, 0x02 },                  /* USB51 500 mA until a type is known */
++	{ CHG_SNARL_BARK_BITE_WD, 0xff, 0x00 },                 /* charger watchdog off */
++	{ CHG_WD_CFG, 0x80 | 0x02 | 0x40, 0x00 },
++	{ CHG_USBIN_5V_AICL_THR, 0x07, 0x03 },
++	{ CHG_USBIN_CONT_AICL_THR, 0x3f, 0x03 },
++	{ CHG_USBIN_AICL_OPTIONS, 0x80 | 0x20 | 0x08 | 0x04 | 0x02 | 0x01, 0x04 | 0x02 | 0x01 },
++	{ CHG_PRE_CURRENT, 0x3f, 500000 / 25000 },
++	{ CHG_THERMREG_SRC_CFG, 0x04 | 0x02, 0x00 },            /* only the die comparator */
++};
++
++/* USBIN input limit; above 500 mA high-current mode + ICL override, then rerun AICL */
++static int
++chg_set_icl(uint32_t ua)
++{
++	bool hc = ua > 500000;
++	int r = 0;
++	r |= chg_update(CHG_USBIN_ICL_CFG, 0xff, (uint8_t)(ua / 25000));
++	r |= chg_update(CHG_USBIN_LOAD_CFG, 0x10, hc ? 0x10 : 0);
++	r |= chg_update(CHG_CMD_APSD, 0x02, hc ? 0x02 : 0);
++	r |= chg_update(CHG_USBIN_ICL_OPTIONS, 0x01, hc ? 0x01 : 0);
++	r |= chg_update(CHG_USBIN_AICL_OPTIONS, 0x04, 0);
++	delay(20000);
++	r |= chg_update(CHG_USBIN_AICL_OPTIONS, 0x04, 0x04);
++	return r;
++}
++
++static const char *const chg_states[8] = {
++	"trickle", "pre", "fast", "fullon", "taper", "terminated", "inhibit", "disabled",
++};
++
++static void
++chg_log(const char *why, uint32_t type_ua)
++{
++	uint32_t pp = 0, st1 = 0, st2 = 0, icl = 0, fv = 0, apsd = 0;
++	(void)chg_rd8(CHG_POWER_PATH_STATUS, &pp);
++	(void)chg_rd8(CHG_STATUS_1, &st1);
++	(void)chg_rd8(CHG_STATUS_2, &st2);
++	(void)chg_rd8(CHG_ICL_STATUS, &icl);
++	(void)chg_rd8(CHG_FLOAT_VOLTAGE, &fv);
++	(void)chg_rd8(CHG_APSD_RESULT, &apsd);
++	printf("SWEET CHG: %s: usb %s (apsd %#x, limit %u mA), %s, input limit %u mA, float %u mV, status2 %#x\n",
++	    why, (pp & 0x11) == 0x11 ? "online" : "offline", apsd & 0x7f, type_ua / 1000,
++	    chg_states[st1 & 7], icl * 25, (3487500 + fv * 7500) / 1000, st2);
++}
++
++static void
++pmic_charger_thread(void *arg, wait_result_t result)
++{
++	uint32_t icl_wall = 1500, fcc = 1000, last_type = ~0u;
++	unsigned ticks = 0;
++	bool online = false;
++	(void)arg;
++	(void)result;
++	(void)PE_parse_boot_argn("chgicl", &icl_wall, sizeof(icl_wall));
++	(void)PE_parse_boot_argn("chgfcc", &fcc, sizeof(fcc));
++	icl_wall = icl_wall < 500 ? 500 : (icl_wall > 2000 ? 2000 : icl_wall);
++	fcc = fcc < 100 ? 100 : (fcc > 1500 ? 1500 : fcc);
++	(void)chg_update(CHG_FAST_CURRENT, 0xff, (uint8_t)(fcc * 1000 / 25000));
++	for (;;) {
++		uint32_t pp = 0;
++		bool now = chg_rd8(CHG_POWER_PATH_STATUS, &pp) == 0 && (pp & 0x11) == 0x11;
++		uint32_t type_ua = 0;
++		if (now) {
++			/* APSD: CDP 1.5 A, DCP/OCP/float = the wall limit, SDP 500 mA (qcom_smbx.c) */
++			uint32_t st = 0, res = 0;
++			if (chg_rd8(CHG_APSD_STATUS, &st) == 0 && (st & 0x01) &&
++			    chg_rd8(CHG_APSD_RESULT, &res) == 0) {
++				type_ua = (res & 0x04) ? 1500000 : (res & (0x08 | 0x02 | 0x10)) ? icl_wall * 1000 : 500000;
++			} else {
++				(void)chg_update(CHG_CMD_APSD, 0x01, 0x01);     /* rerun detection */
++			}
++		}
++		if (type_ua != 0 && (type_ua != last_type || !online)) {
++			int r = chg_set_icl(type_ua);
++			last_type = type_ua;
++			delay(500000);
++			chg_log(r ? "input limit write failed" : "plugged in", type_ua);
++		} else if (!now && online) {
++			last_type = ~0u;
++			chg_log("unplugged", 0);
++		}
++		online = now && type_ua != 0;
++		if (++ticks % 30 == 0) {
++			chg_log("status", online ? last_type : 0);
++		}
++		pmic_sleep_ms(2000);
++	}
++}
++
++static void
++pmic_charger_init(DTEntry node)
++{
++	uint32_t const *chg = NULL;
++	unsigned int size = 0;
++	uint32_t on = 1, mv = 3950;
++	thread_t thread;
++
++	(void)PE_parse_boot_argn("sweetchg", &on, sizeof(on));
++	if (SecureDTGetProperty(node, "charger", (void const **)&chg, &size) != kSuccess ||
++	    size < 2 * sizeof(uint32_t) || pmic_chnls_pa == 0) {
++		return;
++	}
++	if (!on) {
++		printf("SWEET CHG: left alone (sweetchg=0)\n");
++		return;
++	}
++	chg_sid = chg[0];
++	chg_base = chg[1];
++	for (uint32_t i = 0; i < CHG_PERIPHS; i++) {
++		uint16_t apid = PMIC_NO_APID;
++		chg_rd[i] = pmic_channel(chg_sid, chg_base + 0x100 * i, &apid);
++		chg_wr[i] = chg_rd[i] ? pmic_wchannel(apid) : NULL;
++	}
++	if (chg_wr[0] == NULL || chg_wr[3] == NULL || chg_wr[6] == NULL) {
++		printf("SWEET CHG: charger peripherals not in the arbiter map, left alone\n");
++		return;
++	}
++	chg_log("before", 0);
++	int err = 0;
++	for (uint32_t i = 0; i < sizeof(chg_init_seq) / sizeof(chg_init_seq[0]); i++) {
++		int r = chg_update(chg_init_seq[i].off, chg_init_seq[i].mask, chg_init_seq[i].val);
++		if (r != 0) {
++			printf("SWEET CHG: write %#x failed (%d)\n", chg_base + chg_init_seq[i].off, r);
++			err++;
++		}
++	}
++	(void)PE_parse_boot_argn("chgmv", &mv, sizeof(mv));
++	mv = mv < 3600 ? 3600 : (mv > 4400 ? 4400 : mv);
++	err += chg_update(CHG_FLOAT_VOLTAGE, 0xff, (uint8_t)((mv * 1000 - 3487500) / 7500)) != 0;
++	chg_log(err ? "configured with errors" : "configured", 0);
++	if (kernel_thread_start(pmic_charger_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
+ int
+ sweet_pmic_init(void)
+ {
+@@ -234,6 +500,8 @@ sweet_pmic_init(void)
+ 	pmic_core_size = spmi[1];
+ 	pmic_obs_pa = spmi[4];
+ 	pmic_obs_size = spmi[5];
++	pmic_chnls_pa = spmi[2];
++	pmic_chnls_size = spmi[3];
+ 	pmic_core = (volatile uint32_t *)ml_io_map(spmi[0], spmi[1]);
+ 	if (pmic_core == NULL) {
+ 		printf("SWEET PMIC: arbiter mapping failed\n");
+@@ -260,6 +528,8 @@ sweet_pmic_init(void)
+ 		    apid, ctrl, raw, pmic_rtc_offset, r, pmic_rtc_ch ? "" : ", no clock");
+ 	}
+ 
++	pmic_charger_init(node);
++
+ 	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
+ 	if (!enabled ||
+ 	    SecureDTGetProperty(node, "keys", (void const **)&keys, &ksize) != kSuccess) {
+-- 
+2.47.3
+
