@@ -1,0 +1,193 @@
+From 49a0598d544c976a5e2b63882f89250aba20457d Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 17:28:10 +0200
+Subject: [PATCH] jasmine-j0027: SweetGPU checks IBs against the client's
+ buffers; debug mode with hang check
+
+The first Mesa freedreno run froze the phone before any output reached the
+PC (the watchdog reset it). Submitted IBs must now lie inside a buffer of
+the submitting client. sweetgpu_debug=1 logs every user-client call (buffer
+GPU VAs, each IB with its first dwords) with a 150 ms pause per line so it
+leaves over the USB log before the GPU runs the job, and after a submit
+waits up to 1 s; a job that did not finish gets its GPU and SMMU fault
+state logged and the GPU taken down (sweet_gpu_hang_check).
+---
+ bsd/dev/sweet_gpu.c           | 26 +++++++++++++++
+ iokit/Kernel/arm/SweetGPU.cpp | 61 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 87 insertions(+)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 8f7d98c..6a6f2a6 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -914,6 +914,32 @@ sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms)
+ 	return 0;
+ }
+ 
++/*
++ * For SweetGPU.cpp's debug mode: if seqno has not completed within
++ * timeout_ms, log the GPU's and the SMMU's fault state and take the GPU
++ * down (CP halt, RBBM reset, GX off), so a CP stuck on refused memory
++ * accesses cannot hold the bus. Returns 0 when the job completed.
++ */
++int sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms);
++int
++sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms)
++{
++	if (sweet_gpu_wait(seqno, timeout_ms) == 0) {
++		return 0;
++	}
++	volatile uint32_t *s = sg.smmu, *cb = sg.smmu + SMMU_CB0 / 4;
++	printf("SWEET GPU: job %u not done after %u ms (completed %u): rptr %u wptr %u, RBBM_STATUS %08x INT_0 %08x, "
++	    "hw fault %08x, cp int %08x; SMMU sGFSR %08x, CB0 FSR %08x FSYNR0 %08x FAR %08x%08x\n",
++	    seqno, timeout_ms, sweet_gpu_completed(), gpu_rd(CP_RB_RPTR), sg.wptr, gpu_rd(RBBM_STATUS),
++	    gpu_rd(RBBM_INT_0_STATUS), gpu_rd(CP_HW_FAULT), gpu_rd(CP_INTERRUPT_STATUS), s[0x048 / 4],
++	    cb[0x58 / 4], cb[0x68 / 4], cb[0x64 / 4], cb[0x60 / 4]);
++	lck_mtx_lock(gpu_lock);
++	gpu_ready = false;
++	gpu_power_off();
++	lck_mtx_unlock(gpu_lock);
++	return ETIMEDOUT;
++}
++
+ /* Values for userland (Mesa's MSM_PARAM_* counterparts, SweetGPU.cpp). */
+ uint64_t sweet_gpu_param(uint32_t which);
+ uint64_t
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index cf77d04..ac868ea 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -17,6 +17,13 @@
+  *   memory type = handle: IOConnectMapMemory maps that buffer (write-combined,
+  *   like the GPU's own non-cacheable view, so no cache maintenance is needed)
+  *
++ * Every submitted command buffer must lie inside one of the client's buffers.
++ * Boot-arg sweetgpu_debug=1 logs each call (buffer GPU VAs, every IB with its
++ * first dwords) and pauses 150 ms after each line, so it reaches the PC over
++ * the USB log before the GPU runs the job; after a submit it waits up to
++ * 1 s and, if the job did not finish, logs the fault state and takes the GPU
++ * down (sweet_gpu_hang_check) instead of letting a stuck CP hold the bus.
++ *
+  * Buffers are pageable-free kernel memory (IOBufferMemoryDescriptor), mapped
+  * into the one GPU address space with 4K pages; a client's buffers are
+  * unmapped and freed when it closes or dies. The GPU address space is shared
+@@ -30,6 +37,8 @@
+ #include <IOKit/IOBufferMemoryDescriptor.h>
+ #include <IOKit/IOLib.h>
+ #include <libkern/c++/OSArray.h>
++#include <pexpert/pexpert.h>
++#include <sys/proc.h>
+ 
+ extern "C" {
+ int sweet_gpu_vm_alloc(uint64_t size, uint64_t *iova);
+@@ -39,9 +48,20 @@ int sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, u
+ int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
+ uint32_t sweet_gpu_completed(void);
+ uint64_t sweet_gpu_param(uint32_t which);
++int sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms);
+ void sweet_gpu_publish(void);
+ }
+ 
++static uint32_t sweet_gpu_debug;
++
++/* debug log line, then a pause so the USB log carries it out before the GPU runs anything */
++#define GPULOG(fmt, ...) do {                                           \
++	if (sweet_gpu_debug) {                                          \
++	        IOLog("SWEET GPU uc: " fmt "\n", ##__VA_ARGS__);       \
++	        IOSleep(150);                                           \
++	}                                                               \
++} while (0)
++
+ #define SWEET_GPU_MAX_BUFFER    (256ull << 20)
+ #define SWEET_GPU_MAX_IBS       64
+ 
+@@ -127,6 +147,7 @@ class SweetGPUUserClient : public IOUserClient {
+ 	OSArray *fBuffers;      /* handle = index + 1; freed slots hold kOSBooleanFalse */
+ 
+ 	SweetGPUBuffer *buffer(uint64_t handle);
++	SweetGPUBuffer *bufferAt(uint64_t iova, uint64_t len);
+ 
+ public:
+ 	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
+@@ -145,6 +166,9 @@ SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ 	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
+ 		return false;
+ 	}
++	char name[32];
++	proc_selfname(name, sizeof(name));
++	GPULOG("opened by %s", name);
+ 	fLock = IOLockAlloc();
+ 	fBuffers = OSArray::withCapacity(64);
+ 	return fLock != NULL && fBuffers != NULL;
+@@ -185,6 +209,23 @@ SweetGPUUserClient::buffer(uint64_t handle)
+ 	return b;
+ }
+ 
++/* The client's buffer holding [iova, iova + len), retained, or NULL. */
++SweetGPUBuffer *
++SweetGPUUserClient::bufferAt(uint64_t iova, uint64_t len)
++{
++	SweetGPUBuffer *found = NULL;
++	IOLockLock(fLock);
++	for (unsigned int i = 0; i < fBuffers->getCount() && found == NULL; i++) {
++		SweetGPUBuffer *b = OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i));
++		if (b != NULL && iova >= b->iova && len <= b->size && iova - b->iova <= b->size - len) {
++			found = b;
++			found->retain();
++		}
++	}
++	IOLockUnlock(fLock);
++	return found;
++}
++
+ IOReturn
+ SweetGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
+ {
+@@ -237,6 +278,7 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		IOLockUnlock(fLock);
+ 		args->scalarOutput[0] = slot + 1;
+ 		args->scalarOutput[1] = b->iova;
++		GPULOG("buffer %u: %llu bytes at GPU VA %llx%s", slot + 1, b->size, b->iova, (in[1] & 1) ? " (GPU read-only)" : "");
+ 		b->release();
+ 		return kIOReturnSuccess;
+ 	}
+@@ -275,10 +317,28 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			memcpy(&e, s + 8 + i * sizeof(e), sizeof(e));
+ 			iova[i] = e.iova;
+ 			dw[i] = e.dwords;
++			SweetGPUBuffer *b = e.dwords != 0 ? bufferAt(e.iova, 4ull * e.dwords) : NULL;
++			if (b == NULL) {
++				IOLog("SWEET GPU uc: submit refused: IB %u at %llx (%u dwords) is not inside a buffer of this client\n",
++				    i, e.iova, e.dwords);
++				return kIOReturnBadArgument;
++			}
++			if (sweet_gpu_debug) {
++				const uint32_t *w = (const uint32_t *)((const uint8_t *)b->md->getBytesNoCopy() + (e.iova - b->iova));
++				GPULOG("IB %u/%u at %llx, %u dwords: %08x %08x %08x %08x %08x %08x %08x %08x", i + 1, n, e.iova,
++				    e.dwords, w[0], e.dwords > 1 ? w[1] : 0, e.dwords > 2 ? w[2] : 0, e.dwords > 3 ? w[3] : 0,
++				    e.dwords > 4 ? w[4] : 0, e.dwords > 5 ? w[5] : 0, e.dwords > 6 ? w[6] : 0,
++				    e.dwords > 7 ? w[7] : 0);
++			}
++			b->release();
+ 		}
+ 		uint32_t seqno = 0;
+ 		int err = sweet_gpu_submit(iova, dw, n, &seqno);
+ 		args->scalarOutput[0] = seqno;
++		GPULOG("submit of %u IBs: seqno %u (err %d)", n, seqno, err);
++		if (err == 0 && sweet_gpu_debug && sweet_gpu_hang_check(seqno, 1000) != 0) {
++			return kIOReturnTimeout;
++		}
+ 		return err == 0 ? kIOReturnSuccess : err == EBUSY ? kIOReturnBusy : kIOReturnError;
+ 	}
+ 	case 4:         /* wait */
+@@ -308,6 +368,7 @@ sweet_gpu_publish(void)
+ 		IOLog("SWEET GPU: SweetGPU service not created\n");
+ 		return;
+ 	}
++	(void)PE_parse_boot_argn("sweetgpu_debug", &sweet_gpu_debug, sizeof(sweet_gpu_debug));
+ 	gpu->setName("SweetGPU");
+ 	gpu->setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
+ 	gpu->setProperty("chip-id", (unsigned long long)sweet_gpu_param(1), 32);
+-- 
+2.47.3
+

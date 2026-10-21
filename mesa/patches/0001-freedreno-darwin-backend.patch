@@ -1,6 +1,6 @@
-From 85f5c23810f85f3c4c0bf01629c89f7ce076e40b Mon Sep 17 00:00:00 2001
+From 1d1173949242011977e2534f276d3e50a42ef498 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 16:53:08 +0200
+Date: Wed, 21 Oct 2026 17:28:11 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -15,8 +15,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/meson.build                 |  11 +
  src/freedreno/meson.build                     |   2 +-
  src/gallium/drivers/freedreno/meson.build     |  32 +++
- .../drivers/freedreno/sweetgpu_fdtest.c       | 127 +++++++++++
- 11 files changed, 774 insertions(+), 1 deletion(-)
+ .../drivers/freedreno/sweetgpu_fdtest.c       | 136 ++++++++++++
+ 11 files changed, 783 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -777,10 +777,10 @@ index b04379b..28c2fea 100644
 +endif
 diff --git a/src/gallium/drivers/freedreno/sweetgpu_fdtest.c b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
 new file mode 100644
-index 0000000..f6b655a
+index 0000000..f9ea9b4
 --- /dev/null
 +++ b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,136 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -817,6 +817,9 @@ index 0000000..f6b655a
 +int
 +main(void)
 +{
++   /* unbuffered: whatever happens, the last step printed is the last one reached */
++   setvbuf(stdout, NULL, _IONBF, 0);
++   printf("step: options\n");
 +   driOptionCache options, options_info;
 +   driParseOptionInfo(&options_info, fd_driconf, ARRAY_SIZE(fd_driconf));
 +   driParseOptionInfo(&options, fd_driconf, ARRAY_SIZE(fd_driconf));
@@ -827,6 +830,7 @@ index 0000000..f6b655a
 +
 +   /* the darwin backend ignores the fd; fd_screen_create dup()s it */
 +   int fd = open("/dev/null", O_RDWR);
++   printf("step: screen\n");
 +   struct pipe_screen *screen = fd_screen_create(fd, &config, NULL);
 +   if (!screen) {
 +      printf("FAIL: no freedreno screen (is SweetGPU up? sweetgpu=4)\n");
@@ -834,6 +838,7 @@ index 0000000..f6b655a
 +   }
 +   printf("screen: %s (%s)\n", screen->get_name(screen), screen->get_vendor(screen));
 +
++   printf("step: context\n");
 +   struct pipe_context *pipe = screen->context_create(screen, NULL, 0);
 +   if (!pipe) {
 +      printf("FAIL: no context\n");
@@ -851,6 +856,7 @@ index 0000000..f6b655a
 +      .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
 +      .usage = PIPE_USAGE_DEFAULT,
 +   };
++   printf("step: render target\n");
 +   struct pipe_resource *rt = screen->resource_create(screen, &templ);
 +   if (!rt) {
 +      printf("FAIL: no render target\n");
@@ -870,10 +876,13 @@ index 0000000..f6b655a
 +   /* RGBA (0.25, 0.5, 0.75, 1.0) -> bytes 0x40 0x80 0xbf 0xff */
 +   union pipe_color_union color = { .f = { 0.25f, 0.5f, 0.75f, 1.0f } };
 +   int64_t t0 = os_time_get_nano();
++   printf("step: clear\n");
 +   pipe->clear(pipe, PIPE_CLEAR_COLOR0, 0xffffffff, 0, NULL, &color, 0.0, 0);
 +
 +   struct pipe_fence_handle *fence = NULL;
++   printf("step: flush\n");
 +   pipe->flush(pipe, &fence, 0);
++   printf("step: fence\n");
 +   bool done = screen->fence_finish(screen, NULL, fence, 5ull * 1000 * 1000 * 1000);
 +   screen->fence_reference(screen, &fence, NULL);
 +   int64_t t1 = os_time_get_nano();
