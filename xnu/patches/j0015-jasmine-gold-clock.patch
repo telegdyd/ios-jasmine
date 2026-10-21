@@ -1,0 +1,323 @@
+From ff0e8c6851873a1d0aae0c0c5914f15f6051198b Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 05:03:26 +0200
+Subject: [PATCH] jasmine-j0015: Gold cluster off GPLL0 (sweetgold=MHz),
+ checked
+
+XBL leaves the four Gold cores XNU runs on at GPLL0 (about 600 MHz, RCG cfg
+0x401) with the cluster's APCS PLL idle and OSM/CPRh off; their maximum is
+2208 MHz. sweetgold=<MHz> (a downstream perfcl table step) reprograms the
+Gold PLL as msm-4.4 clk-cpu-osm.c does and moves the cluster RCG onto it
+(cfg 0x301), in the platform expert before any disk write. The Gold rail
+voltage is not touched (XBL's, unreadable here): a deterministic workload
+runs before (reference) and after the switch, 20 s later on all four cores
+at once; any wrong result goes back to GPLL0. Quick way only: the proper
+OSM + CPRh setup is still to do. The PMU probe is gone (it read nonsense:
+3402 MHz / 0 on every core); the clock register dump stays.
+---
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |   2 +
+ osfmk/arm64/sweet_cpuclk.c               | 240 +++++++++++++++++------
+ 2 files changed, 182 insertions(+), 60 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 7a9d14b..aa3285d 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -22,6 +22,7 @@ extern "C" void sweet_rtc_set(uint64_t secs);
+ extern "C" void sweet_nvt_init(void);
+ /* osfmk/arm64/sweet_cpuclk.c: measured CPU clock, logged 20 s and 120 s in */
+ extern "C" void sweet_cpuclk_start(void);
++extern "C" uint32_t sweet_gold_clock(void);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -234,6 +235,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	 * PMIC (RTC, charger, gauge, backlight) and touch before registerService
+ 	 * lets the other drivers start: SweetBattery and AppleCLCD look for them.
+ 	 */
++	(void)sweet_gold_clock();       /* sweetgold=: Gold cluster off GPLL0, before any disk write */
+ 	bool rtc = sweet_pmic_init() != 0;
+ 	sweet_nvt_init();
+ 	registerService();
+diff --git a/osfmk/arm64/sweet_cpuclk.c b/osfmk/arm64/sweet_cpuclk.c
+index da5fc31..78f82f8 100644
+--- a/osfmk/arm64/sweet_cpuclk.c
++++ b/osfmk/arm64/sweet_cpuclk.c
+@@ -1,10 +1,11 @@
+ /*
+- * CPU clock probe (jasmine bring-up, read only): how fast do the cores really
+- * run? Nothing sets the Kryo 260 clocks after the bootloader (no cpufreq in
+- * the DT, none in Linux either). For each CPU: the PMU cycle counter
+- * (PMCCNTR_EL0) and a chain of dependent adds (1 per cycle on an A73-class
+- * core) against the 19.2 MHz system counter, 100 ms with interrupts off,
+- * bound to that CPU. Runs 20 s and 120 s after start. sweetclk=0 disables it.
++ * CPU clocks (jasmine). Nothing sets the Kryo 260 clocks after the bootloader
++ * (no cpufreq in the DT, none in Linux either): the Gold cluster XNU runs on
++ * is left on GPLL0, about 600 MHz. sweet_gold_clock() raises it (sweetgold=,
++ * see below); a thread logs the clock hardware 20 s and 120 s after start
++ * and runs the four-core check. The PMU cycle counter and timed loops gave
++ * nonsense here (3402 MHz / 0, the same on every core), so it reads the PLL
++ * and RCG registers instead. sweetclk=0 disables the thread.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -20,6 +21,7 @@
+ #include <pexpert/pexpert.h>
+ 
+ void sweet_cpuclk_start(void);
++uint32_t sweet_gold_clock(void);
+ 
+ static int sweet_cpuclk_chan;
+ 
+@@ -32,51 +34,181 @@ cpuclk_sleep(uint32_t secs)
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
+-static inline uint64_t
+-cntvct(void)
++/*
++ * Gold cluster clock, the quick way (jasmine, 2026-10-21): XBL leaves the four
++ * Kryo 260 Gold cores (the ones XNU runs on) on GPLL0, about 600 MHz, with the
++ * cluster's own APCS PLL idle at L 0x20 and the OSM/CPRh voltage machinery
++ * off. sweetgold=<MHz> (one of the downstream perfcl table steps: 1113, 1401,
++ * 1747, 1958, 2150, 2208) reprograms that PLL (sequence of msm-4.4
++ * clk-cpu-osm.c clk_osm_setup_cluster_pll, keeping XBL's USER_CTL/CONFIG) and
++ * moves the cluster RCG (CFG source 3 = PLL main, divider 1) onto it.
++ *
++ * The voltage is NOT changed: whatever XBL left on the Gold rail (not
++ * readable from the apps processor). Too low a voltage can only make the
++ * cores compute wrong or hang, so every step is checked: a deterministic
++ * workload before the switch (600 MHz reference) and after it on this core;
++ * a mismatch goes straight back to GPLL0. 20 s later all four cores run it at
++ * once (worst droop) and any error goes back to GPLL0 too.
++ * The proper way (OSM tables + CPRh closed-loop voltage from the fuses) is
++ * still to do: jasmine/NOTES.md.
++ */
++#define GOLD_PLL        0x17816000ull   /* MODE 0x0, L 0x4, USER_CTL 0xc, CONFIG_CTL_LO 0x10 */
++#define GOLD_RCG        0x17811050ull   /* CMD, CFG at +4 */
++#define GOLD_WORK       4000000ull
++
++static uint64_t gold_ref;               /* workload result at the boot clock */
++static uint64_t gold_ref_ns;
++static uint32_t gold_mhz;
++static volatile uint32_t *gold_pll, *gold_rcg;
++
++static volatile uint64_t gold_seed = 0x9e3779b97f4a7c15ull;   /* not foldable */
++
++static uint64_t
++gold_workload(uint64_t n)
++{
++	uint64_t x = gold_seed, h = 0;
++	for (uint64_t i = 0; i < n; i++) {
++		x = x * 6364136223846793005ull + 1442695040888963407ull;
++		h ^= (x >> 17) + (h << 5) + (h >> 2);
++		h = (h << 7) | (h >> 57);
++	}
++	return h;
++}
++
++static uint64_t
++gold_timed(uint64_t *ns)
++{
++	uint64_t t0 = mach_absolute_time();
++	uint64_t r = gold_workload(GOLD_WORK);
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, ns);
++	return r;
++}
++
++static int
++gold_rcg_select(uint32_t cfg)
++{
++	gold_rcg[1] = cfg;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	gold_rcg[0] = 0x3;                      /* RCG_UPDATE (update + root enable) */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	for (int i = 0; i < 1000; i++) {
++		if (!(gold_rcg[0] & 1)) {
++			return 0;
++		}
++		delay(1);
++	}
++	return -1;
++}
++
++static void
++gold_back_to_gpll0(const char *why)
++{
++	int r = gold_rcg_select(0x401);         /* GPLL_SEL, divider 1: XBL's setting */
++	printf("SWEET GOLD: %s: back on GPLL0 (rcg %d, cfg %#x)\n", why, r, gold_rcg[1]);
++	gold_mhz = 0;
++}
++
++/* Platform expert start, before any disk write. Returns the MHz now set (0 = boot clock). */
++uint32_t
++sweet_gold_clock(void)
+ {
+-	uint64_t v;
+-	__asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r"(v));
+-	return v;
++	uint32_t mhz = 0;
++	static const uint32_t steps[] = { 1113, 1401, 1747, 1958, 2150, 2208 };
++	if (!PE_parse_boot_argn("sweetgold", &mhz, sizeof(mhz)) || mhz == 0) {
++		return 0;
++	}
++	int ok = 0;
++	for (uint32_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
++		ok |= steps[i] == mhz;
++	}
++	gold_pll = (volatile uint32_t *)ml_io_map((vm_offset_t)GOLD_PLL, 0x1000);
++	gold_rcg = (volatile uint32_t *)ml_io_map((vm_offset_t)(GOLD_RCG & ~0xfffull), 0x1000) + (GOLD_RCG & 0xfff) / 4;
++	uint32_t mode = gold_pll[0], l = gold_pll[1], user = gold_pll[3], cfg = gold_rcg[1];
++	printf("SWEET GOLD: boot: PLL mode %#x L %#x user %#x, RCG cfg %#x\n", mode, l, user, cfg);
++	if (!ok || cfg != 0x401) {
++		printf("SWEET GOLD: %u MHz %s, left alone\n", mhz, !ok ? "is not a table step" : "but the cluster is not on GPLL0 as expected");
++		return 0;
++	}
++	uint64_t ns_ref;
++	gold_ref = gold_timed(&ns_ref);
++	gold_ref_ns = ns_ref;
++
++	/* MDIV: L = MHz / 19.2 (the downstream table's L values: 1113.6 -> 0x3a) */
++	uint32_t newl = mhz * 10 / 192;
++	gold_pll[0] = 0x0;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	gold_pll[1] = newl;
++	gold_pll[0] = 0x2;                      /* BYPASSNL */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	delay(50);
++	gold_pll[0] = 0x6;                      /* + RESET_N */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	delay(100);
++	gold_pll[0] = 0x7;                      /* + OUTCTRL */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	delay(50);
++	if (gold_rcg_select(0x301) != 0) {      /* PLL_MAIN_SEL, divider 1 */
++		gold_back_to_gpll0("RCG update did not complete");
++		return 0;
++	}
++	gold_mhz = mhz;
++	uint64_t ns;
++	uint64_t r = gold_timed(&ns);
++	printf("SWEET GOLD: L %#x (%u MHz): PLL mode %#x status %#x; workload %s, %llu us vs %llu us at boot (x%llu.%02llu)\n",
++	    newl, newl * 192 / 10, gold_pll[0], gold_pll[11], r == gold_ref ? "OK" : "WRONG",
++	    ns / 1000, ns_ref / 1000, ns_ref / (ns ? ns : 1), (ns_ref * 100 / (ns ? ns : 1)) % 100);
++	if (r != gold_ref) {
++		gold_back_to_gpll0("wrong result");
++		return 0;
++	}
++	return mhz;
+ }
+ 
+-/* one CPU: cycles and dependent adds per counter tick over ~100 ms */
++/* 20 s in: all four cores at once, 20 runs each */
++static volatile uint32_t gold_done, gold_errors;
++
+ static void
+-cpuclk_measure(int cpu, uint64_t freq)
++gold_load_thread(void *arg, wait_result_t result)
+ {
+-	uint64_t pmcr, en, c0, c1, t0, t1, adds = 0, x = 0;
+-	boolean_t istate = ml_set_interrupts_enabled(FALSE);
+-
+-	__asm__ volatile ("mrs %0, pmcr_el0" : "=r"(pmcr));
+-	__asm__ volatile ("mrs %0, pmcntenset_el0" : "=r"(en));
+-	__asm__ volatile ("msr pmcr_el0, %0; msr pmcntenset_el0, %1; isb" :: "r"(pmcr | 1), "r"(1ull << 31));
+-	__asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r"(c0));
+-	t0 = cntvct();
+-	do {
+-		t1 = cntvct();
+-	} while (t1 - t0 < freq / 10);
+-	__asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r"(c1));
+-
+-	/* 32 dependent adds per pass: the chain, not the loop, sets the pace */
+-	uint64_t a0 = cntvct(), a1;
+-	do {
+-		__asm__ volatile (
+-			".rept 32\n add %0, %0, #1\n .endr" : "+r"(x));
+-		adds += 32;
+-		a1 = cntvct();
+-	} while (a1 - a0 < freq / 10);
+-
+-	if (!(en & (1ull << 31))) {
+-		__asm__ volatile ("msr pmcntenclr_el0, %0" :: "r"(1ull << 31));
+-	}
+-	__asm__ volatile ("msr pmcr_el0, %0; isb" :: "r"(pmcr));
+-	ml_set_interrupts_enabled(istate);
+-
+-	uint64_t mpidr;
+-	__asm__ volatile ("mrs %0, mpidr_el1" : "=r"(mpidr));
+-	printf("SWEET CLK: cpu %d (mpidr %#llx): cycles %llu in %llu ticks, adds %llu in %llu ticks, freq %llu, pmcr %#llx\n",
+-	    cpu, mpidr & 0xffffff, c1 - c0, t1 - t0, adds, a1 - a0, freq, pmcr);
+-	(void)x;
++	(void)result;
++	processor_t p = cpu_to_processor((int)(uintptr_t)arg);
++	if (p != PROCESSOR_NULL) {
++		thread_bind(p);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++	for (int i = 0; i < 20; i++) {
++		if (gold_workload(GOLD_WORK) != gold_ref) {
++			__atomic_fetch_add(&gold_errors, 1, __ATOMIC_RELAXED);
++		}
++	}
++	__atomic_fetch_add(&gold_done, 1, __ATOMIC_RELAXED);
++}
++
++static void
++gold_load_test(void)
++{
++	if (gold_mhz == 0) {
++		return;
++	}
++	uint32_t n = 0;
++	gold_done = gold_errors = 0;
++	uint64_t t0 = mach_absolute_time(), ns;
++	for (int cpu = 0; cpu < (int)real_ncpus; cpu++) {
++		thread_t t;
++		if (kernel_thread_start(gold_load_thread, (void *)(uintptr_t)cpu, &t) == KERN_SUCCESS) {
++			thread_deallocate(t);
++			n++;
++		}
++	}
++	while (gold_done < n) {
++		cpuclk_sleep(1);
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++	printf("SWEET GOLD: %u MHz, %u cores x 20 runs at once: %u errors (%llu ms)\n",
++	    gold_mhz, n, gold_errors, ns / 1000000);
++	if (gold_errors) {
++		gold_back_to_gpll0("errors under load");
++	}
+ }
+ 
+ /*
+@@ -116,24 +248,12 @@ cpuclk_thread(void *arg, wait_result_t result)
+ {
+ 	(void)arg;
+ 	(void)result;
+-	uint64_t freq;
+-	__asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(freq));
+-	if (freq == 0) {
+-		freq = 19200000;
+-	}
+ 	for (int round = 0; round < 2; round++) {
+ 		cpuclk_sleep(round == 0 ? 20 : 100);
+ 		cpuclk_regs();
+-		for (int cpu = 0; cpu < (int)real_ncpus; cpu++) {
+-			processor_t p = cpu_to_processor(cpu);
+-			if (p == PROCESSOR_NULL) {
+-				continue;
+-			}
+-			thread_bind(p);
+-			thread_block(THREAD_CONTINUE_NULL);     /* move onto that CPU */
+-			cpuclk_measure(cpu, freq);
++		if (round == 0) {
++			gold_load_test();
+ 		}
+-		thread_bind(PROCESSOR_NULL);
+ 	}
+ }
+ 
+-- 
+2.47.3
+
