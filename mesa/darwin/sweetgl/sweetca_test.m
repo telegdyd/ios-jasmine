@@ -261,7 +261,7 @@ main(void)
       BOOL bound = ((BOOL(*)(id, SEL, IOSurfaceRef, NSUInteger, NSUInteger, uint32_t, uint32_t, NSUInteger,
                              NSUInteger, uint32_t, BOOL))objc_msgSend)(
          ctx, sel_registerName("texImageIOSurface:target:internalFormat:width:height:format:type:plane:invert:"),
-         surf, GL_TEXTURE_2D, GL_RGBA, W, H, GL_BGRA, GL_UNSIGNED_BYTE, 0, NO);
+         surf, GL_TEXTURE_2D, GL_RGBA, W, H, GL_BGRA, GL_UNSIGNED_BYTE, 0, YES); /* rows as they are: it is a render target */
       CHECK(bound && tex != 0, "texImageIOSurface: binds the surface to texture %u", tex);
 
       /* CA draws into the framebuffer bound on the context: ours has the surface's texture as its color */
