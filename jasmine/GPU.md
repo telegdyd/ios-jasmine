@@ -152,6 +152,12 @@ in the one GPU address space), so instead of emulating the DRM ioctls Mesa gets 
   `mesa/ios-arm64.ini` (freedreno only, no GL/EGL/Vulkan/LLVM; libdrm from Mesa's subproject for the headers).
   First milestone: `sweetgpu_fdtest` clears a 64x64 RGBA8 render target on the GPU (GMEM, then resolve), waits on
   the fence and reads it back. Then a triangle (ir3 shaders), then GL ES.
+- **Status 2026-10-21 16:56:** kernel j0026 built (test image `shim/out/shim-boot-j26-gpu4.img`: `sweetgpu=4
+  gpumhz=266 sweetwdt=20`, not yet booted); Mesa freedreno for iOS builds (CI run 39620797449, artifact
+  `mesa-ios`: `sweetgpu_fdtest`, 12.9 MB arm64, ad-hoc signed). What it took on Darwin: the drm layer's subdir
+  condition, a libdrm stand-in header (`include/darwin-drm/xf86drm.h`), counting Darwin freedreno as graphics
+  (`with_gfx_compute`, else NIR is headers-only and gallium lacks its shader helpers), and `renderonly.c` linked
+  into the test.
 - **Running our programs on the phone** is up to the user for now (an automated safety check stops me from
   setting up launchd jobs that start them); `sweet-fs.py` puts binaries on the root and fetches their output.
 - **CoreAnimation:** to decide after the first milestone: a GL ES implementation in place of OpenGLES.framework for
