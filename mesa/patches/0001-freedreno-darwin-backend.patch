@@ -1,25 +1,129 @@
-From 99fe88d0a455a9dcfa2864d88bee9daa9df64618 Mon Sep 17 00:00:00 2001
+From 5458f0ae1a4fac548591682cd623bf82f7c011ef Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 16:30:26 +0200
+Date: Wed, 21 Oct 2026 16:38:12 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
+ include/darwin-drm/xf86drm.h                  |  79 +++++++
+ meson.build                                   |   4 +
  src/freedreno/drm/darwin/darwin_bo.c          | 108 +++++++++
  src/freedreno/drm/darwin/darwin_device.c      |  80 +++++++
  src/freedreno/drm/darwin/darwin_pipe.c        | 205 ++++++++++++++++++
  src/freedreno/drm/darwin/darwin_priv.h        | 103 +++++++++
  src/freedreno/drm/freedreno_device.c          |  15 ++
  src/freedreno/drm/meson.build                 |  11 +
+ src/freedreno/meson.build                     |   2 +-
  src/gallium/drivers/freedreno/meson.build     |  29 +++
  .../drivers/freedreno/sweetgpu_fdtest.c       | 124 +++++++++++
- 8 files changed, 675 insertions(+)
+ 11 files changed, 759 insertions(+), 1 deletion(-)
+ create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
  create mode 100644 src/freedreno/drm/darwin/darwin_pipe.c
  create mode 100644 src/freedreno/drm/darwin/darwin_priv.h
  create mode 100644 src/gallium/drivers/freedreno/sweetgpu_fdtest.c
 
+diff --git a/include/darwin-drm/xf86drm.h b/include/darwin-drm/xf86drm.h
+new file mode 100644
+index 0000000..1090fc8
+--- /dev/null
++++ b/include/darwin-drm/xf86drm.h
+@@ -0,0 +1,79 @@
++/*
++ * Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ *
++ * Stand-in for libdrm's xf86drm.h on Apple platforms (ios-jasmine): there is
++ * no DRM device, freedreno runs on its darwin backend (src/freedreno/drm/
++ * darwin). The common freedreno code and the msm backend still reference a
++ * few libdrm calls; here they all fail with -ENODEV.
++ */
++
++#ifndef _XF86DRM_H_
++#define _XF86DRM_H_
++
++#include <errno.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdlib.h>
++
++#include "drm-uapi/drm.h"
++
++#define DRM_NODE_PRIMARY 0
++#define DRM_NODE_CONTROL 1
++#define DRM_NODE_RENDER  2
++#define DRM_NODE_MAX     3
++#define DRM_BUS_PCI      0
++#define DRM_BUS_PLATFORM 2
++
++typedef struct _drmVersion {
++   int version_major;
++   int version_minor;
++   int version_patchlevel;
++   int name_len;
++   char *name;
++   int date_len;
++   char *date;
++   int desc_len;
++   char *desc;
++} drmVersion, *drmVersionPtr;
++
++typedef struct _drmPlatformDeviceInfo {
++   char **compatible;
++} drmPlatformDeviceInfo, *drmPlatformDeviceInfoPtr;
++
++typedef struct _drmDevice {
++   char **nodes;
++   int available_nodes;
++   int bustype;
++   union {
++      drmPlatformDeviceInfoPtr platform;
++   } deviceinfo;
++} drmDevice, *drmDevicePtr;
++
++static inline drmVersionPtr drmGetVersion(int fd) { (void)fd; errno = ENODEV; return NULL; }
++static inline void drmFreeVersion(drmVersionPtr v) { (void)v; }
++static inline int drmIoctl(int fd, unsigned long request, void *arg)
++{ (void)fd; (void)request; (void)arg; return -ENODEV; }
++static inline int drmCommandWrite(int fd, unsigned long index, void *data, unsigned long size)
++{ (void)fd; (void)index; (void)data; (void)size; return -ENODEV; }
++static inline int drmCommandWriteRead(int fd, unsigned long index, void *data, unsigned long size)
++{ (void)fd; (void)index; (void)data; (void)size; return -ENODEV; }
++static inline int drmCommandRead(int fd, unsigned long index, void *data, unsigned long size)
++{ (void)fd; (void)index; (void)data; (void)size; return -ENODEV; }
++static inline int drmGetCap(int fd, uint64_t capability, uint64_t *value)
++{ (void)fd; (void)capability; (void)value; return -ENODEV; }
++static inline int drmOpenWithType(const char *name, const char *busid, int type)
++{ (void)name; (void)busid; (void)type; return -ENODEV; }
++static inline int drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
++{ (void)fd; (void)handle; (void)flags; (void)prime_fd; return -ENODEV; }
++static inline int drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
++{ (void)fd; (void)prime_fd; (void)handle; return -ENODEV; }
++static inline int drmSyncobjCreate(int fd, uint32_t flags, uint32_t *handle)
++{ (void)fd; (void)flags; (void)handle; return -ENODEV; }
++static inline int drmSyncobjDestroy(int fd, uint32_t handle)
++{ (void)fd; (void)handle; return -ENODEV; }
++static inline int drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device)
++{ (void)fd; (void)flags; (void)device; return -ENODEV; }
++static inline void drmFreeDevice(drmDevicePtr *device) { (void)device; }
++
++#endif /* _XF86DRM_H_ */
+diff --git a/meson.build b/meson.build
+index 5f19ef9..6e94ce1 100644
+--- a/meson.build
++++ b/meson.build
+@@ -159,6 +159,10 @@ pre_args += '-DHAVE_OPENGL_ES_2=@0@'.format(with_gles2.to_int())
+ 
+ with_any_opengl = with_opengl or with_gles1 or with_gles2
+ 
++# ios-jasmine: no libdrm on Apple platforms; freedreno uses include/darwin-drm/xf86drm.h
++if host_machine.system() == 'darwin'
++  pre_args += '-I' + (meson.current_source_dir() / 'include' / 'darwin-drm')
++endif
+ system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android', 'managarm'].contains(host_machine.system())
+ 
+ gallium_drivers = get_option('gallium-drivers')
 diff --git a/src/freedreno/drm/darwin/darwin_bo.c b/src/freedreno/drm/darwin/darwin_bo.c
 new file mode 100644
 index 0000000..77eb82a
@@ -602,6 +706,19 @@ index d2baf58..445e18a 100644
  libfreedreno_drm_virtio_files = files(
    'virtio/virtio_bo.c',
    'virtio/virtio_device.c',
+diff --git a/src/freedreno/meson.build b/src/freedreno/meson.build
+index e8f01b8..a6c37f9 100644
+--- a/src/freedreno/meson.build
++++ b/src/freedreno/meson.build
+@@ -22,7 +22,7 @@ subdir('ir2')
+ subdir('ir3')
+ subdir('fdl')
+ 
+-if system_has_kms_drm
++if system_has_kms_drm or host_machine.system() == 'darwin'
+   subdir('drm')
+ endif
+ 
 diff --git a/src/gallium/drivers/freedreno/meson.build b/src/gallium/drivers/freedreno/meson.build
 index b04379b..1a27aab 100644
 --- a/src/gallium/drivers/freedreno/meson.build
