@@ -1,0 +1,175 @@
+From 41785a2e8ae3d4e0cd97b6b072a576bbf7222522 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 04:21:03 +0200
+Subject: [PATCH] jasmine-j0014: measure the real CPU clock
+
+Nothing sets the Kryo 260 clocks after the bootloader (no cpufreq in the
+DT, none under Linux either), and the UI is slow. osfmk/arm64/sweet_cpuclk.c
+binds a thread to each CPU in turn and measures the PMU cycle counter and a
+chain of dependent adds against the system counter (100 ms, interrupts
+off), 20 s and 120 s after the platform expert starts. Read only;
+sweetclk=0 disables it.
+---
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
+ osfmk/arm64/sweet_cpuclk.c               | 115 +++++++++++++++++++++++
+ osfmk/conf/files.arm64                   |   1 +
+ 3 files changed, 119 insertions(+)
+ create mode 100644 osfmk/arm64/sweet_cpuclk.c
+
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 02042c2..7a9d14b 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -20,6 +20,8 @@ extern "C" int sweet_rtc_get(uint64_t *secs);
+ extern "C" void sweet_rtc_set(uint64_t secs);
+ /* bsd/dev/sweet_nvt.c: jasmine touch (ADT /sweet-touch) */
+ extern "C" void sweet_nvt_init(void);
++/* osfmk/arm64/sweet_cpuclk.c: measured CPU clock, logged 20 s and 120 s in */
++extern "C" void sweet_cpuclk_start(void);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -240,6 +242,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	if (rtc) {
+ 		publishResource("IORTC", this);
+ 	}
++	sweet_cpuclk_start();
+ 	return true;
+ }
+ 
+diff --git a/osfmk/arm64/sweet_cpuclk.c b/osfmk/arm64/sweet_cpuclk.c
+new file mode 100644
+index 0000000..15e8d60
+--- /dev/null
++++ b/osfmk/arm64/sweet_cpuclk.c
+@@ -0,0 +1,115 @@
++/*
++ * CPU clock probe (jasmine bring-up, read only): how fast do the cores really
++ * run? Nothing sets the Kryo 260 clocks after the bootloader (no cpufreq in
++ * the DT, none in Linux either). For each CPU: the PMU cycle counter
++ * (PMCCNTR_EL0) and a chain of dependent adds (1 per cycle on an A73-class
++ * core) against the 19.2 MHz system counter, 100 ms with interrupts off,
++ * bound to that CPU. Runs 20 s and 120 s after start. sweetclk=0 disables it.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/processor.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++void sweet_cpuclk_start(void);
++
++static int sweet_cpuclk_chan;
++
++static void
++cpuclk_sleep(uint32_t secs)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(secs, NSEC_PER_SEC, &deadline);
++	(void)assert_wait_deadline(&sweet_cpuclk_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static inline uint64_t
++cntvct(void)
++{
++	uint64_t v;
++	__asm__ volatile ("isb; mrs %0, cntvct_el0" : "=r"(v));
++	return v;
++}
++
++/* one CPU: cycles and dependent adds per counter tick over ~100 ms */
++static void
++cpuclk_measure(int cpu, uint64_t freq)
++{
++	uint64_t pmcr, en, c0, c1, t0, t1, adds = 0, x = 0;
++	boolean_t istate = ml_set_interrupts_enabled(FALSE);
++
++	__asm__ volatile ("mrs %0, pmcr_el0" : "=r"(pmcr));
++	__asm__ volatile ("mrs %0, pmcntenset_el0" : "=r"(en));
++	__asm__ volatile ("msr pmcr_el0, %0; msr pmcntenset_el0, %1; isb" :: "r"(pmcr | 1), "r"(1ull << 31));
++	__asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r"(c0));
++	t0 = cntvct();
++	do {
++		t1 = cntvct();
++	} while (t1 - t0 < freq / 10);
++	__asm__ volatile ("isb; mrs %0, pmccntr_el0" : "=r"(c1));
++
++	/* 32 dependent adds per pass: the chain, not the loop, sets the pace */
++	uint64_t a0 = cntvct(), a1;
++	do {
++		__asm__ volatile (
++			".rept 32\n add %0, %0, #1\n .endr" : "+r"(x));
++		adds += 32;
++		a1 = cntvct();
++	} while (a1 - a0 < freq / 10);
++
++	if (!(en & (1ull << 31))) {
++		__asm__ volatile ("msr pmcntenclr_el0, %0" :: "r"(1ull << 31));
++	}
++	__asm__ volatile ("msr pmcr_el0, %0; isb" :: "r"(pmcr));
++	ml_set_interrupts_enabled(istate);
++
++	uint64_t mpidr;
++	__asm__ volatile ("mrs %0, mpidr_el1" : "=r"(mpidr));
++	printf("SWEET CLK: cpu %d (mpidr %#llx): cycle counter %llu MHz, dependent adds %llu MHz (pmcr %#llx)\n",
++	    cpu, mpidr & 0xffffff, (c1 - c0) * freq / (t1 - t0) / 1000000,
++	    adds * freq / (a1 - a0) / 1000000, pmcr);
++	(void)x;
++}
++
++static void
++cpuclk_thread(void *arg, wait_result_t result)
++{
++	(void)arg;
++	(void)result;
++	uint64_t freq;
++	__asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(freq));
++	if (freq == 0) {
++		freq = 19200000;
++	}
++	for (int round = 0; round < 2; round++) {
++		cpuclk_sleep(round == 0 ? 20 : 100);
++		for (int cpu = 0; cpu < (int)ml_get_max_cpus(); cpu++) {
++			processor_t p = cpu_to_processor(cpu);
++			if (p == PROCESSOR_NULL) {
++				continue;
++			}
++			thread_bind(p);
++			thread_block(THREAD_CONTINUE_NULL);     /* move onto that CPU */
++			cpuclk_measure(cpu, freq);
++		}
++		thread_bind(PROCESSOR_NULL);
++	}
++}
++
++void
++sweet_cpuclk_start(void)
++{
++	int on = 1;
++	thread_t thread;
++	(void)PE_parse_boot_argn("sweetclk", &on, sizeof(on));
++	if (on && kernel_thread_start(cpuclk_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
+index b0dad49..e0832af 100644
+--- a/osfmk/conf/files.arm64
++++ b/osfmk/conf/files.arm64
+@@ -41,6 +41,7 @@ osfmk/arm/arm_timer.c		standard
+ osfmk/arm/arm_init.c	optional config_pmap_ppl
+ osfmk/arm64/arm_vm_init.c	optional config_pmap_ppl
+ osfmk/arm64/sweet_early.c	standard
++osfmk/arm64/sweet_cpuclk.c	standard
+ osfmk/arm64/arm64_hypercall.c	standard
+ osfmk/arm/io_map.c		standard
+ osfmk/arm64/loose_ends.c	standard
+-- 
+2.47.3
+
