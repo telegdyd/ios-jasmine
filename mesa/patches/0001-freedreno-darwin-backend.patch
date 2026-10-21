@@ -1,6 +1,6 @@
-From 381f6eed16baf6020879e9ebb905c25d39ba3504 Mon Sep 17 00:00:00 2001
+From 65e21361a6014db20e155b10e1fb77bb74454bdf Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 00:10:15 +0200
+Date: Thu, 22 Oct 2026 00:12:55 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1367 ++++++++++++++++
- .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1530 +++++++++++++++++
+ .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
- src/gallium/frontends/sweetgl/sweetgl.h       |   95 ++
+ src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5100 insertions(+), 1 deletion(-)
+ 20 files changed, 5263 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..363fd0e
+index 0000000..0e14dde
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1367 @@
+@@ -0,0 +1,1530 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1328,6 +1328,8 @@ index 0000000..363fd0e
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include <mach/mach.h>
++#include <mach/vm_page_size.h>
 +#include <CoreFoundation/CoreFoundation.h>
 +#include <IOSurface/IOSurfaceRef.h>
 +
@@ -1939,6 +1941,91 @@ index 0000000..363fd0e
 +   return false;
 +}
 +
++/*
++ * Texture functions of CA's GL renderer that QuartzCore has no tex_fragment_shaders
++ * entry for (create_shader then fails and the draw is dropped); install_texfns()
++ * points those entries at the sca_ expressions below, and w_ShaderSource adds their
++ * definitions to any shader that calls them. The first two read color_matrix[0..3]
++ * (the input's r, g, b and a columns) and color_matrix[4] (bias).
++ *  - sca_vcm (0x2d, render_vibrant_color_matrix: Control Center plates): the
++ *    destination through the matrix, unpremultiplied, mixed in by the source's
++ *    alpha (what CA's software renderer does);
++ *  - sca_cm4 (0x14, a matrix filter without its premultiply flag, next to 0x13
++ *    colorMatrix4x4Bias: lock screen clock): the matrix on the premultiplied
++ *    colour as it is;
++ *  - sca_nop / sca_vblur (0x26 / 0x27, variable blur, notification centre): CA
++ *    blurs by sampling a mip chain of a copy of the source, which a GLES surface
++ *    (level 0 only) cannot hold, so the mip passes draw nothing and the second
++ *    blurs the source in one pass: a 24 tap golden angle disc, Gaussian weighted,
++ *    radius = mask alpha (1 - alpha with minmax_dir.y) * minmax_dir.x / 2.
++ */
++static const char fn_vcm[] =
++   "lowp vec4 sca_vcm(lowp vec4 s) {\n"
++   "  lowp vec4 d = gl_LastFragData[0];\n"
++   "  lowp vec4 u = vec4(d.rgb / max(d.a, .005), d.a);\n"
++   "  u = clamp(u.r * color_matrix[0] + u.g * color_matrix[1] + u.b * color_matrix[2]\n"
++   "    + u.a * color_matrix[3] + color_matrix[4], 0., 1.);\n"
++   "  u.rgb *= u.a;\n"
++   "  return mix(d, d.a > 0. ? u : vec4(0.), s.a);\n"
++   "}\n";
++static const char fn_cm4[] =
++   "lowp vec4 sca_cm4(lowp vec4 s) {\n"
++   "  lowp vec4 u = clamp(s.r * color_matrix[0] + s.g * color_matrix[1] + s.b * color_matrix[2]\n"
++   "    + s.a * color_matrix[3] + color_matrix[4], 0., 1.);\n"
++   "  return vec4(min(u.rgb, u.a), u.a);\n"
++   "}\n";
++static const char fn_nop[] =
++   "lowp vec4 sca_nop() {\n"
++   "  discard;\n"
++   "  return vec4(0.);\n"
++   "}\n";
++static const char fn_vblur[] =
++   "lowp vec4 sca_vblur(lowp vec4 m) {\n"
++   "  highp vec2 tc = texcoord0_0;\n"
++   "  highp vec2 px = vec2(length(vec2(dFdx(tc.x), dFdy(tc.x))), length(vec2(dFdx(tc.y), dFdy(tc.y))));\n"
++   "  mediump float r = (minmax_dir.y > .5 ? 1. - m.a : m.a) * minmax_dir.x * .5;\n"
++   "  mediump vec4 acc = texture2D(texture0, tc);\n"
++   "  if (r < .5)\n"
++   "    return acc;\n"
++   "  mediump float wsum = 1.;\n"
++   "  for (int i = 1; i <= 24; i++) {\n"
++   "    mediump float f = float(i) / 24.;\n"
++   "    mediump float ang = float(i) * 2.3999632;\n"
++   "    mediump float w = exp(-2. * f);\n"
++   "    acc += w * texture2D(texture0, tc + vec2(cos(ang), sin(ang)) * (sqrt(f) * r) * px);\n"
++   "    wsum += w;\n"
++   "  }\n"
++   "  return acc / wsum;\n"
++   "}\n";
++static const char fn_cm_decl[] = "uniform lowp vec4 color_matrix[5];\n";
++static const char fn_vblur_decl[] = "uniform highp vec4 minmax_dir;\n";
++static const char fn_derivatives[] = "#extension GL_OES_standard_derivatives : enable\n";
++
++/* the sca_ texture functions the source calls, defined before main(); the source is freed */
++static char *
++add_texfns(char *src)
++{
++   bool vcm = strstr(src, "sca_vcm(") != NULL, cm4 = strstr(src, "sca_cm4(") != NULL;
++   bool nop = strstr(src, "sca_nop(") != NULL, vblur = strstr(src, "sca_vblur(") != NULL;
++   if (!strstr(src, "void main") || !(vcm || cm4 || nop || vblur))
++      return src;
++   if (vblur)
++      src = insert_at(src, after_directives(src), fn_derivatives);
++   if ((vcm || cm4) && !strstr(src, "color_matrix["))
++      src = insert_at(src, strstr(src, "void main") - src, fn_cm_decl);
++   if (vblur && !strstr(src, "minmax_dir"))
++      src = insert_at(src, strstr(src, "void main") - src, fn_vblur_decl);
++   if (vcm)
++      src = insert_at(src, strstr(src, "void main") - src, fn_vcm);
++   if (cm4)
++      src = insert_at(src, strstr(src, "void main") - src, fn_cm4);
++   if (nop)
++      src = insert_at(src, strstr(src, "void main") - src, fn_nop);
++   if (vblur)
++      src = insert_at(src, strstr(src, "void main") - src, fn_vblur);
++   return src;
++}
++
 +static void
 +w_ShaderSource(void *rctx, GLuint shader, GLsizei count, const GLchar *const *string,
 +               const GLint *length)
@@ -1969,6 +2056,7 @@ index 0000000..363fd0e
 +   }
 +   if (has_word(src, "coord_arg") && !strstr(src, "vec4 coord_arg"))
 +      src = insert_at(src, after_directives(src), coord_arg_decl);
++   src = add_texfns(src);
 +   if (strstr(src, "gl_LastFragData")) {
 +      flags |= OBJ_FBFETCH;
 +      /* blank the extension directive */
@@ -2621,7 +2709,80 @@ index 0000000..363fd0e
 +   return method_setImplementation(m, (IMP)imp);
 +}
 +
++/*
++ * QuartzCore (iOS 16.7.16 20H392, iPhone X shared cache; the iPhone 8 cache has the
++ * same code 0x4000 lower): CA::OGL::GLContext's tex_fragment_shaders, one GLSL
++ * expression per texture function (entry 0x13 is "colorMatrix4x4Bias(s0)", the
++ * ones without a GL expression are NULL), and the byte table of create_shader's
++ * switch over the function (index function - 0x11) that picks which uniforms a
++ * shader declares and looks up: 0 is color_matrix[5], 0x95 the blur's minmax_dir
++ * and friends, 0xde none. Nothing is written unless all of it is as expected.
++ */
++#define QC_TEXFN_TABLE 0x1d5b48a10ull
++#define QC_TEXFN_CASES 0x18855e1e4ull /* entry of function 0x11 */
++#define QC_CACHE_BASE 0x180000000ull
++
++extern const void *_dyld_get_shared_cache_range(size_t *length);
++
++static const struct {
++   uint8_t fn;
++   const char *expr;
++   uint8_t uniforms;
++} texfns[] = {
++   {0x2d, "sca_vcm(s0)", 0},
++   {0x14, "sca_cm4(s0)", 0},
++   {0x26, "sca_nop()", 0xde},
++   {0x27, "sca_vblur(s1)", 0x95},
++};
++
++static bool
++write_const(void *at, const void *val, size_t len, vm_prot_t back)
++{
++   vm_address_t page = (vm_address_t)at & ~(vm_address_t)vm_page_mask;
++   if (vm_protect(mach_task_self(), page, vm_page_size * 2, FALSE,
++                  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS)
++      return false;
++   memcpy(at, val, len);
++   vm_protect(mach_task_self(), page, vm_page_size * 2, FALSE, back);
++   return true;
++}
++
++static void
++install_texfns(void)
++{
++   size_t len = 0;
++   const uint8_t *cache = _dyld_get_shared_cache_range(&len);
++   if (!cache) {
++      sca_log("sweetca: texture functions: no shared cache range");
++      return;
++   }
++   uint64_t slide = (uint64_t)(uintptr_t)cache - QC_CACHE_BASE;
++   const char **table = (const char **)(uintptr_t)(QC_TEXFN_TABLE + slide);
++   const uint8_t *cases = (const uint8_t *)(uintptr_t)(QC_TEXFN_CASES - 0x11 + slide);
++   if (!table[0x13] || strcmp(table[0x13], "colorMatrix4x4Bias(s0)") != 0 || cases[0x13] != 0 ||
++       cases[0x2b] != 0x95) {
++      sca_log("sweetca: texture functions: unexpected QuartzCore, not patched");
++      return;
++   }
++   for (size_t i = 0; i < sizeof(texfns) / sizeof(texfns[0]); i++) {
++      uint8_t fn = texfns[i].fn;
++      if (table[fn] || cases[fn] != 0xde) {
++         sca_log("sweetca: texture function %#x: unexpected (%p, case %#x), not patched", fn,
++                 (void *)table[fn], cases[fn]);
++         return;
++      }
++   }
++   for (size_t i = 0; i < sizeof(texfns) / sizeof(texfns[0]); i++) {
++      uint8_t fn = texfns[i].fn, u = texfns[i].uniforms;
++      bool ok = write_const((void *)&table[fn], &texfns[i].expr, sizeof(char *), VM_PROT_READ) &&
++                (u == 0xde || write_const((void *)&cases[fn], &u, 1, VM_PROT_READ | VM_PROT_EXECUTE));
++      sca_log("sweetca: texture function %#x = %s: %s", fn, texfns[i].expr, ok ? "installed" : "FAILED");
++   }
++}
++
 +/* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
++int sweetca_installed(void);
++
 +__attribute__((visibility("default"))) int
 +sweetca_installed(void)
 +{
@@ -2633,6 +2794,8 @@ index 0000000..363fd0e
 +{
 +   const char *t = getenv("SWEETCA_TRACE");
 +   trace_on = t && t[0] == '1' ? 1 : t && t[0] == '2' ? 2 : 0;
++   if (!getenv("SWEETCA_NO_TEXFNS"))
++      install_texfns();
 +   Class cls = objc_getClass("EAGLContext");
 +   if (cls == Nil) {
 +      sca_log("sweetca: no EAGLContext class");
