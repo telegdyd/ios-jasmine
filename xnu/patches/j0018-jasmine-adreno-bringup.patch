@@ -1,6 +1,6 @@
-From bbd6b714a15cd6ee0407f394173dfe6004706893 Mon Sep 17 00:00:00 2001
+From e944c1c8edcd1c7a14fe3a377050ce25607c3217 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 06:49:56 +0200
+Date: Wed, 21 Oct 2026 07:08:22 +0200
 Subject: [PATCH] jasmine-j0018: Adreno 512 bring-up, power and command
  processor (sweetgpu=)
 
@@ -13,9 +13,9 @@ above 4 GiB). Mainline Linux, which has no driver for the head switch,
 locked a CPU up on the first GPU register access.
 ---
  bsd/conf/files                           |   1 +
- bsd/dev/sweet_gpu.c                      | 626 +++++++++++++++++++++++
+ bsd/dev/sweet_gpu.c                      | 633 +++++++++++++++++++++++
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   2 +
- 3 files changed, 629 insertions(+)
+ 3 files changed, 636 insertions(+)
  create mode 100755 bsd/dev/sweet_gpu.c
 
 diff --git a/bsd/conf/files b/bsd/conf/files
@@ -32,10 +32,10 @@ index acc75a1..0f71085 100644
  bsd/dev/sweet_i2c1.c			standard
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
 new file mode 100755
-index 0000000..3b8ce42
+index 0000000..4abe9ba
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu.c
-@@ -0,0 +1,626 @@
+@@ -0,0 +1,633 @@
 +/*
 + * Adreno 512 bring-up (jasmine, SDM660): step G1 of jasmine/GPU.md, "the GPU
 + * executes our commands". Off unless sweetgpu= is set; a kernel thread does
@@ -365,14 +365,20 @@ index 0000000..3b8ce42
 +		return err;
 +	}
 +
-+	/* clocks from XO; gfx3d's root must run while GX powers up (downstream force-enable-root-clk) */
-+	if ((err = cc_rcg_xo(GPUCC_RBBMTIMER_RCG)) || (err = cc_branch_on(GPUCC_RBBMTIMER_CBCR)) ||
-+	    (err = cc_rcg_xo(GPUCC_RBCPR_RCG)) || (err = cc_branch_on(GPUCC_RBCPR_CBCR)) ||
++	/*
++	 * Clock roots from XO; gfx3d's must run while GX powers up (downstream
++	 * force-enable-root-clk). The branches only report running once GX is
++	 * on (first boot: the RBBM timer branch stayed off with only CX up),
++	 * so they are enabled here and checked after GX, as kgsl does.
++	 */
++	if ((err = cc_rcg_xo(GPUCC_RBBMTIMER_RCG)) || (err = cc_rcg_xo(GPUCC_RBCPR_RCG)) ||
 +	    (err = cc_rcg_xo(GPUCC_GFX3D_RCG))) {
-+		gpu_state("a GPU clock did not start");
++		gpu_state("a GPU clock root did not start");
 +		return err;
 +	}
-+	gpu_state("CX on, clocks from XO");
++	cc_wr(GPUCC_RBBMTIMER_CBCR, cc_rd(GPUCC_RBBMTIMER_CBCR) | CBCR_ENABLE);
++	cc_wr(GPUCC_RBCPR_CBCR, cc_rd(GPUCC_RBCPR_CBCR) | CBCR_ENABLE);
++	gpu_state("CX on, clock roots from XO");
 +
 +	gpu_pause(4, "GX GDSC power-up next");
 +	/* GX GDSC: block reset, AON (GMEM) reset, unclamp, power on (gdsc.c, CLAMP_IO | SW_RESET | AON_RESET) */
@@ -394,8 +400,9 @@ index 0000000..3b8ce42
 +	}
 +	cc_wr(GPUCC_GFX3D_CBCR, cc_rd(GPUCC_GFX3D_CBCR) | CBCR_RETAIN_MEM);
 +	delay(1);
-+	if ((err = cc_branch_on(GPUCC_GFX3D_CBCR))) {
-+		gpu_state("gfx3d clock did not start");
++	if ((err = cc_branch_on(GPUCC_GFX3D_CBCR)) || (err = cc_branch_on(GPUCC_RBBMTIMER_CBCR)) ||
++	    (err = cc_branch_on(GPUCC_RBCPR_CBCR))) {
++		gpu_state("a GPU clock did not start with GX on");
 +		return err;
 +	}
 +	gpu_state("GX on");

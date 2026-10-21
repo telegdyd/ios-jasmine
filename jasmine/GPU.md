@@ -75,6 +75,33 @@ Each stage is useful on its own.
 
 ### G1: the GPU in the kernel (1-2 weeks)
 
+#### G1 findings (2026-10-21)
+
+- **Firmware** is on the stock `vendor` partition (backup `p67_vendor_a.img`, `/firmware`): `a530_pm4.fw`
+  (19652 bytes), `a530_pfp.fw` (16820), `a512_zap.mdt` + `.b00`-`.b02` and the same as one ELF,
+  `a512_zap.elf` (17204; QDSP6 ELF32, one PT_LOAD at 0x5000, 0x1334 bytes). Kept out of git in
+  `research/gpu-fw`; `tools/mkadt.py` puts them into `/sweet-gpu` (`pm4`, `pfp`, `zap`).
+- **The GPU rail is VDD_CX through a head switch.** The stock DT feeds the GPU CPR controller from a stub
+  regulator; the real path is the GFX LDO block at 0x506e000 (`qcom,sdm660-gfx-ldo`, downstream
+  `msm_gfx_ldo.c`) in BHS mode (LDO mode is never allowed: `qcom,cpr-corner-allow-ldo-mode` all 0), and
+  the GPU's voltage is the CX corner voted through RPM (`qcom,system-voltage` 0x40..0x180 = LOW_SVS..TURBO).
+  The GX GDSC's parent supply is that regulator. Mainline has no driver for the head switch (its sdm660
+  OPP table says "lacking support for the GPU regulator").
+- **Mainline Linux cannot start this GPU:** with the firmware pushed into the charging shell's initramfs
+  (`tools/pmos-push.py`), opening `/dev/dri/renderD128` loaded the microcode and then hard-locked a CPU on
+  the first GPU register access; the shell died a few seconds later (2026-10-21 about 06:37). So there is
+  no Linux reference run; our driver follows the downstream sequence instead.
+- **Power-up sequence (j0018):** GCC `gpu_cfg_ahb` 0x71004, `gpu_bimc_gfx` 0x71010, `bimc_gfx` 0x7106c on;
+  LDO: clear clamp (bit 31), CPR auto-bypass (bit 29), the `sdm660_ldo_config` values, then
+  `enable_bhs_mode` (SW control, power source BHS, BHS enables low, BHS under GDSC control); GPU CX GDSC
+  (0x5066004, status in 0x5066008); RBBM timer, RBCPR and gfx3d RCGs from XO (19.2 MHz: no PLL, no vote);
+  GX GDSC (0x5066094) with BCR reset (0x5066090), AON reset and unclamp (0x5065130 bits 4 and 0); then the
+  gfx3d branch (0x5066098). GPU registers are touched only once GX reports PWR_ON.
+- **Zap shader (next step):** PAS id 13 through SCM (SMCCC SIP calls, `0x42000000 | svc << 8 | cmd`, x1 =
+  arginfo): `INIT_IMAGE` (2/1, metadata = ELF header + program headers + hash segment), `MEM_SETUP` (2/2,
+  the reserved region `gpu@fed00000`, 10 MiB, outside XNU's RAM), copy the PT_LOAD segment,
+  `AUTH_AND_RESET` (2/5); afterwards `CP_SET_SECURE_MODE 0` on the ring.
+
 - An **RPM client** (SMD) for the votes the GPU needs (GPU rail, GPU and bus clocks). The same client can raise
   the RAM and bus clocks, so it pays twice (see the memory bandwidth measurement in NOTES.md).
 - Power up the GPU, load the microcode, start the command processor and run a ring:
