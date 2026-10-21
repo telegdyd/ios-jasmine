@@ -1,6 +1,6 @@
-From 653625822fe883376a4c3d3ee2321e8f3a62f16c Mon Sep 17 00:00:00 2001
+From 9d543eeba9936b73d7717c93e472d9edc4871a0e Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 02:52:27 +0200
+Date: Wed, 21 Oct 2026 03:08:09 +0200
 Subject: [PATCH] jasmine-j0010: battery readout from the PM660 fuel gauge
 
 SweetBattery published a fixed 100 % / 4200 mV (and topaz's 5020 mAh) on
@@ -12,12 +12,12 @@ capacity 3000 mAh and the measured temperature; the percent comes from the
 voltage curve at an IR-corrected voltage, because this gauge's own SOC is
 badly skewed (1 % at 3.57 V); it is logged alongside once a minute.
 ---
- bsd/dev/sweet_pmic.c              | 88 +++++++++++++++++++++++++++++++
- iokit/Kernel/arm/SweetBattery.cpp | 78 ++++++++++++++++++++++-----
- 2 files changed, 152 insertions(+), 14 deletions(-)
+ bsd/dev/sweet_pmic.c              | 94 ++++++++++++++++++++++++++++++-
+ iokit/Kernel/arm/SweetBattery.cpp | 82 ++++++++++++++++++++++-----
+ 2 files changed, 160 insertions(+), 16 deletions(-)
 
 diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
-index c512365..104819d 100644
+index c512365..17e4569 100644
 --- a/bsd/dev/sweet_pmic.c
 +++ b/bsd/dev/sweet_pmic.c
 @@ -9,6 +9,7 @@
@@ -28,7 +28,36 @@ index c512365..104819d 100644
   *
   * Arbiter v3 uses the v2 layout (Linux spmi-pmic-arb.c, see
   * SweetPlatformExpert.cpp): the APID map at core + 0x800 + 4 * n holds the
-@@ -478,6 +479,92 @@ pmic_charger_init(DTEntry node)
+@@ -40,6 +41,14 @@ extern void sweet_hid_key(int key, int down);
+ int sweet_pmic_init(void);
+ int sweet_rtc_get(uint64_t *secs);
+ void sweet_rtc_set(uint64_t secs);
++/* PM660 fuel gauge for SweetBattery.cpp (same layout there) */
++struct sweet_fg {
++	int mv, ma;             /* ma > 0: charging */
++	int temp_dc;            /* 0.1 C */
++	int fg_soc;             /* the gauge's own (monotonic) SOC, percent */
++	int online, charging, full;
++};
++int sweet_fg_read(struct sweet_fg *out);
+ 
+ #define PMIC_MAX_KEYS   4
+ #define PMIC_NO_APID    0xffffu
+@@ -383,9 +392,11 @@ chg_log(const char *why, uint32_t type_ua)
+ 	(void)chg_rd8(CHG_ICL_STATUS, &icl);
+ 	(void)chg_rd8(CHG_FLOAT_VOLTAGE, &fv);
+ 	(void)chg_rd8(CHG_APSD_RESULT, &apsd);
+-	printf("SWEET CHG: %s: usb %s (apsd %#x, limit %u mA), %s, input limit %u mA, float %u mV, status2 %#x\n",
++	struct sweet_fg f = { 0 };
++	bool fgok = sweet_fg_read(&f) == 0;
++	printf("SWEET CHG: %s: usb %s (apsd %#x, limit %u mA), %s, input limit %u mA, float %u mV, status2 %#x, battery %d mV %d mA%s\n",
+ 	    why, (pp & 0x11) == 0x11 ? "online" : "offline", apsd & 0x7f, type_ua / 1000,
+-	    chg_states[st1 & 7], icl * 25, (3487500 + fv * 7500) / 1000, st2);
++	    chg_states[st1 & 7], icl * 25, (3487500 + fv * 7500) / 1000, st2, f.mv, f.ma, fgok ? "" : " (no gauge)");
+ }
+ 
+ static void
+@@ -478,6 +489,84 @@ pmic_charger_init(DTEntry node)
  	}
  }
  
@@ -38,14 +67,6 @@ index c512365..104819d 100644
 + * BATT_VOLTAGE 0x1a0 (122.07 uV), BATT_CURRENT 0x1a2 (s16, 488.28 uA,
 + * negative = charging). ADT /sweet-pmic fg = <sid base>.
 + */
-+struct sweet_fg {
-+	int mv, ma;             /* ma > 0: charging */
-+	int temp_dc;            /* 0.1 C */
-+	int fg_soc;             /* the gauge's own (monotonic) SOC, percent */
-+	int online, charging, full;
-+};
-+int sweet_fg_read(struct sweet_fg *out);
-+
 +static uint32_t fg_base;
 +static volatile uint32_t *fg_soc_ch, *fg_info_ch;
 +
@@ -121,7 +142,7 @@ index c512365..104819d 100644
  int
  sweet_pmic_init(void)
  {
-@@ -529,6 +616,7 @@ sweet_pmic_init(void)
+@@ -529,6 +618,7 @@ sweet_pmic_init(void)
  	}
  
  	pmic_charger_init(node);
@@ -130,7 +151,7 @@ index c512365..104819d 100644
  	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
  	if (!enabled ||
 diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
-index 32bea7e..4a5bc41 100644
+index 32bea7e..582daf4 100644
 --- a/iokit/Kernel/arm/SweetBattery.cpp
 +++ b/iokit/Kernel/arm/SweetBattery.cpp
 @@ -21,6 +21,14 @@ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
@@ -226,7 +247,7 @@ index 32bea7e..4a5bc41 100644
  		    percent, mv, external, charging);
  		fLastMode = mode;
  	}
-@@ -259,10 +272,40 @@ SweetBattery::pollTopaz(void)
+@@ -259,10 +272,43 @@ SweetBattery::pollTopaz(void)
  	return true;
  }
  
@@ -261,23 +282,27 @@ index 32bea7e..4a5bc41 100644
  SweetBattery::poll(void)
  {
 -	if (fReal && pollTopaz()) {
-+	if (fReal && fJasmine && pollJasmine()) {
++	if (fReal && fJasmine) {
++		if (!pollJasmine()) {
++			publish(100, 4200, 0, true, true, false, true, false, false);
++		}
 +		return;
 +	}
 +	if (fReal && !fJasmine && pollTopaz()) {
  		return;
  	}
  	if (fReal) {
-@@ -332,7 +375,14 @@ SweetBattery::start(IOService *provider)
+@@ -332,7 +378,15 @@ SweetBattery::start(IOService *provider)
  	}
  	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
  	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
 -	fReal = topaz && real == 1 && sweet_i2c1_init() == 0;
 +	fJasmine = sweet_board_is("xiaomi,jasmine") != 0;
 +	if (fJasmine) {
-+		struct sweet_fg f;
++		/* the gauge may not be set up yet (sweet_pmic_init runs later in the
++		 * platform expert's start): poll anyway, static until it answers */
 +		fDesign = 3000;
-+		fReal = real == 1 && sweet_fg_read(&f) == 0;
++		fReal = real == 1;
 +	} else {
 +		fReal = topaz && real == 1 && sweet_i2c1_init() == 0;
 +	}
