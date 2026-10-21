@@ -108,7 +108,13 @@ Each stage is useful on its own.
   2 MiB identity blocks) for stream 0; microcode from `/sweet-gpu`; CP on a 32 KiB ring at 0x9f000000:
   `CP_ME_INIT` done in 100 us, `CP_MEM_WRITE` to 0x9f018000 (below 4 GiB) and to a kernel page at
   0x1_04508000 (above 4 GiB) both landed, with the GPU clocked from XO (19.2 MHz) and still in secure mode.
-- **Zap shader (next step):** PAS id 13 through SCM (SMCCC SIP calls, `0x42000000 | svc << 8 | cmd`, x1 =
+- **2026-10-21 14:07: zap shader loaded, CP out of secure mode** (j0019, `sweetgpu=3`,
+  [logs/boot-j19-gpu3b.txt](../logs/boot-j19-gpu3b.txt)): PAS 13 `init_image` (metadata in the GPU window)
+  ret 0, `mem_setup 0xfed00000 + 0x2000` ret 0, `auth_and_reset` ret 0, `CP_SET_SECURE_MODE 0` executed
+  (549 us), and a `CP_MEM_WRITE` after it landed. `mem_setup` with the exact image size 0x1334 (what mainline's
+  `qcom_mdt_load` passes) fails with ret `0xffffffe0`: the size must be 4 KiB aligned, as downstream
+  `pil_setup_region` does ("iommus and XPUs that operate on 4K chunks").
+- **Zap shader (how):** PAS id 13 through SCM (SMCCC SIP calls, `0x42000000 | svc << 8 | cmd`, x1 =
   arginfo): `INIT_IMAGE` (2/1, metadata = ELF header + program headers + hash segment), `MEM_SETUP` (2/2,
   the reserved region `gpu@fed00000`, 10 MiB, outside XNU's RAM), copy the PT_LOAD segment,
   `AUTH_AND_RESET` (2/5); afterwards `CP_SET_SECURE_MODE 0` on the ring.
