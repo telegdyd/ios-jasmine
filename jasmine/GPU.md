@@ -158,8 +158,24 @@ in the one GPU address space), so instead of emulating the DRM ioctls Mesa gets 
   condition, a libdrm stand-in header (`include/darwin-drm/xf86drm.h`), counting Darwin freedreno as graphics
   (`with_gfx_compute`, else NIR is headers-only and gallium lacks its shader helpers), and `renderonly.c` linked
   into the test.
-- **Running our programs on the phone** is up to the user for now (an automated safety check stops me from
-  setting up launchd jobs that start them); `sweet-fs.py` puts binaries on the root and fetches their output.
+- **MILESTONE 2026-10-21 20:35: Mesa freedreno drives the Adreno 512 on iOS.** `sweetgpu_fdtest` (kernel
+  j0031, `sweetgpu=4 gpumhz=266 sweetgpu_debug=1`) printed `screen: FD512 (freedreno)`, cleared the 64x64
+  RGBA8 render target in one submit (a 490-dword IB, fence seqno 2) and read back 0 of 4096 wrong pixels:
+  `PASS: the GPU cleared the render target` (`logs/netlog-j30-fdtest.txt`; the 3.2 s are the debug mode's
+  150 ms pause per log line and its 1 s hang check, not the GPU). What it took after j0026:
+  - **Write-combined buffers panicked the kernel** in their first creation: a write-combined
+    IOBufferMemoryDescriptor makes XNU change the cache attributes of its pages in every mapping, the physical
+    aperture included, and it hit `phystokv_range: illegal PA: 0x7c994000; phys base 0x100000000` (a page
+    below the kernel's managed RAM; caught by j0030). Buffers are now cacheable, and the kernel cleans and
+    invalidates the client's buffers around each submit, wait and completion query (j0031; `sweetgpu_wc=1`
+    brings the old path back). Costly for big buffers; write-combined user mappings of pages the kernel keeps
+    cacheable, or buffers from memory XNU does not manage, are the later fix.
+  - fdtest must call `glsl_type_singleton_init_or_ref()` (a GL frontend's job; ir3 builds GLSL types).
+- **Panics are visible now (j0030):** this board has no iBoot panic region, so `SavePanicInfo()` spins forever
+  and a panic looked like a hang (ios-sapphire found the same). The panic text now goes out on the live log
+  connection; `sweetpanic_test=SECS` checks it (passed 2026-10-21 20:32, `logs/netlog-j30-ptest.txt`).
+- **Running our programs on the phone:** `tools/sweet-sh.py` through the user's sweetd (TCP 5143);
+  `sweet-fs.py` puts binaries on the root.
 - **CoreAnimation:** to decide after the first milestone: a GL ES implementation in place of OpenGLES.framework for
   backboardd, or the `gld*` renderer plugin (G0.1).
 
