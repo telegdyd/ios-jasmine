@@ -1,0 +1,240 @@
+From b31b1a4dea14fd0ec21c4c2bb25952acdd4c1b3b Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 04:05:52 +0200
+Subject: [PATCH] jasmine-j0013: mark the booted A/B slot successful (abmark=)
+
+For iOS booting from a slot (boot_b) without the PC: ABL decrements the
+slot's retry count on every boot that is not marked successful and falls
+back to the other slot after seven. With boot-arg abmark=a|b (only in the
+image flashed to that slot), a writable disk and 60 s after the root came
+up, sweet_ufs.c sets bit 54 (successful) of boot_<slot> in both GPT copies,
+as qbootctl -m does: only in an active, bootable entry; primary first
+(entry sector, then header), then the backup; each copy validated
+(signature, MyLBA, header and entry CRCs, entry array inside that copy's
+own table area) before, and read back after the write. The GPT watchdog
+now compares against CRCs it reads under the same lock, so the deliberate
+update moves its expectations instead of panicking.
+---
+ bsd/dev/sweet_ufs.c | 180 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 176 insertions(+), 4 deletions(-)
+
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index f3bef45..bed4e00 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1015,29 +1015,200 @@ sweet_gpt_watch(__unused void *arg, __unused wait_result_t wr)
+ 		(void)assert_wait_deadline(&gpt_chan, THREAD_UNINT, deadline);
+ 		thread_block(THREAD_CONTINUE_NULL);
+ 
+-		uint32_t h = 0, e = 0, bh = 0;
++		uint32_t h = 0, e = 0, bh = 0, eh, ee, ebh;
+ 		bool ok;
+ 		lck_mtx_lock(&sweet_ufs_lock);
++		eh = gpt_hcrc;
++		ee = gpt_ecrc;
++		ebh = gpt_bhcrc;
+ 		ok = ufs_read_blocks(1, 1) == 0 && memcmp(b, "EFI PART", 8) == 0;
+ 		if (ok) {
+ 			memcpy(&h, b + 16, 4);
+ 			memcpy(&e, b + 88, 4);
+ 		}
+-		if (ok && gpt_bhcrc && ufs_read_blocks(gpt_alt, 1) == 0) {
++		if (ok && ebh && ufs_read_blocks(gpt_alt, 1) == 0) {
+ 			if (memcmp(b, "EFI PART", 8) == 0) {
+ 				memcpy(&bh, b + 16, 4);
+ 			}
+ 		}
+ 		lck_mtx_unlock(&sweet_ufs_lock);
+-		if (!ok || h != gpt_hcrc || e != gpt_ecrc || (gpt_bhcrc && bh != gpt_bhcrc)) {
++		if (!ok || h != eh || e != ee || (ebh && bh != ebh)) {
+ 			uint64_t ns;
+ 			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+ 			panic("SWEET UFS: GPT LUN0 CHANGED after %llu s: primary %s hcrc %#x/%#x ecrc %#x/%#x backup hcrc %#x/%#x",
+-			    ns / NSEC_PER_SEC, ok ? "present" : "MISSING", h, gpt_hcrc, e, gpt_ecrc, bh, gpt_bhcrc);
++			    ns / NSEC_PER_SEC, ok ? "present" : "MISSING", h, eh, e, ee, bh, ebh);
+ 		}
+ 	}
+ }
+ 
++/*
++ * A/B: mark the slot we booted from successful, as Android's boot control
++ * (qbootctl -m) does, so ABL stops counting down its retries and falling back
++ * to the other slot. Only with boot-arg abmark=a|b (put into the image flashed
++ * to that slot, never into fastboot test images), a writable disk, and 60 s
++ * after the root came up: a boot that dies early stays unsuccessful.
++ * Qualcomm GPT attributes of boot_<slot> (ABL PartitionTableUpdate.h): bit 50
++ * active, 51-53 retry count, 54 successful, 55 unbootable. Only bit 54 changes,
++ * only in an active, bootable entry: primary GPT first (entry sector, then
++ * header), then the backup, each validated (signature, header and entry CRCs,
++ * entry sectors inside that copy's own table) before and read back after. The
++ * GPT watchdog's expected CRCs move with it, under the same lock.
++ */
++#define AB_ACTIVE       (1ull << 50)
++#define AB_SUCCESSFUL   (1ull << 54)
++#define AB_UNBOOTABLE   (1ull << 55)
++
++static uint8_t ab_ent[32768];           /* one GPT entry array */
++
++static uint32_t
++ab_crc32(const uint8_t *p, size_t n)
++{
++	uint32_t c = ~0u;
++	while (n--) {
++		c ^= *p++;
++		for (int k = 0; k < 8; k++) {
++			c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1)));
++		}
++	}
++	return ~c;
++}
++
++static uint32_t ab_le32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
++static uint64_t ab_le64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
++
++/*
++ * One GPT copy (header at hlba). 0 = marked (or already marked), else an error.
++ * *idx: the entry index found (must match between the copies), *newh / *newe:
++ * the header and entry CRCs now on disk. Called with sweet_ufs_lock held.
++ */
++static int
++ab_mark_copy(uint64_t hlba, bool primary, const char *name, int *idx, uint32_t *newh, uint32_t *newe)
++{
++	uint8_t *b = (uint8_t *)(su.dma + DMA_BOUNCE);
++	uint8_t hdr[512];
++	if (ufs_read_blocks(hlba, 1) != 0) {
++		return EIO;
++	}
++	memcpy(hdr, b, 512);
++	uint32_t hsize = ab_le32(hdr + 12), hcrc = ab_le32(hdr + 16);
++	if (memcmp(hdr, "EFI PART", 8) != 0 || hsize < 92 || hsize > 512 || ab_le64(hdr + 24) != hlba) {
++		return ENXIO;
++	}
++	memset(hdr + 16, 0, 4);
++	if (ab_crc32(hdr, hsize) != hcrc) {
++		return EBADMSG;
++	}
++	uint64_t first_usable = ab_le64(hdr + 40), last_usable = ab_le64(hdr + 48), elba = ab_le64(hdr + 72);
++	uint32_t nent = ab_le32(hdr + 80), esz = ab_le32(hdr + 84), ecrc = ab_le32(hdr + 88);
++	uint32_t eblocks = (nent * esz + 511) / 512;
++	if (esz != 128 || nent == 0 || nent * esz > sizeof(ab_ent) ||
++	    (primary ? (elba < 2 || elba + eblocks > first_usable) :
++	    (elba <= last_usable || elba + eblocks > hlba))) {
++		return ENXIO;
++	}
++	if (ufs_read_blocks(elba, eblocks) != 0) {
++		return EIO;
++	}
++	memcpy(ab_ent, b, nent * esz);
++	if (ab_crc32(ab_ent, nent * esz) != ecrc) {
++		return EBADMSG;
++	}
++	int found = -1;
++	for (uint32_t i = 0; i < nent && found < 0; i++) {
++		const uint8_t *e = ab_ent + i * esz;
++		uint32_t c;
++		for (c = 0; name[c] && c < 36; c++) {
++			if (e[56 + 2 * c] != (uint8_t)name[c] || e[57 + 2 * c] != 0) {
++				break;
++			}
++		}
++		if (name[c] == 0 && e[56 + 2 * c] == 0 && e[57 + 2 * c] == 0) {
++			found = (int)i;
++		}
++	}
++	if (found < 0 || (*idx >= 0 && found != *idx)) {
++		return ENOENT;
++	}
++	*idx = found;
++	uint8_t *e = ab_ent + (uint32_t)found * esz;
++	uint64_t attr = ab_le64(e + 48);
++	printf("SWEET AB: %s GPT %s entry %d attributes %#llx\n", primary ? "primary" : "backup", name, found, attr);
++	if (!(attr & AB_ACTIVE) || (attr & AB_UNBOOTABLE)) {
++		return EPERM;                   /* not the slot ABL booted */
++	}
++	if (attr & AB_SUCCESSFUL) {
++		*newh = hcrc;
++		*newe = ecrc;
++		return 0;
++	}
++	attr |= AB_SUCCESSFUL;
++	memcpy(e + 48, &attr, 8);
++	uint32_t ne = ab_crc32(ab_ent, nent * esz);
++	memcpy(hdr + 88, &ne, 4);
++	memset(hdr + 16, 0, 4);
++	uint32_t nh = ab_crc32(hdr, hsize);
++	memcpy(hdr + 16, &nh, 4);
++
++	/* entry sector, then header; each read back */
++	uint64_t esec = elba + ((uint32_t)found * esz) / 512;
++	const uint8_t *eblk = ab_ent + (esec - elba) * 512;
++	memcpy(b, eblk, 512);
++	if (emmc_rw(esec, 1, true) != 0 || ufs_read_blocks(esec, 1) != 0 || memcmp(b, eblk, 512) != 0) {
++		printf("SWEET AB: entry sector %#llx write/verify FAILED\n", esec);
++		return EIO;
++	}
++	memcpy(b, hdr, 512);
++	if (emmc_rw(hlba, 1, true) != 0 || ufs_read_blocks(hlba, 1) != 0 || memcmp(b, hdr, 512) != 0) {
++		printf("SWEET AB: header %#llx write/verify FAILED\n", hlba);
++		return EIO;
++	}
++	*newh = nh;
++	*newe = ne;
++	printf("SWEET AB: %s GPT: %s marked successful (attributes %#llx, header crc %#x, entries crc %#x)\n",
++	    primary ? "primary" : "backup", name, attr, nh, ne);
++	return 0;
++}
++
++static void
++sweet_ab_thread(void *arg, __unused wait_result_t wr)
++{
++	char slot = (char)(uintptr_t)arg;
++	char name[8] = { 'b', 'o', 'o', 't', '_', slot, 0 };
++	uint64_t deadline;
++	clock_interval_to_deadline(60, NSEC_PER_SEC, &deadline);
++	(void)assert_wait_deadline(&sweet_ab_thread, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++
++	int idx = -1, r1, r2 = -1;
++	uint32_t h = 0, e = 0, bh = 0, be = 0;
++	lck_mtx_lock(&sweet_ufs_lock);
++	r1 = (su.emmc && su.writable && gpt_alt) ? ab_mark_copy(1, true, name, &idx, &h, &e) : EROFS;
++	if (r1 == 0) {
++		gpt_hcrc = h;
++		gpt_ecrc = e;
++		r2 = ab_mark_copy(gpt_alt, false, name, &idx, &bh, &be);
++		if (r2 == 0) {
++			gpt_bhcrc = bh;
++		}
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++	printf("SWEET AB: slot %c: primary %d, backup %d%s\n", slot, r1, r2,
++	    (r1 == 0 && r2 == 0) ? " (ABL keeps booting this slot)" : " (left as it was)");
++}
++
++static void
++sweet_ab_start(void)
++{
++	char slot[4] = { 0 };
++	thread_t thread;
++	if (!PE_parse_boot_argn("abmark", slot, sizeof(slot)) || (slot[0] != 'a' && slot[0] != 'b') || slot[1]) {
++		return;
++	}
++	if (kernel_thread_start(sweet_ab_thread, (void *)(uintptr_t)slot[0], &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
+ static int
+ sweet_ufs_init(void)
+ {
+@@ -1163,6 +1334,7 @@ sweet_ufs_init(void)
+ 	if (kernel_thread_start(sweet_gpt_watch, NULL, &gpt_thread) == KERN_SUCCESS) {
+ 		thread_deallocate(gpt_thread);
+ 	}
++	sweet_ab_start();
+ 	/*
+ 	 * Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp).
+ 	 * Touch (FT5452 on QUP0 SE2) and keys (PM6125 over SPMI) are ported to
+-- 
+2.47.3
+
