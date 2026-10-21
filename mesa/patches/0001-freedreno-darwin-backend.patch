@@ -1,6 +1,6 @@
-From 42af096694659966f7f101830b764a18c7ebb0c9 Mon Sep 17 00:00:00 2001
+From 7a57c49d26f5f336fb47f72df5b397041691d4fd Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 01:05:26 +0200
+Date: Thu, 22 Oct 2026 01:12:47 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 

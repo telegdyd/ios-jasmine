@@ -314,14 +314,14 @@ main(void)
       result best = {~0u};
       bool best_flip = false, best_ref_flip = false, any = false;
       uint8_t *out = malloc((size_t)H * pitch);
-      for (int flip = 0; flip < 2; flip++) {
+      for (int flip = 0; flip < 3; flip++) {
          /* junk first, so pixels the GPU did not write stand out */
          IOSurfaceLock(surf, 0, NULL);
          memset(IOSurfaceGetBaseAddress(surf), 0x5a, (size_t)H * pitch);
          IOSurfaceUnlock(surf, 0, NULL);
 
          if (flip)
-            set_dest(glctx, GL_TEXTURE_2D, tex, false); /* variant 1: also name it as the destination texture */
+            set_dest(glctx, GL_TEXTURE_2D, tex, flip == 2); /* variants 1, 2: also name it as the destination texture, flipped in 2 */
          double t0 = CACurrentMediaTime();
          ((void (*)(id, SEL, CFTimeInterval, void *))objc_msgSend)(renderer, sel_registerName("beginFrameAtTime:timeStamp:"),
                                                                    t0, NULL);
