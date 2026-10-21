@@ -36,6 +36,28 @@ Each stage is useful on its own.
    fences. The firmware files are on the phone (stock `vendor` partition).
 3. **Watch topaz** (`git fetch topaz`) for the HackiOS patches.
 
+#### G0.1 findings (2026-10-21, from the iOS 16.7.16 root and its dyld shared cache)
+
+- **OpenGL ES on iOS 16 is layered on Metal through a renderer plugin:**
+  `OpenGLES.framework` → `GLEngine.bundle/GLEngine` (the GL front end) →
+  `/System/Library/Extensions/AppleMetalGLRenderer.bundle/AppleMetalGLRenderer` (GL renderer that translates
+  to Metal) → `AGXMetalA11.bundle` (Apple GPU driver). The bundles on disk hold only data (`default.metallib`);
+  the code is in the dyld shared cache.
+- **The renderer slot is a classic Apple GL driver plugin:** GLEngine looks bundles up as
+  `/System/Library/Extensions/%s.bundle` (string next to `gldCreateContext`) and calls them through the
+  `gld*` interface: **133 functions**, listed in [gld-symbols-ios16.txt](gld-symbols-ios16.txt)
+  (`gldCreateContext`, `gldAttachDrawable`, `gldCreateBuffer`, `gldBufferSubData`, `gldClearFence`, ...).
+  `libCVMSPluginSupport.dylib` (CVMS) is the shader/JIT support the plugins use.
+- **CoreAnimation:** QuartzCore has `gles_new_context(void*, void*, unsigned)` next to the software and Metal
+  contexts, and reads `CA_ENABLE_OGL` and `CA_DISPLAY_TYPE` (environment), which presumably select the GL
+  renderer. `IOAcceleratorES` is the accelerator service class QuartzCore looks for (topaz publishes an empty
+  one to skip a 30 s wait).
+- **So the G2 target is concrete:** a renderer bundle that exports the `gld*` interface backed by Mesa freedreno
+  (instead of Metal), and CoreAnimation switched to its GLES renderer (`CA_ENABLE_OGL` for backboardd).
+  Next research steps: the `gld*` signatures (disassembly of AppleMetalGLRenderer and GLEngine's calls, with
+  blacktop `ipsw dyld` as sweet used it), how GLEngine picks the renderer bundle (renderer ID / plist), and what
+  `gles_new_context` needs from IOSurface and the display.
+
 ### G1: the GPU in the kernel (1-2 weeks)
 
 - An **RPM client** (SMD) for the votes the GPU needs (GPU rail, GPU and bus clocks). The same client can raise
