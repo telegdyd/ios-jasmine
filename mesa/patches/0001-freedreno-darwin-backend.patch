@@ -1,28 +1,28 @@
-From 143767cc78ef7cca9cb3d5e53cf915346b66d1a5 Mon Sep 17 00:00:00 2001
+From 43d1d50fbbcc37d8bf781a3696e96412a29dde02 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 20:58:41 +0200
+Date: Wed, 21 Oct 2026 21:23:20 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
- include/darwin-drm/xf86drm.h                  |  87 ++++
+ include/darwin-drm/xf86drm.h                  |  87 +++
  meson.build                                   |   5 +
- src/freedreno/drm/darwin/darwin_bo.c          | 108 +++++
- src/freedreno/drm/darwin/darwin_device.c      |  80 ++++
- src/freedreno/drm/darwin/darwin_pipe.c        | 205 +++++++++
- src/freedreno/drm/darwin/darwin_priv.h        | 103 +++++
+ src/freedreno/drm/darwin/darwin_bo.c          | 160 +++++
+ src/freedreno/drm/darwin/darwin_device.c      |  82 +++
+ src/freedreno/drm/darwin/darwin_pipe.c        | 205 ++++++
+ src/freedreno/drm/darwin/darwin_priv.h        | 113 ++++
  src/freedreno/drm/freedreno_device.c          |  15 +
  src/freedreno/drm/meson.build                 |  11 +
  src/freedreno/meson.build                     |   2 +-
- src/gallium/drivers/freedreno/meson.build     |  32 ++
- .../drivers/freedreno/sweetgpu_fdtest.c       | 307 +++++++++++++
- src/gallium/frontends/sweetgl/meson.build     |  52 +++
- src/gallium/frontends/sweetgl/sweetgl.c       | 251 +++++++++++
- src/gallium/frontends/sweetgl/sweetgl.h       |  46 ++
+ src/gallium/drivers/freedreno/meson.build     |  32 +
+ .../drivers/freedreno/sweetgpu_fdtest.c       | 307 +++++++++
+ src/gallium/frontends/sweetgl/meson.build     |  57 ++
+ src/gallium/frontends/sweetgl/sweetgl.c       | 350 ++++++++++
+ src/gallium/frontends/sweetgl/sweetgl.h       |  71 +++
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |  14 +
- .../frontends/sweetgl/sweetgpu_gltest.c       | 408 ++++++++++++++++++
+ .../frontends/sweetgl/sweetgpu_gltest.c       | 602 ++++++++++++++++++
  src/gallium/meson.build                       |   5 +
- 17 files changed, 1730 insertions(+), 1 deletion(-)
+ 17 files changed, 2117 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -153,10 +153,10 @@ index 5f19ef9..46c744c 100644
    with_gallium_va and with_video_encode,
 diff --git a/src/freedreno/drm/darwin/darwin_bo.c b/src/freedreno/drm/darwin/darwin_bo.c
 new file mode 100644
-index 0000000..77eb82a
+index 0000000..f7a7407
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_bo.c
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,160 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -186,8 +186,9 @@ index 0000000..77eb82a
 +   return (void *)(uintptr_t)addr;
 +}
 +
-+/* Only reached for shared buffers (fd_bo_cpu_prep waits on the userspace
-+ * fences first), and nothing is shared across processes yet.
++/* Only reached for shared buffers (imported IOSurfaces), after
++ * fd_bo_cpu_prep waited on this process's own fences. GPU work of other
++ * processes on the same surface is not tracked (no implicit sync yet).
 + */
 +static int
 +darwin_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op)
@@ -234,6 +235,68 @@ index 0000000..77eb82a
 +   .destroy = darwin_bo_destroy,
 +};
 +
++static struct fd_bo *
++darwin_bo_wrap(struct fd_device *dev, uint32_t size, uint32_t handle, uint64_t iova)
++{
++   struct darwin_bo *darwin_bo = calloc(1, sizeof(*darwin_bo));
++   if (!darwin_bo)
++      return NULL;
++
++   struct fd_bo *bo = &darwin_bo->base;
++   bo->size = size;
++   bo->handle = handle;
++   bo->funcs = &funcs;
++   darwin_bo->iova = iova;
++
++   fd_bo_init_common(bo, dev);
++
++   return bo;
++}
++
++/* a handle the kernel gave out (an imported IOSurface): ask it where the buffer is */
++struct fd_bo *
++darwin_bo_from_handle(struct fd_device *dev, uint32_t size, uint32_t handle)
++{
++   uint64_t in = handle;
++   uint64_t out[2] = { 0, 0 };
++   uint32_t nout = 2;
++
++   IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_BUFFER_INFO,
++                                            &in, 1, out, &nout);
++   if (ret) {
++      ERROR_MSG("no buffer %u: 0x%x", handle, ret);
++      return NULL;
++   }
++   return darwin_bo_wrap(dev, (uint32_t)out[1], handle, out[0]);
++}
++
++/* fd_bo_from_dmabuf on Darwin: the "fd" is an IOSurface id */
++struct fd_bo *
++darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id)
++{
++   uint64_t in[2] = { (uint32_t)iosurface_id, 0 };
++   uint64_t out[4] = { 0, 0, 0, 0 };
++   uint32_t nout = 4;
++
++   IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_IMPORT_IOSURFACE,
++                                            in, 2, out, &nout);
++   if (ret || !out[0]) {
++      ERROR_MSG("IOSurface %d not imported: 0x%x", iosurface_id, ret);
++      return NULL;
++   }
++   if (out[3]) {
++      /* wrapped client memory that starts inside its first page */
++      ERROR_MSG("IOSurface %d starts %u bytes into its buffer: not supported yet",
++                iosurface_id, (unsigned)out[3]);
++      uint64_t handle = out[0];
++      IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_BUFFER_FREE, &handle, 1,
++                                NULL, NULL);
++      return NULL;
++   }
++   /* one handle per surface: the device's handle table finds a second import */
++   return fd_bo_from_handle(dev, (uint32_t)out[0], (uint32_t)out[2]);
++}
++
 +struct fd_bo *
 +darwin_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags)
 +{
@@ -248,29 +311,18 @@ index 0000000..77eb82a
 +      return NULL;
 +   }
 +
-+   struct darwin_bo *darwin_bo = calloc(1, sizeof(*darwin_bo));
-+   if (!darwin_bo) {
++   struct fd_bo *bo = darwin_bo_wrap(dev, size, (uint32_t)out[0], out[1]);
++   if (!bo)
 +      IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_BUFFER_FREE, out, 1,
 +                                NULL, NULL);
-+      return NULL;
-+   }
-+
-+   struct fd_bo *bo = &darwin_bo->base;
-+   bo->size = size;
-+   bo->handle = (uint32_t)out[0];
-+   bo->funcs = &funcs;
-+   darwin_bo->iova = out[1];
-+
-+   fd_bo_init_common(bo, dev);
-+
 +   return bo;
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_device.c b/src/freedreno/drm/darwin/darwin_device.c
 new file mode 100644
-index 0000000..68a5c3c
+index 0000000..81c0409
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_device.c
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,82 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -304,6 +356,8 @@ index 0000000..68a5c3c
 +
 +static const struct fd_device_funcs funcs = {
 +   .bo_new = darwin_bo_new,
++   .bo_from_handle = darwin_bo_from_handle,
++   .bo_from_dmabuf = darwin_bo_from_iosurface,
 +   .bo_close_handle = darwin_bo_close_handle,
 +   .pipe_new = darwin_pipe_new,
 +   .destroy = darwin_device_destroy,
@@ -564,10 +618,10 @@ index 0000000..bb58578
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_priv.h b/src/freedreno/drm/darwin/darwin_priv.h
 new file mode 100644
-index 0000000..db894f5
+index 0000000..80e2f53
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_priv.h
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,113 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -583,7 +637,13 @@ index 0000000..db894f5
 + *                                                       out: seqno
 + *   selector 4  wait          in: seqno, timeout ms     kIOReturnTimeout
 + *   selector 5  completed                               out: last seqno done
++ *   selector 6  import IOSurface  in: id, flags     out: handle, GPU VA, size, offset
++ *   selector 7  buffer info   in: handle                out: GPU VA, size
 + *   memory type = handle      IOConnectMapMemory64 maps a buffer
++ *
++ * Shared buffers are IOSurfaces (j0032): on Darwin a WINSYS_HANDLE_TYPE_FD
++ * handle carries an IOSurface id instead of a dma-buf fd, and the kernel
++ * maps the surface's own memory into the GPU address space.
 + *
 + * Every buffer stays mapped in the one GPU address space, so submits carry
 + * only the command buffers' GPU addresses (no BO list, no relocations).
@@ -629,6 +689,8 @@ index 0000000..db894f5
 +   SWEETGPU_SUBMIT = 3,
 +   SWEETGPU_WAIT = 4,
 +   SWEETGPU_COMPLETED = 5,
++   SWEETGPU_IMPORT_IOSURFACE = 6,
++   SWEETGPU_BUFFER_INFO = 7,
 +};
 +
 +/* sweet_gpu_param() numbers */
@@ -668,6 +730,8 @@ index 0000000..db894f5
 +struct fd_device *darwin_device_new(int fd);
 +struct fd_pipe *darwin_pipe_new(struct fd_device *dev, enum fd_pipe_id id, uint32_t prio);
 +struct fd_bo *darwin_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags);
++struct fd_bo *darwin_bo_from_handle(struct fd_device *dev, uint32_t size, uint32_t handle);
++struct fd_bo *darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id);
 +int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value);
 +
 +#endif /* DARWIN_PRIV_H_ */
@@ -1101,10 +1165,10 @@ index 0000000..d0e3cb8
 +}
 diff --git a/src/gallium/frontends/sweetgl/meson.build b/src/gallium/frontends/sweetgl/meson.build
 new file mode 100644
-index 0000000..35a6a54
+index 0000000..516428f
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/meson.build
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,57 @@
 +# Copyright © 2026 ios-jasmine
 +# SPDX-License-Identifier: MIT
 +
@@ -1131,7 +1195,12 @@ index 0000000..35a6a54
 +  gnu_symbol_visibility : 'hidden',
 +)
 +
-+# the GL ES test: GLSL ES shaders, textures, blending and depth through GL calls
++# the GL ES test: GLSL ES shaders, textures, blending and depth through GL calls,
++# and on iOS rendering into and sampling from IOSurfaces
++sweetgl_test_deps = [idep_nir, idep_mesautil, idep_u_tracepoints, idep_xmlconfig]
++if host_machine.system() == 'darwin'
++  sweetgl_test_deps += dependency('appleframeworks', modules : ['IOSurface', 'CoreFoundation'])
++endif
 +sweetgpu_gltest = executable(
 +  'sweetgpu_gltest',
 +  [
@@ -1142,7 +1211,7 @@ index 0000000..35a6a54
 +    freedreno_xml_header_files,
 +  ],
 +  include_directories : [inc_include, inc_util, inc_gallium, inc_gallium_aux],
-+  dependencies : [idep_nir, idep_mesautil, idep_u_tracepoints, idep_xmlconfig],
++  dependencies : sweetgl_test_deps,
 +  link_with : [
 +    libsweetgl,
 +    libmesa,
@@ -1159,10 +1228,10 @@ index 0000000..35a6a54
 +)
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
 new file mode 100644
-index 0000000..8293b2f
+index 0000000..c894f2d
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.c
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,350 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1181,8 +1250,11 @@ index 0000000..8293b2f
 +#include "pipe/p_state.h"
 +#include "frontend/api.h"
 +#include "frontend/drm_driver.h"
++#include "frontend/winsys_handle.h"
++#include "drm-uapi/drm_fourcc.h"
 +#include "state_tracker/st_context.h"
 +#include "util/driconf.h"
++#include "util/format/u_format.h"
 +#include "util/u_atomic.h"
 +#include "util/u_inlines.h"
 +#include "util/u_memory.h"
@@ -1281,12 +1353,12 @@ index 0000000..8293b2f
 +}
 +
 +static void
-+sgl_fill_visual(struct st_visual *visual, bool depth_stencil)
++sgl_fill_visual(struct st_visual *visual, enum pipe_format color_format, bool depth_stencil)
 +{
 +   memset(visual, 0, sizeof(*visual));
 +   /* single-buffered: GL renders to the front buffer, which the caller reads */
 +   visual->buffer_mask = ST_ATTACHMENT_FRONT_LEFT_MASK;
-+   visual->color_format = PIPE_FORMAT_R8G8B8A8_UNORM;
++   visual->color_format = color_format;
 +   visual->depth_stencil_format = depth_stencil ? PIPE_FORMAT_Z24_UNORM_S8_UINT : PIPE_FORMAT_NONE;
 +   visual->accum_format = PIPE_FORMAT_NONE;
 +   if (depth_stencil)
@@ -1307,7 +1379,7 @@ index 0000000..8293b2f
 +   attribs.major = es_major >= 3 ? 3 : 2;
 +   attribs.minor = 0;
 +   /* the visual of the surfaces it will draw to */
-+   sgl_fill_visual(&attribs.visual, true);
++   sgl_fill_visual(&attribs.visual, PIPE_FORMAT_R8G8B8A8_UNORM, true);
 +
 +   enum st_context_error error;
 +   ctx->st = st_api_create_context(&dpy->fscreen, &attribs, &error, share ? share->st : NULL);
@@ -1377,8 +1449,9 @@ index 0000000..8293b2f
 +   return true;
 +}
 +
-+struct sgl_surface *
-+sgl_surface_create(struct sgl_display *dpy, unsigned width, unsigned height, bool depth_stencil)
++static struct sgl_surface *
++sgl_surface_alloc(struct sgl_display *dpy, unsigned width, unsigned height,
++                  enum pipe_format color_format, bool depth_stencil)
 +{
 +   struct sgl_surface *surf = CALLOC_STRUCT(sgl_surface);
 +   if (!surf)
@@ -1386,7 +1459,7 @@ index 0000000..8293b2f
 +   surf->dpy = dpy;
 +   surf->width = width;
 +   surf->height = height;
-+   sgl_fill_visual(&surf->visual, depth_stencil);
++   sgl_fill_visual(&surf->visual, color_format, depth_stencil);
 +
 +   surf->base.visual = &surf->visual;
 +   surf->base.flush_front = sgl_flush_front;
@@ -1395,6 +1468,101 @@ index 0000000..8293b2f
 +   p_atomic_set(&surf->base.stamp, 1);
 +   surf->base.ID = p_atomic_inc_return(&sgl_drawable_id);
 +   return surf;
++}
++
++struct sgl_surface *
++sgl_surface_create(struct sgl_display *dpy, unsigned width, unsigned height, bool depth_stencil)
++{
++   return sgl_surface_alloc(dpy, width, height, PIPE_FORMAT_R8G8B8A8_UNORM, depth_stencil);
++}
++
++static enum pipe_format
++sgl_iosurface_format(uint32_t pixel_format)
++{
++   switch (pixel_format) {
++   case SGL_IOSURFACE_BGRA:
++      return PIPE_FORMAT_B8G8R8A8_UNORM;
++   case SGL_IOSURFACE_RGBA:
++      return PIPE_FORMAT_R8G8B8A8_UNORM;
++   default:
++      return PIPE_FORMAT_NONE;
++   }
++}
++
++/* a texture around an IOSurface: on Darwin an FD handle carries the IOSurface id */
++static struct pipe_resource *
++sgl_import_iosurface(struct sgl_display *dpy, uint32_t iosurface_id, unsigned width,
++                     unsigned height, unsigned bytes_per_row, enum pipe_format format,
++                     unsigned bind)
++{
++   struct pipe_screen *screen = dpy->fscreen.screen;
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = format,
++      .width0 = width,
++      .height0 = height,
++      .depth0 = 1,
++      .array_size = 1,
++      .bind = bind | PIPE_BIND_SHARED,
++   };
++   struct winsys_handle whandle = {
++      .type = WINSYS_HANDLE_TYPE_FD,
++      .handle = iosurface_id,
++      .stride = bytes_per_row,
++      .modifier = DRM_FORMAT_MOD_LINEAR,
++   };
++   struct pipe_resource *res =
++      screen->resource_from_handle(screen, &templ, &whandle, PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
++   if (!res)
++      fprintf(stderr, "sweetgl: IOSurface %u (%ux%u, %u bytes per row, %s) not usable by the GPU\n",
++              iosurface_id, width, height, bytes_per_row, util_format_short_name(format));
++   return res;
++}
++
++struct sgl_surface *
++sgl_surface_create_iosurface(struct sgl_display *dpy, uint32_t iosurface_id, unsigned width,
++                             unsigned height, unsigned bytes_per_row, uint32_t pixel_format,
++                             bool depth_stencil)
++{
++   enum pipe_format format = sgl_iosurface_format(pixel_format);
++   if (format == PIPE_FORMAT_NONE) {
++      fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
++      return NULL;
++   }
++   struct pipe_resource *color = sgl_import_iosurface(dpy, iosurface_id, width, height,
++                                                      bytes_per_row, format,
++                                                      PIPE_BIND_RENDER_TARGET |
++                                                      PIPE_BIND_SAMPLER_VIEW);
++   if (!color)
++      return NULL;
++   struct sgl_surface *surf = sgl_surface_alloc(dpy, width, height, format, depth_stencil);
++   if (!surf) {
++      pipe_resource_reference(&color, NULL);
++      return NULL;
++   }
++   /* validate() hands this out as the front buffer; depth/stencil is still ours */
++   surf->textures[ST_ATTACHMENT_FRONT_LEFT] = color;
++   return surf;
++}
++
++bool
++sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
++                        unsigned width, unsigned height, unsigned bytes_per_row,
++                        uint32_t pixel_format)
++{
++   enum pipe_format format = sgl_iosurface_format(pixel_format);
++   if (format == PIPE_FORMAT_NONE) {
++      fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
++      return false;
++   }
++   struct pipe_resource *tex = sgl_import_iosurface(ctx->dpy, iosurface_id, width, height,
++                                                    bytes_per_row, format,
++                                                    PIPE_BIND_SAMPLER_VIEW);
++   if (!tex)
++      return false;
++   st_context_teximage(ctx->st, target, 0, format, tex, false);
++   pipe_resource_reference(&tex, NULL);
++   return true;
 +}
 +
 +void
@@ -1416,25 +1584,32 @@ index 0000000..8293b2f
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
 new file mode 100644
-index 0000000..8c66598
+index 0000000..3f2eaf7
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.h
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,71 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + *
 + * sweetgl: a small GL ES frontend for ios-jasmine. Mesa's GL (st/mesa) on the
 + * freedreno screen, without EGL or DRI: a display owns the GPU screen, a
-+ * context is a GL ES 2/3 context, a surface is an offscreen framebuffer (color
-+ * and optional depth/stencil) the context renders into. Modelled on Haiku's
-+ * hgl frontend; the EAGL side (OpenGLES.framework) is meant to sit on top.
++ * context is a GL ES 2/3 context, a surface is a framebuffer (color and
++ * optional depth/stencil) the context renders into, offscreen or an IOSurface.
++ * Modelled on Haiku's hgl frontend; the EAGL side (OpenGLES.framework) is
++ * meant to sit on top.
++ *
++ * IOSurfaces are shared with the GPU without copies (SweetGPU maps the
++ * surface's own memory, kernel j0032). Rows are stored top row first, as
++ * CoreAnimation and the display expect; on the Adreno 512 the bytes per row
++ * must be a multiple of 256 (64 pixels of 4 bytes).
 + */
 +
 +#ifndef SWEETGL_H
 +#define SWEETGL_H
 +
 +#include <stdbool.h>
++#include <stdint.h>
 +
 +#ifdef __cplusplus
 +extern "C" {
@@ -1457,6 +1632,24 @@ index 0000000..8c66598
 +struct sgl_surface *sgl_surface_create(struct sgl_display *dpy, unsigned width,
 +                                       unsigned height, bool depth_stencil);
 +void sgl_surface_destroy(struct sgl_surface *surf);
++
++/* IOSurface pixel formats (IOSurfaceGetPixelFormat) that sweetgl takes */
++#define SGL_IOSURFACE_BGRA 0x42475241 /* 'BGRA', what CoreAnimation renders */
++#define SGL_IOSURFACE_RGBA 0x52474241 /* 'RGBA' */
++
++/* a surface whose color buffer is an IOSurface: the context renders into its memory */
++struct sgl_surface *sgl_surface_create_iosurface(struct sgl_display *dpy, uint32_t iosurface_id,
++                                                 unsigned width, unsigned height,
++                                                 unsigned bytes_per_row, uint32_t pixel_format,
++                                                 bool depth_stencil);
++
++/*
++ * The texture bound to target (GL_TEXTURE_2D) of ctx, which must be current,
++ * samples an IOSurface (EAGL's texImageIOSurface:); level 0 only.
++ */
++bool sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
++                             unsigned width, unsigned height, unsigned bytes_per_row,
++                             uint32_t pixel_format);
 +
 +/* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 +bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
@@ -1488,10 +1681,10 @@ index 0000000..2bc8126
 +#include "es2_glapi_mapi_tmp.h"
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 new file mode 100644
-index 0000000..78cf27a
+index 0000000..e914ff2
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,602 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1507,6 +1700,14 @@ index 0000000..78cf27a
 + *     alpha 0.5 over the clear color (what CoreAnimation does all day);
 + *  4. depth: two overlapping quads drawn far-after-near with GL_LESS.
 + *
++ * Then, on iOS, IOSurfaces shared with the GPU (kernel j0032):
++ *
++ *  5. iosurface target: the triangle of step 2 rendered into a BGRA IOSurface
++ *     the CPU filled with junk first, checked with glReadPixels and then in
++ *     the surface's own memory through IOSurface.framework (top row first);
++ *  6. iosurface texture: a BGRA IOSurface the CPU filled with four colored
++ *     quadrants, sampled as a GL texture (texImageIOSurface).
++ *
 + * Prints PASS or FAIL per step and exits 0 when all pass.
 + */
 +
@@ -1519,6 +1720,24 @@ index 0000000..78cf27a
 +
 +#include "util/os_time.h"
 +#include "sweetgl.h"
++
++#ifdef __APPLE__
++#include <CoreFoundation/CoreFoundation.h>
++
++/* IOSurface.framework: the library is in the iPhoneOS SDK; declared here like IOKit in darwin/ */
++typedef struct __IOSurface *IOSurfaceRef;
++extern const CFStringRef kIOSurfaceWidth;
++extern const CFStringRef kIOSurfaceHeight;
++extern const CFStringRef kIOSurfaceBytesPerElement;
++extern const CFStringRef kIOSurfacePixelFormat;
++IOSurfaceRef IOSurfaceCreate(CFDictionaryRef properties);
++uint32_t IOSurfaceGetID(IOSurfaceRef surface);
++size_t IOSurfaceGetBytesPerRow(IOSurfaceRef surface);
++void *IOSurfaceGetBaseAddress(IOSurfaceRef surface);
++int IOSurfaceLock(IOSurfaceRef surface, uint32_t options, uint32_t *seed);
++int IOSurfaceUnlock(IOSurfaceRef surface, uint32_t options, uint32_t *seed);
++#define kIOSurfaceLockReadOnly 1
++#endif
 +
 +#define W 64
 +#define H 64
@@ -1667,7 +1886,7 @@ index 0000000..78cf27a
 +   "}\n";
 +
 +static bool
-+triangle(void)
++triangle(const char *what)
 +{
 +   static const float verts[] = {
 +      /* x, y, then r, g, b */
@@ -1698,7 +1917,7 @@ index 0000000..78cf27a
 +   glDeleteBuffers(1, &vbo);
 +   glUseProgram(0);
 +   glDeleteProgram(p);
-+   return check("triangle", tri_expected, 3);
++   return check(what, tri_expected, 3);
 +}
 +
 +/* --- 3. texture: 2x2 texels, one per quadrant, blended at alpha 0.5 */
@@ -1847,6 +2066,166 @@ index 0000000..78cf27a
 +   return check("depth", depth_expected, 1);
 +}
 +
++#ifdef __APPLE__
++/* --- 5 and 6: IOSurfaces */
++
++static void
++dict_set_u32(CFMutableDictionaryRef dict, CFStringRef key, uint32_t value)
++{
++   CFNumberRef n = CFNumberCreate(NULL, kCFNumberSInt32Type, &value);
++   CFDictionarySetValue(dict, key, n);
++   CFRelease(n);
++}
++
++/* a W x H BGRA IOSurface; *bpr = its bytes per row */
++static IOSurfaceRef
++iosurface_new(uint32_t *bpr)
++{
++   CFMutableDictionaryRef props = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
++                                                            &kCFTypeDictionaryValueCallBacks);
++   dict_set_u32(props, kIOSurfaceWidth, W);
++   dict_set_u32(props, kIOSurfaceHeight, H);
++   dict_set_u32(props, kIOSurfaceBytesPerElement, 4);
++   dict_set_u32(props, kIOSurfacePixelFormat, SGL_IOSURFACE_BGRA);
++   IOSurfaceRef s = IOSurfaceCreate(props);
++   CFRelease(props);
++   if (!s) {
++      printf("IOSurfaceCreate failed\n");
++      return NULL;
++   }
++   *bpr = (uint32_t)IOSurfaceGetBytesPerRow(s);
++   printf("IOSurface %u: %ux%u BGRA, %u bytes per row\n", IOSurfaceGetID(s), W, H, *bpr);
++   return s;
++}
++
++/* the surface's memory (BGRA, top row first) into px (RGBA, row 0 = bottom); flip = false keeps the rows */
++static void
++iosurface_read(IOSurfaceRef s, uint32_t bpr, bool flip)
++{
++   IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL);
++   const uint8_t *base = IOSurfaceGetBaseAddress(s);
++   for (unsigned y = 0; y < H; y++) {
++      const uint8_t *row = base + (size_t)bpr * (flip ? H - 1 - y : y);
++      for (unsigned x = 0; x < W; x++) {
++         uint8_t *p = px + 4 * (y * W + x);
++         p[0] = row[4 * x + 2];
++         p[1] = row[4 * x + 1];
++         p[2] = row[4 * x + 0];
++         p[3] = row[4 * x + 3];
++      }
++   }
++   IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
++}
++
++static bool
++iosurface_target(struct sgl_display *dpy, struct sgl_context *ctx, struct sgl_surface *back)
++{
++   uint32_t bpr;
++   IOSurfaceRef s = iosurface_new(&bpr);
++   if (!s)
++      return false;
++   /* junk first, so pixels the GPU did not write show */
++   IOSurfaceLock(s, 0, NULL);
++   memset(IOSurfaceGetBaseAddress(s), 0x5a, (size_t)bpr * H);
++   IOSurfaceUnlock(s, 0, NULL);
++
++   bool ok = false;
++   struct sgl_surface *surf =
++      sgl_surface_create_iosurface(dpy, IOSurfaceGetID(s), W, H, bpr, SGL_IOSURFACE_BGRA, true);
++   if (!surf || !sgl_make_current(ctx, surf)) {
++      printf("FAIL: no IOSurface surface or make-current failed\n");
++   } else {
++      glViewport(0, 0, W, H);
++      ok = triangle("iosurface target (glReadPixels)");
++      glFinish();
++      iosurface_read(s, bpr, true);
++      bool mem = check("iosurface target (IOSurface memory)", tri_expected, 3);
++      if (!mem) {
++         iosurface_read(s, bpr, false);
++         printf("iosurface target: the memory %s with the rows not flipped\n",
++                check("iosurface target (unflipped)", tri_expected, 3) ? "matches" : "does not match either");
++      }
++      ok &= mem;
++   }
++   sgl_make_current(ctx, back);
++   sgl_surface_destroy(surf);
++   CFRelease(s);
++   return ok;
++}
++
++static bool
++iosurface_tex_expected(unsigned x, unsigned y, uint8_t out[4])
++{
++   memcpy(out, texels[(y >= H / 2) * 2 + (x >= W / 2)], 4);
++   out[3] = 0xff;
++   return true;
++}
++
++static bool
++iosurface_texture(struct sgl_context *ctx)
++{
++   uint32_t bpr;
++   IOSurfaceRef s = iosurface_new(&bpr);
++   if (!s)
++      return false;
++   /* the texels of step 3, opaque, a quadrant each; memory row 0 is texture row 0 */
++   IOSurfaceLock(s, 0, NULL);
++   uint8_t *base = IOSurfaceGetBaseAddress(s);
++   for (unsigned r = 0; r < H; r++) {
++      for (unsigned x = 0; x < W; x++) {
++         const uint8_t *t = texels[(r >= H / 2) * 2 + (x >= W / 2)];
++         uint8_t *p = base + (size_t)bpr * r + 4 * x;
++         p[0] = t[2];
++         p[1] = t[1];
++         p[2] = t[0];
++         p[3] = 0xff;
++      }
++   }
++   IOSurfaceUnlock(s, 0, NULL);
++
++   static const float quad[] = {
++      -1.0f, -1.0f, 0.0f, 0.0f,
++      1.0f, -1.0f, 1.0f, 0.0f,
++      -1.0f, 1.0f, 0.0f, 1.0f,
++      1.0f, 1.0f, 1.0f, 1.0f,
++   };
++   GLuint tex;
++   glGenTextures(1, &tex);
++   glBindTexture(GL_TEXTURE_2D, tex);
++   if (!sgl_tex_image_iosurface(ctx, GL_TEXTURE_2D, IOSurfaceGetID(s), W, H, bpr, SGL_IOSURFACE_BGRA)) {
++      printf("FAIL: sgl_tex_image_iosurface\n");
++      glDeleteTextures(1, &tex);
++      CFRelease(s);
++      return false;
++   }
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++
++   GLuint p = program(tex_vs, tex_fs);
++   glUseProgram(p);
++   glUniform1i(glGetUniformLocation(p, "tex"), 0);
++   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, quad);
++   glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, quad + 2);
++   glEnableVertexAttribArray(0);
++   glEnableVertexAttribArray(1);
++
++   clear();
++   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++   gl_errors("iosurface texture");
++   read_back();
++
++   glDisableVertexAttribArray(0);
++   glDisableVertexAttribArray(1);
++   glUseProgram(0);
++   glDeleteProgram(p);
++   glDeleteTextures(1, &tex);
++   CFRelease(s);
++   return check("iosurface texture", iosurface_tex_expected, 0);
++}
++#endif
++
 +int
 +main(void)
 +{
@@ -1886,12 +2265,20 @@ index 0000000..78cf27a
 +   read_back();
 +   ok &= check("clear", clear_expected, 0);
 +   printf("step: triangle\n");
-+   ok &= triangle();
++   ok &= triangle("triangle");
 +   printf("step: texture\n");
 +   ok &= texture();
 +   printf("step: depth\n");
 +   ok &= depth();
-+   printf("4 steps in %.1f ms\n", (os_time_get_nano() - t0) / 1e6);
++   unsigned steps = 4;
++#ifdef __APPLE__
++   printf("step: iosurface target\n");
++   ok &= iosurface_target(dpy, ctx, surf);
++   printf("step: iosurface texture\n");
++   ok &= iosurface_texture(ctx);
++   steps += 2;
++#endif
++   printf("%u steps in %.1f ms\n", steps, (os_time_get_nano() - t0) / 1e6);
 +
 +   sgl_make_current(NULL, NULL);
 +   sgl_surface_destroy(surf);
