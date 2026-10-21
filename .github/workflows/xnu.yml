@@ -26,7 +26,7 @@ on:
 
 
 concurrency:
-  group: xnu-${{ github.ref }}
+  group: xnu-${{ github.ref }}-${{ inputs.build || 'kernel' }}
   cancel-in-progress: true
 
 env:
