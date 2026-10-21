@@ -1,0 +1,51 @@
+From 5df25f2ed618d55b521dfc1b336e0cd8a614f449 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 20:25:50 +0200
+Subject: [PATCH] jasmine-j0031: SweetGPU buffers are cacheable by default
+ (sweetgpu_wc=1 for write-combined)
+
+j0029's run with sweetgpu_wc=0 got Mesa's screen up with no freeze, where
+every write-combined run froze in the first buffer creation. Cacheable
+buffers with clean/invalidate around GPU work are now the default;
+sweetgpu_wc=1 brings the write-combined buffers back (to catch that freeze
+with j0030's panic over USB).
+---
+ iokit/Kernel/arm/SweetGPU.cpp | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 9f90639..299cedc 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -24,12 +24,13 @@
+  * 1 s and, if the job did not finish, logs the fault state and takes the GPU
+  * down (sweet_gpu_hang_check) instead of letting a stuck CP hold the bus.
+  *
+- * Boot-arg sweetgpu_wc=0 makes buffers plain cacheable memory, in the
+- * kernel and in the client's mapping, instead of write-combined: the kernel
+- * then cleans and invalidates all of the client's buffers around each
+- * submit, wait and completion query (the GPU's SMMU walk and accesses are
+- * not coherent with the CPU caches). A write-combined IOBufferMemoryDescriptor
+- * changes the cache attributes of its physical pages for every mapping.
++ * Buffers are plain cacheable memory, in the kernel and in the client's
++ * mapping: the kernel cleans and invalidates all of the client's buffers
++ * around each submit, wait and completion query (the GPU's SMMU walk and
++ * accesses are not coherent with the CPU caches). Write-combined buffers
++ * (boot-arg sweetgpu_wc=1, a write-combined IOBufferMemoryDescriptor, which
++ * changes the cache attributes of its physical pages for every mapping)
++ * froze the phone in their first creation (2026-10-21, j0028/j0029).
+  *
+  * Buffers are pageable-free kernel memory (IOBufferMemoryDescriptor), mapped
+  * into the one GPU address space with 4K pages; a client's buffers are
+@@ -61,7 +62,7 @@ void sweet_gpu_publish(void);
+ }
+ 
+ static uint32_t sweet_gpu_debug;
+-static uint32_t sweet_gpu_wc = 1;
++static uint32_t sweet_gpu_wc;
+ 
+ /* debug log line, then a pause so the USB log carries it out before the GPU runs anything */
+ #define GPULOG(fmt, ...) do {                                           \
+-- 
+2.47.3
+

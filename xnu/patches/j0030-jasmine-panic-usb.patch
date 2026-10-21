@@ -1,0 +1,420 @@
+From def86a6b31ec4985c062f8eb00ad4f16d2c8816c Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 20:25:50 +0200
+Subject: [PATCH] jasmine-j0030: panic over USB: the panic text goes out on the
+ live log connection
+
+This board has no iBoot panic region: SavePanicInfo() spins forever and a
+kernel panic looks exactly like a hang (the live log stops, nothing says
+why; ios-sapphire found the same and writes a disk black box). Before that
+spin SavePanicInfo() now calls sweet_usb_panic(), which sends the console
+ring from where the live log socket had got to, then XNU's panic buffer,
+over that same TCP connection: hand-built Ethernet/IPv4/TCP frames with the
+socket's addresses, sequence numbers and timestamps, sent and acknowledged
+by polling the DWC3 (interrupts off, other CPUs halted, no locks, no
+prints). Go-back-N on a 200 ms stall, 10 s at most. The PC side needs
+nothing new: tools/sweet-netlog.py just gets more text. The PC's MAC is
+taken from its first frame. Boot-arg sweetpanic_test=SECS panics on
+purpose SECS after USB is up, to check it.
+---
+ bsd/dev/sweet_usb.c   | 316 ++++++++++++++++++++++++++++++++++++++++++
+ osfmk/arm/model_dep.c |  12 ++
+ 2 files changed, 328 insertions(+)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 7d673a3..c872bcc 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -41,6 +41,11 @@
+ #include <net/kpi_interface.h>
+ #include <net/kpi_protocol.h>
+ #include <netinet/in.h>
++#include <sys/socketvar.h>
++#include <netinet/in_pcb.h>
++#include <netinet/tcp.h>
++#include <netinet/tcp_fsm.h>
++#include <netinet/tcp_var.h>
+ #include <sys/reboot.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+@@ -735,6 +740,11 @@ ud_setup(void)
+ 
+ /* ---- network interface (ue0) ---- */
+ 
++static uint8_t ud_peer_mac[ETHER_ADDR_LEN];
++static bool ud_peer_mac_valid;
++static socket_t ud_log_cs;              /* the live log connection, NULL if none */
++static uint64_t ud_log_sent;            /* console ring position the socket has accepted up to */
++
+ static void
+ ud_rx_arm(void)
+ {
+@@ -745,6 +755,10 @@ ud_rx_arm(void)
+ static void
+ ud_input_frame(const uint8_t *frame, uint32_t len)
+ {
++	if (len >= ETHER_HDR_LEN && !ud_peer_mac_valid) {
++		memcpy(ud_peer_mac, frame + ETHER_ADDR_LEN, ETHER_ADDR_LEN);
++		ud_peer_mac_valid = true;
++	}
+ 	if (ud.ifp != NULL && len >= ETHER_HDR_LEN && len <= ETHER_MAX_LEN) {
+ 		/*
+ 		 * One mbuf with a 2 KiB cluster holds any frame. (mbuf_allocpacket
+@@ -1118,6 +1132,8 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ 		}
+ 		uint64_t pos = sweet_log_position();
+ 		pos = pos > (4u << 20) ? pos - (4u << 20) : 0;  /* the whole ring */
++		ud_log_sent = pos;
++		ud_log_cs = cs;
+ 		for (bool alive = true; alive;) {
+ 			uint32_t n = sweet_log_copy(&pos, chunk, sizeof(chunk));
+ 			if (n == 0) {
+@@ -1130,12 +1146,306 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ 				size_t sent = 0;
+ 				alive = sock_send(cs, &msg, 0, &sent) == 0 && sent > 0;
+ 				off += (uint32_t)sent;
++				ud_log_sent = pos - n + off;
+ 			}
+ 		}
++		ud_log_cs = NULL;
+ 		sock_close(cs);
+ 	}
+ }
+ 
++/*
++ * Panic over USB (j0030). This board has no iBoot panic region, so
++ * SavePanicInfo() spins forever and a kernel panic looks exactly like a
++ * hang: the live log stops, the panic text never leaves the phone. Before
++ * that spin, osfmk/arm/model_dep.c calls sweet_usb_panic(), which pushes the
++ * console ring from where the live log connection had got to, then XNU's
++ * panic buffer, out over that same TCP connection: hand-built Ethernet/IPv4/
++ * TCP frames with the socket's own addresses and sequence numbers, sent and
++ * acknowledged by polling the controller (interrupts are off, the other
++ * CPUs are halted, nothing here may sleep, lock or print). The PC side
++ * (sweet-netlog.py) just sees more log text. Go-back-N on a 200 ms stall;
++ * gives up after 10 s (the test watchdog bites ~15 s later at the earliest).
++ */
++
++
++static uint16_t
++ud_csum(uint32_t sum, const uint8_t *p, uint32_t len)
++{
++	for (uint32_t i = 0; i + 1 < len; i += 2) {
++		sum += (uint32_t)p[i] << 8 | p[i + 1];
++	}
++	if (len & 1) {
++		sum += (uint32_t)p[len - 1] << 8;
++	}
++	while (sum >> 16) {
++		sum = (sum & 0xffff) + (sum >> 16);
++	}
++	return (uint16_t)~sum;
++}
++
++static inline void
++be16(uint8_t *p, uint32_t v)
++{
++	p[0] = (uint8_t)(v >> 8);
++	p[1] = (uint8_t)v;
++}
++
++static inline void
++be32(uint8_t *p, uint32_t v)
++{
++	be16(p, v >> 16);
++	be16(p + 2, v);
++}
++
++static inline uint32_t
++rbe32(const uint8_t *p)
++{
++	return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
++}
++
++static struct {
++	struct in_addr laddr, faddr;
++	uint16_t lport, fport;          /* network order */
++	uint32_t una, wnd, rcv_nxt;
++	bool ts;
++	uint32_t tsval, tsecr;
++	uint8_t snd_scale;
++	uint16_t ip_id;
++	bool tx_busy;
++} up;
++
++/* Poll the event buffer once: TX completions, ACKs from the PC. */
++static void
++ud_panic_events(void)
++{
++	uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
++	if (count == 0) {
++		return;
++	}
++	ud_sync(UD_EVT, UD_EVT_SIZE);
++	for (uint32_t done = 0; done < count; done += 4) {
++		uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
++		ud.evt_pos = (ud.evt_pos + 4) % UD_EVT_SIZE;
++		if (ev & 1) {
++			continue;
++		}
++		unsigned ep = (ev >> 1) & 0x1f, type = (ev >> 6) & 0xf;
++		if (type != 1) {
++			continue;
++		}
++		if (ep == EP_TX) {
++			up.tx_busy = false;
++		} else if (ep == EP_RX) {
++			volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
++			ud_sync(UD_TRB_RX, 16);
++			uint32_t len = UD_FRAME_MAX - (t[2] & 0xffffff);
++			ud_sync(UD_RX, UD_FRAME_MAX);
++			const uint8_t *b = (const uint8_t *)(ud.dma + UD_RX);
++			if (len >= 12 && ld32(b) == NCM_NTH16_SIG) {
++				uint32_t blen = MIN(ld16(b + 8), len), ndp = ld16(b + 10);
++				if (ndp + 8 <= blen && ld32(b + ndp) == NCM_NDP16_SIG) {
++					uint32_t end = MIN(ndp + ld16(b + ndp + 4), blen);
++					for (uint32_t e = ndp + 8; e + 4 <= end; e += 4) {
++						uint32_t di = ld16(b + e), dl = ld16(b + e + 2);
++						if (di == 0 || dl == 0 || di + dl > blen || dl < 14 + 20 + 20) {
++							break;
++						}
++						const uint8_t *f = b + di, *ip = f + 14;
++						uint32_t ihl = (ip[0] & 0xf) * 4;
++						const uint8_t *th = ip + ihl;
++						if (f[12] != 0x08 || f[13] != 0 || ip[9] != IPPROTO_TCP || dl < 14 + ihl + 20 ||
++						    memcmp(ip + 12, &up.faddr, 4) != 0 || memcmp(th, &up.fport, 2) != 0 ||
++						    memcmp(th + 2, &up.lport, 2) != 0 || !(th[13] & 0x10)) {
++							continue;
++						}
++						uint32_t ack = rbe32(th + 8);
++						if ((int32_t)(ack - up.una) > 0) {
++							up.una = ack;
++						}
++						up.wnd = ((uint32_t)th[14] << 8 | th[15]) << up.snd_scale;
++					}
++				}
++			}
++			ud_rx_arm();
++		}
++	}
++	dwc_wr(GEVNTCOUNT, count);
++}
++
++/* One TCP segment of len bytes (seq) to the PC, waiting for the endpoint first. */
++static bool
++ud_panic_segment(uint32_t seq, const char *data, uint32_t len)
++{
++	for (int i = 0; up.tx_busy && i < 20000; i++) {
++		ud_panic_events();
++		delay(1);
++	}
++	if (up.tx_busy) {
++		return false;
++	}
++	uint8_t *b = (uint8_t *)(ud.dma + UD_TX), *f = b + NCM_TX_HDR, *ip = f + 14, *th = ip + 20;
++	uint32_t thl = up.ts ? 32 : 20, flen = 14 + 20 + thl + len;
++	memcpy(f, ud_peer_mac, ETHER_ADDR_LEN);
++	memcpy(f + 6, ud_phone_mac, ETHER_ADDR_LEN);
++	be16(f + 12, 0x0800);
++	ip[0] = 0x45;
++	ip[1] = 0;
++	be16(ip + 2, 20 + thl + len);
++	be16(ip + 4, up.ip_id++);
++	be16(ip + 6, 0x4000);                   /* DF */
++	ip[8] = 64;
++	ip[9] = IPPROTO_TCP;
++	be16(ip + 10, 0);
++	memcpy(ip + 12, &up.laddr, 4);
++	memcpy(ip + 16, &up.faddr, 4);
++	be16(ip + 10, ud_csum(0, ip, 20));
++	memcpy(th, &up.lport, 2);
++	memcpy(th + 2, &up.fport, 2);
++	be32(th + 4, seq);
++	be32(th + 8, up.rcv_nxt);
++	th[12] = (uint8_t)((thl / 4) << 4);
++	th[13] = 0x18;                          /* PSH | ACK */
++	be16(th + 14, 0x2000);
++	be16(th + 16, 0);
++	be16(th + 18, 0);
++	if (up.ts) {
++		th[20] = th[21] = 1;            /* NOP NOP TS */
++		th[22] = 8;
++		th[23] = 10;
++		be32(th + 24, up.tsval);
++		be32(th + 28, up.tsecr);
++	}
++	memcpy(th + thl, data, len);
++	/* pseudo header: addresses, protocol, TCP length */
++	uint32_t sum = 0;
++	for (int i = 12; i < 20; i += 2) {
++		sum += (uint32_t)ip[i] << 8 | ip[i + 1];
++	}
++	sum += IPPROTO_TCP + thl + len;
++	be16(th + 16, ud_csum(sum, th, thl + len));
++	uint32_t total = NCM_TX_HDR + flen;
++	if ((total % 512) == 0) {
++		b[total++] = 0;
++	}
++	st32(b + 0, NCM_NTH16_SIG);
++	st16(b + 4, 12);
++	st16(b + 6, ud.tx_seq++);
++	st16(b + 8, total);
++	st16(b + 10, 12);
++	st32(b + 12, NCM_NDP16_SIG);
++	st16(b + 16, 16);
++	st16(b + 18, 0);
++	st16(b + 20, NCM_TX_HDR);
++	st16(b + 22, flen);
++	st16(b + 24, 0);
++	st16(b + 26, 0);
++	up.tx_busy = true;
++	ud_start_trb(EP_TX, UD_TRB_TX, UD_TX, total, TRBCTL_NORMAL);
++	return true;
++}
++
++/* The stream to send: console ring [from, ring_end), then the panic buffer. */
++static uint64_t up_from, up_ring_end;
++static const char *up_pbuf;
++static uint32_t up_plen;
++static const char up_mark[] = "\n=== SWEET PANIC: XNU panic buffer follows ===\n";
++
++static uint32_t
++ud_panic_bytes(uint64_t off, char *out, uint32_t max)
++{
++	uint64_t ring = up_ring_end - up_from, mark = sizeof(up_mark) - 1;
++	uint32_t n = 0;
++	if (off < ring) {
++		uint64_t pos = up_from + off;
++		n = sweet_log_copy(&pos, out, (uint32_t)MIN((uint64_t)max, ring - off));
++	} else if (off < ring + mark) {
++		n = (uint32_t)MIN((uint64_t)max, ring + mark - off);
++		memcpy(out, up_mark + (off - ring), n);
++	} else if (off < ring + mark + up_plen) {
++		n = (uint32_t)MIN((uint64_t)max, ring + mark + up_plen - off);
++		memcpy(out, up_pbuf + (off - ring - mark), n);
++	}
++	return n;
++}
++
++void sweet_usb_panic(const char *pbuf, uint32_t plen);
++
++void
++sweet_usb_panic(const char *pbuf, uint32_t plen)
++{
++	static bool once;
++	static char seg[1400];
++	if (once || ud.dwc == 0 || !ud.configured || ud_log_cs == NULL || !ud_peer_mac_valid) {
++		return;
++	}
++	once = true;
++	struct socket *so = (struct socket *)ud_log_cs;
++	struct inpcb *inp = sotoinpcb(so);
++	struct tcpcb *tp = inp != NULL ? intotcpcb(inp) : NULL;
++	if (tp == NULL || tp->t_state != TCPS_ESTABLISHED) {
++		return;
++	}
++	up.laddr = inp->inp_laddr;
++	up.faddr = inp->inp_faddr;
++	up.lport = inp->inp_lport;
++	up.fport = inp->inp_fport;
++	up.rcv_nxt = tp->rcv_nxt;
++	up.snd_scale = tp->snd_scale;
++	up.ts = TSTMP_SUPPORTED(tp);
++	up.tsval = tcp_now + tp->t_ts_offset + 1;
++	up.tsecr = tp->ts_recent;
++	up.ip_id = 0x5000;
++	up.tx_busy = ud.tx_busy;
++	/* the send buffer holds ring bytes [ud_log_sent - sb_cc, ud_log_sent) from snd_una on */
++	uint32_t seq0 = tp->snd_una;
++	up.una = seq0;
++	up.wnd = MAX(tp->snd_wnd, 8192u);
++	up_from = ud_log_sent - so->so_snd.sb_cc;
++	up_ring_end = sweet_log_position();
++	up_pbuf = pbuf;
++	up_plen = pbuf != NULL ? plen : 0;
++	uint64_t total = (up_ring_end - up_from) + sizeof(up_mark) - 1 + up_plen;
++	if (total > (2u << 20)) {               /* the ring wrapped past what the socket still holds */
++		return;
++	}
++
++	uint32_t nxt = seq0, last_progress = up.una;
++	uint64_t now = mach_absolute_time(), stall, deadline;
++	nanoseconds_to_absolutetime(200 * NSEC_PER_MSEC, &stall);
++	nanoseconds_to_absolutetime(10 * NSEC_PER_SEC, &deadline);
++	uint64_t give_up = now + deadline, since = now;
++	while (up.una - seq0 < total && mach_absolute_time() < give_up) {
++		if (nxt - seq0 < total && nxt - up.una < MIN(up.wnd, 65536u)) {
++			uint32_t n = ud_panic_bytes(nxt - seq0, seg, sizeof(seg));
++			if (n == 0 || !ud_panic_segment(nxt, seg, n)) {
++				break;
++			}
++			nxt += n;
++		}
++		ud_panic_events();
++		if (up.una != last_progress) {
++			last_progress = up.una;
++			since = mach_absolute_time();
++			if ((int32_t)(nxt - up.una) < 0) {
++				nxt = up.una;
++			}
++		} else if (mach_absolute_time() - since > stall) {
++			nxt = up.una;                   /* go back N */
++			since = mach_absolute_time();
++		}
++	}
++}
++
++/* Boot-arg sweetpanic_test=SECS: panic on purpose SECS after USB is up, to check the above. */
++static void
++ud_panic_test_thread(void *arg, wait_result_t wr __unused)
++{
++	uint32_t secs = (uint32_t)(uintptr_t)arg;
++	ud_sleep_ms(secs * 1000);
++	panic("sweetpanic_test: deliberate panic after %u s (j0030 panic over USB)", secs);
++}
++
+ /*
+  * Command port, TCP 5141 (tools/sweet-cmd.py): one line per connection.
+  *   reboot   clean reboot (filesystems synced); on jasmine every reboot ends
+@@ -1301,5 +1611,11 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	if (ud.ifp != NULL) {
+ 		sweet_netfs_start();
+ 	}
++	uint32_t ptest = 0;
++	if (PE_parse_boot_argn("sweetpanic_test", &ptest, sizeof(ptest)) && ptest != 0 &&
++	    kernel_thread_start(ud_panic_test_thread, (void *)(uintptr_t)ptest, &thread) == KERN_SUCCESS) {
++		printf("SWEET USB: deliberate panic in %u s (sweetpanic_test)\n", ptest);
++		thread_deallocate(thread);
++	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/osfmk/arm/model_dep.c b/osfmk/arm/model_dep.c
+index 39daaf8..8244d8a 100644
+--- a/osfmk/arm/model_dep.c
++++ b/osfmk/arm/model_dep.c
+@@ -800,10 +800,22 @@ panic_print_symbol_name(vm_address_t search)
+ 	return;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern void sweet_usb_panic(const char *pbuf, uint32_t plen);  /* bsd/dev/sweet_usb.c */
++#endif
++
+ void
+ SavePanicInfo(
+ 	const char *message, __unused void *panic_data, uint64_t panic_options)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* no iBoot panic region on these boards: the loop below never ends, so get the text out first */
++	if (debug_buf_base != NULL && debug_buf_ptr > debug_buf_base) {
++		sweet_usb_panic(debug_buf_base, (uint32_t)(debug_buf_ptr - debug_buf_base));
++	} else {
++		sweet_usb_panic(NULL, 0);
++	}
++#endif
+ 	/*
+ 	 * This should be initialized by the time we get here, but
+ 	 * if it is not, asserting about it will be of no use (it will
+-- 
+2.47.3
+
