@@ -52,7 +52,7 @@ COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
 RESET = None
-SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = GPU = None
+SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = GPU = USB = None
 
 if BOARD == 'jasmine':
     # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
@@ -118,6 +118,13 @@ if BOARD == 'jasmine':
                     0x05040000, 0x10000, 0x00100000, 0x94000),
                mem=(0x9f000000, 0x7f0000),
                zap=(0xfed00000, 0xa00000))   # reserved gpu@fed00000 (zap-shader memory-region)
+    # bsd/dev/sweet_usb.c: USB Ethernet (CDC-NCM) on the DWC3 ABL leaves running after fastboot boot.
+    # usb@a8f8800 (qcom,sdm660-dwc3: QSCRATCH) with usb@a800000 (snps,dwc3), qusb2phy0 phy@c012000,
+    # GCC (gcc-sdm660.c): usb_30_gdsc 0xf004 and the CBCRs master 0xf008, sleep 0xf00c,
+    # mock_utmi 0xf010, cfg_noc_usb3_axi 0x5018, aggre2_usb3_axi 0xf03c, ahb2phy 0x6a004,
+    # rx0_usb2_clkref 0x88018 (the order of sweet_usb.c's usb_cbcr).
+    USB = dict(reg=(0x0a800000, 0xd000, 0x0a8f8800, 0x400, 0x0c012000, 0x180, 0x00100000, 0x94000),
+               gcc=(0xf004, 0xf008, 0xf00c, 0xf010, 0x5018, 0xf03c, 0x6a004, 0x88018))
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -337,6 +344,9 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
                               ('mem', u64(*GPU['mem'])), ('zap-mem', u64(*GPU['zap']))] + gpu_firmware())
            ] if GPU and not qemu else []
 
+    usb = [node('sweet-usb', [ph(), ('compatible', cstr('qcom,sdm660-dwc3')), ('reg', u64(*USB['reg'])),
+                              ('gcc-usb', u32(*USB['gcc']))])] if USB and not qemu else []
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -373,7 +383,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch + mdp + gpu)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch + mdp + gpu + usb)
 
 
 if __name__ == '__main__':
