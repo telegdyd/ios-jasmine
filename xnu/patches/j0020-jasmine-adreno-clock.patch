@@ -1,0 +1,125 @@
+From feab39e0832edeaa813d12d67daefbc49ff87cc1 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 14:11:48 +0200
+Subject: [PATCH] jasmine-j0020: GPU core clock from GPU PLL0 (gpumhz=160|266)
+
+gfx3d moves off XO onto GPU PLL0 at twice the rate (clk_rcg2_gfx3d divides
+by 2), with the alpha PLL sequence of clk-alpha-pll.c and gpucc-sdm660.c's
+config. Only the two lowest GPU levels: the voltage is the CX corner and
+nothing votes for more yet. Measured with the CP cycle counter against the
+19.2 MHz always-on counter.
+---
+ bsd/dev/sweet_gpu.c | 76 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 76 insertions(+)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index ae8eeda..ec88542 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -10,6 +10,8 @@
+  *   sweetgpu=3  + load the zap shader through TrustZone (PAS id 13) and take the
+  *               CP out of secure mode (CP_SET_SECURE_MODE 0), then one more
+  *               CP_MEM_WRITE
++ *   gpumhz=160|266 the GPU core clock from GPU PLL0 instead of XO, set right
++ *               after power-up (measured with the CP cycle counter)
+  *
+  * Power (sequences of mainline gpucc-sdm660.c / gdsc.c and downstream
+  * msm_gfx_ldo.c, which mainline lacks): the GPU rail on SDM660 is VDD_CX
+@@ -113,6 +115,9 @@ static const uint32_t ldo_init[][2] = {
+ #define RBBM_AHB_CNTL0          0x0093
+ #define RBBM_AHB_CNTL1          0x0094
+ #define RBBM_AHB_CNTL2          0x0095
++#define RBBM_PERFCTR_CP_0_LO    0x03a0
++#define RBBM_PERFCTR_CNTL       0x0464
++#define CP_PERFCTR_CP_SEL_0     0x0bb0
+ #define RBBM_ALWAYSON_COUNTER_LO 0x04d2
+ #define RBBM_INT_0_STATUS       0x04e1
+ #define RBBM_STATUS             0x04f5
+@@ -385,6 +390,72 @@ gpu_power_on(void)
+ 	return 0;
+ }
+ 
++/* GPU core clock in MHz: CP cycle counter (CP_ALWAYS_COUNT) against the 19.2 MHz always-on counter */
++static uint32_t
++gpu_measure_mhz(void)
++{
++	gpu_wr(RBBM_PERFCTR_CNTL, 1);
++	gpu_wr(CP_PERFCTR_CP_SEL_0, 0);                 /* PERF_CP_ALWAYS_COUNT */
++	uint32_t c0 = gpu_rd(RBBM_PERFCTR_CP_0_LO), a0 = gpu_rd(RBBM_ALWAYSON_COUNTER_LO);
++	delay(2000);
++	uint32_t c1 = gpu_rd(RBBM_PERFCTR_CP_0_LO), a1 = gpu_rd(RBBM_ALWAYSON_COUNTER_LO);
++	return a1 != a0 ? (uint32_t)((uint64_t)(c1 - c0) * 192 / (a1 - a0) / 10) : 0;
++}
++
++/*
++ * gpumhz=: gfx3d from GPU PLL0 (gpucc-sdm660.c: alpha PLL at offset 0, 40-bit
++ * alpha, config_ctl 0x4001055b, VCO 2 for 500-1000 MHz and 3 for 250-500 MHz;
++ * clk_rcg2_gfx3d always divides the PLL by 2, source 1 = PLL0). Only the two
++ * lowest GPU levels: the GPU's voltage is the CX corner and nothing here votes
++ * for a higher one yet (mainline's sdm660 OPP table stops at 266 MHz for the
++ * same reason). Sequence of clk_alpha_pll_configure / clk_alpha_pll_enable.
++ */
++#define GPU_PLL0                0x0000
++static int
++gpu_set_clock(uint32_t mhz)
++{
++	if (mhz != 160 && mhz != 266) {
++		printf("SWEET GPU: gpumhz=%u not allowed (160 or 266)\n", mhz);
++		return EINVAL;
++	}
++	uint32_t before = gpu_measure_mhz();
++	uint64_t hz = 2ull * mhz * 1000000, xo = 19200000;
++	uint32_t l = (uint32_t)(hz / xo);
++	uint64_t alpha = (((hz % xo) << 32) / xo) << 8;  /* 40-bit fraction */
++	uint32_t vco = hz >= 500000000 ? 2 : 3;
++	volatile uint32_t *pll = sg.gpucc + GPU_PLL0 / 4;
++
++	pll[0] = 0;                                     /* MODE: output off, reset, bypass */
++	__builtin_arm_dsb(0xf);
++	delay(1);
++	pll[0x04 / 4] = l;
++	pll[0x08 / 4] = (uint32_t)alpha;
++	pll[0x0c / 4] = (uint32_t)(alpha >> 32);
++	pll[0x18 / 4] = 0x4001055b;                     /* CONFIG_CTL */
++	pll[0x10 / 4] = (pll[0x10 / 4] & ~((3u << 20) | (1u << 24) | (0xfu << 8) | 1u)) |
++	    (vco << 20) | (1u << 24) | 1u;              /* USER_CTL: VCO, alpha on, main output, post-div 1 */
++	__builtin_arm_dsb(0xf);
++	pll[0] |= 2;                                    /* BYPASSNL */
++	__builtin_arm_dsb(0xf);
++	delay(5);
++	pll[0] |= 4;                                    /* RESET_N */
++	int err = poll32(&pll[0], 1u << 31, 1u << 31, 1000); /* LOCK_DET */
++	if (err) {
++		printf("SWEET GPU: GPU PLL0 did not lock (mode %08x, L %x, alpha %llx), staying on XO\n", pll[0], l, alpha);
++		pll[0] = 0;
++		return err;
++	}
++	pll[0] |= 1;                                    /* OUTCTRL */
++	__builtin_arm_dsb(0xf);
++	cc_wr(GPUCC_GFX3D_RCG + 4, (1u << 8) | 3);      /* CFG: source PLL0, divide by 2 (SRC_DIV 3) */
++	cc_wr(GPUCC_GFX3D_RCG, cc_rd(GPUCC_GFX3D_RCG) | RCG_UPDATE);
++	err = poll32(&sg.gpucc[GPUCC_GFX3D_RCG / 4], RCG_UPDATE, 0, 500);
++	printf("SWEET GPU: gfx3d %s: PLL0 L %u alpha %llx vco %u mode %08x, rcg %08x/%08x; measured %u MHz (was %u)\n",
++	    err ? "switch TIMED OUT" : "on PLL0", l, alpha, vco, pll[0], cc_rd(GPUCC_GFX3D_RCG),
++	    cc_rd(GPUCC_GFX3D_RCG + 4), gpu_measure_mhz(), before);
++	return err;
++}
++
+ static void
+ gpu_dump(void)
+ {
+@@ -933,6 +1004,11 @@ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
+ 		return;
+ 	}
+ 	gpu_dump();
++	uint32_t mhz = 0;
++	if (PE_parse_boot_argn("gpumhz", &mhz, sizeof(mhz)) && mhz != 0) {
++		gpu_pause(4, "GPU clock switch next");
++		(void)gpu_set_clock(mhz);
++	}
+ 	if (sg.level >= 2 && gpu_cp_test() == 0 && sg.level >= 3) {
+ 		gpu_zap_test();
+ 	}
+-- 
+2.47.3
+
