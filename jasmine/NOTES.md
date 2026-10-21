@@ -1,6 +1,7 @@
 # jasmine (Mi A2) working notes
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
+**GPU work (G2) handoff, 2026-10-21 21:45: [HANDOFF-G2.md](HANDOFF-G2.md)** (state, rules, workflow, next steps).
 `NOTES.md` at the repo root is sweet's/topaz's log, kept for reference.
 
 ## State (2026-10-20 ~22:45)

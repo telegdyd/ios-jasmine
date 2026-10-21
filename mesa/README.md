@@ -9,3 +9,6 @@ iOS 16 userland with Xcode's iPhoneOS SDK on the CI (`gh workflow run xnu.yml --
 - `ios-arm64.ini`: the meson cross file.
 
 The patches are made from a Mesa checkout in WSL (`~/ios-work/mesa`, one commit per patch).
+
+Sources of the patch: `darwin/` (written into a Mesa tree by `darwin/apply.py`; `tools/g2/mkmesa.sh` regenerates
+`patches/0001-freedreno-darwin-backend.patch` from it). See `jasmine/HANDOFF-G2.md`.
