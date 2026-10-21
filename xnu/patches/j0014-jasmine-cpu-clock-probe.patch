@@ -1,6 +1,6 @@
-From 93f0288b19f369e343908969a3689a0b177ff7b1 Mon Sep 17 00:00:00 2001
+From bfb147948fe20bd8e07808ff1881004469645bbd Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 04:27:13 +0200
+Date: Wed, 21 Oct 2026 04:49:50 +0200
 Subject: [PATCH] jasmine-j0014: measure the real CPU clock
 
 Nothing sets the Kryo 260 clocks after the bootloader (no cpufreq in the
@@ -11,9 +11,9 @@ off), 20 s and 120 s after the platform expert starts. Read only;
 sweetclk=0 disables it.
 ---
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
- osfmk/arm64/sweet_cpuclk.c               | 118 +++++++++++++++++++++++
+ osfmk/arm64/sweet_cpuclk.c               | 150 +++++++++++++++++++++++
  osfmk/conf/files.arm64                   |   1 +
- 3 files changed, 122 insertions(+)
+ 3 files changed, 154 insertions(+)
  create mode 100644 osfmk/arm64/sweet_cpuclk.c
 
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
@@ -39,10 +39,10 @@ index 02042c2..7a9d14b 100644
  
 diff --git a/osfmk/arm64/sweet_cpuclk.c b/osfmk/arm64/sweet_cpuclk.c
 new file mode 100644
-index 0000000..8abd9cf
+index 0000000..da5fc31
 --- /dev/null
 +++ b/osfmk/arm64/sweet_cpuclk.c
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,150 @@
 +/*
 + * CPU clock probe (jasmine bring-up, read only): how fast do the cores really
 + * run? Nothing sets the Kryo 260 clocks after the bootloader (no cpufreq in
@@ -119,10 +119,41 @@ index 0000000..8abd9cf
 +
 +	uint64_t mpidr;
 +	__asm__ volatile ("mrs %0, mpidr_el1" : "=r"(mpidr));
-+	printf("SWEET CLK: cpu %d (mpidr %#llx): cycle counter %llu MHz, dependent adds %llu MHz (pmcr %#llx)\n",
-+	    cpu, mpidr & 0xffffff, (c1 - c0) * freq / (t1 - t0) / 1000000,
-+	    adds * freq / (a1 - a0) / 1000000, pmcr);
++	printf("SWEET CLK: cpu %d (mpidr %#llx): cycles %llu in %llu ticks, adds %llu in %llu ticks, freq %llu, pmcr %#llx\n",
++	    cpu, mpidr & 0xffffff, c1 - c0, t1 - t0, adds, a1 - a0, freq, pmcr);
 +	(void)x;
++}
++
++/*
++ * The clock hardware itself (downstream msm-4.4 clk-cpu-osm.c / sdm660.dtsi,
++ * read only): per cluster the APCS PLL (MODE, L = MHz / 19.2, USER_CTL,
++ * STATUS), the cluster RCG (CMD, CFG: source 10:8 = 3 main PLL / 4 GPLL0 /
++ * 5 early PLL, divider 4:0), the OSM (version, enable 0x1004, desired perf
++ * state 0x1f10, pstate status 0x1c00) and the speed-bin fuse.
++ */
++static uint32_t
++cpuclk_rd(uint64_t pa)
++{
++	volatile uint32_t *v = (volatile uint32_t *)ml_io_map((vm_offset_t)(pa & ~0x3fffull), 0x4000);
++	return v ? v[(pa & 0x3fff) / 4] : 0xdeadbeef;
++}
++
++static void
++cpuclk_regs(void)
++{
++	static const struct { const char *name; uint64_t pll, rcg, osm; } cl[] = {
++		{ "silver", 0x17916000, 0x17911050, 0x179c0000 },
++		{ "gold", 0x17816000, 0x17811050, 0x179c2000 },
++	};
++	for (int i = 0; i < 2; i++) {
++		uint32_t l = cpuclk_rd(cl[i].pll + 0x4), cfg = cpuclk_rd(cl[i].rcg + 4);
++		printf("SWEET CLK: %s PLL mode %#x L %#x (%u MHz) user %#x status %#x; RCG cmd %#x cfg %#x (src %u div %u); "
++		    "OSM ver %#x enable %#x desired %#x pstate %#x\n", cl[i].name,
++		    cpuclk_rd(cl[i].pll), l, (l & 0xff) * 192 / 10, cpuclk_rd(cl[i].pll + 0xc), cpuclk_rd(cl[i].pll + 0x2c),
++		    cpuclk_rd(cl[i].rcg), cfg, (cfg >> 8) & 7, cfg & 0x1f,
++		    cpuclk_rd(cl[i].osm), cpuclk_rd(cl[i].osm + 0x1004), cpuclk_rd(cl[i].osm + 0x1f10), cpuclk_rd(cl[i].osm + 0x1c00));
++	}
++	printf("SWEET CLK: speed-bin fuse 0x784130 = %#x %#x\n", cpuclk_rd(0x784130), cpuclk_rd(0x784134));
 +}
 +
 +static void
@@ -137,6 +168,7 @@ index 0000000..8abd9cf
 +	}
 +	for (int round = 0; round < 2; round++) {
 +		cpuclk_sleep(round == 0 ? 20 : 100);
++		cpuclk_regs();
 +		for (int cpu = 0; cpu < (int)real_ncpus; cpu++) {
 +			processor_t p = cpu_to_processor(cpu);
 +			if (p == PROCESSOR_NULL) {
