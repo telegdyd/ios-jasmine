@@ -1,0 +1,33 @@
+# 23:39:27 sweet_envtest
+sweet_inject: constructor ran
+sweet_envtest: SWEET_ENVTEST=1
+sweet_envtest: DYLD_INSERT_LIBRARIES=/usr/local/bin/sweet_inject.dylib
+sweet_envtest: AMFI dyld policy rc 0 flags 0x7b
+sweet_envtest: injected library loaded
+PASS: sweetenv + dyld policy + library insertion
+
+# exit 0
+# 23:39:32 sweetgpu_fdtest
+step: options
+step: screen
+screen: FD512 (freedreno)
+step: context
+step: render target
+step: clear
+step: flush
+step: fence
+clear + flush + fence: done after 3178.950 ms
+clear: (0,0) 4080bfff (63,0) 4080bfff (0,63) 4080bfff (63,63) 4080bfff (16,16) 4080bfff; stride 256; 0 of 4096 checked wrong
+PASS: the GPU cleared the render target
+step: shaders
+step: state
+step: clear
+step: draw
+step: flush
+step: fence
+triangle + flush + fence: done after 2271.863 ms
+triangle: (0,0) fb0202ff (63,0) 4080bfff (0,63) 4080bfff (63,63) 4080bfff (16,16) 7c4242ff; stride 256; 0 of 4032 checked wrong
+PASS: the GPU drew the triangle
+PASS: all
+
+# exit 0

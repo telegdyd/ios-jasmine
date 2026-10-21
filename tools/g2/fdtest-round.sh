@@ -2,6 +2,7 @@
 # one hands-free fdtest round: boot the image with the live log, wait for
 # SweetGPU + sweetd, push the test, run it, then let the log run out.
 # BINS are pushed and run, PUSH only pushed (libraries), all from xnu/out-mesa.
+# The tests' own output also goes to LOG.tests.
 cd "/c/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine" || exit 1
 export MSYS_NO_PATHCONV=1
 IMG=$1
@@ -34,8 +35,8 @@ for i in $(seq 1 40); do
 done
 for b in $BINS; do
 	echo "# sweetd up, running $b at $(date +%T)"
-	python tools/sweet-sh.py --timeout 60 /usr/local/bin/$b
-	echo "# $b exit $? at $(date +%T)"
+	python tools/sweet-sh.py --timeout 60 /usr/local/bin/$b 2>&1 | tee -a "$LOG.tests"
+	echo "# $b exit ${PIPESTATUS[0]} at $(date +%T)" | tee -a "$LOG.tests"
 done
 wait $RUN
 echo "# log done"

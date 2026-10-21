@@ -364,6 +364,33 @@ copying `eagl.c` verbatim; credit them in any case.
    root's launchd plists stay untouched.
 4. Later: GPU present into flip buffers (their 0164), GPU clock above 266 MHz (needs the CX corner vote).
 
+#### j0033 result (2026-10-21 23:39): step 1 done
+
+Kernel j0033 (`xnu/patches/j0033-jasmine-dyld-env-gpu-vm.patch`, XNU tree commit `a00bcfd`; CI kernel run
+`39668634610`, built on its 4th attempt: GitHub had no macOS arm64 runner for three 15-minute queue windows, see
+`tools/g2/ci-wait.sh`; ios-tools run `39668826543`). Booted with `fastboot boot` as `shim/out/shim-boot-j33-gpu.img`
+(the j0032 boot-args plus `sweetenv=sweet_envtest:SWEET_ENVTEST=1,DYLD_INSERT_LIBRARIES=/usr/local/bin/sweet_inject.dylib`).
+Logs: `logs/netlog-j33-gpu.txt` (kernel), `logs/netlog-j33-tests.txt` (test output).
+
+- **Boot unchanged** with the MAC policy renamed to `"AMFI"`: lock screen and SpringBoard come up as before.
+- **`sweet_envtest`: PASS.** The kernel logs `SWEET ENV: sweet_envtest += ...` for both variables; dyld's policy call
+  returns 0 with flags 0x7b; the inserted `sweet_inject.dylib`'s constructor runs and its symbol resolves.
+  `/usr/local/bin` only; nothing else on the root changed.
+- **GPU regression: `sweetgpu_fdtest` and `sweetgpu_gltest` PASS** (all steps incl. IOSurface target and texture).
+  Buffers are now 0x24000 apart (16 KiB + the 128 KiB scratch pad), and freed VAs come back: within fdtest buffer 1
+  is freed and remade at the same VA 0x800048000, and gltest, a later process, gets 0x800048000 again.
+- **No SMMU fault** was recorded (`smmu_fault_note` printed nothing), so the non-fatal fault path is in place but not
+  yet exercised.
+
+**IOSurface part of step 1: no change needed.** Our topaz-derived SweetSurface already makes `IOSurfaceAddress`
+surfaces over the creator's pages, with a read-only fallback (`sweet_surface_use_task_memory`), maps them cacheable,
+and implements the wrap selectors (sailfish had to refuse them). Explicit row bytes are taken as asked. sailfish's
+row-bytes rule (round explicit rows to 64 only when the request has more than 6 keys) is a heuristic; decide in step
+2 from what CA actually asks for on our root, with Mesa's 64-byte pitch patch first.
+
+**Next: step 2** (libsweetca: our sweetgl + an EAGL layer, checked through CARenderer). Licence question on
+sailfish's `eagl.c` still open.
+
 - Mesa freedreno (Gallium, a5xx) built for iOS (cross-compiled on GitHub's macOS runners, as XNU is) with a
   small kernel interface to the G1 driver (like UniXNU's `turnip-darwin-kmd`, but for freedreno's DRM-style
   winsys).

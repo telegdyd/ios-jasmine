@@ -130,6 +130,9 @@ script file; Python on Windows needs `newline='\n'`; `wsl bash /mnt/c/...` paths
 > Adreno 530) runs CoreAnimation on freedreno by our route 2. GPU.md "G2 comparison with ios-sailfish" lists
 > what CA needed there and **replaces steps B-D below with its four next steps** (j0033 kernel prerequisites,
 > their EAGL layer ported onto our sweetgl, backboardd via the `sweetenv` boot-arg). Step A is done.
+> **2026-10-21 23:39: its step 1, kernel j0033, passed on the phone** (GPU.md "j0033 result"). Round scripts now
+> take `EXTRA_ARGS` (boot-args), `IOS_RUN` (ios-tools) and `PUSH`, and keep test output in `LOG.tests`;
+> `tools/g2/ci-wait.sh` re-runs CI jobs no macOS runner picked up. Phone state: running the j0033 test image.
 
 ### Step A: decide how CoreAnimation reaches our GL (research only, nothing on the phone)
 

@@ -6,6 +6,12 @@ Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
 renderer when `[[EAGLContext alloc] initWithAPI:3 ...]` works; CA calls GL only through Apple's GLI dispatch (60
 entries, [ca-gles-calls-ios16.txt](ca-gles-calls-ios16.txt)). Recommended: EAGL on sweetgl (route 2); the `gld*`
 plugin (route 1) would be a full GLD driver. Waiting for the user's route decision.
+**2026-10-21 ~23:00:** ios-sailfish (Pixel 1, Adreno 530) runs CA on freedreno by route 2; comparison and new
+next steps in [GPU.md](GPU.md). **2026-10-21 23:39: kernel j0033 PASS** (CI `39668634610`): `sweetenv` boot-arg +
+"AMFI" dyld policy call let `DYLD_INSERT_LIBRARIES` load a library (`sweet_envtest`), GPU SMMU faults no longer
+reported to the GPU, 128 KiB scratch pad after each GPU buffer, freed GPU VAs reused; fdtest/gltest still PASS.
+Next: step 2 (EAGL layer on sweetgl, CARenderer test). CI note: macOS arm64 runners were unavailable for ~45 min;
+`tools/g2/ci-wait.sh RUN...` re-runs jobs no runner picked up.
 `NOTES.md` at the repo root is sweet's/topaz's log, kept for reference.
 
 ## State (2026-10-20 ~22:45)
