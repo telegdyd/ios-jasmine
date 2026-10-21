@@ -1,0 +1,782 @@
+From cb242554ca2f27bc2380e56a655d1e2662fc49fe Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:44 +0200
+Subject: [PATCH] jasmine-j0026: Adreno driver for userland: GPU VM, buffers,
+ submit, SweetGPU user client
+
+sweetgpu=4 (G2 step 1): after the CP and zap shader, client buffers get
+GPU VAs from 32 GiB up in CB0's table with 4K pages (tables in kernel
+memory, cleaned for the non-coherent walk); jobs are indirect buffers
+(CP_INDIRECT_BUFFER_PFE) followed by CACHE_FLUSH_TS writing a seqno fence,
+as a5xx_submit without preemption. A kernel self-test (IB with CP_MEM_WRITE
+between two non-contiguous kernel buffers) gates the SweetGPU IOService,
+whose user client offers get-param, buffer new/free/map, submit, wait and
+completed, shaped after Mesa freedreno's msm backend.
+---
+ bsd/dev/sweet_gpu.c           | 339 +++++++++++++++++++++++++++++++++-
+ iokit/Kernel/arm/SweetGPU.cpp | 317 +++++++++++++++++++++++++++++++
+ iokit/conf/files.arm64        |   1 +
+ 3 files changed, 652 insertions(+), 5 deletions(-)
+ create mode 100644 iokit/Kernel/arm/SweetGPU.cpp
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index ec88542..8f7d98c 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -12,6 +12,11 @@
+  *               CP_MEM_WRITE
+  *   gpumhz=160|266 the GPU core clock from GPU PLL0 instead of XO, set right
+  *               after power-up (measured with the CP cycle counter)
++ *   sweetgpu=4  + the driver for userland (G2): a GPU address space with 4K
++ *               page tables, buffer mapping, submission of indirect buffers
++ *               with a fence, the SweetGPU IOKit service
++ *               (iokit/Kernel/arm/SweetGPU.cpp), and a kernel self-test of
++ *               that path
+  *
+  * Power (sequences of mainline gpucc-sdm660.c / gdsc.c and downstream
+  * msm_gfx_ldo.c, which mainline lacks): the GPU rail on SDM660 is VDD_CX
+@@ -48,6 +53,7 @@
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include <libkern/libkern.h>
++#include <kern/locks.h>
+ #include <stdbool.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+@@ -58,6 +64,7 @@ extern void thread_deallocate(thread_t);
+ extern int hz;
+ 
+ void sweet_gpu_start(void);
++extern void sweet_gpu_publish(void);       /* iokit/Kernel/arm/SweetGPU.cpp */
+ 
+ /* gpucc-sdm660.c (offsets from gpucc@5065000) */
+ #define GPUCC_CLAMP_IO          0x0130  /* GX domain misc: bit 0 clamp, bit 4 AON (GMEM) reset */
+@@ -184,6 +191,9 @@ static const uint32_t ldo_init[][2] = {
+ /* PM4 type 7 packets (adreno_pm4.xml) */
+ #define CP_ME_INIT              0x48
+ #define CP_MEM_WRITE            0x3d
++#define CP_INDIRECT_BUFFER_PFE  0x3f
++#define CP_EVENT_WRITE          0x46
++#define CACHE_FLUSH_TS          4
+ 
+ /* layout of the GPU memory window */
+ #define GMEM_MAP_SIZE           0x40000u
+@@ -193,6 +203,7 @@ static const uint32_t ldo_init[][2] = {
+ #define PFP_OFF                 0x10000u
+ #define SCRATCH_OFF             0x18000u
+ #define PT_OFF                  0x20000u        /* SMMU tables, 3 pages */
++#define FENCE_OFF               (SCRATCH_OFF + 0x100)   /* CACHE_FLUSH_TS writes the seqno here */
+ #define FW_MAX                  0x8000u
+ 
+ static struct {
+@@ -665,6 +676,315 @@ cp_mem_write(uint64_t pa, uint32_t v)
+ 	ring_out(v);
+ }
+ 
++/*
++ * GPU address space for userland (sweetgpu=4). CB0's stage 1 table (from
++ * smmu_identity: L1 in the GPU window, 36-bit VA, 4K granule) keeps its
++ * 2 MiB identity blocks for the kernel's ring, firmware and scratch (and the
++ * CP tests' page above 4 GiB); client buffers get GPU VAs from 32 GiB up,
++ * mapped with 4K pages, clear of every identity block (RAM ends below 8 GiB).
++ * Their L2/L3 tables are 4K pieces of kernel pages (the SMMU walk is
++ * non-coherent, so every table write is cleaned to memory). The VA range is
++ * handed out upwards and never reused (enough for a session); one address
++ * space for all clients, as msm's global one.
++ */
++#define GPU_VA_BASE             0x800000000ull
++#define GPU_VA_END              0xf00000000ull  /* 36-bit VA: below 64 GiB */
++#define PTE_PAGE                (3ull | (1ull << 10) | (1ull << 6))     /* page, AF, AP[2:1] 01, AttrIndx 0 */
++#define PTE_RO                  (1ull << 7)                             /* AP[2]: read-only */
++
++static lck_mtx_t *gpu_lock;
++static uint64_t gpu_va_next = GPU_VA_BASE;
++static uint8_t *pt_chunk;               /* current kernel page carved into 4K tables */
++static uint64_t pt_chunk_pa;
++static unsigned pt_chunk_used = PAGE_SIZE;
++#define PT_CHUNKS               256
++static struct { uint64_t pa; uint8_t *va; } pt_chunks[PT_CHUNKS];       /* for table PA -> kernel VA */
++static unsigned pt_nchunks;
++static uint32_t gpu_seqno;
++static bool gpu_ready;
++
++static uint64_t
++kva_to_pa(vm_offset_t va)
++{
++	return ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va)) | (va & PAGE_MASK);
++}
++
++/* Kernel VA of a table this file allocated, by its PA (NULL if not one). */
++static uint64_t *
++pt_kva(uint64_t pa)
++{
++	for (unsigned i = 0; i < pt_nchunks; i++) {
++		if (pa - pt_chunks[i].pa < PAGE_SIZE) {
++			return (uint64_t *)(void *)(pt_chunks[i].va + (pa - pt_chunks[i].pa));
++		}
++	}
++	return NULL;
++}
++
++/* A zeroed 4K table: kernel VA (cacheable) and PA. */
++static uint64_t *
++pt_alloc(uint64_t *pa)
++{
++	if (pt_chunk_used + 0x1000 > PAGE_SIZE) {
++		vm_offset_t va = 0;
++		if (pt_nchunks == PT_CHUNKS ||
++		    kmem_alloc(kernel_map, &va, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			return NULL;
++		}
++		pt_chunk = (uint8_t *)va;
++		pt_chunk_pa = kva_to_pa(va);
++		pt_chunks[pt_nchunks].pa = pt_chunk_pa;
++		pt_chunks[pt_nchunks++].va = pt_chunk;
++		flush_dcache64((addr64_t)pt_chunk_pa, PAGE_SIZE, TRUE);
++		pt_chunk_used = 0;
++	}
++	uint64_t *t = (uint64_t *)(void *)(pt_chunk + pt_chunk_used);
++	*pa = pt_chunk_pa + pt_chunk_used;
++	pt_chunk_used += 0x1000;
++	return t;
++}
++
++/* The L3 table covering iova, created (with its L2) when create is set. NULL if none. */
++static uint64_t *
++pt_l3(uint64_t iova, bool create)
++{
++	volatile uint64_t *l1 = (volatile uint64_t *)(sg.mem + PT_OFF / 4);
++	uint64_t i1 = (iova >> 30) & 63, i2 = (iova >> 21) & 511;
++	if ((l1[i1] & 3) != 3) {
++		uint64_t pa;
++		if (!create || pt_alloc(&pa) == NULL) {
++			return NULL;
++		}
++		l1[i1] = pa | 3;                /* the L1 is in the write-combined window */
++	}
++	uint64_t l2pa = l1[i1] & 0xffffffff000ull;
++	uint64_t *l2 = pt_kva(l2pa);
++	if (l2 == NULL) {
++		return NULL;            /* an identity table in the window: not for client VAs */
++	}
++	if ((l2[i2] & 3) != 3) {
++		uint64_t pa;
++		if (!create || pt_alloc(&pa) == NULL) {
++			return NULL;
++		}
++		l2[i2] = pa | 3;
++		flush_dcache64((addr64_t)(l2pa + i2 * 8), 8, TRUE);
++	}
++	return pt_kva(l2[i2] & 0xffffffff000ull);
++}
++
++static void
++smmu_tlb_sync(void)
++{
++	volatile uint32_t *cb = sg.smmu + SMMU_CB0 / 4;
++	smmu_wr(cb, 0x610, 0);                  /* TLBIASID, ASID 0 */
++	smmu_wr(cb, 0x7f0, ~0u);                /* TLBSYNC */
++	(void)poll32(&cb[0x7f4 / 4], 1, 0, 1000);
++}
++
++/* Room for size bytes of GPU VA (4K aligned, never reused). 0 or ENOMEM. */
++int sweet_gpu_vm_alloc(uint64_t size, uint64_t *iova);
++int
++sweet_gpu_vm_alloc(uint64_t size, uint64_t *iova)
++{
++	size = (size + 0xfff) & ~0xfffull;
++	lck_mtx_lock(gpu_lock);
++	int err = gpu_va_next + size > GPU_VA_END ? ENOMEM : 0;
++	if (!err) {
++		*iova = gpu_va_next;
++		gpu_va_next += size + 0x1000;   /* one unmapped guard page between buffers */
++	}
++	lck_mtx_unlock(gpu_lock);
++	return err;
++}
++
++/* Map npages 4K pages (physical addresses in pa[]) at iova. */
++int sweet_gpu_vm_map(uint64_t iova, const uint64_t *pa, uint32_t npages, bool readonly);
++int
++sweet_gpu_vm_map(uint64_t iova, const uint64_t *pa, uint32_t npages, bool readonly)
++{
++	int err = 0;
++	lck_mtx_lock(gpu_lock);
++	for (uint32_t i = 0; i < npages && !err; i++) {
++		uint64_t va = iova + 0x1000ull * i;
++		uint64_t *l3 = pt_l3(va, true);
++		if (l3 == NULL) {
++			err = ENOMEM;
++			break;
++		}
++		unsigned i3 = (va >> 12) & 511;
++		l3[i3] = (pa[i] & 0xffffffff000ull) | PTE_PAGE | (readonly ? PTE_RO : 0);
++		flush_dcache64((addr64_t)kva_to_pa((vm_offset_t)&l3[i3]), 8, TRUE);
++	}
++	__builtin_arm_dsb(0xf);
++	smmu_tlb_sync();
++	lck_mtx_unlock(gpu_lock);
++	return err;
++}
++
++void sweet_gpu_vm_unmap(uint64_t iova, uint32_t npages);
++void
++sweet_gpu_vm_unmap(uint64_t iova, uint32_t npages)
++{
++	lck_mtx_lock(gpu_lock);
++	for (uint32_t i = 0; i < npages; i++) {
++		uint64_t va = iova + 0x1000ull * i;
++		uint64_t *l3 = pt_l3(va, false);
++		if (l3 != NULL) {
++			unsigned i3 = (va >> 12) & 511;
++			l3[i3] = 0;
++			flush_dcache64((addr64_t)kva_to_pa((vm_offset_t)&l3[i3]), 8, TRUE);
++		}
++	}
++	__builtin_arm_dsb(0xf);
++	smmu_tlb_sync();
++	lck_mtx_unlock(gpu_lock);
++}
++
++/* Ring dwords free before the CP's read pointer (one kept free: full != empty). */
++static uint32_t
++ring_space(void)
++{
++	uint32_t rptr = gpu_rd(CP_RB_RPTR);
++	return (rptr + RING_SIZE / 4 - sg.wptr - 1) % (RING_SIZE / 4);
++}
++
++/*
++ * Submit n indirect buffers (GPU VA, size in dwords) as one job, as
++ * a5xx_submit without preemption: CP_INDIRECT_BUFFER_PFE for each, then
++ * CACHE_FLUSH_TS writing the job's seqno to FENCE_OFF once everything
++ * before it has landed in memory. *seqno is that number.
++ */
++int sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno);
++int
++sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno)
++{
++	if (!gpu_ready || n == 0 || n > 64) {
++		return gpu_ready ? EINVAL : ENODEV;
++	}
++	uint32_t need = 4 * n + 5;
++	lck_mtx_lock(gpu_lock);
++	for (int i = 0; i < 200000 && ring_space() < need; i++) {
++		delay(10);
++	}
++	if (ring_space() < need) {
++		lck_mtx_unlock(gpu_lock);
++		return EBUSY;
++	}
++	for (uint32_t i = 0; i < n; i++) {
++		ring_pkt7(CP_INDIRECT_BUFFER_PFE, 3);
++		ring_out((uint32_t)iova[i]);
++		ring_out((uint32_t)(iova[i] >> 32));
++		ring_out(dwords[i]);
++	}
++	uint64_t fence = sg.mem_pa + FENCE_OFF;
++	*seqno = ++gpu_seqno;
++	ring_pkt7(CP_EVENT_WRITE, 4);
++	ring_out(CACHE_FLUSH_TS);
++	ring_out((uint32_t)fence);
++	ring_out((uint32_t)(fence >> 32));
++	ring_out(*seqno);
++	__builtin_arm_dsb(0xf);
++	gpu_wr(CP_RB_WPTR, sg.wptr);
++	lck_mtx_unlock(gpu_lock);
++	return 0;
++}
++
++/* The last seqno the GPU has completed. */
++uint32_t sweet_gpu_completed(void);
++uint32_t
++sweet_gpu_completed(void)
++{
++	return sg.mem[FENCE_OFF / 4];
++}
++
++/* Wait until seqno has completed: 0, or ETIMEDOUT after timeout_ms. */
++int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
++int
++sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(timeout_ms, NSEC_PER_MSEC, &deadline);
++	while ((int32_t)(sweet_gpu_completed() - seqno) < 0) {
++		if (mach_absolute_time() > deadline) {
++			return ETIMEDOUT;
++		}
++		delay(50);
++	}
++	return 0;
++}
++
++/* Values for userland (Mesa's MSM_PARAM_* counterparts, SweetGPU.cpp). */
++uint64_t sweet_gpu_param(uint32_t which);
++uint64_t
++sweet_gpu_param(uint32_t which)
++{
++	switch (which) {
++	case 0: return gpu_ready;                       /* ready */
++	case 1: return 0x05010200;                      /* chip id: Adreno 512 */
++	case 2: return 512;                             /* gpu id */
++	case 3: return A512_GMEM;                       /* GMEM size */
++	case 4: return 0x00100000;                      /* GMEM base (UCHE_GMEM_RANGE_MIN) */
++	case 5: return GPU_VA_BASE;                     /* client VA start */
++	case 6: return GPU_VA_END - GPU_VA_BASE;        /* client VA size */
++	case 7: return 1;                               /* number of rings */
++	case 8: return (uint64_t)gpu_rd(RBBM_ALWAYSON_COUNTER_LO);   /* timestamp (19.2 MHz) */
++	default: return 0;
++	}
++}
++
++/*
++ * Self-test of the userland path (sweetgpu=4), all in the kernel: two
++ * buffers of ordinary (non-contiguous) kernel memory mapped above 4 GiB, an
++ * indirect buffer in the first with CP_MEM_WRITE into the second, submitted
++ * with a fence. Proves the 4K tables, the IB fetch and the fence.
++ */
++static int
++gpu_vm_selftest(void)
++{
++	vm_offset_t ib = 0, dst = 0;
++	uint64_t ib_iova, dst_iova, pa[PAGE_SIZE / 0x1000];
++	if (kmem_alloc(kernel_map, &ib, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
++	    kmem_alloc(kernel_map, &dst, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
++	    sweet_gpu_vm_alloc(PAGE_SIZE, &ib_iova) || sweet_gpu_vm_alloc(PAGE_SIZE, &dst_iova)) {
++		printf("SWEET GPU: self-test: no memory\n");
++		return ENOMEM;
++	}
++	uint64_t ib_pa = kva_to_pa(ib), dst_pa = kva_to_pa(dst);
++	for (unsigned i = 0; i < PAGE_SIZE / 0x1000; i++) {
++		pa[i] = ib_pa + 0x1000ull * i;
++	}
++	int err = sweet_gpu_vm_map(ib_iova, pa, PAGE_SIZE / 0x1000, true);
++	for (unsigned i = 0; i < PAGE_SIZE / 0x1000; i++) {
++		pa[i] = dst_pa + 0x1000ull * i;
++	}
++	if (!err) {
++		err = sweet_gpu_vm_map(dst_iova, pa, PAGE_SIZE / 0x1000, false);
++	}
++	/* the IB: CP_MEM_WRITE of two values into the destination's second 4K page */
++	uint32_t *w = (uint32_t *)ib;
++	uint64_t target = dst_iova + 0x1004;
++	w[0] = 0x70000000u | 4 | (pm4_parity(4) << 15) | (CP_MEM_WRITE << 16) | (pm4_parity(CP_MEM_WRITE) << 23);
++	w[1] = (uint32_t)target;
++	w[2] = (uint32_t)(target >> 32);
++	w[3] = 0x600d0001;
++	w[4] = 0x600d0002;
++	flush_dcache64((addr64_t)ib_pa, PAGE_SIZE, TRUE);
++	flush_dcache64((addr64_t)dst_pa, PAGE_SIZE, TRUE);
++	uint32_t seqno = 0, dw = 5;
++	if (!err) {
++		err = sweet_gpu_submit(&ib_iova, &dw, 1, &seqno);
++	}
++	if (!err) {
++		err = sweet_gpu_wait(seqno, 1000);
++	}
++	flush_dcache64((addr64_t)dst_pa, PAGE_SIZE, TRUE);
++	volatile uint32_t *d = (volatile uint32_t *)(dst + 0x1004);
++	printf("SWEET GPU: self-test: IB at %llx -> %llx, seqno %u completed %u (%d), reads %08x %08x (want 600d0001 600d0002), "
++	    "CB0 FSR %08x\n", ib_iova, target, seqno, sweet_gpu_completed(), err, d[0], d[1], sg.smmu[(SMMU_CB0 + 0x58) / 4]);
++	return err || d[0] != 0x600d0001 || d[1] != 0x600d0002 ? EIO : 0;
++}
++
+ static int
+ gpu_cp_test(void)
+ {
+@@ -950,19 +1270,19 @@ gpu_zap_load(void)
+ 	return st != 0 || res != 0 ? EIO : 0;
+ }
+ 
+-static void
++static int
+ gpu_zap_test(void)
+ {
+ 	if (gpu_zap_load()) {
+ 		printf("SWEET GPU: zap shader not loaded, the CP stays in secure mode\n");
+-		return;
++		return EIO;
+ 	}
+ 	gpu_pause(4, "CP_SET_SECURE_MODE 0 next");
+ 	ring_pkt7(CP_SET_SECURE_MODE, 1);
+ 	ring_out(0);
+ 	if (ring_kick("CP_SET_SECURE_MODE 0")) {
+ 		gpu_power_off();
+-		return;
++		return ETIMEDOUT;
+ 	}
+ 	uint64_t lo = sg.mem_pa + SCRATCH_OFF + 4;
+ 	cp_mem_write(lo, 0xc0ffee03);
+@@ -971,6 +1291,7 @@ gpu_zap_test(void)
+ 	if (err) {
+ 		gpu_power_off();
+ 	}
++	return err;
+ }
+ 
+ static void
+@@ -1009,8 +1330,15 @@ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
+ 		gpu_pause(4, "GPU clock switch next");
+ 		(void)gpu_set_clock(mhz);
+ 	}
+-	if (sg.level >= 2 && gpu_cp_test() == 0 && sg.level >= 3) {
+-		gpu_zap_test();
++	if (sg.level >= 2 && gpu_cp_test() == 0 && sg.level >= 3 && gpu_zap_test() == 0 && sg.level >= 4) {
++		sg.mem[FENCE_OFF / 4] = 0;
++		gpu_ready = true;
++		if (gpu_vm_selftest() == 0) {
++			sweet_gpu_publish();
++		} else {
++			gpu_ready = false;
++			printf("SWEET GPU: self-test failed, no SweetGPU service\n");
++		}
+ 	}
+ 	printf("SWEET GPU: done\n");
+ }
+@@ -1020,6 +1348,7 @@ sweet_gpu_start(void)
+ {
+ 	thread_t thread;
+ 	PE_parse_boot_argn("sweetgpu", &sg.level, sizeof(sg.level));
++	gpu_lock = lck_mtx_alloc_init(lck_grp_alloc_init("sweet_gpu", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
+ 	if (sg.level > 0 && kernel_thread_start(sweet_gpu_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+new file mode 100644
+index 0000000..aa13db3
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -0,0 +1,317 @@
++/*
++ * SweetGPU: the Adreno 512 for userland (G2 of jasmine/GPU.md). Published by
++ * bsd/dev/sweet_gpu.c once the GPU is up and its self-test passed
++ * (sweetgpu=4). Shaped after what Mesa freedreno's msm backend asks of Linux's
++ * msm DRM driver, so its Darwin backend can stay a thin translation:
++ *
++ *   selector 0  get param:   in  param (Mesa MSM_PARAM_* counterparts, see
++ *                            sweet_gpu_param)            out value
++ *   selector 1  buffer new:  in  size, flags (bit 0: GPU read-only)
++ *                                                        out handle, GPU VA
++ *   selector 2  buffer free: in  handle
++ *   selector 3  submit:      struct in: u32 count, u32 0, then count x
++ *                            { u64 GPU VA, u32 dwords, u32 0 } indirect
++ *                            buffers                     out seqno
++ *   selector 4  wait:        in  seqno, timeout (ms)     kIOReturnTimeout
++ *   selector 5  completed:                               out last seqno done
++ *   memory type = handle: IOConnectMapMemory maps that buffer (write-combined,
++ *   like the GPU's own non-cacheable view, so no cache maintenance is needed)
++ *
++ * Buffers are pageable-free kernel memory (IOBufferMemoryDescriptor), mapped
++ * into the one GPU address space with 4K pages; a client's buffers are
++ * unmapped and freed when it closes or dies. The GPU address space is shared
++ * by all clients, as msm's global one.
++ */
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <IOKit/IOLib.h>
++#include <libkern/c++/OSArray.h>
++
++extern "C" {
++int sweet_gpu_vm_alloc(uint64_t size, uint64_t *iova);
++int sweet_gpu_vm_map(uint64_t iova, const uint64_t *pa, uint32_t npages, bool readonly);
++void sweet_gpu_vm_unmap(uint64_t iova, uint32_t npages);
++int sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno);
++int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
++uint32_t sweet_gpu_completed(void);
++uint64_t sweet_gpu_param(uint32_t which);
++void sweet_gpu_publish(void);
++}
++
++#define SWEET_GPU_MAX_BUFFER    (256ull << 20)
++#define SWEET_GPU_MAX_IBS       64
++
++class SweetGPU : public IOService {
++	OSDeclareDefaultStructors(SweetGPU);
++};
++
++OSDefineMetaClassAndStructors(SweetGPU, IOService);
++
++/* One buffer object: its memory and where the GPU sees it. */
++class SweetGPUBuffer : public OSObject {
++	OSDeclareDefaultStructors(SweetGPUBuffer);
++
++public:
++	IOBufferMemoryDescriptor *md;
++	uint64_t iova, size;
++
++	static SweetGPUBuffer *create(uint64_t size, bool readonly);
++	void free() APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetGPUBuffer, OSObject);
++
++SweetGPUBuffer *
++SweetGPUBuffer::create(uint64_t size, bool readonly)
++{
++	size = round_page(size);
++	if (size == 0 || size > SWEET_GPU_MAX_BUFFER) {
++		return NULL;
++	}
++	SweetGPUBuffer *b = OSTypeAlloc(SweetGPUBuffer);
++	if (b == NULL || !b->init()) {
++		OSSafeReleaseNULL(b);
++		return NULL;
++	}
++	b->size = size;
++	b->md = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMapWriteCombineCache, size, page_size);
++	if (b->md == NULL || b->md->prepare() != kIOReturnSuccess || sweet_gpu_vm_alloc(size, &b->iova) != 0) {
++		b->iova = 0;
++		OSSafeReleaseNULL(b);
++		return NULL;
++	}
++	bzero(b->md->getBytesNoCopy(), size);
++	uint32_t npages = (uint32_t)(size / 0x1000);
++	uint64_t *pa = IONew(uint64_t, npages);
++	bool ok = pa != NULL;
++	for (uint32_t i = 0; ok && i < npages; i++) {
++		IOByteCount len = 0;
++		addr64_t seg = b->md->getPhysicalSegment(0x1000ull * i, &len, kIOMemoryMapperNone);
++		ok = seg != 0 && len >= 0x1000;
++		pa[i] = seg;
++	}
++	if (ok) {
++		ok = sweet_gpu_vm_map(b->iova, pa, npages, readonly) == 0;
++	}
++	if (pa != NULL) {
++		IODelete(pa, uint64_t, npages);
++	}
++	if (!ok) {
++		OSSafeReleaseNULL(b);
++	}
++	return b;
++}
++
++void
++SweetGPUBuffer::free()
++{
++	if (md != NULL) {
++		if (iova != 0) {
++			sweet_gpu_vm_unmap(iova, (uint32_t)(size / 0x1000));
++		}
++		md->complete();
++		OSSafeReleaseNULL(md);
++	}
++	OSObject::free();
++}
++
++class SweetGPUUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SweetGPUUserClient);
++
++	IOLock  *fLock;
++	OSArray *fBuffers;      /* handle = index + 1; freed slots hold kOSBooleanFalse */
++
++	SweetGPUBuffer *buffer(uint64_t handle);
++
++public:
++	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
++	void free() APPLE_KEXT_OVERRIDE;
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetGPUUserClient, IOUserClient);
++
++bool
++SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
++{
++	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
++		return false;
++	}
++	fLock = IOLockAlloc();
++	fBuffers = OSArray::withCapacity(64);
++	return fLock != NULL && fBuffers != NULL;
++}
++
++void
++SweetGPUUserClient::free()
++{
++	OSSafeReleaseNULL(fBuffers);
++	if (fLock != NULL) {
++		IOLockFree(fLock);
++		fLock = NULL;
++	}
++	IOUserClient::free();
++}
++
++IOReturn
++SweetGPUUserClient::clientClose(void)
++{
++	IOLockLock(fLock);
++	fBuffers->flushCollection();    /* unmaps and frees every buffer */
++	IOLockUnlock(fLock);
++	terminate();
++	return kIOReturnSuccess;
++}
++
++/* The buffer for a handle, retained, or NULL. */
++SweetGPUBuffer *
++SweetGPUUserClient::buffer(uint64_t handle)
++{
++	IOLockLock(fLock);
++	SweetGPUBuffer *b = handle >= 1 && handle <= fBuffers->getCount() ?
++	    OSDynamicCast(SweetGPUBuffer, fBuffers->getObject((unsigned int)handle - 1)) : NULL;
++	if (b != NULL) {
++		b->retain();
++	}
++	IOLockUnlock(fLock);
++	return b;
++}
++
++IOReturn
++SweetGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
++{
++	SweetGPUBuffer *b = buffer(type);
++	if (b == NULL) {
++		return kIOReturnBadArgument;
++	}
++	b->md->retain();
++	*memory = b->md;
++	*options = (*options & ~kIOMapCacheMask) | kIOMapWriteCombineCache;
++	b->release();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++    __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target, __unused void *reference)
++{
++	const uint64_t *in = args->scalarInput;
++	uint32_t nin = args->scalarInputCount;
++
++	switch (selector) {
++	case 0:         /* get param */
++		if (nin < 1 || args->scalarOutputCount < 1) {
++			return kIOReturnBadArgument;
++		}
++		args->scalarOutput[0] = sweet_gpu_param((uint32_t)in[0]);
++		return kIOReturnSuccess;
++	case 1: {       /* buffer new */
++		if (nin < 2 || args->scalarOutputCount < 2) {
++			return kIOReturnBadArgument;
++		}
++		SweetGPUBuffer *b = SweetGPUBuffer::create(in[0], (in[1] & 1) != 0);
++		if (b == NULL) {
++			return kIOReturnNoMemory;
++		}
++		IOLockLock(fLock);
++		unsigned int slot = fBuffers->getCount();
++		for (unsigned int i = 0; i < fBuffers->getCount(); i++) {
++			if (OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i)) == NULL) {
++				slot = i;
++				break;
++			}
++		}
++		if (slot == fBuffers->getCount()) {
++			fBuffers->setObject(b);
++		} else {
++			fBuffers->replaceObject(slot, b);
++		}
++		IOLockUnlock(fLock);
++		args->scalarOutput[0] = slot + 1;
++		args->scalarOutput[1] = b->iova;
++		b->release();
++		return kIOReturnSuccess;
++	}
++	case 2: {       /* buffer free */
++		if (nin < 1) {
++			return kIOReturnBadArgument;
++		}
++		IOLockLock(fLock);
++		IOReturn ret = kIOReturnBadArgument;
++		if (in[0] >= 1 && in[0] <= fBuffers->getCount() &&
++		    OSDynamicCast(SweetGPUBuffer, fBuffers->getObject((unsigned int)in[0] - 1)) != NULL) {
++			fBuffers->replaceObject((unsigned int)in[0] - 1, kOSBooleanFalse);
++			ret = kIOReturnSuccess;
++		}
++		IOLockUnlock(fLock);
++		return ret;
++	}
++	case 3: {       /* submit */
++		struct ib {
++			uint64_t iova;
++			uint32_t dwords, pad;
++		};
++		const uint8_t *s = (const uint8_t *)args->structureInput;
++		uint32_t len = args->structureInputSize;
++		if (s == NULL || len < 8 || args->scalarOutputCount < 1) {
++			return kIOReturnBadArgument;
++		}
++		uint32_t n = *(const uint32_t *)(const void *)s;
++		if (n == 0 || n > SWEET_GPU_MAX_IBS || len < 8 + n * sizeof(struct ib)) {
++			return kIOReturnBadArgument;
++		}
++		uint64_t iova[SWEET_GPU_MAX_IBS];
++		uint32_t dw[SWEET_GPU_MAX_IBS];
++		for (uint32_t i = 0; i < n; i++) {
++			struct ib e;
++			memcpy(&e, s + 8 + i * sizeof(e), sizeof(e));
++			iova[i] = e.iova;
++			dw[i] = e.dwords;
++		}
++		uint32_t seqno = 0;
++		int err = sweet_gpu_submit(iova, dw, n, &seqno);
++		args->scalarOutput[0] = seqno;
++		return err == 0 ? kIOReturnSuccess : err == EBUSY ? kIOReturnBusy : kIOReturnError;
++	}
++	case 4:         /* wait */
++		if (nin < 2) {
++			return kIOReturnBadArgument;
++		}
++		return sweet_gpu_wait((uint32_t)in[0], (uint32_t)(in[1] < 60000 ? in[1] : 60000)) == 0 ? kIOReturnSuccess : kIOReturnTimeout;
++	case 5:         /* completed */
++		if (args->scalarOutputCount < 1) {
++			return kIOReturnBadArgument;
++		}
++		args->scalarOutput[0] = sweet_gpu_completed();
++		return kIOReturnSuccess;
++	default:
++		return kIOReturnUnsupported;
++	}
++}
++
++/* Called by sweet_gpu.c once the GPU runs and its self-test passed. */
++void
++sweet_gpu_publish(void)
++{
++	IOService *platform = IOService::getPlatform();
++	SweetGPU *gpu = OSTypeAlloc(SweetGPU);
++	if (platform == NULL || gpu == NULL || !gpu->init()) {
++		OSSafeReleaseNULL(gpu);
++		IOLog("SWEET GPU: SweetGPU service not created\n");
++		return;
++	}
++	gpu->setName("SweetGPU");
++	gpu->setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
++	gpu->setProperty("chip-id", (unsigned long long)sweet_gpu_param(1), 32);
++	gpu->setProperty("gpu-id", (unsigned long long)sweet_gpu_param(2), 32);
++	if (gpu->attach(platform)) {
++		gpu->registerService();
++		IOLog("SWEET GPU: SweetGPU service published (Adreno %llu)\n", sweet_gpu_param(2));
++	}
++	OSSafeReleaseNULL(gpu);
++}
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index cc24c81..0dbc445 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -16,6 +16,7 @@ iokit/Kernel/arm/SweetEntitlements.cpp                           optional iokitc
+ iokit/Kernel/arm/SweetKeyStore.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
++iokit/Kernel/arm/SweetGPU.cpp                                    optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+-- 
+2.47.3
+
