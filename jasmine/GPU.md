@@ -52,6 +52,15 @@ Each stage is useful on its own.
   contexts, and reads `CA_ENABLE_OGL` and `CA_DISPLAY_TYPE` (environment), which presumably select the GL
   renderer. `IOAcceleratorES` is the accelerator service class QuartzCore looks for (topaz publishes an empty
   one to skip a 30 s wait).
+- **How OpenGLES picks the renderer (found with blacktop `ipsw` 3.1.739 in WSL `~/ios-work/tools`):** OpenGLES
+  matches the IOKit service class `IOAcceleratorES` (or `IOAcceleratorESLegacy`) and reads three properties:
+  `IOGLESBundleName` (a native GL renderer bundle), `IOGLESMetalBundleName` (the Metal-based one, normally
+  `AppleMetalGLRenderer`) and `IOGLESDefaultUseMetal` (which of the two), then loads
+  `/System/Library/Extensions/%s.bundle` and, through `loadGLIPlugin:sharedWithCompute:`, its `gld*` entry points.
+  **So the kernel chooses the GL renderer:** our `IOAcceleratorES` (topaz already publishes an empty one) with
+  `IOGLESBundleName = JasmineGLRenderer`, `IOGLESDefaultUseMetal = false` makes OpenGLES load
+  `/System/Library/Extensions/JasmineGLRenderer.bundle/JasmineGLRenderer`. No binary patching of iOS.
+  `AppleMetalGLRenderer` exports 131 of the 133 `gld*` names (symbols and strings dumped to `~/ios-work/gl/out`).
 - **So the G2 target is concrete:** a renderer bundle that exports the `gld*` interface backed by Mesa freedreno
   (instead of Metal), and CoreAnimation switched to its GLES renderer (`CA_ENABLE_OGL` for backboardd).
   Next research steps: the `gld*` signatures (disassembly of AppleMetalGLRenderer and GLEngine's calls, with
