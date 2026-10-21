@@ -304,12 +304,32 @@ w_FramebufferParameteriAPPLE(void *rctx, GLenum target, GLenum pname, GLint valu
 }
 
 /* CA hands finished surfaces to the display without waiting for the GPU: flush means finish */
+/* SWEETCA_TRACE: the current framebuffer's center pixel and a corner, and the draw counts */
+static unsigned n_draws, n_clears;
+static void
+trace_fb(const char *when)
+{
+   GLint fb = -1, vp[4] = {0};
+   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+   glGetIntegerv(GL_VIEWPORT, vp);
+   uint8_t px[8] = {0};
+   if (fb > 0) {
+      glReadPixels(vp[0] + 4, vp[1] + 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      glReadPixels(vp[0] + vp[2] / 2, vp[1] + vp[3] / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px + 4);
+   }
+   sca_log("sweetca: %s: fbo %d viewport %d,%d %dx%d, draws %u clears %u, GL reads rgba (4,4)=%02x%02x%02x%02x center=%02x%02x%02x%02x",
+           when, fb, vp[0], vp[1], vp[2], vp[3], n_draws, n_clears, px[0], px[1], px[2], px[3], px[4], px[5],
+           px[6], px[7]);
+}
+
 static void
 w_Flush(void *rctx)
 {
    CUR(rctx);
    (void)c;
    glFinish();
+   if (trace_on)
+      trace_fb("flush");
    POST(90);
 }
 
@@ -948,6 +968,7 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
    CUR(rctx);
    draw_prep(c);
+   n_draws++;
    glDrawArrays(mode, first, count);
    POST(65);
 }
@@ -957,6 +978,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
 {
    CUR(rctx);
    draw_prep(c);
+   n_draws++;
    glDrawElements(mode, count, type, indices);
    POST(67);
 }
@@ -966,6 +988,7 @@ w_Clear(void *rctx, GLbitfield mask)
 {
    CUR(rctx);
    (void)c;
+   n_clears++;
    glClear(mask);
    POST(10);
 }

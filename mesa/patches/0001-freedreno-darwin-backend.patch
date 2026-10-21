@@ -1,6 +1,6 @@
-From 92a647f5486d3ea663e8612eae4a3bd85a6e3459 Mon Sep 17 00:00:00 2001
+From 0912ff26a95364804d751c5f58c03b9378386e40 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 00:33:25 +0200
+Date: Thu, 22 Oct 2026 00:52:03 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1542 +++++++++++++++++
- .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1565 +++++++++++++++++
+ .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5275 insertions(+), 1 deletion(-)
+ 20 files changed, 5298 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..0944feb
+index 0000000..891e0e5
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1542 @@
+@@ -0,0 +1,1565 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1593,12 +1593,32 @@ index 0000000..0944feb
 +}
 +
 +/* CA hands finished surfaces to the display without waiting for the GPU: flush means finish */
++/* SWEETCA_TRACE: the current framebuffer's center pixel and a corner, and the draw counts */
++static unsigned n_draws, n_clears;
++static void
++trace_fb(const char *when)
++{
++   GLint fb = -1, vp[4] = {0};
++   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
++   glGetIntegerv(GL_VIEWPORT, vp);
++   uint8_t px[8] = {0};
++   if (fb > 0) {
++      glReadPixels(vp[0] + 4, vp[1] + 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
++      glReadPixels(vp[0] + vp[2] / 2, vp[1] + vp[3] / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px + 4);
++   }
++   sca_log("sweetca: %s: fbo %d viewport %d,%d %dx%d, draws %u clears %u, GL reads rgba (4,4)=%02x%02x%02x%02x center=%02x%02x%02x%02x",
++           when, fb, vp[0], vp[1], vp[2], vp[3], n_draws, n_clears, px[0], px[1], px[2], px[3], px[4], px[5],
++           px[6], px[7]);
++}
++
 +static void
 +w_Flush(void *rctx)
 +{
 +   CUR(rctx);
 +   (void)c;
 +   glFinish();
++   if (trace_on)
++      trace_fb("flush");
 +   POST(90);
 +}
 +
@@ -2237,6 +2257,7 @@ index 0000000..0944feb
 +{
 +   CUR(rctx);
 +   draw_prep(c);
++   n_draws++;
 +   glDrawArrays(mode, first, count);
 +   POST(65);
 +}
@@ -2246,6 +2267,7 @@ index 0000000..0944feb
 +{
 +   CUR(rctx);
 +   draw_prep(c);
++   n_draws++;
 +   glDrawElements(mode, count, type, indices);
 +   POST(67);
 +}
@@ -2255,6 +2277,7 @@ index 0000000..0944feb
 +{
 +   CUR(rctx);
 +   (void)c;
++   n_clears++;
 +   glClear(mask);
 +   POST(10);
 +}
