@@ -1,6 +1,6 @@
-From 1fdfbe624dc72003ed39c7abad5b99521f38c78a Mon Sep 17 00:00:00 2001
+From e482d4070e6b9a0c8ff2395388758cdf2150d9a1 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 01:28:51 +0200
+Date: Wed, 21 Oct 2026 02:28:43 +0200
 Subject: [PATCH] jasmine-j0007: tear-free MDP flips and fit-to-screen on
  jasmine
 
@@ -19,12 +19,12 @@ height, 997x2160 centred, instead of cropping the status bar and home
 indicator; SweetHIDTouch maps touches through the same fit. sweetfb_fit=0
 crops as before.
 ---
- iokit/Kernel/arm/SweetFramebuffer.cpp | 221 +++++++++++++++++++++++---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 228 ++++++++++++++++++++++++--
  iokit/Kernel/arm/hid/SweetHID.cpp     |  10 ++
- 2 files changed, 213 insertions(+), 18 deletions(-)
+ 2 files changed, 220 insertions(+), 18 deletions(-)
 
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 6f174af..c72100d 100644
+index 6f174af..704501f 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -35,6 +35,9 @@
@@ -37,7 +37,7 @@ index 6f174af..c72100d 100644
  
  extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
  extern "C" void sweet_console_retarget(vm_offset_t va);   /* osfmk/console/video_console.c */
-@@ -70,11 +73,14 @@ sweet_hold_set(SweetSurface **set, bool on)
+@@ -70,6 +73,8 @@ sweet_hold_set(SweetSurface **set, bool on)
  }
  class AppleCLCD;
  static AppleCLCD *sweet_cons_fb;
@@ -46,17 +46,12 @@ index 6f174af..c72100d 100644
  static void sweet_cons_show(void);
  class OSDictionary;
  static void sweet_bl_log(const char *who, OSDictionary *d);
- extern "C" void sweet_dcache_clean(vm_offset_t addr, unsigned length);  /* osfmk/arm/caches.c */
- extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-+extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
- 
- #if defined(SWEET)
- #include <IOKit/IOService.h>
-@@ -173,11 +179,20 @@ public:
+@@ -173,11 +178,21 @@ public:
  	/* kernel-drawn frames (console, fade) are double buffered like iOS's:
  	 * built in the back buffer, then the MDP flips to it at vsync */
  	IOBufferMemoryDescriptor *fFlip[2];
 +	uint8_t      *fFlipVA[2];     /* back buffers' kernel addresses (both boards) */
++	IOMemoryMap  *fFlipMap[2];    /* jasmine: their write-combined mappings */
 +	bool          fFlipWC;        /* jasmine: write-combined, no cache clean */
 +	uint32_t      fFlushMask;     /* CTL_FLUSH bits: the pipe's and the CTL's */
 +	/* jasmine fit: the 1125x2436 frame scaled into fFitW x fHeight at column fFitX */
@@ -136,7 +131,7 @@ index 6f174af..c72100d 100644
  		}
  	}
  	uint32_t hz = 10;
-@@ -421,6 +452,149 @@ AppleCLCD::start(IOService *provider)
+@@ -421,6 +452,156 @@ AppleCLCD::start(IOService *provider)
  	return true;
  }
  
@@ -208,7 +203,14 @@ index 6f174af..c72100d 100644
 +	}
 +	for (int i = 0; i < 2; i++) {
 +		fFlipPhys[i] = flip[2 * i];
-+		fFlipVA[i] = (uint8_t *)ml_io_map_wcomb((vm_offset_t)flip[2 * i], round_page(fsz));
++		/*
++		 * Mapped like the panel memory (SweetSurface): ml_io_map_wcomb takes
++		 * its VA from the small I/O range, and 9 MB panicked in kmem_alloc.
++		 */
++		IOMemoryDescriptor *md = IOMemoryDescriptor::withPhysicalAddress(flip[2 * i], round_page(fsz), kIODirectionInOut);
++		fFlipMap[i] = md ? md->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache) : NULL;
++		OSSafeReleaseNULL(md);
++		fFlipVA[i] = fFlipMap[i] ? (uint8_t *)fFlipMap[i]->getVirtualAddress() : NULL;
 +		if (fFlipVA[i] == NULL) {
 +			fFlipVA[0] = fFlipVA[1] = NULL;
 +			return false;
@@ -286,7 +288,7 @@ index 6f174af..c72100d 100644
  void
  AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  {
-@@ -461,8 +635,8 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -461,8 +642,8 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  			if (step <= SWEET_FB_FADE_STEPS) {
  				fb->fFadeStep = step + 1;
  			}
@@ -297,7 +299,7 @@ index 6f174af..c72100d 100644
  			    fb->fLastVA ? fb->fLastVA :
  			    fb->fConsShown ?
  			    (const uint8_t *)fb->fCons->getBytesNoCopy() : (const uint8_t *)fb->fPixels;
-@@ -593,7 +767,7 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+@@ -593,7 +774,7 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
  	fVig0[0x14 / 4] = (uint32_t)pa;
  	fVig0[0x24 / 4] = stride;
  	__asm__ volatile("dsb sy" ::: "memory");
@@ -306,7 +308,7 @@ index 6f174af..c72100d 100644
  	__asm__ volatile("dsb sy" ::: "memory");
  	fScanPhys = pa;
  	fScanStride = stride;
-@@ -824,7 +998,9 @@ void
+@@ -824,7 +1005,9 @@ void
  AppleCLCD::flipBack(void)
  {
  	uint32_t idx = fFlipIdx ^ 1;
@@ -317,7 +319,7 @@ index 6f174af..c72100d 100644
  	scanFrom(fFlipPhys[idx], fRowBytes);
  	fFlipIdx = idx;
  }
-@@ -886,7 +1062,7 @@ AppleCLCD::directPresent(const uint8_t *rec)
+@@ -886,7 +1069,7 @@ AppleCLCD::directPresent(const uint8_t *rec)
  				 * next frame in this surface at once, so scanning it directly let
  				 * the panel show frames half drawn. Cached to cached, a few ms.
  				 */
@@ -326,7 +328,7 @@ index 6f174af..c72100d 100644
  					flipFrom((const uint8_t *)(va + s->offset + (uint64_t)oy * s->bytesPerRow + (uint64_t)ox * 4),
  					    s->bytesPerRow);
  				} else {
-@@ -946,8 +1122,8 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -946,8 +1129,8 @@ AppleCLCD::present(const uint8_t *rec)
  	 * flip, like the direct path. Composing into the scanned, uncached boot
  	 * framebuffer showed every multi-layer frame (dims, apps) drawn top-down.
  	 */
@@ -337,7 +339,7 @@ index 6f174af..c72100d 100644
  		scanFrom(fBootSrc, fBootStride);
  	}
  
-@@ -985,6 +1161,15 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -985,6 +1168,15 @@ AppleCLCD::present(const uint8_t *rec)
  			OSSafeReleaseNULL(s);
  			continue;
  		}
@@ -353,7 +355,7 @@ index 6f174af..c72100d 100644
  		uintptr_t src = s->kernelAddress();
  		uint32_t bpe = s->bytesPerElement ? s->bytesPerElement : 4;
  		if (w <= 0 || h <= 0) {
-@@ -1037,7 +1222,7 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1037,7 +1229,7 @@ AppleCLCD::present(const uint8_t *rec)
  		}
  		s->release();
  	}
