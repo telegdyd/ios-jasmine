@@ -177,6 +177,16 @@ in the one GPU address space), so instead of emulating the DRM ioctls Mesa gets 
   the hypotenuse are skipped), e.g. (16,16) = 7c 42 42 ff as computed. `PASS: the GPU drew the triangle`
   (`logs/netlog-j31-tri.txt`, same j0031 kernel). ir3 code, vertex fetch, viewport, rasterizer and varyings
   work on the first try. Next: a GL ES context (Mesa's GLES frontend on Darwin) and a GLSL test.
+- **2026-10-21 21:09: OpenGL ES works on the Adreno 512.** `sweetgl` (Mesa patch, `src/gallium/frontends/sweetgl`,
+  modelled on Haiku's hgl: a display owns the freedreno screen, st/mesa GL ES contexts, offscreen surfaces with
+  depth/stencil, the public GL ES entry points compiled in; no EGL/DRI) reports `OpenGL ES 3.1 Mesa 26.2.5`,
+  renderer `FD512`, GLSL ES 3.10, 129 extensions. `sweetgpu_gltest` passed all four steps with plain GL ES 2.0
+  calls and glReadPixels: clear, a GLSL triangle with varyings and a uniform, a 2x2 texture (nearest, client-side
+  vertex arrays) blended at alpha 0.5, and the depth test (`logs/netlog-j31-gl.txt`, kernel j0031). 9.6 s for the
+  four steps: mostly the debug mode's log pauses plus first-time shader compiles. Mesa for iOS now builds with
+  `-Dgles2=enabled`; a Linux host build in WSL (`~/ios-work/mesa/build-host`) compile-checks changes first.
+  Next: the EAGL side (OpenGLES.framework's EAGLContext / renderbufferStorage:fromDrawable: on IOSurfaces),
+  then CoreAnimation's renderer.
 - **Panics are visible now (j0030):** this board has no iBoot panic region, so `SavePanicInfo()` spins forever
   and a panic looked like a hang (ios-sapphire found the same). The panic text now goes out on the live log
   connection; `sweetpanic_test=SECS` checks it (passed 2026-10-21 20:32, `logs/netlog-j30-ptest.txt`).
