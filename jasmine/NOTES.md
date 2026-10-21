@@ -20,7 +20,7 @@ Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
 2. Standalone boot: the shim boot image on boot_b, Nura's boot_a kept as the charging shell and fallback.
 3. CPU: Gold clock (no cpufreq driver yet), then all 8 cores (4K pages, UniXNU).
 4. Wi-Fi (WCN3990 on the modem DSP; topaz 0113-0130 as the model).
-GPU waits for HackiOS to publish its patches (topaz README).
+5. GPU: topaz runs CoreAnimation on its Adreno 610 with HackiOS's private patches (kernel driver + Mesa freedreno as the GL ES renderer), to be published in topaz once HackiOS publishes. `git fetch topaz` and check after each step; if still unpublished after 1-4, consider our own Adreno 512 (a5xx) work: firmware (a530_pm4/pfp, zap shader via TZ), GPU clocks/GX power, GPU SMMU, freedreno.
 
 ## Kernel patches (ours, on top of topaz's)
 
