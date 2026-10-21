@@ -69,7 +69,7 @@ jobs:
           name: ios-tools
           path: out/
 
-  # Mesa freedreno for the iOS userland (G2): mesa/patches on mesa-26.2.5,
+  # Mesa freedreno + GL ES (sweetgl) for the iOS userland (G2): mesa/patches on mesa-26.2.5,
   # cross-built with Xcode's iPhoneOS SDK (mesa/ios-arm64.ini).
   mesa:
     if: ${{ inputs.build == 'mesa' }}
@@ -91,19 +91,22 @@ jobs:
         run: |
           export PATH="$RUNNER_TEMP/venv/bin:$(brew --prefix bison)/bin:$(brew --prefix flex)/bin:$PATH"
           cd mesa-src
-          meson setup build --cross-file ../mesa/ios-arm64.ini -Dbuildtype=release             -Dplatforms= -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dfreedreno-kmds=msm             -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled             -Dllvm=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dvalgrind=disabled             -Dlibunwind=disabled -Dbuild-tests=false -Dshader-cache=disabled -Dperfetto=false             -Dvideo-codecs= -Dspirv-tools=disabled -Dallow-fallback-for=libdrm
+          meson setup build --cross-file ../mesa/ios-arm64.ini -Dbuildtype=release             -Dplatforms= -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dfreedreno-kmds=msm             -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false -Dgles1=disabled -Dgles2=enabled             -Dllvm=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dvalgrind=disabled             -Dlibunwind=disabled -Dbuild-tests=false -Dshader-cache=disabled -Dperfetto=false             -Dvideo-codecs= -Dspirv-tools=disabled -Dallow-fallback-for=libdrm
       - name: Build
         run: |
           export PATH="$RUNNER_TEMP/venv/bin:$PATH"
-          ninja -C mesa-src/build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest > build.log 2>&1 || true
+          ninja -C mesa-src/build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest src/gallium/frontends/sweetgl/sweetgpu_gltest > build.log 2>&1 || true
           grep -E -A12 "^FAILED|error:|Undefined symbols" build.log | grep -v "warning:" | head -300 || true
           tail -15 build.log
           test -f mesa-src/build/src/gallium/drivers/freedreno/sweetgpu_fdtest
+          test -f mesa-src/build/src/gallium/frontends/sweetgl/sweetgpu_gltest
       - name: Sign
         run: |
           mkdir -p out
           cp mesa-src/build/src/gallium/drivers/freedreno/sweetgpu_fdtest out/
           codesign -f -s - --entitlements ios/entitlements.plist out/sweetgpu_fdtest
+          cp mesa-src/build/src/gallium/frontends/sweetgl/sweetgpu_gltest out/
+          codesign -f -s - --entitlements ios/entitlements.plist out/sweetgpu_gltest
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
