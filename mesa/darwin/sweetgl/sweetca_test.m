@@ -27,6 +27,7 @@
 #include <string.h>
 
 extern int sweetca_installed(void);
+extern void sweetca_set_trace(int level);
 
 #define W 256
 #define H 256
@@ -215,6 +216,10 @@ main(void)
 {
    @autoreleasepool {
       setvbuf(stdout, NULL, _IOLBF, 0);
+      if (getenv("SWEETCA_TRACE"))
+         sweetca_set_trace(atoi(getenv("SWEETCA_TRACE")));
+      else
+         sweetca_set_trace(1);
       CHECK(sweetca_installed(), "libsweetca replaced the EAGLContext methods");
 
       EAGLContext *ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];

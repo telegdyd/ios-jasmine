@@ -1493,6 +1493,13 @@ install_texfns(void)
 
 /* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
 int sweetca_installed(void);
+void sweetca_set_trace(int level);
+
+__attribute__((visibility("default"))) void
+sweetca_set_trace(int level)
+{
+   trace_on = level;
+}
 
 __attribute__((visibility("default"))) int
 sweetca_installed(void)
