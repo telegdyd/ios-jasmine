@@ -12,7 +12,8 @@ screen (image versions v8-v14 in NOTES.md):
   launchd.plist   _PanicOnCrash -> _PanicOnCrasX (a crashing daemon must not
                   panic the system); CommCenter jobs removed (no baseband: it
                   crash-loops and Setup blocks on its CoreTelephony XPC)
-                  bluetoothd, fairplayd.H2 KeepAlive off (no hardware: relaunch loop)
+                  bluetoothd and fairplayd.H2 removed too (no hardware: on-demand
+                  relaunch every ~10 s)
   containers      /private/var/containers/{Bundle,Data/System,Shared/SystemGroup,Temp}
                   (on iOS they live on the data volume)
   migration       LastSystemVersion so DataMigration does not run for an hour
@@ -65,20 +66,16 @@ def launchd(root):
         if '_PanicOnCrash' in job:
             job['_PanicOnCrasX'] = job.pop('_PanicOnCrash')
             renamed += 1
-    removed = [k for k, j in jobs.items() if j.get('Label') == 'com.apple.CommCenter']
+    # CommCenter: no baseband. bluetoothd, fairplayd.H2: no hardware; they exit
+    # at once and were started again on demand about every 10 s (jasmine,
+    # 2026-10-21; KeepAlive off alone did not stop it).
+    gone = ('com.apple.CommCenter', 'com.apple.bluetoothd', 'com.apple.fairplayd.H2')
+    removed = [k for k, j in jobs.items() if j.get('Label') in gone]
     for k in removed:
         del jobs[k]
-    # No Bluetooth / FairPlay hardware: both exit at once and KeepAlive
-    # relaunched them every few seconds (about 100 launches in 5 minutes on
-    # jasmine). They still start once and on demand.
-    calmed = 0
-    for j in jobs.values():
-        if j.get('Label') in ('com.apple.bluetoothd', 'com.apple.fairplayd.H2') and j.get('KeepAlive'):
-            j['KeepAlive'] = False
-            calmed += 1
     save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
-    print(f'launchd.plist: {renamed} _PanicOnCrash renamed, {len(removed)} CommCenter jobs removed, '
-          f'{calmed} KeepAlive off (bluetoothd, fairplayd.H2)')
+    print(f'launchd.plist: {renamed} _PanicOnCrash renamed, {len(removed)} jobs removed '
+          f'(CommCenter, bluetoothd, fairplayd.H2)')
 
 
 def containers(root):
