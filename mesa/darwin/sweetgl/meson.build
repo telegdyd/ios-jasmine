@@ -83,7 +83,7 @@ if host_machine.system() == 'darwin'
       libgallium,
       libfreedreno_perfcntrs,
     ],
-    install_name : '@executable_path/libsweetca.dylib',
+    link_args : ['-Wl,-install_name,@executable_path/libsweetca.dylib'],
     install : false,
   )
 endif

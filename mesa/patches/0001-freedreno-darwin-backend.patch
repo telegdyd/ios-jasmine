@@ -1,6 +1,6 @@
-From 3f857506b56ece0d4d21756c85e60c2e1fe7560f Mon Sep 17 00:00:00 2001
+From 381f6eed16baf6020879e9ebb905c25d39ba3504 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 00:08:19 +0200
+Date: Thu, 22 Oct 2026 00:10:15 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -1188,7 +1188,7 @@ index 0000000..d0e3cb8
 +}
 diff --git a/src/gallium/frontends/sweetgl/meson.build b/src/gallium/frontends/sweetgl/meson.build
 new file mode 100644
-index 0000000..afcada4
+index 0000000..2841507
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/meson.build
 @@ -0,0 +1,89 @@
@@ -1277,7 +1277,7 @@ index 0000000..afcada4
 +      libgallium,
 +      libfreedreno_perfcntrs,
 +    ],
-+    install_name : '@executable_path/libsweetca.dylib',
++    link_args : ['-Wl,-install_name,@executable_path/libsweetca.dylib'],
 +    install : false,
 +  )
 +endif
