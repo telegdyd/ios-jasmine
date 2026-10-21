@@ -132,6 +132,26 @@ Each stage is useful on its own.
 
 ### G2: CoreAnimation on the GPU (weeks to months)
 
+#### G2 design (2026-10-21)
+
+Mesa's freedreno talks to the kernel only through its `src/freedreno/drm/msm` backend: `drmCommandWrite[Read]`
+with the `struct drm_msm_*` of `include/drm-uapi/msm_drm.h` (GET_PARAM, GEM_NEW, GEM_INFO, GEM_CPU_PREP/FINI,
+GEM_SUBMIT, WAIT_FENCE, SUBMITQUEUE_NEW/CLOSE/QUERY, MADVISE), `DRM_IOCTL_GEM_CLOSE` and `mmap` of a BO's offset.
+So the kernel exposes exactly that and Mesa needs no new backend:
+
+- **Kernel:** `SweetGPU` (IOService, published when the GPU is up at boot) and `SweetGPUUserClient`, one external
+  method per `DRM_MSM_*` number taking the same structs, plus GEM_CLOSE. Behind it: the bring-up of j0018-j0020
+  as the driver's init (power, 266 MHz, SMMU, microcode, zap); a GPU VA space in SMMU context bank 0 with real 4K
+  page tables (L1/L2/L3); BOs = kernel memory (IOBufferMemoryDescriptor, 16K pages as four 4K PTEs) mapped into the
+  GPU VA and, write-combined, into the client task (`clientMemoryForType`, type = BO handle); submit = one
+  `CP_INDIRECT_BUFFER_PFE` per command buffer into the ring, then `CP_EVENT_WRITE CACHE_FLUSH_TS` of the fence
+  seqno to a fence word; fences polled (interrupts later).
+- **Userland:** a small "libdrm-darwin" (`drmCommandWriteRead` -> `IOConnectCallStructMethod`, `mmap` of the
+  offset -> `IOConnectMapMemory64`) under Mesa freedreno (Gallium, a5xx) cross-built for iOS on the macOS
+  runner. First milestone: a test program that clears and reads back a render target through Gallium; then GL ES.
+- **CoreAnimation:** to decide after the first milestone: a GL ES implementation in place of OpenGLES.framework for
+  backboardd, or the `gld*` renderer plugin (G0.1).
+
 - Mesa freedreno (Gallium, a5xx) built for iOS (cross-compiled on GitHub's macOS runners, as XNU is) with a
   small kernel interface to the G1 driver (like UniXNU's `turnip-darwin-kmd`, but for freedreno's DRM-style
   winsys).
