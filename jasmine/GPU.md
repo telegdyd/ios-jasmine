@@ -61,6 +61,12 @@ Each stage is useful on its own.
   `IOGLESBundleName = JasmineGLRenderer`, `IOGLESDefaultUseMetal = false` makes OpenGLES load
   `/System/Library/Extensions/JasmineGLRenderer.bundle/JasmineGLRenderer`. No binary patching of iOS.
   `AppleMetalGLRenderer` exports 131 of the 133 `gld*` names (symbols and strings dumped to `~/ios-work/gl/out`).
+- **CoreAnimation side (first look):** QuartzCore has three context constructors, `sw_new_context` (0x1884409d0),
+  `gles_new_context` (0x188440b4c) and `metal_new_context` (0x188440b98), reached only through a function-pointer
+  table (no direct calls), plus `ogl-renderer.cpp` and `rendererWithEAGLContext:options:`. `CA_ENABLE_OGL` is read
+  in what looks like the GL context setup (sub_1883da11c) and **defaults to on** (unset counts as 1). Still open:
+  where the table entry is chosen (Metal device present? IOAcceleratorES? `CA_DISPLAY_TYPE`?). QuartzCore
+  disassembly: `~/ios-work/gl/out/qc.s` (`ipsw dyld disass --image QuartzCore`; `ipsw dyld xref` ran out of memory).
 - **So the G2 target is concrete:** a renderer bundle that exports the `gld*` interface backed by Mesa freedreno
   (instead of Metal), and CoreAnimation switched to its GLES renderer (`CA_ENABLE_OGL` for backboardd).
   Next research steps: the `gld*` signatures (disassembly of AppleMetalGLRenderer and GLEngine's calls, with
