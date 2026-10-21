@@ -286,6 +286,7 @@ main(void)
          return 1;
       ((void (*)(id, SEL, id))objc_msgSend)(renderer, sel_registerName("setLayer:"), root);
       ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("setBounds:"), CGRectMake(0, 0, W, H));
+      [CATransaction flush];
 
       /*
        * -[CARenderer setDestination:] calls GLESContext::set_destination_texture(0, arg, false)
@@ -315,6 +316,9 @@ main(void)
          ((void (*)(id, SEL, CFTimeInterval, void *))objc_msgSend)(renderer, sel_registerName("beginFrameAtTime:timeStamp:"),
                                                                    t0, NULL);
          ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("addUpdateRect:"), CGRectMake(0, 0, W, H));
+         printf("nextFrameTime %.3f, missing content %d\n",
+                ((double (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("nextFrameTime")),
+                ((BOOL(*)(id, SEL))objc_msgSend)(renderer, sel_registerName("hasMissingContent")));
          ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("render"));
          ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("endFrame"));
          double t1 = CACurrentMediaTime();
