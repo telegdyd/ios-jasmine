@@ -14,6 +14,14 @@ Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
 | 4 iOS root | **iOS 16 LOCK SCREEN on the Mi A2, 2026-10-20 ~22:40** (kernel 0139, `shim/out/shim-boot-ios-rwf139.img`, image `~/ios-work/root-build/ios16-root.simg` flashed to userdata 21:12). iPhone10,3 iOS 16.7.16 (20H392), 17 GiB HFS+ root. Writes verified: self-test OK, GPT copies unchanged after rw sessions |
 | 5 Input | **Keys + clock work (0140, 2026-10-21 ~01:00)**: power, volume up/down reach backboardd; date correct with `rtcoffset=1790955133` (PMIC RTC raw + offset, measured 2026-10-21 00:16). **Touch works (0141, 2026-10-21 01:15)**: unlocked to the home screen and Spotlight. **Display fitted and tear-free (j0007, 2026-10-21 02:40)**: whole 1125x2436 iOS frame scaled to 997x2160 (status bar, home indicator visible), touch mapped through the same fit; Settings, App Library, keyboard typing work. Next: wallpaper/widgets (no app extensions, upstream issue), battery driver, charger driver in XNU |
 
+## Roadmap (agreed 2026-10-21)
+
+1. Battery life: charger setup (j0009) and battery readout (j0010), then panel brightness / real screen off over DSI DCS (topaz 0104-0110 style), stop the bluetoothd / fairplayd.H2 respawn loop.
+2. Standalone boot: the shim boot image on boot_b, Nura's boot_a kept as the charging shell and fallback.
+3. CPU: Gold clock (no cpufreq driver yet), then all 8 cores (4K pages, UniXNU).
+4. Wi-Fi (WCN3990 on the modem DSP; topaz 0113-0130 as the model).
+GPU waits for HackiOS to publish its patches (topaz README).
+
 ## Kernel patches (ours, on top of topaz's)
 
 Ours are `xnu/patches/j0001-*` onward so they sort after every upstream topaz number (topaz kept going at 0136; merged 2026-10-21 with topaz 0136-0139). The WSL tree `~/xnu-8796` is `6d393c1 topaz-series` (0001-0135) + topaz 0136-0139 + ours, one commit each; `git format-patch` a new commit into the next j number.
