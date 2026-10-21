@@ -967,12 +967,39 @@ draw_prep(struct sca_ctx *c)
    }
 }
 
+/* SWEETCA_TRACE=2: what each of the first draws draws with and into */
+static void
+trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
+{
+   static unsigned shown;
+   if (trace_on < 2 || shown >= 60)
+      return;
+   shown++;
+   GLint vp[4] = {0}, sc[4] = {0}, blend = glIsEnabled(GL_BLEND), scen = glIsEnabled(GL_SCISSOR_TEST);
+   glGetIntegerv(GL_VIEWPORT, vp);
+   glGetIntegerv(GL_SCISSOR_BOX, sc);
+   GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
+   char tex[200] = "";
+   size_t l = 0;
+   for (int u = 0; u < UNITS && l < sizeof(tex) - 40; u++) {
+      GLuint t = c->held[u];
+      if (t)
+         l += snprintf(tex + l, sizeof(tex) - l, " u%d=%u(%ux%u%s)", u, t, t < TEXMAX ? c->tex_w[t] : 0,
+                       t < TEXMAX ? c->tex_h[t] : 0, u == c->fbfetch_unit ? ",fb" : "");
+   }
+   sca_log("sweetca: draw %u: prog %u mode %#x n %d fbo %u (tex %u %ux%u) vp %d,%d %dx%d scissor %d %d,%d %dx%d blend %d%s",
+           shown, c->program, mode, count, c->fbo, fbtex, fbtex < TEXMAX ? c->tex_w[fbtex] : 0,
+           fbtex < TEXMAX ? c->tex_h[fbtex] : 0, vp[0], vp[1], vp[2], vp[3], scen, sc[0], sc[1], sc[2], sc[3],
+           blend, tex);
+}
+
 static void
 w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
    CUR(rctx);
    draw_prep(c);
    n_draws++;
+   trace_draw(c, mode, count);
    glDrawArrays(mode, first, count);
    POST(65);
 }
@@ -983,6 +1010,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    CUR(rctx);
    draw_prep(c);
    n_draws++;
+   trace_draw(c, mode, count);
    glDrawElements(mode, count, type, indices);
    POST(67);
 }

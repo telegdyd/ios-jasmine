@@ -1,6 +1,6 @@
-From 2094bf217dc9418d8e60899ff321d2d84286d1f6 Mon Sep 17 00:00:00 2001
+From 2e6ffe2ccabee71e4db9a2fd21496974a4acb220 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 01:44:24 +0200
+Date: Thu, 22 Oct 2026 01:51:20 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1587 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1615 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
- .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++++
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  602 ++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5320 insertions(+), 1 deletion(-)
+ 20 files changed, 5348 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..31ce33f
+index 0000000..71e5b92
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1587 @@
+@@ -0,0 +1,1615 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2256,12 +2256,39 @@ index 0000000..31ce33f
 +   }
 +}
 +
++/* SWEETCA_TRACE=2: what each of the first draws draws with and into */
++static void
++trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
++{
++   static unsigned shown;
++   if (trace_on < 2 || shown >= 60)
++      return;
++   shown++;
++   GLint vp[4] = {0}, sc[4] = {0}, blend = glIsEnabled(GL_BLEND), scen = glIsEnabled(GL_SCISSOR_TEST);
++   glGetIntegerv(GL_VIEWPORT, vp);
++   glGetIntegerv(GL_SCISSOR_BOX, sc);
++   GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
++   char tex[200] = "";
++   size_t l = 0;
++   for (int u = 0; u < UNITS && l < sizeof(tex) - 40; u++) {
++      GLuint t = c->held[u];
++      if (t)
++         l += snprintf(tex + l, sizeof(tex) - l, " u%d=%u(%ux%u%s)", u, t, t < TEXMAX ? c->tex_w[t] : 0,
++                       t < TEXMAX ? c->tex_h[t] : 0, u == c->fbfetch_unit ? ",fb" : "");
++   }
++   sca_log("sweetca: draw %u: prog %u mode %#x n %d fbo %u (tex %u %ux%u) vp %d,%d %dx%d scissor %d %d,%d %dx%d blend %d%s",
++           shown, c->program, mode, count, c->fbo, fbtex, fbtex < TEXMAX ? c->tex_w[fbtex] : 0,
++           fbtex < TEXMAX ? c->tex_h[fbtex] : 0, vp[0], vp[1], vp[2], vp[3], scen, sc[0], sc[1], sc[2], sc[3],
++           blend, tex);
++}
++
 +static void
 +w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 +{
 +   CUR(rctx);
 +   draw_prep(c);
 +   n_draws++;
++   trace_draw(c, mode, count);
 +   glDrawArrays(mode, first, count);
 +   POST(65);
 +}
@@ -2272,6 +2299,7 @@ index 0000000..31ce33f
 +   CUR(rctx);
 +   draw_prep(c);
 +   n_draws++;
++   trace_draw(c, mode, count);
 +   glDrawElements(mode, count, type, indices);
 +   POST(67);
 +}
