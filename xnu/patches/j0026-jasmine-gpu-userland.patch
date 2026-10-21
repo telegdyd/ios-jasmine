@@ -1,6 +1,6 @@
-From cb242554ca2f27bc2380e56a655d1e2662fc49fe Mon Sep 17 00:00:00 2001
+From 33fbfb0c4f654e2b1e7c0dba6c9ee2d299e9c25e Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 16:20:44 +0200
+Date: Wed, 21 Oct 2026 16:30:59 +0200
 Subject: [PATCH] jasmine-j0026: Adreno driver for userland: GPU VM, buffers,
  submit, SweetGPU user client
 
@@ -14,9 +14,9 @@ whose user client offers get-param, buffer new/free/map, submit, wait and
 completed, shaped after Mesa freedreno's msm backend.
 ---
  bsd/dev/sweet_gpu.c           | 339 +++++++++++++++++++++++++++++++++-
- iokit/Kernel/arm/SweetGPU.cpp | 317 +++++++++++++++++++++++++++++++
+ iokit/Kernel/arm/SweetGPU.cpp | 320 ++++++++++++++++++++++++++++++++
  iokit/conf/files.arm64        |   1 +
- 3 files changed, 652 insertions(+), 5 deletions(-)
+ 3 files changed, 655 insertions(+), 5 deletions(-)
  create mode 100644 iokit/Kernel/arm/SweetGPU.cpp
 
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
@@ -444,10 +444,10 @@ index ec88542..8f7d98c 100755
  	}
 diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
 new file mode 100644
-index 0000000..aa13db3
+index 0000000..cf77d04
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,320 @@
 +/*
 + * SweetGPU: the Adreno 512 for userland (G2 of jasmine/GPU.md). Published by
 + * bsd/dev/sweet_gpu.c once the GPU is up and its self-test passed
@@ -472,6 +472,9 @@ index 0000000..aa13db3
 + * unmapped and freed when it closes or dies. The GPU address space is shared
 + * by all clients, as msm's global one.
 + */
++#include <sys/errno.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOPlatformExpert.h>
 +#include <IOKit/IOService.h>
 +#include <IOKit/IOUserClient.h>
 +#include <IOKit/IOBufferMemoryDescriptor.h>
