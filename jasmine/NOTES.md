@@ -2,6 +2,10 @@
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
 **GPU work (G2) handoff, 2026-10-21 21:45: [HANDOFF-G2.md](HANDOFF-G2.md)** (state, rules, workflow, next steps).
+**G2 step A done 2026-10-21 ~22:00** ([GPU.md](GPU.md), "G2 step A"): backboardd already falls back to CA's GLES
+renderer when `[[EAGLContext alloc] initWithAPI:3 ...]` works; CA calls GL only through Apple's GLI dispatch (60
+entries, [ca-gles-calls-ios16.txt](ca-gles-calls-ios16.txt)). Recommended: EAGL on sweetgl (route 2); the `gld*`
+plugin (route 1) would be a full GLD driver. Waiting for the user's route decision.
 `NOTES.md` at the repo root is sweet's/topaz's log, kept for reference.
 
 ## State (2026-10-20 ~22:45)

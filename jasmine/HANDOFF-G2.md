@@ -128,6 +128,10 @@ script file; Python on Windows needs `newline='\n'`; `wsl bash /mnt/c/...` paths
 
 ### Step A: decide how CoreAnimation reaches our GL (research only, nothing on the phone)
 
+**Done 2026-10-21 ~22:00**: results and recommendation (route 2, EAGL on sweetgl, tested first through CARenderer
+in a standalone program) in GPU.md "G2 step A"; the route still needs the user's confirmation. What follows is the
+original brief.
+
 OpenGLES.framework lives in the dyld shared cache, so a replacement file on disk is ignored. Two routes:
 
 1. **Renderer plugin (G0.1):** OpenGLES matches the IOKit class `IOAcceleratorES` and loads

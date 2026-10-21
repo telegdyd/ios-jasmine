@@ -1,0 +1,65 @@
+# QuartzCore (iOS 16.7.16, 20H392) GLES renderer: GLI dispatch entries it calls
+# offset = byte offset in {GLIContext ctx; dispatch[1036]} returned by -[EAGLContext getMacroContextPrivate]
+# (entry index = (offset-8)/8); names from the OpenGLES exports that load the same slot.
+# Found by scanning QuartzCore for loads through GLESContext+0x7f8 and ldr fn,[b,#off]; ldr x0,[b]; blr fn.
+# offset	index	GL function	QuartzCore callers
+0x0030	5	glBindTexture	CA::Render::Layer::show, GLContext::restore_state, GLContext::update_state, GLContext::update_texture, GLESContext::make_buffer_current
+0x0040	7	glBlendFunc	GLContext::load_blend_func
+0x0058	10	glClear	GLContext::clear_region, GLESContext::set_surface
+0x0068	12	glClearColor	GLContext::clear_region, GLContext::init_state
+0x01c8	56	glCopyTexSubImage2D	GLESContext::copy_destination
+0x01e0	59	glDeleteTextures	GLESContext::delete_image, GLESContext::finalize_surface, GLESContext::purge
+0x0200	63	glDisable	GLContext::clear_region, GLContext::init_state, GLContext::restore_state, GLESContext::set_surface
+0x0210	65	glDrawArrays	GLContext::draw_elements, GLContext::draw_lines, GLContext::draw_points, std::__1::__function::__func<GLContext::draw_elements
+0x0220	67	glDrawElements	GLContext::draw_elements
+0x0248	72	glEnable	GLContext::clear_region, GLContext::restore_state
+0x02d0	89	glFinish	GLContext::finish, GLESContext::finish, GLESContext::finish_image
+0x02d8	90	glFlush	GLContext::flush, GLESContext::flush_texture_cache
+0x0318	98	glGenTextures	GLESContext::bind_noise, GLESContext::create_surface, GLESContext::create_surface_from_iosurface, GLESContext::make_buffer_current, GLESContext::mipmapped_texture, GLESContext::update_texture_plane
+0x0338	102	glGetError	GLContext::get
+0x0348	104	glGetIntegerv	GLContext::init_state, GLESContext::GLESContext, GLESContext::update
+0x03b0	117	glGetString	GLESContext::GLESContext
+0x0620	195	glPixelStorei	GLESContext::init_state, GLESContext::mipmapped_texture, GLESContext::update_image
+0x07e0	251	glScissor	GLContext::clear_region, GLContext::restore_state, GLContext::update_state
+0x0970	301	glTexImage2D	GLESContext::bind_noise, GLESContext::create_surface, GLESContext::mipmapped_texture, GLESContext::update_image
+0x0978	302	glTexParameterf	GLESContext::mipmapped_texture
+0x0988	304	glTexParameteri	GLESContext::bind_image_impl, GLESContext::bind_noise, GLESContext::bind_surface_impl, GLESContext::create_surface, GLESContext::create_surface_from_iosurface, GLESContext::make_buffer_current, GLESContext::mipmapped_texture, GLESContext::modify_subimage_impl, GLESContext::update_compressed_image, GLESContext::update_image, GLESContext::update_texture_plane
+0x09a0	307	glTexSubImage2D	GLESContext::modify_subimage_impl, GLESContext::update_image
+0x0a80	335	glViewport	GLESContext::set_surface
+0x0a98	338	glBlendEquation/glBlendEquationOES	GLContext::load_blend_func
+0x0ab8	342	glActiveTexture	GLContext::init_state, GLContext::restore_state, GLContext::update_state, GLContext::update_texture
+0x0be8	380	glCompressedTexImage2D	GLESContext::update_compressed_image
+0x0eb8	470	glFinishObjectAPPLE	GLESContext::finish_image
+0x1000	511	glVertexAttribPointer	GLContext::draw_lines, GLContext::draw_points, GLContext::init_client_state, GLContext::restore_state
+0x1008	512	glEnableVertexAttribArray	GLContext::draw_lines, GLContext::draw_points, GLContext::init_client_state
+0x1010	513	glDisableVertexAttribArray	GLContext::draw_lines, GLContext::draw_points, GLContext::init_client_state, GLContext::restore_state
+0x1280	591	glDeleteProgram/glDeleteShader	GLContext::create_shader, GLContext::purge, gl_delete_shader
+0x1298	594	glCreateShader	GLContext::create_shader
+0x12a0	595	glShaderSource	GLContext::create_shader
+0x12a8	596	glCompileShader	GLContext::create_shader
+0x12b0	597	glCreateProgram	GLContext::create_shader
+0x12b8	598	glAttachShader	GLContext::create_shader
+0x12c0	599	glLinkProgram	GLContext::create_shader
+0x12c8	600	glUseProgram	GLContext::create_shader, GLContext::purge, GLContext::restore_state, GLContext::update_shader
+0x12d8	602	glUniform1f	GLContext::update_shader
+0x12f0	605	glUniform4f	GLContext::update_shader
+0x12f8	606	glUniform1i	GLContext::create_shader
+0x1328	612	glUniform3fv	GLContext::update_shader
+0x1330	613	glUniform4fv	GLContext::update_shader
+0x1360	619	glUniformMatrix3fv	GLContext::update_shader
+0x1368	620	glUniformMatrix4fv	GLContext::update_shader
+0x1390	625	glGetUniformLocation	GLContext::create_shader
+0x13b8	630	glBindAttribLocation	GLContext::create_shader
+0x1508	672	glBindFramebuffer/glBindFramebufferOES	GLESContext::make_buffer_current, GLESContext::set_surface
+0x1510	673	glDeleteFramebuffers/glDeleteFramebuffersOES	GLESContext::finalize_surface
+0x1518	674	glGenFramebuffers/glGenFramebuffersOES	GLESContext::make_buffer_current, GLESContext::set_surface
+0x1530	677	glFramebufferTexture2D/glFramebufferTexture2DOES	GLESContext::make_buffer_current, GLESContext::set_surface
+0x1550	681	glGenerateMipmap/glGenerateMipmapOES	GLESContext::bind_image_impl, GLESContext::bind_surface_impl, GLESContext::create_surface
+0x1860	779	glFenceSync/glFenceSyncAPPLE	GLESContext::set_fence
+0x1870	781	glDeleteSync/glDeleteSyncAPPLE	GLESContext::delete_fence
+0x1878	782	glClientWaitSync/glClientWaitSyncAPPLE	GLESContext::test_fence
+0x1978	814	glLabelObjectEXT	GLESContext::attach_surface_texture
+0x1988	816	glInsertEventMarkerEXT	GLContext::insert_event_marker
+0x1990	817	glPushGroupMarkerEXT	GLContext::push_group_marker
+0x1998	818	glPopGroupMarkerEXT	GLContext::pop_group_marker
+0x2008	1024	glFramebufferParameteriAPPLE	GLESContext::set_surface

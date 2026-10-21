@@ -209,8 +209,91 @@ in the one GPU address space), so instead of emulating the DRM ioctls Mesa gets 
   connection; `sweetpanic_test=SECS` checks it (passed 2026-10-21 20:32, `logs/netlog-j30-ptest.txt`).
 - **Running our programs on the phone:** `tools/sweet-sh.py` through the user's sweetd (TCP 5143);
   `sweet-fs.py` puts binaries on the root.
-- **CoreAnimation:** to decide after the first milestone: a GL ES implementation in place of OpenGLES.framework for
-  backboardd, or the `gld*` renderer plugin (G0.1).
+- **CoreAnimation:** decided by the step A research below (2026-10-21 ~22:00): EAGL on sweetgl (route 2), not the
+  `gld*` renderer plugin (G0.1). Route choice still to be confirmed by the user before anything touches the root.
+
+#### G2 step A: how CoreAnimation reaches GL (2026-10-21 ~22:00, research only)
+
+From the iOS 16.7.16 shared cache. blacktop `ipsw` runs out of memory on whole-cache commands, so the analysis
+uses small readers in [tools/g2/dsc](../tools/g2/dsc/README.md) (dumps stay in WSL `~/ios-work/gl/out2`).
+
+**How backboardd picks its renderer.** `CA::WindowServer::AppleDisplay::new_server` always builds an
+`EAGLServer` (an `IOMFBServer` subclass) for the panel. Its constructor reads `CA_ENABLE_OGL` once (unset counts as
+1) and calls `EAGLServer::renderer()`, which:
+
+1. tries Metal: `CAMetalContextCreate()` first waits up to 300 x 100 ms for an `IOAcceleratorES` service (topaz
+   0138's empty one ends the wait), then needs a Metal device; non-NULL gives `new_metal_context` + `OGL::Renderer`;
+2. only if that is NULL and `CA_ENABLE_OGL` is on: `[[EAGLContext alloc] initWithAPI:3 properties:dict]`, on nil
+   `initWithAPI:2`, then `setParameter:0x260 to:&0`, and **only if `[ctx API] == 3`** `new GLESContext(ctx)` +
+   `OGL::Renderer`. An ES 2 context is not used;
+3. otherwise no renderer: the CPU path we run today.
+
+So backboardd switches by itself once `initWithAPI:3` returns a working context (there is no Metal device here).
+`CA_DISPLAY_TYPE` plays no part in this choice.
+
+**What GLESContext asks of EAGL** (every EAGL selector QuartzCore references): `+alloc`,
+`-initWithAPI:properties:`, `-setParameter:to:`, `-API`, `-getMacroContextPrivate`,
+`-attachImage:toCoreSurface:invertedRender:` (`make_buffer_current`: a display IOSurface onto the bound
+`GL_TEXTURE_2D`, then an FBO on that texture; `attach_surface_texture`) and
+`-texImageIOSurface:target:internalFormat:width:height:format:type:plane:invert:` (`create_surface_from_iosurface`,
+`attach_surface_texture`). `+setCurrentContext:` / `+currentContext` only in `-[CARenderer render]` and
+`CATextLayer`. No `renderbufferStorage:fromDrawable:` or `presentRenderbuffer:` on the server path: CA renders into
+the IOMFB swap surfaces as textures and swaps them through IOMobileFramebuffer exactly as now.
+
+**QuartzCore never calls the exported `gl*` functions** (it has no stub into OpenGLES at all), so interposing `gl*`
+symbols would catch nothing. `getMacroContextPrivate` returns `{__GLIContextRec *ctx; __GLIFunctionDispatchRec
+disp}` (1036 entries; OpenGLES's own `glFoo` exports reach the same struct through `tpidrro_el0[0xf0]`), kept at
+`GLESContext+0x7f8`, and every call is `disp[n](ctx, args...)`. QuartzCore uses **60 entries**, listed with their
+callers in [ca-gles-calls-ios16.txt](ca-gles-calls-ios16.txt): plain GL ES 2.0/3.0 (textures incl. compressed,
+FBOs, shaders from GLSL source, uniforms, vertex attributes, draw arrays/elements, blend, scissor, viewport, fence
+sync) plus Apple bits that map directly: `glFenceSyncAPPLE`/`ClientWaitSync`/`DeleteSync`, `glFinishObjectAPPLE`,
+`glFramebufferParameteriAPPLE`, `glLabelObjectEXT` and the debug markers. Extensions probed by the constructor
+(each only enables a feature): `GL_APPLE_fence`, `_texture_filter_cubic`, `_texture_xr`,
+`_texture_ycbcr_basic_formats`, `_texture_ycbcr_extended_formats`, `_tile_order_rot`,
+`GL_EXT_shader_framebuffer_fetch`, `_texture_filter_anisotropic`, `_texture_lod_bias`,
+`GL_IMG_texture_compression_pvrtc`, `GL_KHR_texture_compression_astc_ldr`, `GL_OES_standard_derivatives`,
+`_texture_float(_linear)`, `_texture_half_float(_linear)`. Overrides read there: `CA_DISABLE_WORKAROUNDS`,
+`CA_MAX_TEXTURE_UNITS`, `CA_MAX_TEXTURE_SIZE`.
+
+**Route 1 (renderer plugin under GLEngine) is a full GLD driver, so it is out.** OpenGLES's `eagl_init` dlopens
+`<OpenGLES.framework>/GLEngine.bundle/GLEngine` (fixed path, served from the shared cache), resolves 18 `gli*`
+entry points and calls `gliInitializeLibrary` with the matched `IOAcceleratorES` service; libGFXShared loads the
+`IOGLESBundleName` bundle. GLEngine (776 KB of code) keeps all GL state, compiles GLSL itself through
+libGLProgrammability to LLVM IR (`GL_FORCE_LLVM_IR_OUTPUT`) and drives the plugin with private records
+(`GLDContextRec`, `GLDTextureRec`, `GLDProgramRec`, ...). `gldPopulateContextDispatch` does not reach the GL
+dispatch: AppleMetalGLRenderer's copies 25 primitive callbacks (`gldClear`, `gldRenderTriangles`,
+`gldRenderVertexArray`, `gldBeginElementBuffer`, ...). A plugin would have to implement the 133 `gld*` functions
+over undocumented structs and translate Apple's LLVM IR into NIR.
+
+**Getting code into backboardd.** iOS 16 dyld (`SyscallDelegate::amfiFlags`) asks
+`__mac_syscall("AMFI", 90, {input flags, &output})` and takes 0 when the call fails. Our kernel registers MAC
+policies "SWEET AMFI" and "Sandbox" but none named "AMFI", so dyld prunes every `DYLD_*` variable today;
+`DYLD_INSERT_LIBRARIES` needs the kernel to answer that call (dyld's output bits, from its open source: 0x1 @paths,
+0x2 path variables incl. `DYLD_INSERT_LIBRARIES`, 0x8 fallback paths, 0x10 print variables, 0x20 failed insertion
+allowed, 0x40 interposing).
+
+**CARenderer is a ready test harness:** `+[CARenderer rendererWithEAGLContext:options:]` builds the same
+`GLESContext` + `OGL::Renderer` as the server. A standalone program can render a CALayer tree with CA's real GLES
+renderer into an IOSurface, with nothing changed on the root.
+
+**Recommendation: route 2, EAGL on sweetgl.** A library (working name `libsweetca`) that, when loaded, replaces
+the EAGLContext methods above with sweetgl-backed ones (ObjC runtime) and gives CA a GLI dispatch table of its
+own: 1036 entries, the 60 used ones forwarding to Mesa's GL ES (the GLIContext argument selects the sweetgl
+context), all others a trap that logs its index. Estimate: 1000-1500 lines of C/ObjC on top of sweetgl, plus
+sweetgl additions (per-thread current context, GL ES 3.0 reported as the API, binding an IOSurface to an existing
+texture name for `attachImage:`). Order:
+
+1. Step C as a test program: libsweetca + CARenderer + a few CALayers rendered into an IOSurface, checked pixel by
+   pixel, run through sweetd. No root changes.
+2. Kernel (with step B in j0033): sweet_amfi answers the dyld policy call; checked with `DYLD_INSERT_LIBRARIES` on
+   a test program through sweetd.
+3. Step D, **needs the user's OK**: libsweetca on the root and `DYLD_INSERT_LIBRARIES` in backboardd's launchd
+   plist. Removing the key brings back today's CPU renderer.
+
+Fallback without the plist change: publish `IOGLESBundleName` = our bundle on `IOAcceleratorES`; GLEngine dlopens
+it during CA's first `initWithAPI:3`, its initializer installs the EAGL replacement and fails that attempt, and
+CA's `initWithAPI:2` retry gets our ES 3 context. Works with the code as read, but leans on that retry. topaz has
+not published its CA side (`89451b8` still the head at 22:00).
 
 - Mesa freedreno (Gallium, a5xx) built for iOS (cross-compiled on GitHub's macOS runners, as XNU is) with a
   small kernel interface to the G1 driver (like UniXNU's `turnip-darwin-kmd`, but for freedreno's DRM-style
