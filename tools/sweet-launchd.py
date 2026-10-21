@@ -34,7 +34,8 @@ SWEETD = {
     'POSIXSpawnType': 'Interactive',
     'StandardErrorPath': '/private/var/log/sweetd.log',
 }
-SWEETD_KEY = '/Library/LaunchDaemons/com.jasmine.sweetd.plist'
+SWEETD_KEY = '/System/Library/LaunchDaemons/com.jasmine.sweetd.plist'
+SWEETD_LEGACY_KEY = '/Library/LaunchDaemons/com.jasmine.sweetd.plist'
 TOKEN = os.path.join(HERE, '..', 'research', 'sweetd.token')
 TOKEN_ON_PHONE = '/private/var/root/sweetd.token'
 
@@ -81,9 +82,13 @@ def main():
                 open(TOKEN, 'w').write(secrets.token_hex(24) + '\n')
                 print(f'new token in {os.path.normpath(TOKEN)}')
             fs('put', TOKEN, TOKEN_ON_PHONE, '--mode', '600', '--owner', '0:0')
+            had_legacy = SWEETD_LEGACY_KEY in jobs
+            jobs.pop(SWEETD_LEGACY_KEY, None)
             jobs[SWEETD_KEY] = SWEETD
             store_job_file(tmp, SWEETD_KEY, SWEETD)
             store(tmp, cache)
+            if had_legacy:
+                fs('rm', SWEETD_LEGACY_KEY)
             print(f'{SWEETD["Label"]} added ({len(jobs)} jobs); reboot to start it')
         elif cmd in ('remove', 'show') and len(sys.argv) == 3:
             keys = [k for k, v in jobs.items() if v.get('Label') == sys.argv[2]]
@@ -96,8 +101,9 @@ def main():
             for k in keys:
                 del jobs[k]
             store(tmp, cache)
-            if SWEETD_KEY in keys:
-                fs('rm', SWEETD_KEY)
+            for key in (SWEETD_KEY, SWEETD_LEGACY_KEY):
+                if key in keys:
+                    fs('rm', key)
             print(f'{sys.argv[2]} removed; reboot to apply')
         else:
             sys.exit(__doc__)

@@ -1,33 +1,28 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-### >>> UPDATE 2026-10-21: sweetd plist-path bug found; install pending approval <<<
+### >>> UPDATE 2026-10-21: sweetd works over USB Ethernet <<<
 
 The new command daemon/client groundwork is in place. `ios/sweetd.c`,
 `tools/sweet-sh.py`, and `tools/sweet-launchd.py` are tracked. USB Ethernet is
-live at `169.254.7.2`: log/file services (5140/5142) answer, but command port
-5143 remains closed. The local `research/sweetd.token` exists; keep it secret.
-The phone has `/usr/local/bin/sweetd` (read back as a 70,512-byte arm64
-Mach-O) and its active `/System/Library/xpc/launchd.plist` contains the
-`/Library/LaunchDaemons/com.jasmine.sweetd.plist` job. After booting
-`shim/out/shim-boot-j26-slotb.img`, the kernel log confirmed
-`Using unsecure cache: /System/Library/xpc/launchd.plist` and successful cache
-delivery. However, launchd's own log had no `sweetd` import or spawn, and
-`sweet-fs.py ls /Library/LaunchDaemons` showed only Apple's factory plist.
-**Root cause:** the helper inserted the job into the launchd cache but never
-created the plist file at the path launchd imports.
+live at `169.254.7.2`: log/file services (5140/5142) and command service
+(5143) answer. The local `research/sweetd.token` exists; keep it secret.
+The phone has `/usr/local/bin/sweetd` (70,512-byte arm64 Mach-O, mode 0755).
+The first helper version added its dictionary to the unsecure cache but omitted
+the plist file launchd imports. Creating the file under `/Library/LaunchDaemons`
+still did not work: launchd logs showed imports only from
+`/System/Library/LaunchDaemons`. The corrected `tools/sweet-launchd.py` now
+writes the binary plist under `/System/Library/LaunchDaemons`, updates the
+unsecure cache, removes any stale `/Library` entry/file, and cleans up its plist
+on `remove`.
 
-`tools/sweet-launchd.py` is now corrected to write the binary plist to
-`/Library/LaunchDaemons/com.jasmine.sweetd.plist` as root:0644 before updating
-the cache; its remove command also removes that custom plist. The installed
-daemon bytes were re-put as root:0755. Last check still found port 5143 closed;
-no command has yet run successfully. The phone is currently on the j26 slot-B
-test boot. **The auto-approval reviewer rejected applying the corrected helper
-because it persistently enables root remote command execution; do not retry by
-another route. Await the user's explicit approval.** Once approved, run
-`tools/sweet-launchd.py add-sweetd`, reboot through `tools/sweet-cmd.py reboot`,
-`fastboot boot shim/out/shim-boot-j26-slotb.img`, capture the fresh log, and
-test `tools/sweet-sh.py /usr/bin/id`. No partition was flashed. Do not print
-or regenerate the token.
+**Verified 2026-10-21:** booted `shim/out/shim-boot-j26-slotb.img` with `fastboot
+boot` (no partitions flashed). Fresh kernel log contains `exec sweetd`. The
+client command `tools/sweet-sh.py /bin/df` returned the phone's filesystem
+usage, including `/dev/ufsroot0` mounted at `/`, with exit code 0. `/usr/bin/id`
+is not present on this iOS root; `/bin/df` is the confirmed working example.
+Use `tools/sweet-sh.py /absolute/path [args...]` for subsequent commands. The
+local `research/sweetd.token` is required by the client; keep it secret and do
+not regenerate it.
 
 ## Agent handoff / active work (2026-10-15, latest)
 
