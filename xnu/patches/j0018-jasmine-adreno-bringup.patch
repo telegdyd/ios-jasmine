@@ -1,6 +1,6 @@
-From 2dd176c4a1dbe39b1136aa0d83290428442b716b Mon Sep 17 00:00:00 2001
+From 49158fc8e810571600c482205168780a44149099 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 13:19:46 +0200
+Date: Wed, 21 Oct 2026 13:31:52 +0200
 Subject: [PATCH] jasmine-j0018: Adreno 512 bring-up, power and command
  processor (sweetgpu=)
 
@@ -13,9 +13,9 @@ above 4 GiB). Mainline Linux, which has no driver for the head switch,
 locked a CPU up on the first GPU register access.
 ---
  bsd/conf/files                           |   1 +
- bsd/dev/sweet_gpu.c                      | 742 +++++++++++++++++++++++
+ bsd/dev/sweet_gpu.c                      | 756 +++++++++++++++++++++++
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   2 +
- 3 files changed, 745 insertions(+)
+ 3 files changed, 759 insertions(+)
  create mode 100755 bsd/dev/sweet_gpu.c
 
 diff --git a/bsd/conf/files b/bsd/conf/files
@@ -32,10 +32,10 @@ index acc75a1..0f71085 100644
  bsd/dev/sweet_i2c1.c			standard
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
 new file mode 100755
-index 0000000..3f39a87
+index 0000000..464e6c4
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu.c
-@@ -0,0 +1,742 @@
+@@ -0,0 +1,756 @@
 +/*
 + * Adreno 512 bring-up (jasmine, SDM660): step G1 of jasmine/GPU.md, "the GPU
 + * executes our commands". Off unless sweetgpu= is set; a kernel thread does
@@ -521,6 +521,19 @@ index 0000000..3f39a87
 +}
 +
 +/*
++ * Every store to the SMMU goes through here. The hypervisor traps and
++ * emulates the global register space, and its emulation goes "horribly
++ * wrong for stores using r31 (XZR/WZR) as the source register" (arm-smmu.c,
++ * QCOM_DUMMY_VAL): a plain `= 0` compiles to `str wzr` and hung the phone.
++ * The "r" constraint forces a real register.
++ */
++static inline void
++smmu_wr(volatile uint32_t *base, uint32_t off, uint32_t v)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"((volatile uint8_t *)base + off) : "memory");
++}
++
++/*
 + * The GPU SMMU (SMMU-v2, 3 stream groups, 5 context banks of which TZ keeps
 + * CB2-4: arm-smmu-qcom.c "TZ protects several last context banks") comes out
 + * of the GX power-up faulting every stream, and the hypervisor ignores a
@@ -534,6 +547,7 @@ index 0000000..3f39a87
 +smmu_identity(uint64_t hi)
 +{
 +	volatile uint32_t *s = sg.smmu, *cb = sg.smmu + SMMU_CB0 / 4;
++	gpu_pause(3, "SMMU setup next");
 +	volatile uint64_t *pt = (volatile uint64_t *)(sg.mem + PT_OFF / 4);
 +	uint64_t pt_pa = sg.mem_pa + PT_OFF;
 +
@@ -553,27 +567,27 @@ index 0000000..3f39a87
 +	pt[(gib_hi != gib_lo ? 1024 : 512) + ((a >> 21) & 511)] = a | blk;
 +	__builtin_arm_dsb(0xf);
 +
-+	cb[0x000 / 4] = 0;                              /* SCTLR off while it is set up */
-+	cb[0x010 / 4] = (7u << 15) | 1;                 /* TCR2: SEP upstream, PASize 36 bits */
-+	cb[0x020 / 4] = (uint32_t)pt_pa;                /* TTBR0, ASID 0 */
-+	cb[0x024 / 4] = (uint32_t)(pt_pa >> 32);
-+	cb[0x028 / 4] = 0;
-+	cb[0x02c / 4] = 0;
-+	cb[0x030 / 4] = (1u << 23) | 28;                /* TCR: EPD1, 4K, walk NC / non-shareable, T0SZ 28 */
-+	cb[0x034 / 4] = 0;                              /* CONTEXTIDR */
-+	cb[0x038 / 4] = 0x0004ff44;                     /* MAIR0: 0 NC, 1 WB, 2 device */
-+	cb[0x03c / 4] = 0;
-+	cb[0x058 / 4] = 0xffffffffu;                    /* FSR: clear */
-+	s[SMMU_GR1 / 4] = (1u << 16) | (0xfu << 12) | (3u << 8); /* CBAR0: S1 + S2 bypass, WB, NSH */
-+	s[(SMMU_GR1 + 0x800) / 4] = 1;                  /* CBA2R0: VA64 */
-+	s[0x068 / 4] = 0;                               /* TLBIALLNSNH */
-+	s[0x070 / 4] = 0;                               /* sTLBGSYNC */
++	smmu_wr(cb, 0x000, 0);                              /* SCTLR off while it is set up */
++	smmu_wr(cb, 0x010, (7u << 15) | 1);                 /* TCR2: SEP upstream, PASize 36 bits */
++	smmu_wr(cb, 0x020, (uint32_t)pt_pa);                /* TTBR0, ASID 0 */
++	smmu_wr(cb, 0x024, (uint32_t)(pt_pa >> 32));
++	smmu_wr(cb, 0x028, 0);
++	smmu_wr(cb, 0x02c, 0);
++	smmu_wr(cb, 0x030, (1u << 23) | 28);                /* TCR: EPD1, 4K, walk NC / non-shareable, T0SZ 28 */
++	smmu_wr(cb, 0x034, 0);                              /* CONTEXTIDR */
++	smmu_wr(cb, 0x038, 0x0004ff44);                     /* MAIR0: 0 NC, 1 WB, 2 device */
++	smmu_wr(cb, 0x03c, 0);
++	smmu_wr(cb, 0x058, 0xffffffffu);                    /* FSR: clear */
++	smmu_wr(s, SMMU_GR1, (1u << 16) | (0xfu << 12) | (3u << 8)); /* CBAR0: S1 + S2 bypass, WB, NSH */
++	smmu_wr(s, (SMMU_GR1 + 0x800), 1);                  /* CBA2R0: VA64 */
++	smmu_wr(s, 0x068, ~0u);                         /* TLBIALLNSNH (Linux writes QCOM_DUMMY_VAL) */
++	smmu_wr(s, 0x070, ~0u);                         /* sTLBGSYNC */
 +	(void)poll32(&s[0x074 / 4], 1, 0, 1000);
-+	s[0xc00 / 4] = 0;                               /* S2CR0: translate, CB0 */
-+	s[0x800 / 4] = (1u << 31);                      /* SMR0: valid, ID 0, mask 0 */
++	smmu_wr(s, 0xc00, 0);                               /* S2CR0: translate, CB0 */
++	smmu_wr(s, 0x800, (1u << 31));                      /* SMR0: valid, ID 0, mask 0 */
 +	__builtin_arm_dsb(0xf);
 +	/* M | TRE | AFE | CFRE | CFIE | S1_ASIDPNE; faults terminate (no CFCFG stall) */
-+	cb[0x000 / 4] = (1u << 12) | (1u << 6) | (1u << 5) | (1u << 2) | (1u << 1) | 1;
++	smmu_wr(cb, 0x000, (1u << 12) | (1u << 6) | (1u << 5) | (1u << 2) | (1u << 1) | 1);
 +	__builtin_arm_dsb(0xf);
 +	printf("SWEET GPU: SMMU CB0 table at %llx: SMR0 %08x S2CR0 %08x CBAR0 %08x CBA2R0 %08x SCTLR %08x "
 +	    "TCR %08x TCR2 %08x TTBR0 %08x%08x MAIR0 %08x; hi page %llx\n", pt_pa,
