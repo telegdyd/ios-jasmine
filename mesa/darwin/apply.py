@@ -127,10 +127,28 @@ if host_machine.system() == 'darwin'
 endif
 """
 p.write_text(s, encoding='utf-8', newline='\n')
+# a5xx: sample and render linear IOSurfaces whose rows are 64-byte aligned (CoreAnimation's are,
+# the 256 bytes of gmem_align_w x cpp are for GMEM resolve, which we do not use there: sysmem).
+# Found by ios-sailfish (Pixel 1) with the same driver.
+sub('src/gallium/drivers/freedreno/freedreno_resource.c',
+    '''      rsc->layout.pitchalign = MAX2(rsc->layout.pitchalign, 5);
+
+   if (rsc->layout.pitch0 < (prsc->width0 * rsc->layout.cpp) ||''',
+    '''      rsc->layout.pitchalign = MAX2(rsc->layout.pitchalign, 5);
+
+#ifdef __APPLE__
+   /* ios-jasmine: linear a5xx surfaces with 64-byte aligned rows are used in place */
+   if (is_a5xx(screen) && handle->modifier == DRM_FORMAT_MOD_LINEAR &&
+       handle->stride % 64 == 0)
+      rsc->layout.pitchalign = 6;
+#endif
+
+   if (rsc->layout.pitch0 < (prsc->width0 * rsc->layout.cpp) ||''')
 # sweetgl: GL ES contexts on the freedreno screen without EGL/DRI, and its test
 sgl = root / 'src/gallium/frontends/sweetgl'
 sgl.mkdir(exist_ok=True)
-for f in ('meson.build', 'sweetgl.h', 'sweetgl.c', 'sweetgl_gles2.c', 'sweetgpu_gltest.c'):
+for f in ('meson.build', 'sweetgl.h', 'sweetgl.c', 'sweetgl_gles2.c', 'sweetgpu_gltest.c', 'sweetca.c',
+          'sweetca_slots.inc'):
     (sgl / f).write_text((here / 'sweetgl' / f).read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
 p = root / 'src/gallium/meson.build'
 s = p.read_text(encoding='utf-8')

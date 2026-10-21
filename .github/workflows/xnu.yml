@@ -101,11 +101,12 @@ jobs:
       - name: Build
         run: |
           export PATH="$RUNNER_TEMP/venv/bin:$PATH"
-          ninja -C mesa-src/build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest src/gallium/frontends/sweetgl/sweetgpu_gltest > build.log 2>&1 || true
+          ninja -C mesa-src/build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest src/gallium/frontends/sweetgl/sweetgpu_gltest src/gallium/frontends/sweetgl/libsweetca.dylib > build.log 2>&1 || true
           grep -E -A12 "^FAILED|error:|Undefined symbols" build.log | grep -v "warning:" | head -300 || true
           tail -15 build.log
           test -f mesa-src/build/src/gallium/drivers/freedreno/sweetgpu_fdtest
           test -f mesa-src/build/src/gallium/frontends/sweetgl/sweetgpu_gltest
+          test -f mesa-src/build/src/gallium/frontends/sweetgl/libsweetca.dylib
       - name: Sign
         run: |
           mkdir -p out
@@ -113,6 +114,11 @@ jobs:
           codesign -f -s - --entitlements ios/entitlements.plist out/sweetgpu_fdtest
           cp mesa-src/build/src/gallium/frontends/sweetgl/sweetgpu_gltest out/
           codesign -f -s - --entitlements ios/entitlements.plist out/sweetgpu_gltest
+          # libsweetca (EAGL on sweetgl for CoreAnimation) and its test; the test is Objective-C, so clang builds it here
+          cp mesa-src/build/src/gallium/frontends/sweetgl/libsweetca.dylib out/
+          codesign -f -s - out/libsweetca.dylib
+          xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -fobjc-arc -O1 -Wno-deprecated-declarations             mesa/darwin/sweetgl/sweetca_test.m -o out/sweetca_test             -framework Foundation -framework QuartzCore -framework CoreGraphics -framework IOSurface -framework OpenGLES             -Lout -lsweetca
+          codesign -f -s - --entitlements ios/entitlements.plist out/sweetca_test
           ls -la out
       - uses: actions/upload-artifact@v4
         with:

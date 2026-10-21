@@ -1,28 +1,31 @@
-From 43d1d50fbbcc37d8bf781a3696e96412a29dde02 Mon Sep 17 00:00:00 2001
+From 3f857506b56ece0d4d21756c85e60c2e1fe7560f Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 21:23:20 +0200
+Date: Thu, 22 Oct 2026 00:08:19 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
- include/darwin-drm/xf86drm.h                  |  87 +++
- meson.build                                   |   5 +
- src/freedreno/drm/darwin/darwin_bo.c          | 160 +++++
- src/freedreno/drm/darwin/darwin_device.c      |  82 +++
- src/freedreno/drm/darwin/darwin_pipe.c        | 205 ++++++
- src/freedreno/drm/darwin/darwin_priv.h        | 113 ++++
- src/freedreno/drm/freedreno_device.c          |  15 +
- src/freedreno/drm/meson.build                 |  11 +
- src/freedreno/meson.build                     |   2 +-
- src/gallium/drivers/freedreno/meson.build     |  32 +
- .../drivers/freedreno/sweetgpu_fdtest.c       | 307 +++++++++
- src/gallium/frontends/sweetgl/meson.build     |  57 ++
- src/gallium/frontends/sweetgl/sweetgl.c       | 350 ++++++++++
- src/gallium/frontends/sweetgl/sweetgl.h       |  71 +++
- src/gallium/frontends/sweetgl/sweetgl_gles2.c |  14 +
- .../frontends/sweetgl/sweetgpu_gltest.c       | 602 ++++++++++++++++++
- src/gallium/meson.build                       |   5 +
- 17 files changed, 2117 insertions(+), 1 deletion(-)
+ include/darwin-drm/xf86drm.h                  |   87 +
+ meson.build                                   |    5 +
+ src/freedreno/drm/darwin/darwin_bo.c          |  160 ++
+ src/freedreno/drm/darwin/darwin_device.c      |   82 +
+ src/freedreno/drm/darwin/darwin_pipe.c        |  205 +++
+ src/freedreno/drm/darwin/darwin_priv.h        |  113 ++
+ src/freedreno/drm/freedreno_device.c          |   15 +
+ src/freedreno/drm/meson.build                 |   11 +
+ src/freedreno/meson.build                     |    2 +-
+ .../drivers/freedreno/freedreno_resource.c    |    7 +
+ src/gallium/drivers/freedreno/meson.build     |   32 +
+ .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
+ src/gallium/frontends/sweetgl/meson.build     |   89 +
+ src/gallium/frontends/sweetgl/sweetca.c       | 1367 ++++++++++++++++
+ .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
+ src/gallium/frontends/sweetgl/sweetgl.h       |   95 ++
+ src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++++
+ src/gallium/meson.build                       |    5 +
+ 20 files changed, 5100 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -30,6 +33,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  create mode 100644 src/freedreno/drm/darwin/darwin_priv.h
  create mode 100644 src/gallium/drivers/freedreno/sweetgpu_fdtest.c
  create mode 100644 src/gallium/frontends/sweetgl/meson.build
+ create mode 100644 src/gallium/frontends/sweetgl/sweetca.c
+ create mode 100644 src/gallium/frontends/sweetgl/sweetca_slots.inc
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl.c
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl.h
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl_gles2.c
@@ -810,6 +815,24 @@ index e8f01b8..a6c37f9 100644
    subdir('drm')
  endif
  
+diff --git a/src/gallium/drivers/freedreno/freedreno_resource.c b/src/gallium/drivers/freedreno/freedreno_resource.c
+index ee7b54e..6910a8c 100644
+--- a/src/gallium/drivers/freedreno/freedreno_resource.c
++++ b/src/gallium/drivers/freedreno/freedreno_resource.c
+@@ -1689,6 +1689,13 @@ fd_layout_resource_for_handle(struct fd_resource *rsc, struct winsys_handle *han
+    else
+       rsc->layout.pitchalign = MAX2(rsc->layout.pitchalign, 5);
+ 
++#ifdef __APPLE__
++   /* ios-jasmine: linear a5xx surfaces with 64-byte aligned rows are used in place */
++   if (is_a5xx(screen) && handle->modifier == DRM_FORMAT_MOD_LINEAR &&
++       handle->stride % 64 == 0)
++      rsc->layout.pitchalign = 6;
++#endif
++
+    if (rsc->layout.pitch0 < (prsc->width0 * rsc->layout.cpp) ||
+        fd_resource_pitch(rsc, 0) != rsc->layout.pitch0)
+       return false;
 diff --git a/src/gallium/drivers/freedreno/meson.build b/src/gallium/drivers/freedreno/meson.build
 index b04379b..28c2fea 100644
 --- a/src/gallium/drivers/freedreno/meson.build
@@ -1165,10 +1188,10 @@ index 0000000..d0e3cb8
 +}
 diff --git a/src/gallium/frontends/sweetgl/meson.build b/src/gallium/frontends/sweetgl/meson.build
 new file mode 100644
-index 0000000..516428f
+index 0000000..afcada4
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/meson.build
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,89 @@
 +# Copyright © 2026 ios-jasmine
 +# SPDX-License-Identifier: MIT
 +
@@ -1226,12 +1249,2876 @@ index 0000000..516428f
 +  ],
 +  install : false,
 +)
++
++# libsweetca: sweetgl plus an EAGL layer that gives CoreAnimation's GLES renderer a
++# GLI dispatch table over Mesa (sweetca.c); sweetca_test links it
++if host_machine.system() == 'darwin'
++  libsweetca = shared_library(
++    'sweetca',
++    [
++      'sweetca.c',
++      '../../auxiliary/renderonly/renderonly.c',
++      freedreno_tracepoints[1],
++      freedreno_xml_header_files,
++    ],
++    include_directories : [inc_include, inc_util, inc_gallium, inc_gallium_aux],
++    dependencies : sweetgl_test_deps + [
++      dependency('appleframeworks', modules : ['OpenGLES', 'IOSurface', 'CoreFoundation']),
++    ],
++    link_with : [
++      libsweetgl,
++      libmesa,
++      libglapi,
++      libfreedreno,
++      libfreedreno_drm,
++      libfreedreno_ir2,
++      libfreedreno_ir3,
++      libfreedreno_layout,
++      libgallium,
++      libfreedreno_perfcntrs,
++    ],
++    install_name : '@executable_path/libsweetca.dylib',
++    install : false,
++  )
++endif
+diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
+new file mode 100644
+index 0000000..363fd0e
+--- /dev/null
++++ b/src/gallium/frontends/sweetgl/sweetca.c
+@@ -0,0 +1,1367 @@
++/*
++ * Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ *
++ * libsweetca: CoreAnimation's own OpenGL ES renderer (CA::OGL::GLESContext and
++ * OGL::Renderer) on Mesa freedreno, through sweetgl.
++ *
++ * QuartzCore never calls an exported gl* function. It asks an EAGLContext for
++ * -getMacroContextPrivate, which returns {rctx; dispatch[1036]} (the layout
++ * of GLEngine's GLI dispatch table), and calls dispatch[n](rctx, args...).
++ * For the contexts it makes, this library replaces the EAGLContext methods CA
++ * uses (found by reading QuartzCore, see jasmine/GPU.md "G2 step A") with ones
++ * that hand out such a table of its own: the ~60 entries CA calls are
++ * wrappers around Mesa's GL ES, all others log their slot name once and
++ * return 0. Contexts that were not made here go to Apple's original methods.
++ *
++ * What CA expects beyond plain GL ES 2/3 is emulated here. The list was found
++ * by the ios-sailfish project on a Pixel 1 (Adreno 530, same Mesa driver
++ * family); the code below is our own:
++ *  - GL_TEXTURE_RECTANGLE textures are 2D textures, with separate 2D and
++ *    rectangle bindings per unit, and sampler2DRect shaders are rewritten to
++ *    sample a 2D texture with texel coordinates scaled by 1/size;
++ *  - GL_EXT_shader_framebuffer_fetch (gl_LastFragData) is a texture read of
++ *    the render target's own texture, with a texture barrier before the draw;
++ *  - IOSurfaces become texture storage with no copy, one Mesa resource per
++ *    surface (sweetgl), or a copy when the GPU cannot use their rows in place.
++ *
++ * Environment: SWEETCA_TRACE=1 logs GL errors after each call (and eats them),
++ * the first call of each slot and every shader that fails to compile.
++ */
++
++#include <objc/NSObjCRuntime.h>
++#include <objc/message.h>
++#include <objc/objc.h>
++#include <objc/runtime.h>
++#include <ctype.h>
++#include <pthread.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <CoreFoundation/CoreFoundation.h>
++#include <IOSurface/IOSurfaceRef.h>
++
++#include <GLES3/gl31.h>
++#include <GLES2/gl2ext.h>
++
++#include "sweetgl.h"
++#include "sweetca_slots.inc"
++
++#define GL_TEXTURE_RECTANGLE_ARB 0x84F5
++#define GL_TEXTURE_BINDING_RECTANGLE_ARB 0x84F6
++#define GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB 0x84F8
++#define GL_UNPACK_CLIENT_STORAGE_APPLE 0x85B2
++#define GL_BGRA_EXT_ 0x80E1
++#define GL_HALF_FLOAT_OES_ 0x8D61
++
++#define UNITS 32
++#define OBJMAX 8192 /* shader and program names with emulation state (they share one namespace) */
++#define TEXMAX 16384
++#define FBOMAX 1024
++#define MAX_CTX 32
++
++static int trace_on;
++
++static void
++sca_log(const char *fmt, ...)
++{
++   char line[1024];
++   va_list ap;
++   va_start(ap, fmt);
++   int n = vsnprintf(line, sizeof(line) - 2, fmt, ap);
++   va_end(ap);
++   if (n < 0)
++      return;
++   if (n > (int)sizeof(line) - 2)
++      n = sizeof(line) - 2;
++   line[n++] = '\n';
++   (void)!fwrite(line, 1, n, stderr);
++   fflush(stderr);
++}
++
++/* ---- contexts ---- */
++
++#define OBJ_RECT 1   /* fragment shader with a sampler2DRect */
++#define OBJ_FBFETCH 2 /* fragment shader reading gl_LastFragData */
++
++struct sca_obj {
++   uint8_t flags;
++   char rect_sampler[32];
++   /* programs: uniform locations of the emulation's uniforms, -1 for none */
++   GLint rect_sampler_loc, rect_scale_loc, fb_sampler_loc, fb_scale_loc;
++};
++
++/* CA reads {rctx, disp[]} from getMacroContextPrivate: rctx first, then the table */
++struct sca_ctx {
++   void *rctx;
++   void *disp[SCA_SLOTS];
++   id eagl;
++   unsigned api;
++   struct sgl_context *gl;
++
++   int active;                         /* active texture unit as CA set it */
++   GLuint bind2d[UNITS], bindrect[UNITS], held[UNITS];
++   int fbfetch_unit;
++   GLuint program, fbo;
++   GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
++   uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
++   uint8_t tex_swizzled[TEXMAX];
++   struct sca_obj obj[OBJMAX];
++};
++
++static struct sca_ctx *ctxs[MAX_CTX];
++static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
++static __thread struct sca_ctx *cur;    /* bound to this thread's Mesa context */
++static __thread id cur_eagl;
++
++static struct sca_ctx *
++lookup(id eagl)
++{
++   struct sca_ctx *found = NULL;
++   if (!eagl)
++      return NULL;
++   pthread_mutex_lock(&ctx_lock);
++   for (int i = 0; i < MAX_CTX && !found; i++) {
++      if (ctxs[i] && ctxs[i]->eagl == eagl)
++         found = ctxs[i];
++   }
++   pthread_mutex_unlock(&ctx_lock);
++   return found;
++}
++
++static void
++bind_ctx(struct sca_ctx *c)
++{
++   sgl_make_current(c ? c->gl : NULL, NULL);
++   cur = c;
++}
++
++/* the wrappers' first lines: rctx is ours, and its Mesa context must be this thread's */
++#define CUR(r)                                                                   \
++   struct sca_ctx *c = (struct sca_ctx *)(r);                                     \
++   if (__builtin_expect(cur != c, 0))                                             \
++      bind_ctx(c)
++
++static void
++post(int slot)
++{
++   static uint8_t logged[SCA_SLOTS][8];
++   static uint8_t used[SCA_SLOTS];
++   if (!used[slot]) {
++      used[slot] = 1;
++      sca_log("sweetca: first call of slot %d %s", slot, sca_slot_names[slot] ? sca_slot_names[slot] : "?");
++   }
++   GLenum e = glGetError();
++   unsigned k = e - GL_INVALID_ENUM;
++   if (e != GL_NO_ERROR && (k >= 8 || logged[slot][k] < 3)) {
++      if (k < 8)
++         logged[slot][k]++;
++      sca_log("sweetca: GL error %#x after slot %d %s", e, slot,
++              sca_slot_names[slot] ? sca_slot_names[slot] : "?");
++   }
++}
++#define POST(slot)                                                               \
++   do {                                                                          \
++      if (__builtin_expect(trace_on, 0))                                         \
++         post(slot);                                                             \
++   } while (0)
++
++static intptr_t
++trap(int slot)
++{
++   static uint8_t seen[SCA_SLOTS];
++   if (!seen[slot]) {
++      seen[slot] = 1;
++      sca_log("sweetca: unsupported GLI slot %d (%s)", slot,
++              sca_slot_names[slot] ? sca_slot_names[slot] : "unnamed");
++   }
++   return 0;
++}
++
++/* ---- wrappers: plain pass-through ---- */
++
++#define UNP(...) __VA_ARGS__
++#define WV(slot, name, params, args)                                             \
++   static void w_##name(void *rctx, UNP params)                                  \
++   {                                                                             \
++      CUR(rctx);                                                                 \
++      (void)c;                                                                   \
++      gl##name args;                                                             \
++      POST(slot);                                                                \
++   }
++#define WR(slot, ret, name, params, args)                                        \
++   static ret w_##name(void *rctx, UNP params)                                   \
++   {                                                                             \
++      CUR(rctx);                                                                 \
++      (void)c;                                                                   \
++      ret r = gl##name args;                                                     \
++      POST(slot);                                                                \
++      return r;                                                                  \
++   }
++
++WV(7, BlendFunc, (GLenum s, GLenum d), (s, d))
++WV(12, ClearColor, (GLfloat r, GLfloat g, GLfloat b, GLfloat a), (r, g, b, a))
++WV(63, Disable, (GLenum cap), (cap))
++WV(72, Enable, (GLenum cap), (cap))
++WV(98, GenTextures, (GLsizei n, GLuint *t), (n, t))
++WV(251, Scissor, (GLint x, GLint y, GLsizei w, GLsizei h), (x, y, w, h))
++WV(335, Viewport, (GLint x, GLint y, GLsizei w, GLsizei h), (x, y, w, h))
++WV(338, BlendEquation, (GLenum mode), (mode))
++WV(511, VertexAttribPointer,
++   (GLuint i, GLint size, GLenum type, GLboolean norm, GLsizei stride, const void *p),
++   (i, size, type, norm, stride, p))
++WV(512, EnableVertexAttribArray, (GLuint i), (i))
++WV(513, DisableVertexAttribArray, (GLuint i), (i))
++WV(598, AttachShader, (GLuint p, GLuint s), (p, s))
++WV(602, Uniform1f, (GLint l, GLfloat a), (l, a))
++WV(605, Uniform4f, (GLint l, GLfloat a, GLfloat b, GLfloat cc, GLfloat d), (l, a, b, cc, d))
++WV(606, Uniform1i, (GLint l, GLint a), (l, a))
++WV(612, Uniform3fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
++WV(613, Uniform4fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
++WV(619, UniformMatrix3fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v), (l, n, t, v))
++WV(620, UniformMatrix4fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v), (l, n, t, v))
++WR(625, GLint, GetUniformLocation, (GLuint p, const GLchar *name), (p, name))
++WV(630, BindAttribLocation, (GLuint p, GLuint i, const GLchar *name), (p, i, name))
++WV(674, GenFramebuffers, (GLsizei n, GLuint *f), (n, f))
++WR(779, GLsync, FenceSync, (GLenum cond, GLbitfield flags), (cond, flags))
++WV(781, DeleteSync, (GLsync s), (s))
++WR(782, GLenum, ClientWaitSync, (GLsync s, GLbitfield flags, GLuint64 timeout), (s, flags, timeout))
++
++static GLenum
++w_GetError(void *rctx)
++{
++   CUR(rctx);
++   (void)c;
++   return glGetError();
++}
++
++static void
++w_UseProgram(void *rctx, GLuint p)
++{
++   CUR(rctx);
++   c->program = p;
++   glUseProgram(p);
++   POST(600);
++}
++
++/* shader and program objects: Apple's ARB handles are the plain names here */
++static uint64_t
++w_CreateShader(void *rctx, GLenum type)
++{
++   CUR(rctx);
++   (void)c;
++   uint64_t r = glCreateShader(type);
++   POST(594);
++   return r;
++}
++
++static uint64_t
++w_CreateProgram(void *rctx)
++{
++   CUR(rctx);
++   (void)c;
++   uint64_t r = glCreateProgram();
++   POST(597);
++   return r;
++}
++
++static void
++w_DeleteObject(void *rctx, GLuint obj)
++{
++   CUR(rctx);
++   if (glIsProgram(obj))
++      glDeleteProgram(obj);
++   else
++      glDeleteShader(obj);
++   if (obj < OBJMAX)
++      memset(&c->obj[obj], 0, sizeof(c->obj[obj]));
++   POST(591);
++}
++
++/* ---- markers, labels and fences that only need to exist ---- */
++
++static void
++w_Nop(void *rctx)
++{
++   (void)rctx;
++}
++
++static void
++w_FramebufferParameteriAPPLE(void *rctx, GLenum target, GLenum pname, GLint value)
++{
++   (void)rctx;
++   static int logged;
++   if (logged++ < 4)
++      sca_log("sweetca: glFramebufferParameteriAPPLE(%#x, %#x, %d) ignored", target, pname, value);
++}
++
++/* CA hands finished surfaces to the display without waiting for the GPU: flush means finish */
++static void
++w_Flush(void *rctx)
++{
++   CUR(rctx);
++   (void)c;
++   glFinish();
++   POST(90);
++}
++
++static void
++w_Finish(void *rctx)
++{
++   CUR(rctx);
++   (void)c;
++   glFinish();
++   POST(89);
++}
++
++static void
++w_FinishObjectAPPLE(void *rctx, GLenum object, GLint name)
++{
++   (void)object;
++   (void)name;
++   w_Finish(rctx);
++}
++
++/* ---- strings and queries ---- */
++
++static const GLubyte *
++w_GetString(void *rctx, GLenum name)
++{
++   CUR(rctx);
++   (void)c;
++   const GLubyte *s = glGetString(name);
++   /*
++    * Without GL_EXT_shader_framebuffer_fetch CA drops every layer with a blend
++    * mode filter. The extension is emulated (see draw_prep); say it is there.
++    */
++   if (name == GL_EXTENSIONS && s) {
++      static char *ext;
++      if (!ext && asprintf(&ext, "%s GL_EXT_shader_framebuffer_fetch", s) < 0)
++         ext = NULL;
++      return ext ? (const GLubyte *)ext : s;
++   }
++   if (!s)
++      sca_log("sweetca: glGetString(%#x) = NULL (error %#x)", name, glGetError());
++   return s;
++}
++
++static void
++w_GetIntegerv(void *rctx, GLenum pname, GLint *v)
++{
++   CUR(rctx);
++   switch (pname) {
++   case GL_TEXTURE_BINDING_2D:
++      *v = (GLint)c->bind2d[c->active];
++      return;
++   case GL_TEXTURE_BINDING_RECTANGLE_ARB:
++      *v = (GLint)c->bindrect[c->active];
++      return;
++   case GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB:
++      glGetIntegerv(GL_MAX_TEXTURE_SIZE, v);
++      return;
++   default:
++      glGetIntegerv(pname, v);
++      POST(104);
++   }
++}
++
++static void
++w_PixelStorei(void *rctx, GLenum pname, GLint param)
++{
++   CUR(rctx);
++   (void)c;
++   if (pname == GL_UNPACK_CLIENT_STORAGE_APPLE)
++      return;
++   glPixelStorei(pname, param);
++   POST(195);
++}
++
++/* ---- textures: 2D and rectangle bindings ---- */
++
++static GLenum
++tgt(struct sca_ctx *c, GLenum target)
++{
++   if (target != GL_TEXTURE_2D && target != GL_TEXTURE_RECTANGLE_ARB)
++      return target;
++   int u = c->active;
++   GLuint want = target == GL_TEXTURE_2D ? c->bind2d[u] : c->bindrect[u];
++   if (c->held[u] != want) {
++      glBindTexture(GL_TEXTURE_2D, want);
++      c->held[u] = want;
++   }
++   return GL_TEXTURE_2D;
++}
++
++static void
++note_size(struct sca_ctx *c, GLuint tex, unsigned w, unsigned h)
++{
++   if (tex > 0 && tex < TEXMAX) {
++      c->tex_w[tex] = w;
++      c->tex_h[tex] = h;
++   }
++}
++
++static void
++w_ActiveTexture(void *rctx, GLenum unit)
++{
++   CUR(rctx);
++   glActiveTexture(unit);
++   unsigned u = unit - GL_TEXTURE0;
++   c->active = u < UNITS ? u : UNITS - 1;
++   POST(342);
++}
++
++static void
++w_BindTexture(void *rctx, GLenum target, GLuint tex)
++{
++   CUR(rctx);
++   if (target == GL_TEXTURE_2D || target == GL_TEXTURE_RECTANGLE_ARB) {
++      int u = c->active;
++      if (target == GL_TEXTURE_2D)
++         c->bind2d[u] = tex;
++      else
++         c->bindrect[u] = tex;
++      c->held[u] = tex;
++      glBindTexture(GL_TEXTURE_2D, tex);
++   } else {
++      glBindTexture(target, tex);
++   }
++   POST(5);
++}
++
++/* GL unbinds deleted textures everywhere; so do the shadows */
++static void
++w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
++{
++   CUR(rctx);
++   for (GLsizei i = 0; i < n; i++) {
++      for (int u = 0; u < UNITS; u++) {
++         if (c->bind2d[u] == tex[i])
++            c->bind2d[u] = 0;
++         if (c->bindrect[u] == tex[i])
++            c->bindrect[u] = 0;
++         if (c->held[u] == tex[i])
++            c->held[u] = 0;
++      }
++      if (tex[i] < TEXMAX) {
++         c->tex_w[tex[i]] = c->tex_h[tex[i]] = 0;
++         c->tex_swizzled[tex[i]] = 0;
++      }
++      for (int f = 0; f < FBOMAX; f++) {
++         if (c->fbo_tex[f] == tex[i])
++            c->fbo_tex[f] = 0;
++      }
++   }
++   glDeleteTextures(n, tex);
++   POST(59);
++}
++
++static void
++w_TexParameteri(void *rctx, GLenum target, GLenum pname, GLint param)
++{
++   CUR(rctx);
++   glTexParameteri(tgt(c, target), pname, param);
++   POST(304);
++}
++
++static void
++w_TexParameterf(void *rctx, GLenum target, GLenum pname, GLfloat param)
++{
++   CUR(rctx);
++   glTexParameterf(tgt(c, target), pname, param);
++   POST(302);
++}
++
++static void
++set_swizzle(struct sca_ctx *c, GLenum target, const GLint s[4], bool on)
++{
++   GLuint tex = c->held[c->active];
++   if (tex >= TEXMAX || (!on && !c->tex_swizzled[tex]))
++      return;
++   c->tex_swizzled[tex] = on;
++   static const GLint ident[4] = {GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA};
++   const GLint *m = on ? s : ident;
++   glTexParameteri(target, GL_TEXTURE_SWIZZLE_R, m[0]);
++   glTexParameteri(target, GL_TEXTURE_SWIZZLE_G, m[1]);
++   glTexParameteri(target, GL_TEXTURE_SWIZZLE_B, m[2]);
++   glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, m[3]);
++}
++
++/* Apple's ES takes internalformat GL_RGBA with format GL_BGRA_EXT; Mesa wants BGRA for both */
++static void
++w_TexImage2D(void *rctx, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h,
++             GLint border, GLenum format, GLenum type, const void *pixels)
++{
++   CUR(rctx);
++   GLenum t = tgt(c, target);
++   set_swizzle(c, t, NULL, false);
++   if (format == GL_BGRA_EXT_ && (ifmt == GL_RGBA || ifmt == GL_RGBA8))
++      ifmt = GL_BGRA_EXT_;
++   glTexImage2D(t, level, ifmt, w, h, border, format, type, pixels);
++   POST(301);
++   if (level == 0)
++      note_size(c, c->held[c->active], w, h);
++}
++
++static void
++w_TexSubImage2D(void *rctx, GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h,
++                GLenum format, GLenum type, const void *pixels)
++{
++   CUR(rctx);
++   glTexSubImage2D(tgt(c, target), level, x, y, w, h, format, type, pixels);
++   POST(307);
++}
++
++static void
++w_CompressedTexImage2D(void *rctx, GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei h,
++                       GLint border, GLsizei size, const void *data)
++{
++   CUR(rctx);
++   glCompressedTexImage2D(tgt(c, target), level, ifmt, w, h, border, size, data);
++   POST(380);
++   if (level == 0)
++      note_size(c, c->held[c->active], w, h);
++}
++
++static void
++w_CopyTexSubImage2D(void *rctx, GLenum target, GLint level, GLint xo, GLint yo, GLint x, GLint y,
++                    GLsizei w, GLsizei h)
++{
++   CUR(rctx);
++   glCopyTexSubImage2D(tgt(c, target), level, xo, yo, x, y, w, h);
++   POST(56);
++}
++
++static void
++w_GenerateMipmap(void *rctx, GLenum target)
++{
++   CUR(rctx);
++   glGenerateMipmap(tgt(c, target));
++   POST(681);
++}
++
++/* ---- framebuffers ---- */
++
++static void
++w_BindFramebuffer(void *rctx, GLenum target, GLuint fb)
++{
++   CUR(rctx);
++   if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER)
++      c->fbo = fb < FBOMAX ? fb : 0;
++   glBindFramebuffer(target, fb);
++   POST(672);
++}
++
++static void
++w_DeleteFramebuffers(void *rctx, GLsizei n, const GLuint *fb)
++{
++   CUR(rctx);
++   for (GLsizei i = 0; i < n; i++) {
++      if (fb[i] < FBOMAX)
++         c->fbo_tex[fb[i]] = 0;
++      if (c->fbo == fb[i])
++         c->fbo = 0;
++   }
++   glDeleteFramebuffers(n, fb);
++   POST(673);
++}
++
++static void
++w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum textarget, GLuint tex,
++                       GLint level)
++{
++   CUR(rctx);
++   if (attachment == GL_COLOR_ATTACHMENT0 && c->fbo > 0 && c->fbo < FBOMAX &&
++       (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
++      c->fbo_tex[c->fbo] = tex;
++   glFramebufferTexture2D(target, attachment,
++                          textarget == GL_TEXTURE_RECTANGLE_ARB ? GL_TEXTURE_2D : textarget, tex,
++                          level);
++   POST(677);
++}
++
++/* ---- shaders ---- */
++
++/*
++ * Apple's shader compiler takes what Mesa's does not, and sees extensions Mesa
++ * lacks. Rewritten sources:
++ *  - sampler2DRect: a sampler2D, texture2DRect scaling the texel coordinate by
++ *    sca_rect_scale (1/size, set before each draw);
++ *  - gl_LastFragData[0]: a read of sca_fb, the render target's texture;
++ *  - coord_arg, which CA's inverted-mask shader uses without declaring.
++ * New declarations go after the leading preprocessor lines (extension
++ * directives must precede all other tokens).
++ */
++static const char rect_prelude[] =
++   "#define sampler2DRect sampler2D\n"
++   "#define texture2DRect(s, c) texture2D(s, (c) * sca_rect_scale)\n"
++   "uniform highp vec2 sca_rect_scale;\n";
++static const char fb_decl[] =
++   "uniform lowp sampler2D sca_fb;\n"
++   "uniform highp vec2 sca_fb_scale;\n";
++static const char fb_read[] = "texture2D(sca_fb, gl_FragCoord.xy * sca_fb_scale)";
++static const char coord_arg_decl[] = "uniform highp vec4 coord_arg;\n";
++
++/* offset after the leading lines that are blank or start with '#' */
++static size_t
++after_directives(const char *src)
++{
++   size_t at = 0;
++   for (;;) {
++      size_t i = at;
++      while (src[i] == ' ' || src[i] == '\t' || src[i] == '\r')
++         i++;
++      if (src[i] == '\n') {
++         at = i + 1;
++      } else if (src[i] == '#') {
++         const char *nl = strchr(src + i, '\n');
++         if (!nl)
++            return strlen(src);
++         at = nl - src + 1;
++      } else {
++         return at;
++      }
++   }
++}
++
++static char *
++insert_at(char *src, size_t at, const char *text)
++{
++   size_t n = strlen(src), t = strlen(text);
++   char *out = malloc(n + t + 1);
++   memcpy(out, src, at);
++   memcpy(out + at, text, t);
++   memcpy(out + at + t, src + at, n - at + 1);
++   free(src);
++   return out;
++}
++
++static bool
++has_word(const char *src, const char *word)
++{
++   size_t l = strlen(word);
++   for (const char *p = strstr(src, word); p; p = strstr(p + 1, word)) {
++      bool before = p == src || !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
++      bool after = !(isalnum((unsigned char)p[l]) || p[l] == '_');
++      if (before && after)
++         return true;
++   }
++   return false;
++}
++
++static void
++w_ShaderSource(void *rctx, GLuint shader, GLsizei count, const GLchar *const *string,
++               const GLint *length)
++{
++   CUR(rctx);
++   size_t n = 0;
++   for (GLsizei i = 0; i < count; i++)
++      n += length && length[i] >= 0 ? (size_t)length[i] : strlen(string[i]);
++   char *src = malloc(n + 1), *p = src;
++   for (GLsizei i = 0; i < count; i++) {
++      size_t l = length && length[i] >= 0 ? (size_t)length[i] : strlen(string[i]);
++      memcpy(p, string[i], l);
++      p += l;
++   }
++   *p = 0;
++
++   uint8_t flags = 0;
++   char rect_sampler[32] = "";
++   const char *rect = strstr(src, "sampler2DRect");
++   if (rect) {
++      const char *name = rect + strlen("sampler2DRect");
++      while (*name == ' ' || *name == '\t')
++         name++;
++      size_t l = strspn(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
++      snprintf(rect_sampler, sizeof(rect_sampler), "%.*s", (int)l, name);
++      flags |= OBJ_RECT;
++      src = insert_at(src, after_directives(src), rect_prelude);
++   }
++   if (has_word(src, "coord_arg") && !strstr(src, "vec4 coord_arg"))
++      src = insert_at(src, after_directives(src), coord_arg_decl);
++   if (strstr(src, "gl_LastFragData")) {
++      flags |= OBJ_FBFETCH;
++      /* blank the extension directive */
++      char *ext = strstr(src, "#extension GL_EXT_shader_framebuffer_fetch");
++      for (char *e = ext; e && *e && *e != '\n'; e++)
++         *e = ' ';
++      src = insert_at(src, after_directives(src), fb_decl);
++      /* each read becomes a texture read */
++      size_t reads = 0;
++      for (char *r = strstr(src, "gl_LastFragData[0]"); r; r = strstr(r + 1, "gl_LastFragData[0]"))
++         reads++;
++      char *out = malloc(strlen(src) + reads * sizeof(fb_read) + 1), *o = out;
++      for (const char *q = src; *q;) {
++         if (strncmp(q, "gl_LastFragData[0]", 18) == 0) {
++            memcpy(o, fb_read, sizeof(fb_read) - 1);
++            o += sizeof(fb_read) - 1;
++            q += 18;
++         } else {
++            *o++ = *q++;
++         }
++      }
++      *o = 0;
++      free(src);
++      src = out;
++   }
++   if (shader < OBJMAX) {
++      c->obj[shader].flags = flags;
++      snprintf(c->obj[shader].rect_sampler, sizeof(c->obj[shader].rect_sampler), "%s", rect_sampler);
++   }
++   const GLchar *one = src;
++   glShaderSource(shader, 1, &one, NULL);
++   if (trace_on > 1)
++      sca_log("sweetca: shader %u source:\n%s", shader, src);
++   free(src);
++   POST(595);
++}
++
++/* after a failed compile: the info log and the source, once per failure up to a limit */
++static void
++log_compile_failure(GLuint shader)
++{
++   static int logged;
++   GLint ok = 0;
++   glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
++   if (ok || logged++ >= 12)
++      return;
++   char log[1024] = "", src[3000] = "";
++   glGetShaderInfoLog(shader, sizeof(log), NULL, log);
++   glGetShaderSource(shader, sizeof(src), NULL, src);
++   sca_log("sweetca: shader %u failed to compile: %.600s", shader, log);
++   sca_log("sweetca: source:\n%s", src);
++}
++
++static void
++w_CompileShader2(void *rctx, GLuint shader)
++{
++   CUR(rctx);
++   (void)c;
++   glCompileShader(shader);
++   log_compile_failure(shader);
++   POST(596);
++}
++
++static void
++w_LinkProgram(void *rctx, GLuint program)
++{
++   CUR(rctx);
++   glLinkProgram(program);
++   GLint ok = 0;
++   glGetProgramiv(program, GL_LINK_STATUS, &ok);
++   if (!ok) {
++      static int logged;
++      if (logged++ < 12) {
++         char log[1024] = "";
++         glGetProgramInfoLog(program, sizeof(log), NULL, log);
++         sca_log("sweetca: program %u failed to link: %.600s", program, log);
++      }
++   } else if (program < OBJMAX) {
++      struct sca_obj *p = &c->obj[program];
++      GLuint shaders[8];
++      GLsizei n = 0;
++      glGetAttachedShaders(program, 8, &n, shaders);
++      p->flags = 0;
++      p->rect_sampler_loc = p->rect_scale_loc = p->fb_sampler_loc = p->fb_scale_loc = -1;
++      for (GLsizei i = 0; i < n; i++) {
++         if (shaders[i] >= OBJMAX)
++            continue;
++         struct sca_obj *s = &c->obj[shaders[i]];
++         if (s->flags & OBJ_RECT) {
++            p->flags |= OBJ_RECT;
++            p->rect_sampler_loc = glGetUniformLocation(program, s->rect_sampler);
++            p->rect_scale_loc = glGetUniformLocation(program, "sca_rect_scale");
++         }
++         if (s->flags & OBJ_FBFETCH) {
++            p->flags |= OBJ_FBFETCH;
++            p->fb_sampler_loc = glGetUniformLocation(program, "sca_fb");
++            p->fb_scale_loc = glGetUniformLocation(program, "sca_fb_scale");
++         }
++      }
++   }
++   POST(599);
++}
++
++/* ---- draws ---- */
++
++static void
++set_unit(struct sca_ctx *c, int u, GLuint want)
++{
++   if (c->held[u] == want)
++      return;
++   glActiveTexture(GL_TEXTURE0 + u);
++   glBindTexture(GL_TEXTURE_2D, want);
++   glActiveTexture(GL_TEXTURE0 + c->active);
++   c->held[u] = want;
++}
++
++static void
++texel_scale(struct sca_ctx *c, GLuint tex, GLint loc)
++{
++   unsigned w = tex < TEXMAX ? c->tex_w[tex] : 0, h = tex < TEXMAX ? c->tex_h[tex] : 0;
++   glUniform2f(loc, w ? 1.0f / w : 1.0f, h ? 1.0f / h : 1.0f);
++}
++
++/*
++ * Before a draw: each unit holds what the program samples there (the
++ * rectangle texture on the unit of its sampler2DRect, the 2D texture
++ * elsewhere), the rectangle scale is set, the framebuffer-fetch texture is
++ * bound, and a texture barrier is issued when the draw samples the texture it
++ * renders into (CA reads the destination that way; Apple's GPUs return what
++ * memory held when the pass began).
++ */
++static void
++draw_prep(struct sca_ctx *c)
++{
++   struct sca_obj *p = c->program && c->program < OBJMAX ? &c->obj[c->program] : NULL;
++   int runit = -1;
++   if (p && (p->flags & OBJ_RECT)) {
++      GLint unit = 0;
++      if (p->rect_sampler_loc >= 0)
++         glGetUniformiv(c->program, p->rect_sampler_loc, &unit);
++      runit = unit;
++   }
++   for (int u = 0; u < UNITS; u++) {
++      if (u == c->fbfetch_unit)
++         continue;
++      GLuint want = u == runit ? c->bindrect[u] : c->bind2d[u];
++      if (c->held[u] != want)
++         set_unit(c, u, want);
++   }
++   if (runit >= 0 && runit < UNITS && p->rect_scale_loc >= 0)
++      texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
++
++   GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
++   if (p && (p->flags & OBJ_FBFETCH) && fbtex) {
++      set_unit(c, c->fbfetch_unit, fbtex);
++      if (p->fb_sampler_loc >= 0)
++         glUniform1i(p->fb_sampler_loc, c->fbfetch_unit);
++      if (p->fb_scale_loc >= 0)
++         texel_scale(c, fbtex, p->fb_scale_loc);
++   }
++   if (fbtex) {
++      for (int u = 0; u < UNITS; u++) {
++         if (c->held[u] == fbtex) {
++            sgl_texture_barrier();
++            break;
++         }
++      }
++   }
++}
++
++static void
++w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
++{
++   CUR(rctx);
++   draw_prep(c);
++   glDrawArrays(mode, first, count);
++   POST(65);
++}
++
++static void
++w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *indices)
++{
++   CUR(rctx);
++   draw_prep(c);
++   glDrawElements(mode, count, type, indices);
++   POST(67);
++}
++
++static void
++w_Clear(void *rctx, GLbitfield mask)
++{
++   CUR(rctx);
++   (void)c;
++   glClear(mask);
++   POST(10);
++}
++
++/* ---- IOSurfaces as texture storage ---- */
++
++static void
++fourcc_str(uint32_t f, char out[5])
++{
++   for (int i = 0; i < 4; i++) {
++      unsigned ch = (f >> (24 - 8 * i)) & 0xff;
++      out[i] = ch >= 0x20 && ch < 0x7f ? (char)ch : '.';
++   }
++   out[4] = 0;
++}
++
++/* how a surface's bytes are read: the sweetgl format and the texture swizzle that makes them right */
++struct surf_fmt {
++   enum sgl_format f;
++   GLint swz[4];
++   bool swizzled;
++   GLenum gl_format, gl_type, gl_internal; /* for the copy path */
++};
++
++static const GLint SWZ_A8[4] = {GL_ZERO, GL_ZERO, GL_ZERO, GL_RED};
++static const GLint SWZ_L8[4] = {GL_RED, GL_RED, GL_RED, GL_ONE};
++static const GLint SWZ_LA8[4] = {GL_RED, GL_RED, GL_RED, GL_GREEN};
++
++static bool
++fmt_from_gl(GLenum format, GLenum type, struct surf_fmt *o)
++{
++   bool half = type == GL_HALF_FLOAT || type == GL_HALF_FLOAT_OES_;
++   memset(o, 0, sizeof(*o));
++   o->gl_format = format;
++   o->gl_type = type ? type : GL_UNSIGNED_BYTE;
++   switch (format) {
++   case GL_BGRA_EXT_:
++      o->f = SGL_FMT_BGRA8;
++      o->gl_internal = GL_BGRA_EXT_;
++      return true;
++   case GL_RGBA:
++      o->f = half ? SGL_FMT_RGBA16F : SGL_FMT_RGBA8;
++      o->gl_internal = half ? GL_RGBA16F : GL_RGBA8;
++      return true;
++   case GL_RED:
++      o->f = SGL_FMT_R8;
++      o->gl_internal = GL_R8;
++      return !half;
++   case GL_RG:
++      o->f = SGL_FMT_RG8;
++      o->gl_internal = GL_RG8;
++      return !half;
++   case GL_ALPHA:
++      o->f = SGL_FMT_R8;
++      memcpy(o->swz, SWZ_A8, sizeof(o->swz));
++      o->swizzled = true;
++      o->gl_internal = GL_ALPHA;
++      return !half;
++   case GL_LUMINANCE:
++      o->f = SGL_FMT_R8;
++      memcpy(o->swz, SWZ_L8, sizeof(o->swz));
++      o->swizzled = true;
++      o->gl_internal = GL_LUMINANCE;
++      return !half;
++   case GL_LUMINANCE_ALPHA:
++      o->f = SGL_FMT_RG8;
++      memcpy(o->swz, SWZ_LA8, sizeof(o->swz));
++      o->swizzled = true;
++      o->gl_internal = GL_LUMINANCE_ALPHA;
++      return !half;
++   default:
++      return false;
++   }
++}
++
++/* CA's surfaces that carry no GL format: by IOSurface pixel format, else bytes per element */
++static bool
++fmt_from_surface(uint32_t fourcc, size_t bpe, struct surf_fmt *o)
++{
++   switch (fourcc) {
++   case 'BGRA':
++      return fmt_from_gl(GL_BGRA_EXT_, GL_UNSIGNED_BYTE, o);
++   case 'RGBA':
++      return fmt_from_gl(GL_RGBA, GL_UNSIGNED_BYTE, o);
++   case 'RGhA':
++      return fmt_from_gl(GL_RGBA, GL_HALF_FLOAT, o);
++   case 'L008':
++      return fmt_from_gl(GL_RED, GL_UNSIGNED_BYTE, o);
++   case 'L016':
++      return fmt_from_gl(GL_RG, GL_UNSIGNED_BYTE, o);
++   case 'A008':
++      return fmt_from_gl(GL_ALPHA, GL_UNSIGNED_BYTE, o);
++   case 'LA08':
++      return fmt_from_gl(GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, o);
++   case 0:
++      return bpe == 4   ? fmt_from_gl(GL_BGRA_EXT_, GL_UNSIGNED_BYTE, o)
++             : bpe == 8 ? fmt_from_gl(GL_RGBA, GL_HALF_FLOAT, o)
++             : bpe == 1 ? fmt_from_gl(GL_RED, GL_UNSIGNED_BYTE, o)
++                        : false;
++   default:
++      return false;
++   }
++}
++
++/*
++ * A surface whose rows the GPU cannot take in place (CA's own bitmaps are not
++ * 64-byte aligned): its pixels are uploaded as a snapshot.
++ */
++static bool
++copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf_fmt *f, size_t w,
++             size_t h, size_t pitch, size_t bpe)
++{
++   if (bpe == 0 || pitch % bpe != 0)
++      return false;
++   if (IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL) != 0)
++      return false;
++   const void *base = IOSurfaceGetBaseAddress(s);
++   GLint row = 0, align = 4;
++   glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row);
++   glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
++   glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(pitch / bpe));
++   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
++   glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type, base);
++   GLenum e = glGetError();
++   glPixelStorei(GL_UNPACK_ROW_LENGTH, row);
++   glPixelStorei(GL_UNPACK_ALIGNMENT, align);
++   IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
++   if (e != GL_NO_ERROR)
++      sca_log("sweetca: copy of surface %u (%zux%zu, pitch %zu) failed: GL error %#x",
++              IOSurfaceGetID(s), w, h, pitch, e);
++   note_size(c, c->held[c->active], w, h);
++   return e == GL_NO_ERROR;
++}
++
++/* the surface's memory as the storage of the texture bound to target */
++static bool
++bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GLenum type,
++             uint32_t plane, const char *why)
++{
++   static int logged;
++   uint32_t fourcc = IOSurfaceGetPixelFormat(s);
++   bool planar = IOSurfaceGetPlaneCount(s) > 1;
++   size_t w = planar ? IOSurfaceGetWidthOfPlane(s, plane) : IOSurfaceGetWidth(s);
++   size_t h = planar ? IOSurfaceGetHeightOfPlane(s, plane) : IOSurfaceGetHeight(s);
++   size_t pitch = planar ? IOSurfaceGetBytesPerRowOfPlane(s, plane) : IOSurfaceGetBytesPerRow(s);
++   size_t bpe = planar ? IOSurfaceGetBytesPerElementOfPlane(s, plane) : IOSurfaceGetBytesPerElement(s);
++   char cc[5];
++   fourcc_str(fourcc, cc);
++
++   struct surf_fmt f;
++   bool ok = !planar && ((format && fmt_from_gl(format, type, &f)) || fmt_from_surface(fourcc, bpe, &f));
++   if (!ok) {
++      if (logged++ < 40)
++         sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu plane %u: no format (gl %#x/%#x)", why,
++                 IOSurfaceGetID(s), cc, w, h, pitch, plane, format, type);
++      return false;
++   }
++   GLenum t = tgt(c, target);
++   set_swizzle(c, t, f.swz, f.swizzled);
++   bool done = false;
++   const char *how = "in place";
++   if (pitch % 64 == 0)
++      done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, f.f);
++   if (!done && format) {
++      how = "copied";
++      done = copy_surface(c, s, t, &f, w, h, pitch, bpe);
++   }
++   if (!done) {
++      if (logged++ < 40)
++         sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu: GPU import failed, no copy", why,
++                 IOSurfaceGetID(s), cc, w, h, pitch);
++      return false;
++   }
++   if (strcmp(how, "in place") == 0)
++      note_size(c, c->held[c->active], w, h);
++   if (trace_on && logged++ < 80)
++      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x)", why,
++              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type);
++   return true;
++}
++
++/* ---- the EAGLContext methods ---- */
++
++static IMP orig_init, orig_init_api, orig_init_share, orig_dealloc, orig_api, orig_set_param,
++   orig_macro, orig_tex_iosurface, orig_attach, orig_set_current, orig_current;
++
++static struct sgl_display *dpy;
++static pthread_mutex_t dpy_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static struct sgl_display *
++display(void)
++{
++   pthread_mutex_lock(&dpy_lock);
++   if (!dpy) {
++      /* before the screen: render straight to memory, no GMEM tiles (their restore and
++       * resolve overran unpadded IOSurfaces on the Pixel), and no fp16 lowering of mediump */
++      setenv("FD_MESA_DEBUG", "sysmem,nofp16", 0);
++      setenv("IR3_SHADER_DEBUG", "nofp16", 0);
++      dpy = sgl_display_create();
++   }
++   pthread_mutex_unlock(&dpy_lock);
++   return dpy;
++}
++
++#define TABLE_ENTRY(n) (void *)trap_##n,
++#define TRAP_FN(n)                                                               \
++   static intptr_t trap_##n(void *rctx)                                          \
++   {                                                                             \
++      (void)rctx;                                                                \
++      return trap(n);                                                            \
++   }
++SCA_FOR_EACH_SLOT(TRAP_FN)
++
++static void
++fill_dispatch(void **d)
++{
++   static void *const traps[SCA_SLOTS] = {SCA_FOR_EACH_SLOT(TABLE_ENTRY)};
++   memcpy(d, traps, sizeof(traps));
++#define S(i, fn) d[i] = (void *)fn
++   S(5, w_BindTexture);
++   S(7, w_BlendFunc);
++   S(10, w_Clear);
++   S(12, w_ClearColor);
++   S(56, w_CopyTexSubImage2D);
++   S(59, w_DeleteTextures);
++   S(63, w_Disable);
++   S(65, w_DrawArrays);
++   S(67, w_DrawElements);
++   S(72, w_Enable);
++   S(89, w_Finish);
++   S(90, w_Flush);
++   S(98, w_GenTextures);
++   S(102, w_GetError);
++   S(104, w_GetIntegerv);
++   S(117, w_GetString);
++   S(195, w_PixelStorei);
++   S(251, w_Scissor);
++   S(301, w_TexImage2D);
++   S(302, w_TexParameterf);
++   S(304, w_TexParameteri);
++   S(307, w_TexSubImage2D);
++   S(335, w_Viewport);
++   S(338, w_BlendEquation);
++   S(342, w_ActiveTexture);
++   S(380, w_CompressedTexImage2D);
++   S(470, w_FinishObjectAPPLE);
++   S(511, w_VertexAttribPointer);
++   S(512, w_EnableVertexAttribArray);
++   S(513, w_DisableVertexAttribArray);
++   S(591, w_DeleteObject);
++   S(594, w_CreateShader);
++   S(595, w_ShaderSource);
++   S(596, w_CompileShader2);
++   S(597, w_CreateProgram);
++   S(598, w_AttachShader);
++   S(599, w_LinkProgram);
++   S(600, w_UseProgram);
++   S(602, w_Uniform1f);
++   S(605, w_Uniform4f);
++   S(606, w_Uniform1i);
++   S(612, w_Uniform3fv);
++   S(613, w_Uniform4fv);
++   S(619, w_UniformMatrix3fv);
++   S(620, w_UniformMatrix4fv);
++   S(625, w_GetUniformLocation);
++   S(630, w_BindAttribLocation);
++   S(672, w_BindFramebuffer);
++   S(673, w_DeleteFramebuffers);
++   S(674, w_GenFramebuffers);
++   S(677, w_FramebufferTexture2D);
++   S(681, w_GenerateMipmap);
++   S(779, w_FenceSync);
++   S(781, w_DeleteSync);
++   S(782, w_ClientWaitSync);
++   S(814, w_Nop);
++   S(816, w_Nop);
++   S(817, w_Nop);
++   S(818, w_Nop);
++   S(1024, w_FramebufferParameteriAPPLE);
++#undef S
++}
++
++/* a context for self, or NULL (the caller then uses Apple's init) */
++static struct sca_ctx *
++make_ctx(id self, NSUInteger api)
++{
++   struct sgl_display *d = api >= 2 && api <= 3 ? display() : NULL;
++   struct sgl_context *gl = d ? sgl_context_create(d, (int)api, NULL) : NULL;
++   struct sca_ctx *c = gl ? calloc(1, sizeof(*c)) : NULL;
++   if (!c) {
++      if (gl)
++         sgl_context_destroy(gl);
++      return NULL;
++   }
++   c->rctx = c;
++   fill_dispatch(c->disp);
++   c->eagl = self;
++   c->api = (unsigned)api;
++   c->gl = gl;
++   c->fbfetch_unit = UNITS - 1;
++   for (int i = 0; i < OBJMAX; i++)
++      c->obj[i].rect_sampler_loc = c->obj[i].rect_scale_loc = c->obj[i].fb_sampler_loc =
++         c->obj[i].fb_scale_loc = -1;
++   int slot = -1;
++   pthread_mutex_lock(&ctx_lock);
++   for (int i = 0; i < MAX_CTX && slot < 0; i++) {
++      if (!ctxs[i]) {
++         ctxs[i] = c;
++         slot = i;
++      }
++   }
++   pthread_mutex_unlock(&ctx_lock);
++   if (slot < 0) {
++      sgl_context_destroy(gl);
++      free(c);
++      return NULL;
++   }
++   /* the unit for framebuffer fetch: the last one the GPU has */
++   bind_ctx(c);
++   GLint units = 16;
++   glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &units);
++   c->fbfetch_unit = units - 1 < UNITS ? units - 1 : UNITS - 1;
++   sca_log("sweetca: EAGLContext %p API %lu on Mesa: %s, %s (GLI %p)", self, (unsigned long)api,
++           glGetString(GL_VERSION), glGetString(GL_RENDERER), c);
++   bind_ctx(NULL);
++   return c;
++}
++
++static id
++m_init(id self, SEL cmd, NSUInteger api, id props)
++{
++   if (make_ctx(self, api))
++      return self;
++   sca_log("sweetca: EAGLContext API %lu: no Mesa context, Apple's EAGL instead", (unsigned long)api);
++   return ((id (*)(id, SEL, NSUInteger, id))orig_init)(self, cmd, api, props);
++}
++
++static id
++m_init_api(id self, SEL cmd, NSUInteger api)
++{
++   if (make_ctx(self, api))
++      return self;
++   return ((id (*)(id, SEL, NSUInteger))orig_init_api)(self, cmd, api);
++}
++
++static id
++m_init_share(id self, SEL cmd, NSUInteger api, id share)
++{
++   if (make_ctx(self, api))
++      return self;
++   return ((id (*)(id, SEL, NSUInteger, id))orig_init_share)(self, cmd, api, share);
++}
++
++static void
++m_dealloc(id self, SEL cmd)
++{
++   struct sca_ctx *c = lookup(self);
++   if (!c) {
++      ((void (*)(id, SEL))orig_dealloc)(self, cmd);
++      return;
++   }
++   pthread_mutex_lock(&ctx_lock);
++   for (int i = 0; i < MAX_CTX; i++) {
++      if (ctxs[i] == c)
++         ctxs[i] = NULL;
++   }
++   pthread_mutex_unlock(&ctx_lock);
++   if (cur == c)
++      bind_ctx(NULL);
++   sgl_context_destroy(c->gl);
++   free(c);
++   /* EAGLContext's own init never ran: skip its dealloc, run NSObject's */
++   struct objc_super sup = {self, class_getSuperclass(objc_getClass("EAGLContext"))};
++   ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, cmd);
++}
++
++static NSUInteger
++m_api(id self, SEL cmd)
++{
++   struct sca_ctx *c = lookup(self);
++   return c ? c->api : ((NSUInteger(*)(id, SEL))orig_api)(self, cmd);
++}
++
++static BOOL
++m_set_param(id self, SEL cmd, uint32_t pname, const int32_t *value)
++{
++   if (!lookup(self))
++      return ((BOOL(*)(id, SEL, uint32_t, const int32_t *))orig_set_param)(self, cmd, pname, value);
++   sca_log("sweetca: setParameter %#x to %d (ignored)", pname, value ? *value : 0);
++   return YES;
++}
++
++static void *
++m_macro(id self, SEL cmd)
++{
++   struct sca_ctx *c = lookup(self);
++   return c ? (void *)c : ((void *(*)(id, SEL))orig_macro)(self, cmd);
++}
++
++static BOOL
++m_tex_iosurface(id self, SEL cmd, IOSurfaceRef s, NSUInteger target, NSUInteger internalformat,
++                uint32_t width, uint32_t height, NSUInteger format, NSUInteger type, uint32_t plane,
++                BOOL invert)
++{
++   struct sca_ctx *c = lookup(self);
++   if (!c) {
++      return ((BOOL(*)(id, SEL, IOSurfaceRef, NSUInteger, NSUInteger, uint32_t, uint32_t, NSUInteger,
++                       NSUInteger, uint32_t, BOOL))orig_tex_iosurface)(self, cmd, s, target,
++                                                                       internalformat, width, height,
++                                                                       format, type, plane, invert);
++   }
++   if (cur != c)
++      bind_ctx(c);
++   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, "texImageIOSurface");
++}
++
++static BOOL
++m_attach(id self, SEL cmd, NSUInteger target, IOSurfaceRef s, BOOL inverted)
++{
++   struct sca_ctx *c = lookup(self);
++   if (!c)
++      return ((BOOL(*)(id, SEL, NSUInteger, IOSurfaceRef, BOOL))orig_attach)(self, cmd, target, s, inverted);
++   if (cur != c)
++      bind_ctx(c);
++   return bind_surface(c, s, (GLenum)target, 0, 0, 0, "attachImage");
++}
++
++static BOOL
++m_set_current(id cls, SEL cmd, id eagl)
++{
++   struct sca_ctx *c = lookup(eagl);
++   if (c) {
++      bind_ctx(c);
++      cur_eagl = eagl;
++      return YES;
++   }
++   if (cur)
++      bind_ctx(NULL);
++   cur_eagl = nil;
++   return ((BOOL(*)(id, SEL, id))orig_set_current)(cls, cmd, eagl);
++}
++
++static id
++m_current(id cls, SEL cmd)
++{
++   return cur_eagl ? cur_eagl : ((id(*)(id, SEL))orig_current)(cls, cmd);
++}
++
++static IMP
++swap(Class cls, const char *sel, void *imp)
++{
++   Method m = class_getInstanceMethod(cls, sel_registerName(sel));
++   if (!m) {
++      sca_log("sweetca: EAGLContext has no %s", sel);
++      return NULL;
++   }
++   return method_setImplementation(m, (IMP)imp);
++}
++
++/* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
++__attribute__((visibility("default"))) int
++sweetca_installed(void)
++{
++   return orig_init != NULL;
++}
++
++__attribute__((constructor)) static void
++sweetca_init(void)
++{
++   const char *t = getenv("SWEETCA_TRACE");
++   trace_on = t && t[0] == '1' ? 1 : t && t[0] == '2' ? 2 : 0;
++   Class cls = objc_getClass("EAGLContext");
++   if (cls == Nil) {
++      sca_log("sweetca: no EAGLContext class");
++      return;
++   }
++   Class meta = object_getClass((id)cls);
++   orig_init = swap(cls, "initWithAPI:properties:", m_init);
++   orig_init_api = swap(cls, "initWithAPI:", m_init_api);
++   orig_init_share = swap(cls, "initWithAPI:sharegroup:", m_init_share);
++   orig_dealloc = swap(cls, "dealloc", m_dealloc);
++   orig_api = swap(cls, "API", m_api);
++   orig_set_param = swap(cls, "setParameter:to:", m_set_param);
++   orig_macro = swap(cls, "getMacroContextPrivate", m_macro);
++   orig_tex_iosurface =
++      swap(cls, "texImageIOSurface:target:internalFormat:width:height:format:type:plane:invert:",
++           m_tex_iosurface);
++   orig_attach = swap(cls, "attachImage:toCoreSurface:invertedRender:", m_attach);
++   orig_set_current = swap(meta, "setCurrentContext:", m_set_current);
++   orig_current = swap(meta, "currentContext", m_current);
++   sca_log("sweetca: EAGL methods replaced%s", trace_on ? " (GL error checks on)" : "");
++}
+diff --git a/src/gallium/frontends/sweetgl/sweetca_slots.inc b/src/gallium/frontends/sweetgl/sweetca_slots.inc
+new file mode 100644
+index 0000000..2c17092
+--- /dev/null
++++ b/src/gallium/frontends/sweetgl/sweetca_slots.inc
+@@ -0,0 +1,1453 @@
++/* generated by tools/g2/dsc/genslots.py from GLEngine and OpenGLES (iOS 16.7.16): slot -> GL name */
++#define SCA_SLOTS 1036
++
++static const char *const sca_slot_names[SCA_SLOTS] = {
++	[1] = "glAlphaFunc",
++	[5] = "glBindTexture",
++	[7] = "glBlendFunc",
++	[10] = "glClear",
++	[12] = "glClearColor",
++	[15] = "glClearStencil",
++	[37] = "glColor4f",
++	[43] = "glColor4ub",
++	[49] = "glColorMask",
++	[51] = "glColorPointer",
++	[54] = "glCopyTexImage2D",
++	[56] = "glCopyTexSubImage2D",
++	[57] = "glCullFace",
++	[59] = "glDeleteTextures",
++	[60] = "glDepthFunc",
++	[61] = "glDepthMask",
++	[63] = "glDisable",
++	[64] = "glDisableClientState",
++	[65] = "glDrawArrays",
++	[67] = "glDrawElements",
++	[72] = "glEnable",
++	[73] = "glEnableClientState",
++	[89] = "glFinish",
++	[90] = "glFlush",
++	[91] = "glFogf",
++	[92] = "glFogfv",
++	[95] = "glFrontFace",
++	[98] = "glGenTextures",
++	[99] = "glGetBooleanv",
++	[102] = "glGetError",
++	[103] = "glGetFloatv",
++	[104] = "glGetIntegerv",
++	[105] = "glGetLightfv",
++	[110] = "glGetMaterialfv",
++	[115] = "glGetPointerv",
++	[117] = "glGetString",
++	[118] = "glGetTexEnvfv",
++	[119] = "glGetTexEnviv",
++	[123] = "glGetTexImage",
++	[124] = "glGetTexLevelParameterfv",
++	[125] = "glGetTexLevelParameteriv",
++	[126] = "glGetTexParameterfv",
++	[127] = "glGetTexParameteriv",
++	[128] = "glHint",
++	[143] = "glIsEnabled",
++	[145] = "glIsTexture",
++	[146] = "glLightModelf",
++	[147] = "glLightModelfv",
++	[150] = "glLightf",
++	[151] = "glLightfv",
++	[155] = "glLineWidth",
++	[157] = "glLoadIdentity",
++	[159] = "glLoadMatrixf",
++	[161] = "glLogicOp",
++	[170] = "glMaterialf",
++	[171] = "glMaterialfv",
++	[174] = "glMatrixMode",
++	[176] = "glMultMatrixf",
++	[182] = "glNormal3f",
++	[188] = "glNormalPointer",
++	[195] = "glPixelStorei",
++	[199] = "glPointSize",
++	[201] = "glPolygonOffset",
++	[205] = "glPopMatrix",
++	[210] = "glPushMatrix",
++	[236] = "glReadBuffer",
++	[237] = "glReadPixels",
++	[248] = "glRotatef",
++	[250] = "glScalef",
++	[251] = "glScissor",
++	[253] = "glShadeModel",
++	[254] = "glStencilFunc",
++	[255] = "glStencilMask",
++	[256] = "glStencilOp",
++	[289] = "glTexCoordPointer",
++	[290] = "glTexEnvf",
++	[291] = "glTexEnvfv",
++	[292] = "glTexEnvi",
++	[293] = "glTexEnviv",
++	[301] = "glTexImage2D",
++	[302] = "glTexParameterf",
++	[303] = "glTexParameterfv",
++	[304] = "glTexParameteri",
++	[305] = "glTexParameteriv",
++	[307] = "glTexSubImage2D",
++	[309] = "glTranslatef",
++	[334] = "glVertexPointer",
++	[335] = "glViewport",
++	[336] = "glBlendFuncSeparate/glBlendFuncSeparateOES",
++	[337] = "glBlendColor",
++	[338] = "glBlendEquation/glBlendEquationOES",
++	[341] = "glClientActiveTexture",
++	[342] = "glActiveTexture",
++	[369] = "glMultiTexCoord4f",
++	[379] = "glCompressedTexImage3D",
++	[380] = "glCompressedTexImage2D",
++	[382] = "glCompressedTexSubImage3D",
++	[383] = "glCompressedTexSubImage2D",
++	[385] = "glGetCompressedTexImage_ExecThread",
++	[405] = "glDrawRangeElements",
++	[438] = "glTexImage3D",
++	[439] = "glTexSubImage3D",
++	[440] = "glCopyTexSubImage3D",
++	[441] = "glGetUniformIndices",
++	[442] = "glGetActiveUniformsiv",
++	[444] = "glGetUniformBlockIndex",
++	[445] = "glGetActiveUniformBlockiv",
++	[446] = "glGetActiveUniformBlockName",
++	[447] = "glUniformBlockBinding",
++	[458] = "glBlendEquationSeparate/glBlendEquationSeparateOES",
++	[459] = "glSampleCoverage",
++	[463] = "glGenFencesAPPLE",
++	[464] = "glDeleteFencesAPPLE",
++	[465] = "glSetFenceAPPLE",
++	[466] = "glIsFenceAPPLE",
++	[467] = "glTestFenceAPPLE",
++	[468] = "glFinishFenceAPPLE",
++	[469] = "glTestObjectAPPLE",
++	[470] = "glFinishObjectAPPLE",
++	[476] = "glVertexAttrib1f",
++	[479] = "glVertexAttrib2f",
++	[482] = "glVertexAttrib3f",
++	[485] = "glVertexAttrib4f",
++	[489] = "glVertexAttrib1fv",
++	[492] = "glVertexAttrib2fv",
++	[495] = "glVertexAttrib3fv",
++	[503] = "glVertexAttrib4fv",
++	[511] = "glVertexAttribPointer",
++	[512] = "glEnableVertexAttribArray",
++	[513] = "glDisableVertexAttribArray",
++	[515] = "glGetVertexAttribfv",
++	[516] = "glGetVertexAttribiv",
++	[517] = "glGetVertexAttribPointerv",
++	[540] = "glPointParameterf",
++	[541] = "glPointParameterfv",
++	[586] = "glStencilOpSeparate",
++	[591] = "glDeleteProgram/glDeleteShader",
++	[593] = "glDetachShader",
++	[594] = "glCreateShader",
++	[595] = "glShaderSource",
++	[596] = "glCompileShader",
++	[597] = "glCreateProgram",
++	[598] = "glAttachShader",
++	[599] = "glLinkProgram",
++	[600] = "glUseProgram",
++	[601] = "glValidateProgram",
++	[602] = "glUniform1f",
++	[603] = "glUniform2f",
++	[604] = "glUniform3f",
++	[605] = "glUniform4f",
++	[606] = "glUniform1i",
++	[607] = "glUniform2i",
++	[608] = "glUniform3i",
++	[609] = "glUniform4i",
++	[610] = "glUniform1fv",
++	[611] = "glUniform2fv",
++	[612] = "glUniform3fv",
++	[613] = "glUniform4fv",
++	[614] = "glUniform1iv",
++	[615] = "glUniform2iv",
++	[616] = "glUniform3iv",
++	[617] = "glUniform4iv",
++	[618] = "glUniformMatrix2fv",
++	[619] = "glUniformMatrix3fv",
++	[620] = "glUniformMatrix4fv",
++	[625] = "glGetUniformLocation",
++	[626] = "glGetActiveUniform",
++	[627] = "glGetUniformfv",
++	[628] = "glGetUniformiv",
++	[629] = "glGetShaderSource",
++	[630] = "glBindAttribLocation",
++	[631] = "glGetActiveAttrib",
++	[632] = "glGetAttribLocation",
++	[634] = "glGenQueries/glGenQueriesEXT",
++	[635] = "glDeleteQueries/glDeleteQueriesEXT",
++	[636] = "glIsQuery/glIsQueryEXT",
++	[637] = "glBeginQuery/glBeginQueryEXT",
++	[638] = "glEndQuery/glEndQueryEXT",
++	[639] = "glGetQueryiv/glGetQueryivEXT",
++	[640] = "glGetQueryObjectivEXT",
++	[641] = "glGetQueryObjectuiv/glGetQueryObjectuivEXT",
++	[642] = "glBindBuffer",
++	[643] = "glDeleteBuffers",
++	[644] = "glGenBuffers",
++	[645] = "glIsBuffer",
++	[646] = "glBufferData",
++	[647] = "glBufferSubData",
++	[649] = "glMapBufferOES",
++	[650] = "glUnmapBuffer/glUnmapBufferOES",
++	[651] = "glGetBufferParameteriv",
++	[652] = "glGetBufferPointerv/glGetBufferPointervOES",
++	[654] = "glDrawBuffers",
++	[655] = "glIsShader",
++	[656] = "glIsProgram",
++	[657] = "glGetShaderiv",
++	[658] = "glGetProgramiv",
++	[659] = "glGetShaderInfoLog",
++	[660] = "glGetProgramInfoLog",
++	[661] = "glStencilFuncSeparate",
++	[662] = "glStencilMaskSeparate",
++	[665] = "glIsRenderbuffer/glIsRenderbufferOES",
++	[666] = "glBindRenderbuffer/glBindRenderbufferOES",
++	[667] = "glDeleteRenderbuffers/glDeleteRenderbuffersOES",
++	[668] = "glGenRenderbuffers/glGenRenderbuffersOES",
++	[669] = "glRenderbufferStorage/glRenderbufferStorageOES",
++	[670] = "glGetRenderbufferParameteriv/glGetRenderbufferParameterivOES",
++	[671] = "glIsFramebuffer/glIsFramebufferOES",
++	[672] = "glBindFramebuffer/glBindFramebufferOES",
++	[673] = "glDeleteFramebuffers/glDeleteFramebuffersOES",
++	[674] = "glGenFramebuffers/glGenFramebuffersOES",
++	[675] = "glCheckFramebufferStatus/glCheckFramebufferStatusOES",
++	[677] = "glFramebufferTexture2D/glFramebufferTexture2DOES",
++	[679] = "glFramebufferRenderbuffer/glFramebufferRenderbufferOES",
++	[680] = "glGetFramebufferAttachmentParameteriv/glGetFramebufferAttachmentParameterivOES",
++	[681] = "glGenerateMipmap/glGenerateMipmapOES",
++	[689] = "glProgramParameteri/glProgramParameteriEXT",
++	[691] = "glFramebufferTextureLayer",
++	[693] = "glBindBufferRange",
++	[695] = "glBindBufferBase",
++	[696] = "glBeginTransformFeedback",
++	[697] = "glEndTransformFeedback",
++	[698] = "glTransformFeedbackVaryings",
++	[699] = "glGetTransformFeedbackVarying",
++	[700] = "glGetIntegeri_v",
++	[714] = "glVertexAttribI4i",
++	[718] = "glVertexAttribI4ui",
++	[722] = "glVertexAttribI4iv",
++	[726] = "glVertexAttribI4uiv",
++	[731] = "glVertexAttribIPointer",
++	[732] = "glGetVertexAttribIiv",
++	[733] = "glGetVertexAttribIuiv",
++	[734] = "glUniform1ui",
++	[735] = "glUniform2ui",
++	[736] = "glUniform3ui",
++	[737] = "glUniform4ui",
++	[738] = "glUniform1uiv",
++	[739] = "glUniform2uiv",
++	[740] = "glUniform3uiv",
++	[741] = "glUniform4uiv",
++	[742] = "glGetUniformuiv",
++	[744] = "glGetFragDataLocation",
++	[749] = "glUniformMatrix2x3fv",
++	[750] = "glUniformMatrix3x2fv",
++	[751] = "glUniformMatrix2x4fv",
++	[752] = "glUniformMatrix4x2fv",
++	[753] = "glUniformMatrix3x4fv",
++	[754] = "glUniformMatrix4x3fv",
++	[755] = "glBlitFramebuffer",
++	[756] = "glRenderbufferStorageMultisample/glRenderbufferStorageMultisampleAPPLE",
++	[759] = "glGetAttachedShaders",
++	[761] = "glVertexAttribDivisor/glVertexAttribDivisorEXT",
++	[762] = "glDrawArraysInstanced/glDrawArraysInstancedEXT",
++	[763] = "glDrawElementsInstanced/glDrawElementsInstancedEXT",
++	[768] = "glBindVertexArray/glBindVertexArrayOES",
++	[769] = "glDeleteVertexArrays/glDeleteVertexArraysOES",
++	[770] = "glGenVertexArrays/glGenVertexArraysOES",
++	[771] = "glIsVertexArray/glIsVertexArrayOES",
++	[772] = "glPointSizePointerOES",
++	[774] = "glClearBufferiv",
++	[775] = "glClearBufferuiv",
++	[776] = "glClearBufferfv",
++	[777] = "glClearBufferfi",
++	[778] = "glGetStringi",
++	[779] = "glFenceSync/glFenceSyncAPPLE",
++	[780] = "glIsSync/glIsSyncAPPLE",
++	[781] = "glDeleteSync/glDeleteSyncAPPLE",
++	[782] = "glClientWaitSync/glClientWaitSyncAPPLE",
++	[783] = "glWaitSync/glWaitSyncAPPLE",
++	[784] = "glGetInteger64v/glGetInteger64vAPPLE",
++	[785] = "glGetSynciv/glGetSyncivAPPLE",
++	[791] = "glCopyBufferSubData",
++	[795] = "glMapBufferRange/glMapBufferRangeEXT",
++	[796] = "glFlushMappedBufferRange/glFlushMappedBufferRangeEXT",
++	[798] = "glGetInteger64i_v",
++	[799] = "glGetBufferParameteri64v",
++	[800] = "glGenSamplers",
++	[801] = "glDeleteSamplers",
++	[802] = "glIsSampler",
++	[803] = "glBindSampler",
++	[804] = "glSamplerParameteri",
++	[805] = "glSamplerParameteriv",
++	[806] = "glSamplerParameterf",
++	[807] = "glSamplerParameterfv",
++	[810] = "glGetSamplerParameteriv",
++	[811] = "glGetSamplerParameterfv",
++	[814] = "glLabelObjectEXT",
++	[815] = "glGetObjectLabelEXT",
++	[816] = "glInsertEventMarkerEXT",
++	[817] = "glPushGroupMarkerEXT",
++	[818] = "glPopGroupMarkerEXT",
++	[819] = "glUseProgramStagesEXT",
++	[820] = "glActiveShaderProgramEXT",
++	[821] = "glCreateShaderProgramvEXT",
++	[822] = "glBindProgramPipelineEXT",
++	[823] = "glDeleteProgramPipelinesEXT",
++	[824] = "glGenProgramPipelinesEXT",
++	[825] = "glIsProgramPipelineEXT",
++	[826] = "glGetProgramPipelineivEXT",
++	[827] = "glValidateProgramPipelineEXT",
++	[828] = "glGetProgramPipelineInfoLogEXT",
++	[829] = "glProgramUniform1iEXT",
++	[830] = "glProgramUniform2iEXT",
++	[831] = "glProgramUniform3iEXT",
++	[832] = "glProgramUniform4iEXT",
++	[833] = "glProgramUniform1fEXT",
++	[834] = "glProgramUniform2fEXT",
++	[835] = "glProgramUniform3fEXT",
++	[836] = "glProgramUniform4fEXT",
++	[837] = "glProgramUniform1ivEXT",
++	[838] = "glProgramUniform2ivEXT",
++	[839] = "glProgramUniform3ivEXT",
++	[840] = "glProgramUniform4ivEXT",
++	[841] = "glProgramUniform1fvEXT",
++	[842] = "glProgramUniform2fvEXT",
++	[843] = "glProgramUniform3fvEXT",
++	[844] = "glProgramUniform4fvEXT",
++	[845] = "glProgramUniformMatrix2fvEXT",
++	[846] = "glProgramUniformMatrix3fvEXT",
++	[847] = "glProgramUniformMatrix4fvEXT",
++	[848] = "glProgramUniform1uiEXT",
++	[849] = "glProgramUniform2uiEXT",
++	[850] = "glProgramUniform3uiEXT",
++	[851] = "glProgramUniform4uiEXT",
++	[852] = "glProgramUniform1uivEXT",
++	[853] = "glProgramUniform2uivEXT",
++	[854] = "glProgramUniform3uivEXT",
++	[855] = "glProgramUniform4uivEXT",
++	[856] = "glProgramUniformMatrix2x3fvEXT",
++	[857] = "glProgramUniformMatrix3x2fvEXT",
++	[858] = "glProgramUniformMatrix2x4fvEXT",
++	[859] = "glProgramUniformMatrix4x2fvEXT",
++	[860] = "glProgramUniformMatrix3x4fvEXT",
++	[861] = "glProgramUniformMatrix4x3fvEXT",
++	[874] = "glReleaseShaderCompiler",
++	[875] = "glShaderBinary",
++	[876] = "glGetShaderPrecisionFormat",
++	[877] = "glDepthRangef",
++	[878] = "glClearDepthf",
++	[887] = "glGetProgramBinary",
++	[888] = "glProgramBinary",
++	[904] = "glBindTransformFeedback",
++	[905] = "glGenTransformFeedbacks",
++	[906] = "glDeleteTransformFeedbacks",
++	[907] = "glPauseTransformFeedback",
++	[908] = "glResumeTransformFeedback",
++	[909] = "glIsTransformFeedback",
++	[968] = "glAlphaFuncx",
++	[969] = "glClearColorx",
++	[970] = "glClearDepthx",
++	[971] = "glClipPlanef",
++	[972] = "glClipPlanex",
++	[973] = "glColor4x",
++	[974] = "glDepthRangex",
++	[975] = "glFogx",
++	[976] = "glFogxv",
++	[977] = "glFrustumf",
++	[978] = "glFrustumx",
++	[979] = "glGetClipPlanef",
++	[980] = "glGetClipPlanex",
++	[981] = "glGetFixedv",
++	[982] = "glGetLightxv",
++	[983] = "glGetMaterialxv",
++	[984] = "glGetTexEnvxv",
++	[985] = "glGetTexParameterxv",
++	[986] = "glLightModelx",
++	[987] = "glLightModelxv",
++	[988] = "glLightx",
++	[989] = "glLightxv",
++	[990] = "glLineWidthx",
++	[991] = "glLoadMatrixx",
++	[992] = "glMaterialx",
++	[993] = "glMaterialxv",
++	[994] = "glMultMatrixx",
++	[995] = "glNormal3x",
++	[996] = "glOrthof",
++	[997] = "glOrthox",
++	[998] = "glPointSizex",
++	[999] = "glPolygonOffsetx",
++	[1000] = "glRotatex",
++	[1001] = "glScalex",
++	[1002] = "glTexEnvx",
++	[1003] = "glTexEnvxv",
++	[1004] = "glTexParameterx",
++	[1005] = "glTexParameterxv",
++	[1006] = "glTranslatex",
++	[1007] = "glMultiTexCoord4x",
++	[1008] = "glSampleCoveragex",
++	[1009] = "glPointParameterx",
++	[1010] = "glPointParameterxv",
++	[1011] = "glCurrentPaletteMatrixOES",
++	[1012] = "glLoadPaletteFromModelViewMatrixOES",
++	[1013] = "glMatrixIndexPointerOES",
++	[1014] = "glWeightPointerOES",
++	[1015] = "glDrawTexsOES",
++	[1016] = "glDrawTexiOES",
++	[1017] = "glDrawTexxOES",
++	[1018] = "glDrawTexsvOES",
++	[1019] = "glDrawTexivOES",
++	[1020] = "glDrawTexxvOES",
++	[1021] = "glDrawTexfOES",
++	[1022] = "glDrawTexfvOES",
++	[1023] = "glDiscardFramebufferEXT/glInvalidateFramebuffer",
++	[1024] = "glFramebufferParameteriAPPLE",
++	[1025] = "glGetFramebufferParameteriAPPLE",
++	[1026] = "glResolveMultisampleFramebufferAPPLE",
++	[1027] = "glCopyTextureLevelsAPPLE",
++	[1028] = "glInvalidateSubFramebuffer",
++	[1029] = "glGetInternalformativ",
++	[1031] = "glTexStorage2D/glTexStorage2DEXT",
++	[1032] = "glTexStorage3D",
++};
++
++#define SCA_FOR_EACH_SLOT(T) \
++	T(0) \
++	T(1) \
++	T(2) \
++	T(3) \
++	T(4) \
++	T(5) \
++	T(6) \
++	T(7) \
++	T(8) \
++	T(9) \
++	T(10) \
++	T(11) \
++	T(12) \
++	T(13) \
++	T(14) \
++	T(15) \
++	T(16) \
++	T(17) \
++	T(18) \
++	T(19) \
++	T(20) \
++	T(21) \
++	T(22) \
++	T(23) \
++	T(24) \
++	T(25) \
++	T(26) \
++	T(27) \
++	T(28) \
++	T(29) \
++	T(30) \
++	T(31) \
++	T(32) \
++	T(33) \
++	T(34) \
++	T(35) \
++	T(36) \
++	T(37) \
++	T(38) \
++	T(39) \
++	T(40) \
++	T(41) \
++	T(42) \
++	T(43) \
++	T(44) \
++	T(45) \
++	T(46) \
++	T(47) \
++	T(48) \
++	T(49) \
++	T(50) \
++	T(51) \
++	T(52) \
++	T(53) \
++	T(54) \
++	T(55) \
++	T(56) \
++	T(57) \
++	T(58) \
++	T(59) \
++	T(60) \
++	T(61) \
++	T(62) \
++	T(63) \
++	T(64) \
++	T(65) \
++	T(66) \
++	T(67) \
++	T(68) \
++	T(69) \
++	T(70) \
++	T(71) \
++	T(72) \
++	T(73) \
++	T(74) \
++	T(75) \
++	T(76) \
++	T(77) \
++	T(78) \
++	T(79) \
++	T(80) \
++	T(81) \
++	T(82) \
++	T(83) \
++	T(84) \
++	T(85) \
++	T(86) \
++	T(87) \
++	T(88) \
++	T(89) \
++	T(90) \
++	T(91) \
++	T(92) \
++	T(93) \
++	T(94) \
++	T(95) \
++	T(96) \
++	T(97) \
++	T(98) \
++	T(99) \
++	T(100) \
++	T(101) \
++	T(102) \
++	T(103) \
++	T(104) \
++	T(105) \
++	T(106) \
++	T(107) \
++	T(108) \
++	T(109) \
++	T(110) \
++	T(111) \
++	T(112) \
++	T(113) \
++	T(114) \
++	T(115) \
++	T(116) \
++	T(117) \
++	T(118) \
++	T(119) \
++	T(120) \
++	T(121) \
++	T(122) \
++	T(123) \
++	T(124) \
++	T(125) \
++	T(126) \
++	T(127) \
++	T(128) \
++	T(129) \
++	T(130) \
++	T(131) \
++	T(132) \
++	T(133) \
++	T(134) \
++	T(135) \
++	T(136) \
++	T(137) \
++	T(138) \
++	T(139) \
++	T(140) \
++	T(141) \
++	T(142) \
++	T(143) \
++	T(144) \
++	T(145) \
++	T(146) \
++	T(147) \
++	T(148) \
++	T(149) \
++	T(150) \
++	T(151) \
++	T(152) \
++	T(153) \
++	T(154) \
++	T(155) \
++	T(156) \
++	T(157) \
++	T(158) \
++	T(159) \
++	T(160) \
++	T(161) \
++	T(162) \
++	T(163) \
++	T(164) \
++	T(165) \
++	T(166) \
++	T(167) \
++	T(168) \
++	T(169) \
++	T(170) \
++	T(171) \
++	T(172) \
++	T(173) \
++	T(174) \
++	T(175) \
++	T(176) \
++	T(177) \
++	T(178) \
++	T(179) \
++	T(180) \
++	T(181) \
++	T(182) \
++	T(183) \
++	T(184) \
++	T(185) \
++	T(186) \
++	T(187) \
++	T(188) \
++	T(189) \
++	T(190) \
++	T(191) \
++	T(192) \
++	T(193) \
++	T(194) \
++	T(195) \
++	T(196) \
++	T(197) \
++	T(198) \
++	T(199) \
++	T(200) \
++	T(201) \
++	T(202) \
++	T(203) \
++	T(204) \
++	T(205) \
++	T(206) \
++	T(207) \
++	T(208) \
++	T(209) \
++	T(210) \
++	T(211) \
++	T(212) \
++	T(213) \
++	T(214) \
++	T(215) \
++	T(216) \
++	T(217) \
++	T(218) \
++	T(219) \
++	T(220) \
++	T(221) \
++	T(222) \
++	T(223) \
++	T(224) \
++	T(225) \
++	T(226) \
++	T(227) \
++	T(228) \
++	T(229) \
++	T(230) \
++	T(231) \
++	T(232) \
++	T(233) \
++	T(234) \
++	T(235) \
++	T(236) \
++	T(237) \
++	T(238) \
++	T(239) \
++	T(240) \
++	T(241) \
++	T(242) \
++	T(243) \
++	T(244) \
++	T(245) \
++	T(246) \
++	T(247) \
++	T(248) \
++	T(249) \
++	T(250) \
++	T(251) \
++	T(252) \
++	T(253) \
++	T(254) \
++	T(255) \
++	T(256) \
++	T(257) \
++	T(258) \
++	T(259) \
++	T(260) \
++	T(261) \
++	T(262) \
++	T(263) \
++	T(264) \
++	T(265) \
++	T(266) \
++	T(267) \
++	T(268) \
++	T(269) \
++	T(270) \
++	T(271) \
++	T(272) \
++	T(273) \
++	T(274) \
++	T(275) \
++	T(276) \
++	T(277) \
++	T(278) \
++	T(279) \
++	T(280) \
++	T(281) \
++	T(282) \
++	T(283) \
++	T(284) \
++	T(285) \
++	T(286) \
++	T(287) \
++	T(288) \
++	T(289) \
++	T(290) \
++	T(291) \
++	T(292) \
++	T(293) \
++	T(294) \
++	T(295) \
++	T(296) \
++	T(297) \
++	T(298) \
++	T(299) \
++	T(300) \
++	T(301) \
++	T(302) \
++	T(303) \
++	T(304) \
++	T(305) \
++	T(306) \
++	T(307) \
++	T(308) \
++	T(309) \
++	T(310) \
++	T(311) \
++	T(312) \
++	T(313) \
++	T(314) \
++	T(315) \
++	T(316) \
++	T(317) \
++	T(318) \
++	T(319) \
++	T(320) \
++	T(321) \
++	T(322) \
++	T(323) \
++	T(324) \
++	T(325) \
++	T(326) \
++	T(327) \
++	T(328) \
++	T(329) \
++	T(330) \
++	T(331) \
++	T(332) \
++	T(333) \
++	T(334) \
++	T(335) \
++	T(336) \
++	T(337) \
++	T(338) \
++	T(339) \
++	T(340) \
++	T(341) \
++	T(342) \
++	T(343) \
++	T(344) \
++	T(345) \
++	T(346) \
++	T(347) \
++	T(348) \
++	T(349) \
++	T(350) \
++	T(351) \
++	T(352) \
++	T(353) \
++	T(354) \
++	T(355) \
++	T(356) \
++	T(357) \
++	T(358) \
++	T(359) \
++	T(360) \
++	T(361) \
++	T(362) \
++	T(363) \
++	T(364) \
++	T(365) \
++	T(366) \
++	T(367) \
++	T(368) \
++	T(369) \
++	T(370) \
++	T(371) \
++	T(372) \
++	T(373) \
++	T(374) \
++	T(375) \
++	T(376) \
++	T(377) \
++	T(378) \
++	T(379) \
++	T(380) \
++	T(381) \
++	T(382) \
++	T(383) \
++	T(384) \
++	T(385) \
++	T(386) \
++	T(387) \
++	T(388) \
++	T(389) \
++	T(390) \
++	T(391) \
++	T(392) \
++	T(393) \
++	T(394) \
++	T(395) \
++	T(396) \
++	T(397) \
++	T(398) \
++	T(399) \
++	T(400) \
++	T(401) \
++	T(402) \
++	T(403) \
++	T(404) \
++	T(405) \
++	T(406) \
++	T(407) \
++	T(408) \
++	T(409) \
++	T(410) \
++	T(411) \
++	T(412) \
++	T(413) \
++	T(414) \
++	T(415) \
++	T(416) \
++	T(417) \
++	T(418) \
++	T(419) \
++	T(420) \
++	T(421) \
++	T(422) \
++	T(423) \
++	T(424) \
++	T(425) \
++	T(426) \
++	T(427) \
++	T(428) \
++	T(429) \
++	T(430) \
++	T(431) \
++	T(432) \
++	T(433) \
++	T(434) \
++	T(435) \
++	T(436) \
++	T(437) \
++	T(438) \
++	T(439) \
++	T(440) \
++	T(441) \
++	T(442) \
++	T(443) \
++	T(444) \
++	T(445) \
++	T(446) \
++	T(447) \
++	T(448) \
++	T(449) \
++	T(450) \
++	T(451) \
++	T(452) \
++	T(453) \
++	T(454) \
++	T(455) \
++	T(456) \
++	T(457) \
++	T(458) \
++	T(459) \
++	T(460) \
++	T(461) \
++	T(462) \
++	T(463) \
++	T(464) \
++	T(465) \
++	T(466) \
++	T(467) \
++	T(468) \
++	T(469) \
++	T(470) \
++	T(471) \
++	T(472) \
++	T(473) \
++	T(474) \
++	T(475) \
++	T(476) \
++	T(477) \
++	T(478) \
++	T(479) \
++	T(480) \
++	T(481) \
++	T(482) \
++	T(483) \
++	T(484) \
++	T(485) \
++	T(486) \
++	T(487) \
++	T(488) \
++	T(489) \
++	T(490) \
++	T(491) \
++	T(492) \
++	T(493) \
++	T(494) \
++	T(495) \
++	T(496) \
++	T(497) \
++	T(498) \
++	T(499) \
++	T(500) \
++	T(501) \
++	T(502) \
++	T(503) \
++	T(504) \
++	T(505) \
++	T(506) \
++	T(507) \
++	T(508) \
++	T(509) \
++	T(510) \
++	T(511) \
++	T(512) \
++	T(513) \
++	T(514) \
++	T(515) \
++	T(516) \
++	T(517) \
++	T(518) \
++	T(519) \
++	T(520) \
++	T(521) \
++	T(522) \
++	T(523) \
++	T(524) \
++	T(525) \
++	T(526) \
++	T(527) \
++	T(528) \
++	T(529) \
++	T(530) \
++	T(531) \
++	T(532) \
++	T(533) \
++	T(534) \
++	T(535) \
++	T(536) \
++	T(537) \
++	T(538) \
++	T(539) \
++	T(540) \
++	T(541) \
++	T(542) \
++	T(543) \
++	T(544) \
++	T(545) \
++	T(546) \
++	T(547) \
++	T(548) \
++	T(549) \
++	T(550) \
++	T(551) \
++	T(552) \
++	T(553) \
++	T(554) \
++	T(555) \
++	T(556) \
++	T(557) \
++	T(558) \
++	T(559) \
++	T(560) \
++	T(561) \
++	T(562) \
++	T(563) \
++	T(564) \
++	T(565) \
++	T(566) \
++	T(567) \
++	T(568) \
++	T(569) \
++	T(570) \
++	T(571) \
++	T(572) \
++	T(573) \
++	T(574) \
++	T(575) \
++	T(576) \
++	T(577) \
++	T(578) \
++	T(579) \
++	T(580) \
++	T(581) \
++	T(582) \
++	T(583) \
++	T(584) \
++	T(585) \
++	T(586) \
++	T(587) \
++	T(588) \
++	T(589) \
++	T(590) \
++	T(591) \
++	T(592) \
++	T(593) \
++	T(594) \
++	T(595) \
++	T(596) \
++	T(597) \
++	T(598) \
++	T(599) \
++	T(600) \
++	T(601) \
++	T(602) \
++	T(603) \
++	T(604) \
++	T(605) \
++	T(606) \
++	T(607) \
++	T(608) \
++	T(609) \
++	T(610) \
++	T(611) \
++	T(612) \
++	T(613) \
++	T(614) \
++	T(615) \
++	T(616) \
++	T(617) \
++	T(618) \
++	T(619) \
++	T(620) \
++	T(621) \
++	T(622) \
++	T(623) \
++	T(624) \
++	T(625) \
++	T(626) \
++	T(627) \
++	T(628) \
++	T(629) \
++	T(630) \
++	T(631) \
++	T(632) \
++	T(633) \
++	T(634) \
++	T(635) \
++	T(636) \
++	T(637) \
++	T(638) \
++	T(639) \
++	T(640) \
++	T(641) \
++	T(642) \
++	T(643) \
++	T(644) \
++	T(645) \
++	T(646) \
++	T(647) \
++	T(648) \
++	T(649) \
++	T(650) \
++	T(651) \
++	T(652) \
++	T(653) \
++	T(654) \
++	T(655) \
++	T(656) \
++	T(657) \
++	T(658) \
++	T(659) \
++	T(660) \
++	T(661) \
++	T(662) \
++	T(663) \
++	T(664) \
++	T(665) \
++	T(666) \
++	T(667) \
++	T(668) \
++	T(669) \
++	T(670) \
++	T(671) \
++	T(672) \
++	T(673) \
++	T(674) \
++	T(675) \
++	T(676) \
++	T(677) \
++	T(678) \
++	T(679) \
++	T(680) \
++	T(681) \
++	T(682) \
++	T(683) \
++	T(684) \
++	T(685) \
++	T(686) \
++	T(687) \
++	T(688) \
++	T(689) \
++	T(690) \
++	T(691) \
++	T(692) \
++	T(693) \
++	T(694) \
++	T(695) \
++	T(696) \
++	T(697) \
++	T(698) \
++	T(699) \
++	T(700) \
++	T(701) \
++	T(702) \
++	T(703) \
++	T(704) \
++	T(705) \
++	T(706) \
++	T(707) \
++	T(708) \
++	T(709) \
++	T(710) \
++	T(711) \
++	T(712) \
++	T(713) \
++	T(714) \
++	T(715) \
++	T(716) \
++	T(717) \
++	T(718) \
++	T(719) \
++	T(720) \
++	T(721) \
++	T(722) \
++	T(723) \
++	T(724) \
++	T(725) \
++	T(726) \
++	T(727) \
++	T(728) \
++	T(729) \
++	T(730) \
++	T(731) \
++	T(732) \
++	T(733) \
++	T(734) \
++	T(735) \
++	T(736) \
++	T(737) \
++	T(738) \
++	T(739) \
++	T(740) \
++	T(741) \
++	T(742) \
++	T(743) \
++	T(744) \
++	T(745) \
++	T(746) \
++	T(747) \
++	T(748) \
++	T(749) \
++	T(750) \
++	T(751) \
++	T(752) \
++	T(753) \
++	T(754) \
++	T(755) \
++	T(756) \
++	T(757) \
++	T(758) \
++	T(759) \
++	T(760) \
++	T(761) \
++	T(762) \
++	T(763) \
++	T(764) \
++	T(765) \
++	T(766) \
++	T(767) \
++	T(768) \
++	T(769) \
++	T(770) \
++	T(771) \
++	T(772) \
++	T(773) \
++	T(774) \
++	T(775) \
++	T(776) \
++	T(777) \
++	T(778) \
++	T(779) \
++	T(780) \
++	T(781) \
++	T(782) \
++	T(783) \
++	T(784) \
++	T(785) \
++	T(786) \
++	T(787) \
++	T(788) \
++	T(789) \
++	T(790) \
++	T(791) \
++	T(792) \
++	T(793) \
++	T(794) \
++	T(795) \
++	T(796) \
++	T(797) \
++	T(798) \
++	T(799) \
++	T(800) \
++	T(801) \
++	T(802) \
++	T(803) \
++	T(804) \
++	T(805) \
++	T(806) \
++	T(807) \
++	T(808) \
++	T(809) \
++	T(810) \
++	T(811) \
++	T(812) \
++	T(813) \
++	T(814) \
++	T(815) \
++	T(816) \
++	T(817) \
++	T(818) \
++	T(819) \
++	T(820) \
++	T(821) \
++	T(822) \
++	T(823) \
++	T(824) \
++	T(825) \
++	T(826) \
++	T(827) \
++	T(828) \
++	T(829) \
++	T(830) \
++	T(831) \
++	T(832) \
++	T(833) \
++	T(834) \
++	T(835) \
++	T(836) \
++	T(837) \
++	T(838) \
++	T(839) \
++	T(840) \
++	T(841) \
++	T(842) \
++	T(843) \
++	T(844) \
++	T(845) \
++	T(846) \
++	T(847) \
++	T(848) \
++	T(849) \
++	T(850) \
++	T(851) \
++	T(852) \
++	T(853) \
++	T(854) \
++	T(855) \
++	T(856) \
++	T(857) \
++	T(858) \
++	T(859) \
++	T(860) \
++	T(861) \
++	T(862) \
++	T(863) \
++	T(864) \
++	T(865) \
++	T(866) \
++	T(867) \
++	T(868) \
++	T(869) \
++	T(870) \
++	T(871) \
++	T(872) \
++	T(873) \
++	T(874) \
++	T(875) \
++	T(876) \
++	T(877) \
++	T(878) \
++	T(879) \
++	T(880) \
++	T(881) \
++	T(882) \
++	T(883) \
++	T(884) \
++	T(885) \
++	T(886) \
++	T(887) \
++	T(888) \
++	T(889) \
++	T(890) \
++	T(891) \
++	T(892) \
++	T(893) \
++	T(894) \
++	T(895) \
++	T(896) \
++	T(897) \
++	T(898) \
++	T(899) \
++	T(900) \
++	T(901) \
++	T(902) \
++	T(903) \
++	T(904) \
++	T(905) \
++	T(906) \
++	T(907) \
++	T(908) \
++	T(909) \
++	T(910) \
++	T(911) \
++	T(912) \
++	T(913) \
++	T(914) \
++	T(915) \
++	T(916) \
++	T(917) \
++	T(918) \
++	T(919) \
++	T(920) \
++	T(921) \
++	T(922) \
++	T(923) \
++	T(924) \
++	T(925) \
++	T(926) \
++	T(927) \
++	T(928) \
++	T(929) \
++	T(930) \
++	T(931) \
++	T(932) \
++	T(933) \
++	T(934) \
++	T(935) \
++	T(936) \
++	T(937) \
++	T(938) \
++	T(939) \
++	T(940) \
++	T(941) \
++	T(942) \
++	T(943) \
++	T(944) \
++	T(945) \
++	T(946) \
++	T(947) \
++	T(948) \
++	T(949) \
++	T(950) \
++	T(951) \
++	T(952) \
++	T(953) \
++	T(954) \
++	T(955) \
++	T(956) \
++	T(957) \
++	T(958) \
++	T(959) \
++	T(960) \
++	T(961) \
++	T(962) \
++	T(963) \
++	T(964) \
++	T(965) \
++	T(966) \
++	T(967) \
++	T(968) \
++	T(969) \
++	T(970) \
++	T(971) \
++	T(972) \
++	T(973) \
++	T(974) \
++	T(975) \
++	T(976) \
++	T(977) \
++	T(978) \
++	T(979) \
++	T(980) \
++	T(981) \
++	T(982) \
++	T(983) \
++	T(984) \
++	T(985) \
++	T(986) \
++	T(987) \
++	T(988) \
++	T(989) \
++	T(990) \
++	T(991) \
++	T(992) \
++	T(993) \
++	T(994) \
++	T(995) \
++	T(996) \
++	T(997) \
++	T(998) \
++	T(999) \
++	T(1000) \
++	T(1001) \
++	T(1002) \
++	T(1003) \
++	T(1004) \
++	T(1005) \
++	T(1006) \
++	T(1007) \
++	T(1008) \
++	T(1009) \
++	T(1010) \
++	T(1011) \
++	T(1012) \
++	T(1013) \
++	T(1014) \
++	T(1015) \
++	T(1016) \
++	T(1017) \
++	T(1018) \
++	T(1019) \
++	T(1020) \
++	T(1021) \
++	T(1022) \
++	T(1023) \
++	T(1024) \
++	T(1025) \
++	T(1026) \
++	T(1027) \
++	T(1028) \
++	T(1029) \
++	T(1030) \
++	T(1031) \
++	T(1032) \
++	T(1033) \
++	T(1034) \
++	T(1035)
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
 new file mode 100644
-index 0000000..c894f2d
+index 0000000..4bca096
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.c
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,450 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1254,6 +4141,7 @@ index 0000000..c894f2d
 +#include "drm-uapi/drm_fourcc.h"
 +#include "state_tracker/st_context.h"
 +#include "util/driconf.h"
++#include "util/simple_mtx.h"
 +#include "util/format/u_format.h"
 +#include "util/u_atomic.h"
 +#include "util/u_inlines.h"
@@ -1377,7 +4265,8 @@ index 0000000..c894f2d
 +   memset(&attribs, 0, sizeof(attribs));
 +   attribs.profile = API_OPENGLES2;
 +   attribs.major = es_major >= 3 ? 3 : 2;
-+   attribs.minor = 0;
++   /* 3.1: CoreAnimation's rectangle texture emulation needs glGetTexLevelParameteriv */
++   attribs.minor = es_major >= 3 ? 1 : 0;
 +   /* the visual of the surfaces it will draw to */
 +   sgl_fill_visual(&attribs.visual, PIPE_FORMAT_R8G8B8A8_UNORM, true);
 +
@@ -1545,24 +4434,122 @@ index 0000000..c894f2d
 +   return surf;
 +}
 +
++static enum pipe_format
++sgl_pipe_format(enum sgl_format format)
++{
++   switch (format) {
++   case SGL_FMT_BGRA8:
++      return PIPE_FORMAT_B8G8R8A8_UNORM;
++   case SGL_FMT_RGBA8:
++      return PIPE_FORMAT_R8G8B8A8_UNORM;
++   case SGL_FMT_R8:
++      return PIPE_FORMAT_R8_UNORM;
++   case SGL_FMT_RG8:
++      return PIPE_FORMAT_R8G8_UNORM;
++   case SGL_FMT_RGBA16F:
++      return PIPE_FORMAT_R16G16B16A16_FLOAT;
++   default:
++      return PIPE_FORMAT_NONE;
++   }
++}
++
++/*
++ * One resource per imported IOSurface (and geometry), least recently used out.
++ * A dropped entry only drops our reference: textures made from it keep it.
++ */
++#define SGL_IMPORT_CACHE 32
++static struct {
++   uint32_t id, width, height, pitch;
++   enum pipe_format format;
++   struct pipe_resource *res;
++   uint64_t used;
++} sgl_import_cache[SGL_IMPORT_CACHE];
++static uint64_t sgl_import_clock;
++static simple_mtx_t sgl_import_lock = SIMPLE_MTX_INITIALIZER;
++
++/* a new reference to the shared resource of the surface, imported if needed */
++static struct pipe_resource *
++sgl_import_cached(struct sgl_display *dpy, uint32_t id, unsigned width, unsigned height,
++                  unsigned pitch, enum pipe_format format)
++{
++   struct pipe_resource *res = NULL;
++   simple_mtx_lock(&sgl_import_lock);
++   for (unsigned i = 0; i < SGL_IMPORT_CACHE && !res; i++) {
++      if (sgl_import_cache[i].res && sgl_import_cache[i].id == id &&
++          sgl_import_cache[i].width == width && sgl_import_cache[i].height == height &&
++          sgl_import_cache[i].pitch == pitch && sgl_import_cache[i].format == format) {
++         sgl_import_cache[i].used = ++sgl_import_clock;
++         pipe_resource_reference(&res, sgl_import_cache[i].res);
++      }
++   }
++   simple_mtx_unlock(&sgl_import_lock);
++   if (res)
++      return res;
++
++   res = sgl_import_iosurface(dpy, id, width, height, pitch, format,
++                              PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW);
++   if (!res)
++      return NULL;
++   simple_mtx_lock(&sgl_import_lock);
++   unsigned victim = 0;
++   for (unsigned i = 0; i < SGL_IMPORT_CACHE; i++) {
++      if (!sgl_import_cache[i].res) {
++         victim = i;
++         break;
++      }
++      if (sgl_import_cache[i].used < sgl_import_cache[victim].used)
++         victim = i;
++   }
++   pipe_resource_reference(&sgl_import_cache[victim].res, res);
++   sgl_import_cache[victim].id = id;
++   sgl_import_cache[victim].width = width;
++   sgl_import_cache[victim].height = height;
++   sgl_import_cache[victim].pitch = pitch;
++   sgl_import_cache[victim].format = format;
++   sgl_import_cache[victim].used = ++sgl_import_clock;
++   simple_mtx_unlock(&sgl_import_lock);
++   return res;
++}
++
++bool
++sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
++                            unsigned width, unsigned height, unsigned bytes_per_row,
++                            enum sgl_format format)
++{
++   enum pipe_format pf = sgl_pipe_format(format);
++   if (pf == PIPE_FORMAT_NONE)
++      return false;
++   struct pipe_resource *tex =
++      sgl_import_cached(ctx->dpy, iosurface_id, width, height, bytes_per_row, pf);
++   if (!tex)
++      return false;
++   st_context_teximage(ctx->st, target, 0, pf, tex, false);
++   pipe_resource_reference(&tex, NULL);
++   return true;
++}
++
 +bool
 +sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
 +                        unsigned width, unsigned height, unsigned bytes_per_row,
 +                        uint32_t pixel_format)
 +{
-+   enum pipe_format format = sgl_iosurface_format(pixel_format);
-+   if (format == PIPE_FORMAT_NONE) {
++   enum sgl_format format = pixel_format == SGL_IOSURFACE_BGRA   ? SGL_FMT_BGRA8
++                            : pixel_format == SGL_IOSURFACE_RGBA ? SGL_FMT_RGBA8
++                                                                 : SGL_FMT_NONE;
++   if (format == SGL_FMT_NONE) {
 +      fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
 +      return false;
 +   }
-+   struct pipe_resource *tex = sgl_import_iosurface(ctx->dpy, iosurface_id, width, height,
-+                                                    bytes_per_row, format,
-+                                                    PIPE_BIND_SAMPLER_VIEW);
-+   if (!tex)
-+      return false;
-+   st_context_teximage(ctx->st, target, 0, format, tex, false);
-+   pipe_resource_reference(&tex, NULL);
-+   return true;
++   return sgl_tex_image_iosurface_fmt(ctx, target, iosurface_id, width, height, bytes_per_row,
++                                      format);
++}
++
++void _mesa_TextureBarrierNV(void);
++
++void
++sgl_texture_barrier(void)
++{
++   _mesa_TextureBarrierNV();
 +}
 +
 +void
@@ -1584,10 +4571,10 @@ index 0000000..c894f2d
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
 new file mode 100644
-index 0000000..3f2eaf7
+index 0000000..c142f62
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.h
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,95 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1650,6 +4637,30 @@ index 0000000..3f2eaf7
 +bool sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
 +                             unsigned width, unsigned height, unsigned bytes_per_row,
 +                             uint32_t pixel_format);
++
++/* what an IOSurface's bytes are, for textures made from one (EAGL's texImageIOSurface:) */
++enum sgl_format {
++   SGL_FMT_NONE,
++   SGL_FMT_BGRA8,
++   SGL_FMT_RGBA8,
++   SGL_FMT_R8,
++   SGL_FMT_RG8,
++   SGL_FMT_RGBA16F,
++};
++
++/*
++ * Like sgl_tex_image_iosurface, with the format given directly. One GPU
++ * resource is kept per (surface, size, pitch, format) and shared by every
++ * texture and render target made from it, so work that renders into a surface
++ * and work that samples it are ordered by Mesa (two resources over the same
++ * memory would not be). Fails if the GPU cannot use the surface in place.
++ */
++bool sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
++                                 unsigned width, unsigned height, unsigned bytes_per_row,
++                                 enum sgl_format format);
++
++/* GL_NV_texture_barrier on the current context: later draws see earlier draws' pixels */
++void sgl_texture_barrier(void);
 +
 +/* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 +bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);

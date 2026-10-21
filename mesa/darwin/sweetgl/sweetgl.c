@@ -20,6 +20,7 @@
 #include "drm-uapi/drm_fourcc.h"
 #include "state_tracker/st_context.h"
 #include "util/driconf.h"
+#include "util/simple_mtx.h"
 #include "util/format/u_format.h"
 #include "util/u_atomic.h"
 #include "util/u_inlines.h"
@@ -143,7 +144,8 @@ sgl_context_create(struct sgl_display *dpy, int es_major, struct sgl_context *sh
    memset(&attribs, 0, sizeof(attribs));
    attribs.profile = API_OPENGLES2;
    attribs.major = es_major >= 3 ? 3 : 2;
-   attribs.minor = 0;
+   /* 3.1: CoreAnimation's rectangle texture emulation needs glGetTexLevelParameteriv */
+   attribs.minor = es_major >= 3 ? 1 : 0;
    /* the visual of the surfaces it will draw to */
    sgl_fill_visual(&attribs.visual, PIPE_FORMAT_R8G8B8A8_UNORM, true);
 
@@ -311,24 +313,122 @@ sgl_surface_create_iosurface(struct sgl_display *dpy, uint32_t iosurface_id, uns
    return surf;
 }
 
+static enum pipe_format
+sgl_pipe_format(enum sgl_format format)
+{
+   switch (format) {
+   case SGL_FMT_BGRA8:
+      return PIPE_FORMAT_B8G8R8A8_UNORM;
+   case SGL_FMT_RGBA8:
+      return PIPE_FORMAT_R8G8B8A8_UNORM;
+   case SGL_FMT_R8:
+      return PIPE_FORMAT_R8_UNORM;
+   case SGL_FMT_RG8:
+      return PIPE_FORMAT_R8G8_UNORM;
+   case SGL_FMT_RGBA16F:
+      return PIPE_FORMAT_R16G16B16A16_FLOAT;
+   default:
+      return PIPE_FORMAT_NONE;
+   }
+}
+
+/*
+ * One resource per imported IOSurface (and geometry), least recently used out.
+ * A dropped entry only drops our reference: textures made from it keep it.
+ */
+#define SGL_IMPORT_CACHE 32
+static struct {
+   uint32_t id, width, height, pitch;
+   enum pipe_format format;
+   struct pipe_resource *res;
+   uint64_t used;
+} sgl_import_cache[SGL_IMPORT_CACHE];
+static uint64_t sgl_import_clock;
+static simple_mtx_t sgl_import_lock = SIMPLE_MTX_INITIALIZER;
+
+/* a new reference to the shared resource of the surface, imported if needed */
+static struct pipe_resource *
+sgl_import_cached(struct sgl_display *dpy, uint32_t id, unsigned width, unsigned height,
+                  unsigned pitch, enum pipe_format format)
+{
+   struct pipe_resource *res = NULL;
+   simple_mtx_lock(&sgl_import_lock);
+   for (unsigned i = 0; i < SGL_IMPORT_CACHE && !res; i++) {
+      if (sgl_import_cache[i].res && sgl_import_cache[i].id == id &&
+          sgl_import_cache[i].width == width && sgl_import_cache[i].height == height &&
+          sgl_import_cache[i].pitch == pitch && sgl_import_cache[i].format == format) {
+         sgl_import_cache[i].used = ++sgl_import_clock;
+         pipe_resource_reference(&res, sgl_import_cache[i].res);
+      }
+   }
+   simple_mtx_unlock(&sgl_import_lock);
+   if (res)
+      return res;
+
+   res = sgl_import_iosurface(dpy, id, width, height, pitch, format,
+                              PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW);
+   if (!res)
+      return NULL;
+   simple_mtx_lock(&sgl_import_lock);
+   unsigned victim = 0;
+   for (unsigned i = 0; i < SGL_IMPORT_CACHE; i++) {
+      if (!sgl_import_cache[i].res) {
+         victim = i;
+         break;
+      }
+      if (sgl_import_cache[i].used < sgl_import_cache[victim].used)
+         victim = i;
+   }
+   pipe_resource_reference(&sgl_import_cache[victim].res, res);
+   sgl_import_cache[victim].id = id;
+   sgl_import_cache[victim].width = width;
+   sgl_import_cache[victim].height = height;
+   sgl_import_cache[victim].pitch = pitch;
+   sgl_import_cache[victim].format = format;
+   sgl_import_cache[victim].used = ++sgl_import_clock;
+   simple_mtx_unlock(&sgl_import_lock);
+   return res;
+}
+
+bool
+sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
+                            unsigned width, unsigned height, unsigned bytes_per_row,
+                            enum sgl_format format)
+{
+   enum pipe_format pf = sgl_pipe_format(format);
+   if (pf == PIPE_FORMAT_NONE)
+      return false;
+   struct pipe_resource *tex =
+      sgl_import_cached(ctx->dpy, iosurface_id, width, height, bytes_per_row, pf);
+   if (!tex)
+      return false;
+   st_context_teximage(ctx->st, target, 0, pf, tex, false);
+   pipe_resource_reference(&tex, NULL);
+   return true;
+}
+
 bool
 sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
                         unsigned width, unsigned height, unsigned bytes_per_row,
                         uint32_t pixel_format)
 {
-   enum pipe_format format = sgl_iosurface_format(pixel_format);
-   if (format == PIPE_FORMAT_NONE) {
+   enum sgl_format format = pixel_format == SGL_IOSURFACE_BGRA   ? SGL_FMT_BGRA8
+                            : pixel_format == SGL_IOSURFACE_RGBA ? SGL_FMT_RGBA8
+                                                                 : SGL_FMT_NONE;
+   if (format == SGL_FMT_NONE) {
       fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
       return false;
    }
-   struct pipe_resource *tex = sgl_import_iosurface(ctx->dpy, iosurface_id, width, height,
-                                                    bytes_per_row, format,
-                                                    PIPE_BIND_SAMPLER_VIEW);
-   if (!tex)
-      return false;
-   st_context_teximage(ctx->st, target, 0, format, tex, false);
-   pipe_resource_reference(&tex, NULL);
-   return true;
+   return sgl_tex_image_iosurface_fmt(ctx, target, iosurface_id, width, height, bytes_per_row,
+                                      format);
+}
+
+void _mesa_TextureBarrierNV(void);
+
+void
+sgl_texture_barrier(void)
+{
+   _mesa_TextureBarrierNV();
 }
 
 void

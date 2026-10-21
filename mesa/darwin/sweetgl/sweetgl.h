@@ -61,6 +61,30 @@ bool sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t 
                              unsigned width, unsigned height, unsigned bytes_per_row,
                              uint32_t pixel_format);
 
+/* what an IOSurface's bytes are, for textures made from one (EAGL's texImageIOSurface:) */
+enum sgl_format {
+   SGL_FMT_NONE,
+   SGL_FMT_BGRA8,
+   SGL_FMT_RGBA8,
+   SGL_FMT_R8,
+   SGL_FMT_RG8,
+   SGL_FMT_RGBA16F,
+};
+
+/*
+ * Like sgl_tex_image_iosurface, with the format given directly. One GPU
+ * resource is kept per (surface, size, pitch, format) and shared by every
+ * texture and render target made from it, so work that renders into a surface
+ * and work that samples it are ordered by Mesa (two resources over the same
+ * memory would not be). Fails if the GPU cannot use the surface in place.
+ */
+bool sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
+                                 unsigned width, unsigned height, unsigned bytes_per_row,
+                                 enum sgl_format format);
+
+/* GL_NV_texture_barrier on the current context: later draws see earlier draws' pixels */
+void sgl_texture_barrier(void);
+
 /* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
 

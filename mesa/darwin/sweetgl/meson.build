@@ -55,3 +55,35 @@ sweetgpu_gltest = executable(
   ],
   install : false,
 )
+
+# libsweetca: sweetgl plus an EAGL layer that gives CoreAnimation's GLES renderer a
+# GLI dispatch table over Mesa (sweetca.c); sweetca_test links it
+if host_machine.system() == 'darwin'
+  libsweetca = shared_library(
+    'sweetca',
+    [
+      'sweetca.c',
+      '../../auxiliary/renderonly/renderonly.c',
+      freedreno_tracepoints[1],
+      freedreno_xml_header_files,
+    ],
+    include_directories : [inc_include, inc_util, inc_gallium, inc_gallium_aux],
+    dependencies : sweetgl_test_deps + [
+      dependency('appleframeworks', modules : ['OpenGLES', 'IOSurface', 'CoreFoundation']),
+    ],
+    link_with : [
+      libsweetgl,
+      libmesa,
+      libglapi,
+      libfreedreno,
+      libfreedreno_drm,
+      libfreedreno_ir2,
+      libfreedreno_ir3,
+      libfreedreno_layout,
+      libgallium,
+      libfreedreno_perfcntrs,
+    ],
+    install_name : '@executable_path/libsweetca.dylib',
+    install : false,
+  )
+endif
