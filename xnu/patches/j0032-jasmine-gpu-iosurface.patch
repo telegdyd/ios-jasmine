@@ -1,0 +1,374 @@
+From 96cbc835bba89d1878f6bbd1febd13a1242b27ee Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 21:17:44 +0200
+Subject: [PATCH] jasmine-j0032: SweetGPU imports IOSurfaces into the GPU
+ address space
+
+Selector 6 maps an IOSurface (SweetSurface) into the GPU address space as a
+buffer of the client: the GPU sees the surface's own pages, so Mesa can
+render into surfaces that CoreAnimation and the display use. One handle per
+surface and client (a second import returns it again); the buffer holds the
+surface until it is freed. Kernel buffers and wrapped client memory are
+cleaned and invalidated around GPU work like SweetGPU's own buffers; the
+panel framebuffer (write-combined physical window) needs nothing.
+Selector 7 returns a buffer's GPU VA and size (Mesa's bo_from_handle).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetGPU.cpp | 237 +++++++++++++++++++++++++++-------
+ 1 file changed, 187 insertions(+), 50 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 299cedc..b54c990 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -14,8 +14,18 @@
+  *                            buffers                     out seqno
+  *   selector 4  wait:        in  seqno, timeout (ms)     kIOReturnTimeout
+  *   selector 5  completed:                               out last seqno done
+- *   memory type = handle: IOConnectMapMemory maps that buffer (write-combined,
+- *   like the GPU's own non-cacheable view, so no cache maintenance is needed)
++ *   selector 6  import IOSurface: in surface id, flags (bit 0: GPU read-only)
++ *                            out handle, GPU VA, size, offset of the pixels
++ *                            in the buffer (wrapped client memory starts
++ *                            inside its first page)
++ *   selector 7  buffer info: in  handle                  out GPU VA, size
++ *   memory type = handle: IOConnectMapMemory maps that buffer
++ *
++ * An imported IOSurface (SweetSurface.cpp) is a buffer like the others: the
++ * GPU sees the surface's own pages, so what the GPU renders is in the
++ * surface for every process that maps it, and the display can show it. A
++ * client gets one handle per surface (importing it again returns the same
++ * handle, as GEM does); the buffer holds the surface until it is freed.
+  *
+  * Every submitted command buffer must lie inside one of the client's buffers.
+  * Boot-arg sweetgpu_debug=1 logs each call (buffer GPU VAs, every IB with its
+@@ -47,6 +57,7 @@
+ #include <libkern/c++/OSArray.h>
+ #include <pexpert/pexpert.h>
+ #include <sys/proc.h>
++#include "SweetSurface.h"
+ 
+ extern "C" {
+ int sweet_gpu_vm_alloc(uint64_t size, uint64_t *iova);
+@@ -86,15 +97,48 @@ class SweetGPUBuffer : public OSObject {
+ 	OSDeclareDefaultStructors(SweetGPUBuffer);
+ 
+ public:
+-	IOBufferMemoryDescriptor *md;
++	IOMemoryDescriptor *md;         /* prepared while the buffer lives */
++	SweetSurface *surface;          /* imported IOSurface, or NULL */
++	uintptr_t kva;                  /* kernel address, for cache maintenance and the IB log */
++	bool flush;                     /* cacheable: clean/invalidate around GPU work */
++	IOOptionBits mapCache;          /* cache mode of the client's mapping */
+ 	uint64_t iova, size;
+ 
+ 	static SweetGPUBuffer *create(uint64_t size, bool readonly);
++	static SweetGPUBuffer *import(SweetSurface *surface, bool readonly);
++	bool mapGPU(bool readonly);
+ 	void free() APPLE_KEXT_OVERRIDE;
+ };
+ 
+ OSDefineMetaClassAndStructors(SweetGPUBuffer, OSObject);
+ 
++/* Map md's pages into a fresh GPU VA range of size bytes (4K pages; the last one may be partial). */
++bool
++SweetGPUBuffer::mapGPU(bool readonly)
++{
++	if (sweet_gpu_vm_alloc(size, &iova) != 0) {
++		iova = 0;
++		return false;
++	}
++	uint32_t npages = (uint32_t)(size / 0x1000);
++	uint64_t length = md->getLength();
++	uint64_t *pa = IONew(uint64_t, npages);
++	bool ok = pa != NULL;
++	for (uint32_t i = 0; ok && i < npages; i++) {
++		IOByteCount len = 0;
++		addr64_t seg = md->getPhysicalSegment(0x1000ull * i, &len, kIOMemoryMapperNone);
++		ok = seg != 0 && (seg & 0xfff) == 0 && len >= (length - 0x1000ull * i < 0x1000 ? length - 0x1000ull * i : 0x1000);
++		pa[i] = seg;
++	}
++	if (ok) {
++		ok = sweet_gpu_vm_map(iova, pa, npages, readonly) == 0;
++	}
++	if (pa != NULL) {
++		IODelete(pa, uint64_t, npages);
++	}
++	return ok;
++}
++
+ SweetGPUBuffer *
+ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ {
+@@ -108,38 +152,66 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ 		return NULL;
+ 	}
+ 	b->size = size;
++	b->flush = !sweet_gpu_wc;
++	b->mapCache = sweet_gpu_wc ? kIOMapWriteCombineCache : kIOMapDefaultCache;
+ 	GPULOG("buffer of %llu bytes: memory%s next", size, sweet_gpu_wc ? " (write-combined)" : "");
+-	b->md = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	IOBufferMemoryDescriptor *bmd = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryKernelUserShared | (sweet_gpu_wc ? kIOMapWriteCombineCache : 0), size, page_size);
++	b->md = bmd;
+ 	GPULOG("buffer: memory %p, prepare next", b->md);
+-	if (b->md == NULL || b->md->prepare() != kIOReturnSuccess || sweet_gpu_vm_alloc(size, &b->iova) != 0) {
+-		b->iova = 0;
++	if (b->md == NULL || b->md->prepare() != kIOReturnSuccess) {
++		OSSafeReleaseNULL(b->md);
+ 		OSSafeReleaseNULL(b);
+ 		return NULL;
+ 	}
+-	GPULOG("buffer: kernel VA %p, clearing next", b->md->getBytesNoCopy());
+-	bzero(b->md->getBytesNoCopy(), size);
+-	if (!sweet_gpu_wc) {
+-		IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->md->getBytesNoCopy(), size);
++	b->kva = (uintptr_t)bmd->getBytesNoCopy();
++	GPULOG("buffer: kernel VA %p, clearing next", (void *)b->kva);
++	bzero((void *)b->kva, size);
++	if (b->flush) {
++		IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->kva, size);
+ 	}
+-	GPULOG("buffer: cleared, GPU mapping at %llx next", b->iova);
+-	uint32_t npages = (uint32_t)(size / 0x1000);
+-	uint64_t *pa = IONew(uint64_t, npages);
+-	bool ok = pa != NULL;
+-	for (uint32_t i = 0; ok && i < npages; i++) {
+-		IOByteCount len = 0;
+-		addr64_t seg = b->md->getPhysicalSegment(0x1000ull * i, &len, kIOMemoryMapperNone);
+-		ok = seg != 0 && len >= 0x1000;
+-		pa[i] = seg;
++	GPULOG("buffer: cleared, GPU mapping next");
++	if (!b->mapGPU(readonly)) {
++		OSSafeReleaseNULL(b);
+ 	}
+-	if (ok) {
+-		ok = sweet_gpu_vm_map(b->iova, pa, npages, readonly) == 0;
++	return b;
++}
++
++/*
++ * A buffer around an IOSurface's memory: kernel buffers and wrapped client
++ * memory are cacheable (cleaned and invalidated like our own buffers), the
++ * panel framebuffer is a write-combined physical window that needs nothing.
++ */
++SweetGPUBuffer *
++SweetGPUBuffer::import(SweetSurface *surface, bool readonly)
++{
++	IOMemoryDescriptor *smd = surface->memory;
++	if (smd == NULL || smd->getLength() == 0 || smd->getLength() > SWEET_GPU_MAX_BUFFER) {
++		return NULL;
+ 	}
+-	if (pa != NULL) {
+-		IODelete(pa, uint64_t, npages);
++	SweetGPUBuffer *b = OSTypeAlloc(SweetGPUBuffer);
++	if (b == NULL || !b->init()) {
++		OSSafeReleaseNULL(b);
++		return NULL;
+ 	}
+-	if (!ok) {
++	b->size = (smd->getLength() + 0xfff) & ~0xfffull;
++	b->flush = OSDynamicCast(IOBufferMemoryDescriptor, smd) != NULL || surface->wrapped;
++	b->mapCache = surface->mapCache;
++	if (smd->prepare() != kIOReturnSuccess) {
++		b->release();
++		return NULL;
++	}
++	smd->retain();
++	b->md = smd;
++	surface->retain();
++	b->surface = surface;
++	b->kva = surface->kernelAddress();
++	if (b->kva == 0 || !b->mapGPU(readonly)) {
+ 		OSSafeReleaseNULL(b);
++		return NULL;
++	}
++	if (b->flush) {
++		IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->kva, b->size);
+ 	}
+ 	return b;
+ }
+@@ -154,6 +226,7 @@ SweetGPUBuffer::free()
+ 		md->complete();
+ 		OSSafeReleaseNULL(md);
+ 	}
++	OSSafeReleaseNULL(surface);
+ 	OSObject::free();
+ }
+ 
+@@ -164,6 +237,8 @@ class SweetGPUUserClient : public IOUserClient {
+ 	OSArray *fBuffers;      /* handle = index + 1; freed slots hold kOSBooleanFalse */
+ 
+ 	SweetGPUBuffer *buffer(uint64_t handle);
++	uint32_t addBuffer(SweetGPUBuffer *b);
++	uint32_t surfaceHandle(uint32_t id);
+ 	void flushBuffers(void);
+ 	SweetGPUBuffer *bufferAt(uint64_t iova, uint64_t len);
+ 
+@@ -227,6 +302,43 @@ SweetGPUUserClient::buffer(uint64_t handle)
+ 	return b;
+ }
+ 
++/* Store b (retained by the table) and return its handle. */
++uint32_t
++SweetGPUUserClient::addBuffer(SweetGPUBuffer *b)
++{
++	IOLockLock(fLock);
++	unsigned int slot = fBuffers->getCount();
++	for (unsigned int i = 0; i < fBuffers->getCount(); i++) {
++		if (OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i)) == NULL) {
++			slot = i;
++			break;
++		}
++	}
++	if (slot == fBuffers->getCount()) {
++		fBuffers->setObject(b);
++	} else {
++		fBuffers->replaceObject(slot, b);
++	}
++	IOLockUnlock(fLock);
++	return slot + 1;
++}
++
++/* The handle under which this client imported IOSurface id, or 0. */
++uint32_t
++SweetGPUUserClient::surfaceHandle(uint32_t id)
++{
++	uint32_t handle = 0;
++	IOLockLock(fLock);
++	for (unsigned int i = 0; i < fBuffers->getCount() && handle == 0; i++) {
++		SweetGPUBuffer *b = OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i));
++		if (b != NULL && b->surface != NULL && b->surface->id == id) {
++			handle = i + 1;
++		}
++	}
++	IOLockUnlock(fLock);
++	return handle;
++}
++
+ /* The client's buffer holding [iova, iova + len), retained, or NULL. */
+ SweetGPUBuffer *
+ SweetGPUUserClient::bufferAt(uint64_t iova, uint64_t len)
+@@ -244,18 +356,15 @@ SweetGPUUserClient::bufferAt(uint64_t iova, uint64_t len)
+ 	return found;
+ }
+ 
+-/* sweetgpu_wc=0: clean and invalidate every buffer of this client (the GPU is not coherent) */
++/* Clean and invalidate every cacheable buffer of this client (the GPU is not coherent) */
+ void
+ SweetGPUUserClient::flushBuffers(void)
+ {
+-	if (sweet_gpu_wc) {
+-		return;
+-	}
+ 	IOLockLock(fLock);
+ 	for (unsigned int i = 0; i < fBuffers->getCount(); i++) {
+ 		SweetGPUBuffer *b = OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i));
+-		if (b != NULL) {
+-			IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->md->getBytesNoCopy(), b->size);
++		if (b != NULL && b->flush) {
++			IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->kva, b->size);
+ 		}
+ 	}
+ 	IOLockUnlock(fLock);
+@@ -270,9 +379,7 @@ SweetGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMe
+ 	}
+ 	b->md->retain();
+ 	*memory = b->md;
+-	if (sweet_gpu_wc) {
+-		*options = (*options & ~kIOMapCacheMask) | kIOMapWriteCombineCache;
+-	}
++	*options = (*options & ~kIOMapCacheMask) | b->mapCache;
+ 	b->release();
+ 	return kIOReturnSuccess;
+ }
+@@ -305,23 +412,10 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (b == NULL) {
+ 			return kIOReturnNoMemory;
+ 		}
+-		IOLockLock(fLock);
+-		unsigned int slot = fBuffers->getCount();
+-		for (unsigned int i = 0; i < fBuffers->getCount(); i++) {
+-			if (OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i)) == NULL) {
+-				slot = i;
+-				break;
+-			}
+-		}
+-		if (slot == fBuffers->getCount()) {
+-			fBuffers->setObject(b);
+-		} else {
+-			fBuffers->replaceObject(slot, b);
+-		}
+-		IOLockUnlock(fLock);
+-		args->scalarOutput[0] = slot + 1;
++		uint32_t handle = addBuffer(b);
++		args->scalarOutput[0] = handle;
+ 		args->scalarOutput[1] = b->iova;
+-		GPULOG("buffer %u: %llu bytes at GPU VA %llx%s", slot + 1, b->size, b->iova, (in[1] & 1) ? " (GPU read-only)" : "");
++		GPULOG("buffer %u: %llu bytes at GPU VA %llx%s", handle, b->size, b->iova, (in[1] & 1) ? " (GPU read-only)" : "");
+ 		b->release();
+ 		return kIOReturnSuccess;
+ 	}
+@@ -367,7 +461,7 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 				return kIOReturnBadArgument;
+ 			}
+ 			if (sweet_gpu_debug) {
+-				const uint32_t *w = (const uint32_t *)((const uint8_t *)b->md->getBytesNoCopy() + (e.iova - b->iova));
++				const uint32_t *w = (const uint32_t *)(b->kva + (e.iova - b->iova));
+ 				GPULOG("IB %u/%u at %llx, %u dwords: %08x %08x %08x %08x %08x %08x %08x %08x", i + 1, n, e.iova,
+ 				    e.dwords, w[0], e.dwords > 1 ? w[1] : 0, e.dwords > 2 ? w[2] : 0, e.dwords > 3 ? w[3] : 0,
+ 				    e.dwords > 4 ? w[4] : 0, e.dwords > 5 ? w[5] : 0, e.dwords > 6 ? w[6] : 0,
+@@ -401,6 +495,49 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		args->scalarOutput[0] = sweet_gpu_completed();
+ 		flushBuffers();
+ 		return kIOReturnSuccess;
++	case 6: {       /* import IOSurface */
++		if (nin < 2 || in[0] == 0 || in[0] > UINT32_MAX || args->scalarOutputCount < 4) {
++			return kIOReturnBadArgument;
++		}
++		SweetSurface *surface = sweet_surface_copy((uint32_t)in[0]);
++		if (surface == NULL) {
++			return kIOReturnNotFound;
++		}
++		uint32_t handle = surfaceHandle(surface->id);
++		SweetGPUBuffer *b = handle != 0 ? buffer(handle) : NULL;
++		if (b == NULL) {
++			b = SweetGPUBuffer::import(surface, (in[1] & 1) != 0);
++			handle = b != NULL ? addBuffer(b) : 0;
++		}
++		uint32_t delta = surface->wrapDelta;
++		surface->release();
++		if (b == NULL) {
++			IOLog("SWEET GPU uc: IOSurface %llu not imported
++", in[0]);
++			return kIOReturnNoMemory;
++		}
++		args->scalarOutput[0] = handle;
++		args->scalarOutput[1] = b->iova;
++		args->scalarOutput[2] = b->size;
++		args->scalarOutput[3] = delta;
++		GPULOG("IOSurface %llu: buffer %u, %llu bytes at GPU VA %llx%s%s", in[0], handle, b->size, b->iova,
++		    b->flush ? "" : " (not cached)", (in[1] & 1) ? " (GPU read-only)" : "");
++		b->release();
++		return kIOReturnSuccess;
++	}
++	case 7: {       /* buffer info */
++		if (nin < 1 || args->scalarOutputCount < 2) {
++			return kIOReturnBadArgument;
++		}
++		SweetGPUBuffer *b = buffer(in[0]);
++		if (b == NULL) {
++			return kIOReturnBadArgument;
++		}
++		args->scalarOutput[0] = b->iova;
++		args->scalarOutput[1] = b->size;
++		b->release();
++		return kIOReturnSuccess;
++	}
+ 	default:
+ 		return kIOReturnUnsupported;
+ 	}
+-- 
+2.47.3
+
