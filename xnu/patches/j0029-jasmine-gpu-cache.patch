@@ -1,0 +1,149 @@
+From 5984d234eb39f6e0bb478364793d42c8434e9daa Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 20:08:21 +0200
+Subject: [PATCH] jasmine-j0029: SweetGPU buffers: step log, sweetgpu_wc=0 for
+ cacheable buffers
+
+j0028's debug run showed every parameter call returning and the GPU
+healthy (heartbeat), then the freeze inside the first buffer creation.
+The buffer is a write-combined IOBufferMemoryDescriptor, which changes the
+cache attributes of its physical pages for every mapping; nothing else in
+the kernel makes such buffers (SweetSurface keeps its own ones cacheable).
+sweetgpu_debug=1 now logs each step of a buffer creation. sweetgpu_wc=0
+keeps buffers plain cacheable memory in the kernel and in the client's
+mapping and cleans and invalidates the client's buffers around each
+submit, wait and completion query instead.
+---
+ iokit/Kernel/arm/SweetGPU.cpp | 48 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 45 insertions(+), 3 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 4ec0986..9f90639 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -24,6 +24,13 @@
+  * 1 s and, if the job did not finish, logs the fault state and takes the GPU
+  * down (sweet_gpu_hang_check) instead of letting a stuck CP hold the bus.
+  *
++ * Boot-arg sweetgpu_wc=0 makes buffers plain cacheable memory, in the
++ * kernel and in the client's mapping, instead of write-combined: the kernel
++ * then cleans and invalidates all of the client's buffers around each
++ * submit, wait and completion query (the GPU's SMMU walk and accesses are
++ * not coherent with the CPU caches). A write-combined IOBufferMemoryDescriptor
++ * changes the cache attributes of its physical pages for every mapping.
++ *
+  * Buffers are pageable-free kernel memory (IOBufferMemoryDescriptor), mapped
+  * into the one GPU address space with 4K pages; a client's buffers are
+  * unmapped and freed when it closes or dies. The GPU address space is shared
+@@ -54,6 +61,7 @@ void sweet_gpu_publish(void);
+ }
+ 
+ static uint32_t sweet_gpu_debug;
++static uint32_t sweet_gpu_wc = 1;
+ 
+ /* debug log line, then a pause so the USB log carries it out before the GPU runs anything */
+ #define GPULOG(fmt, ...) do {                                           \
+@@ -99,14 +107,21 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ 		return NULL;
+ 	}
+ 	b->size = size;
++	GPULOG("buffer of %llu bytes: memory%s next", size, sweet_gpu_wc ? " (write-combined)" : "");
+ 	b->md = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+-	    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMapWriteCombineCache, size, page_size);
++	    kIODirectionInOut | kIOMemoryKernelUserShared | (sweet_gpu_wc ? kIOMapWriteCombineCache : 0), size, page_size);
++	GPULOG("buffer: memory %p, prepare next", b->md);
+ 	if (b->md == NULL || b->md->prepare() != kIOReturnSuccess || sweet_gpu_vm_alloc(size, &b->iova) != 0) {
+ 		b->iova = 0;
+ 		OSSafeReleaseNULL(b);
+ 		return NULL;
+ 	}
++	GPULOG("buffer: kernel VA %p, clearing next", b->md->getBytesNoCopy());
+ 	bzero(b->md->getBytesNoCopy(), size);
++	if (!sweet_gpu_wc) {
++		IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->md->getBytesNoCopy(), size);
++	}
++	GPULOG("buffer: cleared, GPU mapping at %llx next", b->iova);
+ 	uint32_t npages = (uint32_t)(size / 0x1000);
+ 	uint64_t *pa = IONew(uint64_t, npages);
+ 	bool ok = pa != NULL;
+@@ -148,6 +163,7 @@ class SweetGPUUserClient : public IOUserClient {
+ 	OSArray *fBuffers;      /* handle = index + 1; freed slots hold kOSBooleanFalse */
+ 
+ 	SweetGPUBuffer *buffer(uint64_t handle);
++	void flushBuffers(void);
+ 	SweetGPUBuffer *bufferAt(uint64_t iova, uint64_t len);
+ 
+ public:
+@@ -227,6 +243,23 @@ SweetGPUUserClient::bufferAt(uint64_t iova, uint64_t len)
+ 	return found;
+ }
+ 
++/* sweetgpu_wc=0: clean and invalidate every buffer of this client (the GPU is not coherent) */
++void
++SweetGPUUserClient::flushBuffers(void)
++{
++	if (sweet_gpu_wc) {
++		return;
++	}
++	IOLockLock(fLock);
++	for (unsigned int i = 0; i < fBuffers->getCount(); i++) {
++		SweetGPUBuffer *b = OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i));
++		if (b != NULL) {
++			IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->md->getBytesNoCopy(), b->size);
++		}
++	}
++	IOLockUnlock(fLock);
++}
++
+ IOReturn
+ SweetGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
+ {
+@@ -236,7 +269,9 @@ SweetGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMe
+ 	}
+ 	b->md->retain();
+ 	*memory = b->md;
+-	*options = (*options & ~kIOMapCacheMask) | kIOMapWriteCombineCache;
++	if (sweet_gpu_wc) {
++		*options = (*options & ~kIOMapCacheMask) | kIOMapWriteCombineCache;
++	}
+ 	b->release();
+ 	return kIOReturnSuccess;
+ }
+@@ -340,6 +375,7 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			b->release();
+ 		}
+ 		uint32_t seqno = 0;
++		flushBuffers();
+ 		int err = sweet_gpu_submit(iova, dw, n, &seqno);
+ 		args->scalarOutput[0] = seqno;
+ 		GPULOG("submit of %u IBs: seqno %u (err %d)", n, seqno, err);
+@@ -352,12 +388,17 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (nin < 2) {
+ 			return kIOReturnBadArgument;
+ 		}
+-		return sweet_gpu_wait((uint32_t)in[0], (uint32_t)(in[1] < 60000 ? in[1] : 60000)) == 0 ? kIOReturnSuccess : kIOReturnTimeout;
++		if (sweet_gpu_wait((uint32_t)in[0], (uint32_t)(in[1] < 60000 ? in[1] : 60000)) != 0) {
++			return kIOReturnTimeout;
++		}
++		flushBuffers();
++		return kIOReturnSuccess;
+ 	case 5:         /* completed */
+ 		if (args->scalarOutputCount < 1) {
+ 			return kIOReturnBadArgument;
+ 		}
+ 		args->scalarOutput[0] = sweet_gpu_completed();
++		flushBuffers();
+ 		return kIOReturnSuccess;
+ 	default:
+ 		return kIOReturnUnsupported;
+@@ -376,6 +417,7 @@ sweet_gpu_publish(void)
+ 		return;
+ 	}
+ 	(void)PE_parse_boot_argn("sweetgpu_debug", &sweet_gpu_debug, sizeof(sweet_gpu_debug));
++	(void)PE_parse_boot_argn("sweetgpu_wc", &sweet_gpu_wc, sizeof(sweet_gpu_wc));
+ 	gpu->setName("SweetGPU");
+ 	gpu->setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
+ 	gpu->setProperty("chip-id", (unsigned long long)sweet_gpu_param(1), 32);
+-- 
+2.47.3
+
