@@ -825,8 +825,11 @@ w_ShaderSource(void *rctx, GLuint shader, GLsizei count, const GLchar *const *st
    }
    const GLchar *one = src;
    glShaderSource(shader, 1, &one, NULL);
-   if (trace_on > 1)
-      sca_log("sweetca: shader %u source:\n%s", shader, src);
+   if (trace_on > 1) {
+      sca_log("sweetca: shader %u source (%zu bytes):", shader, strlen(src));
+      for (size_t i = 0, n2 = strlen(src); i < n2; i += 700)
+         sca_log("sweetca: | %.700s", src + i);
+   }
    free(src);
    POST(595);
 }
@@ -1138,7 +1141,7 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
 /* the surface's memory as the storage of the texture bound to target */
 static bool
 bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GLenum type,
-             uint32_t plane, bool invert, const char *why)
+             uint32_t plane, bool flip, const char *why)
 {
    static int logged;
    uint32_t fourcc = IOSurfaceGetPixelFormat(s);
@@ -1150,7 +1153,6 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    char cc[5];
    fourcc_str(fourcc, cc);
 
-   invert = flip_mode ? !invert : invert;
    struct surf_fmt f;
    bool ok = !planar && ((format && fmt_from_gl(format, type, &f)) || fmt_from_surface(fourcc, bpe, &f));
    if (!ok) {
@@ -1163,11 +1165,11 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    set_swizzle(c, t, f.swz, f.swizzled);
    bool done = false;
    const char *how = "in place";
-   if (pitch % 64 == 0 && !invert)
+   if (pitch % 64 == 0 && !flip)
       done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, f.f);
    if (!done && format) {
       how = "copied";
-      done = copy_surface(c, s, t, &f, w, h, pitch, bpe, invert);
+      done = copy_surface(c, s, t, &f, w, h, pitch, bpe, flip);
    }
    if (!done) {
       if (logged++ < 40)
@@ -1178,8 +1180,8 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    if (strcmp(how, "in place") == 0)
       note_size(c, c->held[c->active], w, h);
    if (trace_on && logged++ < 80)
-      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, invert %d)", why,
-              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, invert);
+      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, flip %d)", why,
+              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, flip);
    return true;
 }
 
@@ -1415,7 +1417,7 @@ m_tex_iosurface(id self, SEL cmd, IOSurfaceRef s, NSUInteger target, NSUInteger 
    }
    if (cur != c)
       bind_ctx(c);
-   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, invert, "texImageIOSurface");
+   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, !invert, "texImageIOSurface");
 }
 
 static BOOL
@@ -1426,7 +1428,7 @@ m_attach(id self, SEL cmd, NSUInteger target, IOSurfaceRef s, BOOL inverted)
       return ((BOOL(*)(id, SEL, NSUInteger, IOSurfaceRef, BOOL))orig_attach)(self, cmd, target, s, inverted);
    if (cur != c)
       bind_ctx(c);
-   return bind_surface(c, s, (GLenum)target, 0, 0, 0, inverted, "attachImage");
+   return bind_surface(c, s, (GLenum)target, 0, 0, 0, false, "attachImage");
 }
 
 static BOOL
