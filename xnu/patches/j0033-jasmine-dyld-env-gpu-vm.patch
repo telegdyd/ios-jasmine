@@ -1,0 +1,405 @@
+From a00bcfd7d096ef26e4a6c42fff57a90f392665e7 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 22:14:41 +0200
+Subject: [PATCH] jasmine-j0033: DYLD_* for sweetenv (AMFI dyld policy call,
+ sweetenv boot-arg); GPU SMMU faults not reported to the GPU, scratch-padded
+ and reused GPU VAs
+
+---
+ bsd/dev/sweet_gpu.c   | 153 +++++++++++++++++++++++++++++++++++-------
+ bsd/kern/kern_exec.c  |  80 ++++++++++++++++++++++
+ bsd/kern/sweet_amfi.c |  33 ++++++++-
+ 3 files changed, 239 insertions(+), 27 deletions(-)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index d9ede89..eab50fd 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -636,8 +636,13 @@ smmu_identity(uint64_t hi)
+ 	smmu_wr(s, 0xc00, 0);                               /* S2CR0: translate, CB0 */
+ 	smmu_wr(s, 0x800, (1u << 31));                      /* SMR0: valid, ID 0, mask 0 */
+ 	__builtin_arm_dsb(0xf);
+-	/* M | TRE | AFE | CFRE | CFIE | S1_ASIDPNE; faults terminate (no CFCFG stall) */
+-	smmu_wr(cb, 0x000, (1u << 12) | (1u << 6) | (1u << 5) | (1u << 2) | (1u << 1) | 1);
++	/*
++	 * M | TRE | AFE | CFIE | S1_ASIDPNE; faults terminate (no CFCFG stall) and
++	 * are not reported to the GPU (no CFRE): a faulting read returns 0, a write
++	 * is dropped, the FSR keeps the record (smmu_fault_note). An abort reported
++	 * back can leave the CP waiting on the access for good.
++	 */
++	smmu_wr(cb, 0x000, (1u << 12) | (1u << 6) | (1u << 2) | (1u << 1) | 1);
+ 	__builtin_arm_dsb(0xf);
+ 	printf("SWEET GPU: SMMU CB0 table at %llx: SMR0 %08x S2CR0 %08x CBAR0 %08x CBA2R0 %08x SCTLR %08x "
+ 	    "TCR %08x TCR2 %08x TTBR0 %08x%08x MAIR0 %08x; hi page %llx\n", pt_pa,
+@@ -685,17 +690,32 @@ cp_mem_write(uint64_t pa, uint32_t v)
+  * CP tests' page above 4 GiB); client buffers get GPU VAs from 32 GiB up,
+  * mapped with 4K pages, clear of every identity block (RAM ends below 8 GiB).
+  * Their L2/L3 tables are 4K pieces of kernel pages (the SMMU walk is
+- * non-coherent, so every table write is cleaned to memory). The VA range is
+- * handed out upwards and never reused (enough for a session); one address
++ * non-coherent, so every table write is cleaned to memory). One address
+  * space for all clients, as msm's global one.
++ *
++ * Each buffer's range is followed by GPU_VA_PAD of VA mapped to one shared
++ * scratch page: the GPU fetches past the end of what it uses, and on the
++ * A530 (ios-sailfish) such overruns into unmapped VA hung the GPU even with
++ * faults terminated. Freed ranges (buffer + pad) are reused first-fit once
++ * the GPU has completed every job submitted before the free, since a job in
++ * flight may still use the old addresses; adjacent ones are merged. A full
++ * free list leaks the range (logged).
+  */
+ #define GPU_VA_BASE             0x800000000ull
+ #define GPU_VA_END              0xf00000000ull  /* 36-bit VA: below 64 GiB */
++#define GPU_VA_PAD              0x20000ull
++#define GPU_VA_FREE_MAX         1024
+ #define PTE_PAGE                (3ull | (1ull << 10) | (1ull << 6))     /* page, AF, AP[2:1] 01, AttrIndx 0 */
+ #define PTE_RO                  (1ull << 7)                             /* AP[2]: read-only */
+ 
+ static lck_mtx_t *gpu_lock;
+ static uint64_t gpu_va_next = GPU_VA_BASE;
++static struct {
++	uint64_t iova, size;
++	uint32_t seqno;         /* the last job submitted before the free */
++} gpu_va_free[GPU_VA_FREE_MAX];
++static unsigned gpu_va_nfree;
++static uint64_t gpu_scratch_pa;
+ static uint8_t *pt_chunk;               /* current kernel page carved into 4K tables */
+ static uint64_t pt_chunk_pa;
+ static unsigned pt_chunk_used = PAGE_SIZE;
+@@ -784,39 +804,97 @@ smmu_tlb_sync(void)
+ 	(void)poll32(&cb[0x7f4 / 4], 1, 0, 1000);
+ }
+ 
+-/* Room for size bytes of GPU VA (4K aligned, never reused). 0 or ENOMEM. */
++/* Room for size bytes of GPU VA (4K aligned) and the pad after them. 0 or ENOMEM. */
+ int sweet_gpu_vm_alloc(uint64_t size, uint64_t *iova);
+ int
+ sweet_gpu_vm_alloc(uint64_t size, uint64_t *iova)
+ {
+-	size = (size + 0xfff) & ~0xfffull;
++	uint64_t span = ((size + 0xfff) & ~0xfffull) + GPU_VA_PAD;
++	int err = ENOMEM;
+ 	lck_mtx_lock(gpu_lock);
+-	int err = gpu_va_next + size > GPU_VA_END ? ENOMEM : 0;
+-	if (!err) {
++	uint32_t done = sg.mem[FENCE_OFF / 4];
++	for (unsigned i = 0; i < gpu_va_nfree && err; i++) {
++		if (gpu_va_free[i].size >= span && (int32_t)(done - gpu_va_free[i].seqno) >= 0) {
++			*iova = gpu_va_free[i].iova;
++			gpu_va_free[i].iova += span;
++			gpu_va_free[i].size -= span;
++			if (gpu_va_free[i].size == 0) {
++				gpu_va_free[i] = gpu_va_free[--gpu_va_nfree];
++			}
++			err = 0;
++		}
++	}
++	if (err && gpu_va_next + span <= GPU_VA_END) {
+ 		*iova = gpu_va_next;
+-		gpu_va_next += size + 0x1000;   /* one unmapped guard page between buffers */
++		gpu_va_next += span;
++		err = 0;
+ 	}
+ 	lck_mtx_unlock(gpu_lock);
+ 	return err;
+ }
+ 
+-/* Map npages 4K pages (physical addresses in pa[]) at iova. */
++/* Give [iova, iova + span) back for reuse after the jobs submitted so far. gpu_lock held. */
++static void
++gpu_va_release(uint64_t iova, uint64_t span)
++{
++	for (unsigned i = 0; i < gpu_va_nfree;) {
++		if (gpu_va_free[i].iova + gpu_va_free[i].size == iova || iova + span == gpu_va_free[i].iova) {
++			iova = iova < gpu_va_free[i].iova ? iova : gpu_va_free[i].iova;
++			span += gpu_va_free[i].size;
++			gpu_va_free[i] = gpu_va_free[--gpu_va_nfree];
++			i = 0;          /* the merged range may now touch an earlier one */
++		} else {
++			i++;
++		}
++	}
++	if (gpu_va_nfree == GPU_VA_FREE_MAX) {
++		static bool told;
++		if (!told) {
++			told = true;
++			printf("SWEET GPU: GPU VA free list full, %llx+%llx not reused\n", iova, span);
++		}
++		return;
++	}
++	gpu_va_free[gpu_va_nfree].iova = iova;
++	gpu_va_free[gpu_va_nfree].size = span;
++	gpu_va_free[gpu_va_nfree++].seqno = gpu_seqno;
++}
++
++/* One L3 entry, cleaned to memory for the non-coherent walk. gpu_lock held. */
++static int
++gpu_pte_set(uint64_t va, uint64_t pte)
++{
++	uint64_t *l3 = pt_l3(va, pte != 0);
++	if (l3 == NULL) {
++		return pte != 0 ? ENOMEM : 0;
++	}
++	unsigned i3 = (va >> 12) & 511;
++	l3[i3] = pte;
++	flush_dcache64((addr64_t)kva_to_pa((vm_offset_t)&l3[i3]), 8, TRUE);
++	return 0;
++}
++
++/* Map npages 4K pages (physical addresses in pa[]) at iova, then the pad after them to the scratch page. */
+ int sweet_gpu_vm_map(uint64_t iova, const uint64_t *pa, uint32_t npages, bool readonly);
+ int
+ sweet_gpu_vm_map(uint64_t iova, const uint64_t *pa, uint32_t npages, bool readonly)
+ {
+ 	int err = 0;
+ 	lck_mtx_lock(gpu_lock);
+-	for (uint32_t i = 0; i < npages && !err; i++) {
+-		uint64_t va = iova + 0x1000ull * i;
+-		uint64_t *l3 = pt_l3(va, true);
+-		if (l3 == NULL) {
++	if (gpu_scratch_pa == 0) {
++		vm_offset_t va = 0;
++		if (kmem_alloc(kernel_map, &va, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 			err = ENOMEM;
+-			break;
++		} else {
++			gpu_scratch_pa = kva_to_pa(va);
++			flush_dcache64((addr64_t)gpu_scratch_pa, PAGE_SIZE, TRUE);
+ 		}
+-		unsigned i3 = (va >> 12) & 511;
+-		l3[i3] = (pa[i] & 0xffffffff000ull) | PTE_PAGE | (readonly ? PTE_RO : 0);
+-		flush_dcache64((addr64_t)kva_to_pa((vm_offset_t)&l3[i3]), 8, TRUE);
++	}
++	for (uint32_t i = 0; i < npages && !err; i++) {
++		err = gpu_pte_set(iova + 0x1000ull * i, (pa[i] & 0xffffffff000ull) | PTE_PAGE | (readonly ? PTE_RO : 0));
++	}
++	for (uint64_t off = 0; off < GPU_VA_PAD && !err; off += 0x1000) {
++		err = gpu_pte_set(iova + 0x1000ull * npages + off, gpu_scratch_pa | PTE_PAGE);
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 	smmu_tlb_sync();
+@@ -824,25 +902,46 @@ sweet_gpu_vm_map(uint64_t iova, const uint64_t *pa, uint32_t npages, bool readon
+ 	return err;
+ }
+ 
++/* Unmap a range from sweet_gpu_vm_alloc (npages as mapped, and its pad) and give it back. */
+ void sweet_gpu_vm_unmap(uint64_t iova, uint32_t npages);
+ void
+ sweet_gpu_vm_unmap(uint64_t iova, uint32_t npages)
+ {
++	uint64_t span = 0x1000ull * npages + GPU_VA_PAD;
+ 	lck_mtx_lock(gpu_lock);
+-	for (uint32_t i = 0; i < npages; i++) {
+-		uint64_t va = iova + 0x1000ull * i;
+-		uint64_t *l3 = pt_l3(va, false);
+-		if (l3 != NULL) {
+-			unsigned i3 = (va >> 12) & 511;
+-			l3[i3] = 0;
+-			flush_dcache64((addr64_t)kva_to_pa((vm_offset_t)&l3[i3]), 8, TRUE);
+-		}
++	for (uint64_t off = 0; off < span; off += 0x1000) {
++		(void)gpu_pte_set(iova + off, 0);
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 	smmu_tlb_sync();
++	gpu_va_release(iova, span);
+ 	lck_mtx_unlock(gpu_lock);
+ }
+ 
++/*
++ * Log what CB0's FSR recorded since the last look (the first 32 faults of a
++ * boot; FSR format bits 9-10 are not a fault) and clear it. gpu_lock held.
++ */
++static void
++smmu_fault_note(const char *when)
++{
++	volatile uint32_t *cb = sg.smmu + SMMU_CB0 / 4;
++	uint32_t fsr = cb[0x58 / 4];
++	static uint32_t logged;
++
++	if ((fsr & ~(3u << 9)) == 0) {
++		return;
++	}
++	if (logged < 32) {
++		logged++;
++		uint64_t far = ((uint64_t)cb[0x64 / 4] << 32) | cb[0x60 / 4];
++		uint64_t *l3 = far >= GPU_VA_BASE && far < GPU_VA_END ? pt_l3(far, false) : NULL;
++		printf("SWEET GPU: SMMU fault before %s: CB0 FSR %08x FSYNR0 %08x FAR %llx, %s\n", when, fsr,
++		    cb[0x68 / 4], far, l3 == NULL ? "no client table" : l3[(far >> 12) & 511] != 0 ? "page mapped" : "page unmapped");
++	}
++	smmu_wr(cb, 0x058, fsr);
++}
++
+ /* Ring dwords free before the CP's read pointer (one kept free: full != empty). */
+ static uint32_t
+ ring_space(void)
+@@ -873,6 +972,7 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+ 		lck_mtx_unlock(gpu_lock);
+ 		return EBUSY;
+ 	}
++	smmu_fault_note("submit");
+ 	for (uint32_t i = 0; i < n; i++) {
+ 		ring_pkt7(CP_INDIRECT_BUFFER_PFE, 3);
+ 		ring_out((uint32_t)iova[i]);
+@@ -936,6 +1036,7 @@ sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms)
+ 	    gpu_rd(RBBM_INT_0_STATUS), gpu_rd(CP_HW_FAULT), gpu_rd(CP_INTERRUPT_STATUS), s[0x048 / 4],
+ 	    cb[0x58 / 4], cb[0x68 / 4], cb[0x64 / 4], cb[0x60 / 4]);
+ 	lck_mtx_lock(gpu_lock);
++	smmu_fault_note("hang");
+ 	gpu_ready = false;
+ 	gpu_power_off();
+ 	lck_mtx_unlock(gpu_lock);
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 68612db..1f5e61b 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5540,6 +5540,79 @@ bad:
+ 	return error;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* Length of the run of s before any character of stop (like strcspn). */
++static size_t
++sweet_span(const char *s, const char *stop)
++{
++	size_t n = 0;
++	while (s[n] != '\0' && strchr(stop, s[n]) == NULL) {
++		n++;
++	}
++	return n;
++}
++
++/*
++ * Boot-arg sweetenv=NAME:VAR=VAL[,VAR=VAL...][;NAME:...] adds VAR=VAL to the
++ * environment of every executable whose file name is NAME, e.g.
++ * sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib: a boot
++ * without it runs the root as it is, no launchd plist edited.
++ */
++static int
++sweet_exec_env(struct image_params *imgp, int ptr_size)
++{
++	static char spec[512];
++	static int parsed;      /* 0 not yet, 1 no boot-arg, 2 spec holds it */
++
++	if (parsed == 0) {
++		parsed = PE_parse_boot_argn("sweetenv", spec, sizeof(spec)) && spec[0] != '\0' ? 2 : 1;
++	}
++	if (parsed != 2) {
++		return 0;
++	}
++	const char *base = imgp->ip_strings + strlen(EXECUTABLE_KEY);
++	for (const char *c = base; *c != '\0'; c++) {
++		if (*c == '/') {
++			base = c + 1;
++		}
++	}
++	for (const char *entry = spec; *entry != '\0';) {
++		size_t n = sweet_span(entry, ":;");
++		const char *vars = entry[n] == ':' ? entry + n + 1 : entry + n;
++		size_t vlen = sweet_span(vars, ";");
++		if (entry[n] == ':' && strlen(base) == n && strncmp(base, entry, n) == 0) {
++			for (const char *v = vars; v < vars + vlen;) {
++				char var[160];
++				size_t len = sweet_span(v, ",;");
++				if (len > 0 && len < sizeof(var)) {
++					memcpy(var, v, len);
++					var[len] = '\0';
++					int error = exec_add_user_string(imgp, CAST_USER_ADDR_T(var), UIO_SYSSPACE, TRUE);
++					if (error) {
++						return error;
++					}
++					if (imgp->ip_argspace < ptr_size) {
++						return E2BIG;
++					}
++					imgp->ip_argspace -= ptr_size;
++					imgp->ip_envc++;
++					printf("SWEET ENV: %s += %s\n", base, var);
++				}
++				v += len;
++				if (*v == ',') {
++					v++;
++				}
++			}
++		}
++		entry = vars + vlen;
++		if (*entry == ';') {
++			entry++;
++		}
++	}
++	return 0;
++}
++#endif
++
+ 
+ /*
+  * exec_extract_strings
+@@ -5741,6 +5814,13 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_envc++;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	error = sweet_exec_env(imgp, new_ptr_size);
++	if (error) {
++		goto bad;
++	}
++#endif
++
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index cb67b4d..6e0856a 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -305,8 +305,39 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
+ 	}
+ }
+ 
++/*
++ * dyld asks the policy named "AMFI" which DYLD_* variables it may honour
++ * (op 90, amfi_check_dyld_policy_self: in {u64 input flags; u64 *output})
++ * and honours none when the call fails, so DYLD_INSERT_LIBRARIES from
++ * sweetenv was dropped. Allowed (dyld's bits): @paths 0x1, path variables
++ * incl. DYLD_INSERT_LIBRARIES 0x2, fallback paths 0x8, print variables
++ * 0x10, failed insertions 0x20 (a broken library must not stop backboardd)
++ * and interposing 0x40. Other ops fail as they did with no such policy.
++ */
++#define SWEET_AMFI_DYLD_POLICY  90
++#define SWEET_AMFI_DYLD_ALLOW   0x7bull
++
++static int
++sweet_amfi_syscall(struct proc *p __unused, int call, user_addr_t arg)
++{
++	struct {
++		uint64_t in;
++		uint64_t out;
++	} a;
++	uint64_t allow = SWEET_AMFI_DYLD_ALLOW;
++
++	if (call != SWEET_AMFI_DYLD_POLICY) {
++		return ENOPOLICY;
++	}
++	if (copyin(arg, &a, sizeof(a)) != 0 || a.out == 0) {
++		return EFAULT;
++	}
++	return copyout(&allow, (user_addr_t)a.out, sizeof(allow));
++}
++
+ static const struct mac_policy_ops sweet_amfi_mac_ops = {
+ 	.mpo_vnode_check_signature = sweet_amfi_vnode_check_signature,
++	.mpo_policy_syscall = sweet_amfi_syscall,
+ };
+ 
+ /*
+@@ -360,7 +391,7 @@ static struct mac_policy_conf sweet_sandbox_mac_conf = {
+ static mac_policy_handle_t sweet_sandbox_mac_handle;
+ 
+ static struct mac_policy_conf sweet_amfi_mac_conf = {
+-	.mpc_name = "SWEET AMFI",
++	.mpc_name = "AMFI",             /* __mac_syscall("AMFI", ...) finds policies by name */
+ 	.mpc_fullname = "SWEET built-in Mobile File Integrity",
+ 	.mpc_ops = &sweet_amfi_mac_ops,
+ };
+-- 
+2.47.3
+
