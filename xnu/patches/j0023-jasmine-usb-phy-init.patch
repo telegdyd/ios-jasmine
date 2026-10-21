@@ -1,0 +1,208 @@
+From 64a05a8fd63ad97609cacddd2a3c3795b6bc5e8e Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 15:04:44 +0200
+Subject: [PATCH] jasmine-j0023: USB after a normal boot: QUSB2 PHY init and
+ DWC3 setup
+
+On slot b's standalone boot ABL never runs fastboot: the USB power domain
+and clocks are on, but the QUSB2 PHY is not initialised and the first
+endpoint command timed out. When the PHY PLL is not locked (or with
+usbphyinit=1) the PHY gets Linux's sdm660 sequence (block reset, msm8996
+table, power up, differential reference clock, PLL lock check), QSCRATCH
+selects the UTMI clock as the pipe clock, and GUSB2PHYCFG loses SUSPHY and
+ENBLSLPM. The PHY supplies are logged read-only (sweet_pmic_peek).
+---
+ bsd/dev/sweet_pmic.c |  23 ++++++++
+ bsd/dev/sweet_usb.c  | 121 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 144 insertions(+)
+
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index 70f4314..5977358 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -125,6 +125,29 @@ pmic_read(volatile uint32_t *ch, uint32_t addr, unsigned n, uint32_t *out)
+ 	return -1;
+ }
+ 
++/*
++ * Read-only peek for other drivers (sweet_usb.c logs the USB PHY supplies):
++ * n (1..4) bytes at (sid, addr) through that peripheral's observer channel.
++ * 0, the arbiter status, or -1 (no arbiter, no channel).
++ */
++int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
++
++int
++sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out)
++{
++	if (pmic_core == NULL || n < 1 || n > 4) {
++		return -1;
++	}
++	volatile uint32_t *ch = pmic_channel(sid, addr, NULL);
++	if (ch == NULL) {
++		return -1;
++	}
++	lck_spin_lock(&sweet_pmic_lock);
++	int r = pmic_read(ch, addr, n, out);
++	lck_spin_unlock(&sweet_pmic_lock);
++	return r;
++}
++
+ /* RTC seconds, read until two reads agree (the counter can carry mid-read). */
+ static int
+ pmic_rtc_raw(uint32_t *secs)
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index eaf2654..3557421 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -74,6 +74,7 @@ static struct {
+ /* sweet's addresses, or ADT /sweet-usb's (see the top of the file) */
+ static uint64_t usb_dwc_pa = DWC3_PA, usb_qs_pa = 0x0a6f8800, usb_phy_pa = QUSB2_PA, usb_gcc_pa = GCC_PA;
+ static uint32_t usb_gdscr = GCC_USB30_PRIM_GDSCR;
++static uint32_t usb_phy_bcr;           /* GCC QUSB2PHY_PRIM_BCR, 0 = unknown (gcc-usb entry 9) */
+ static bool usb_from_dt;
+ 
+ /* 1 when the device tree describes this board's USB (jasmine); then sweet_ufs.c runs the probe */
+@@ -100,6 +101,9 @@ sweet_usb_board(void)
+ 	for (unsigned i = 0; i < sizeof(usb_cbcr) / sizeof(usb_cbcr[0]); i++) {
+ 		usb_cbcr[i].off = gcc[1 + i];
+ 	}
++	if (gs >= (2 + sizeof(usb_cbcr) / sizeof(usb_cbcr[0])) * sizeof(uint32_t)) {
++		usb_phy_bcr = gcc[1 + sizeof(usb_cbcr) / sizeof(usb_cbcr[0])];
++	}
+ 	usb_from_dt = true;
+ 	return 1;
+ }
+@@ -112,6 +116,120 @@ usb_rd(vm_offset_t base, uint32_t off)
+ 	return v;
+ }
+ 
++/*
++ * jasmine: USB after a normal boot. ABL only sets the controller up for
++ * fastboot; after a normal boot (slot b standalone) the USB power domain and
++ * clocks are on (XBL) but the QUSB2 PHY was never initialised and the DWC3 is
++ * in its reset state, so the first endpoint command times out. Then this does
++ * what Linux does (phy-qcom-qusb2.c qusb2_phy_init with sdm660_phy_cfg,
++ * dwc3-qcom.c dwc3_qcom_select_utmi_clk, the DT's dis_u2_susphy and
++ * dis_enblslpm quirks): PHY block reset, power down, the msm8996 table,
++ * power up, differential reference clock, PLL lock check; UTMI as the pipe
++ * clock (high speed only, as mainline runs this port); GUSB2PHYCFG without
++ * SUSPHY / ENBLSLPM. The PHY's three supplies (DT vdd L1B 0.925 V, vdda-pll
++ * L10A 1.8 V, vdda-phy-dpdm L7B 3.125 V) belong to RPM; they are only read
++ * and logged here. usbphyinit=1 forces the sequence even when ABL left the
++ * PHY running (to test it from a fastboot boot), 0 never runs it.
++ */
++#define QUSB2_PLL_TEST          0x04
++#define   QUSB2_CLK_REF_SEL     (1u << 7)
++#define QUSB2_PLL_STATUS        0x38
++#define   QUSB2_PLL_LOCKED      (1u << 5)
++#define QUSB2_PORT_POWERDOWN    0xb4
++#define   QUSB2_POWER_DOWN      (1u << 0)
++#define   QUSB2_DISABLE_CTRL    ((1u << 5) | (1u << 1) | (1u << 0)) /* CLAMP_N_EN, FREEZIO_N, POWER_DOWN */
++#define QSCRATCH_GENERAL_CFG    0x08
++#define   PIPE_UTMI_CLK_SEL     (1u << 0)
++#define   PIPE3_PHYSTATUS_SW    (1u << 3)
++#define   PIPE_UTMI_CLK_DIS     (1u << 8)
++#define GUSB2PHYCFG             0xc200
++#define   GUSB2PHYCFG_SUSPHY    (1u << 6)
++#define   GUSB2PHYCFG_ENBLSLPM  (1u << 8)
++
++static const uint32_t qusb2_sdm660_tbl[][2] = {
++	{ 0x80, 0xf8 }, { 0x84, 0xb3 }, { 0x88, 0x83 }, { 0x8c, 0xc0 },  /* PORT_TUNE1..4 */
++	{ 0x08, 0x30 },                                                 /* PLL_TUNE */
++	{ 0x0c, 0x79 }, { 0x10, 0x21 },                                 /* PLL_USER_CTL1, 2 */
++	{ 0x9c, 0x14 },                                                 /* PORT_TEST2 */
++	{ 0x1c, 0x9f }, { 0x18, 0x00 },                                 /* PLL_AUTOPGM_CTL1, PLL_PWR_CTRL */
++};
++
++extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
++
++static void
++usb_log_supply(const char *name, uint32_t sid, uint32_t base)
++{
++	uint32_t st = 0, v = 0, en = 0;
++	int r = sweet_pmic_peek(sid, base + 0x08, 1, &st);
++	if (r == 0) {
++		r = sweet_pmic_peek(sid, base + 0x40, 2, &v);
++	}
++	if (r == 0) {
++		r = sweet_pmic_peek(sid, base + 0x46, 1, &en);
++	}
++	printf("SWEET USB: supply %s (sid %u 0x%04x): %s STATUS1 0x%02x VSET 0x%04x EN_CTL 0x%02x\n", name, sid, base,
++	    r ? "UNREADABLE" : (st & 0x80) ? "ready" : "not ready", st, v, en);
++}
++
++static inline void
++usb_wr(vm_offset_t base, uint32_t off, uint32_t v)
++{
++	*(volatile uint32_t *)(base + off) = v;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++static void
++usb_phy_bringup(vm_offset_t gcc, vm_offset_t dwc)
++{
++	int force = -1;
++	PE_parse_boot_argn("usbphyinit", &force, sizeof(force));
++	vm_offset_t phy = ml_io_map(usb_phy_pa, 0x200);
++	vm_offset_t qs = ml_io_map(usb_qs_pa, 0x100);
++	if (phy == 0 || qs == 0) {
++		return;
++	}
++	uint32_t status = usb_rd(phy, QUSB2_PLL_STATUS);
++	printf("SWEET USB: QUSB2 PLL_STATUS 0x%02x PLL_TEST 0x%02x POWERDOWN 0x%02x, QSCRATCH GENERAL_CFG 0x%08x\n",
++	    status, usb_rd(phy, QUSB2_PLL_TEST), usb_rd(phy, QUSB2_PORT_POWERDOWN), usb_rd(qs, QSCRATCH_GENERAL_CFG));
++	usb_log_supply("vdd L1B", 2, 0x4000);
++	usb_log_supply("vdda-pll L10A", 0, 0x4900);
++	usb_log_supply("vdda-phy-dpdm L7B", 2, 0x4600);
++	if (force == 0 || (force != 1 && (status & QUSB2_PLL_LOCKED))) {
++		return;         /* ABL's fastboot left the PHY running */
++	}
++	printf("SWEET USB: QUSB2 PHY init (%s)\n", force == 1 ? "forced" : "PLL not locked: normal boot");
++	if (usb_phy_bcr != 0) {
++		usb_wr(gcc, usb_phy_bcr, usb_rd(gcc, usb_phy_bcr) | 1);
++		delay(120);
++		usb_wr(gcc, usb_phy_bcr, usb_rd(gcc, usb_phy_bcr) & ~1u);
++	}
++	usb_wr(phy, QUSB2_PORT_POWERDOWN, usb_rd(phy, QUSB2_PORT_POWERDOWN) | QUSB2_DISABLE_CTRL);
++	uint32_t test = usb_rd(phy, QUSB2_PLL_TEST);
++	for (unsigned i = 0; i < sizeof(qusb2_sdm660_tbl) / sizeof(qusb2_sdm660_tbl[0]); i++) {
++		usb_wr(phy, qusb2_sdm660_tbl[i][0], qusb2_sdm660_tbl[i][1]);
++	}
++	usb_wr(phy, QUSB2_PORT_POWERDOWN, usb_rd(phy, QUSB2_PORT_POWERDOWN) & ~QUSB2_POWER_DOWN);
++	delay(160);
++	usb_wr(phy, QUSB2_PLL_TEST, test & ~QUSB2_CLK_REF_SEL);  /* differential reference clock (clkref) */
++	(void)usb_rd(phy, QUSB2_PLL_TEST);
++	delay(110);
++	for (int i = 0; i < 50 && !(usb_rd(phy, QUSB2_PLL_STATUS) & QUSB2_PLL_LOCKED); i++) {
++		delay(100);
++	}
++	status = usb_rd(phy, QUSB2_PLL_STATUS);
++
++	/* UTMI clock as the pipe clock: no SuperSpeed PHY in use */
++	usb_wr(qs, QSCRATCH_GENERAL_CFG, usb_rd(qs, QSCRATCH_GENERAL_CFG) | PIPE_UTMI_CLK_DIS);
++	delay(200);
++	usb_wr(qs, QSCRATCH_GENERAL_CFG, usb_rd(qs, QSCRATCH_GENERAL_CFG) | PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
++	delay(200);
++	usb_wr(qs, QSCRATCH_GENERAL_CFG, usb_rd(qs, QSCRATCH_GENERAL_CFG) & ~PIPE_UTMI_CLK_DIS);
++	usb_wr(dwc, GUSB2PHYCFG, usb_rd(dwc, GUSB2PHYCFG) & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
++	printf("SWEET USB: QUSB2 PLL %s (STATUS 0x%02x), GENERAL_CFG 0x%08x, GUSB2PHYCFG 0x%08x\n",
++	    (status & QUSB2_PLL_LOCKED) ? "locked" : "NOT locked", status, usb_rd(qs, QSCRATCH_GENERAL_CFG),
++	    usb_rd(dwc, GUSB2PHYCFG));
++}
++
+ void
+ sweet_usb_probe(void)
+ {
+@@ -160,6 +278,9 @@ sweet_usb_probe(void)
+ 	printf("SWEET USB: DWC3 GEVNTADR 0x%08x%08x GEVNTSIZ 0x%08x GEVNTCOUNT 0x%08x GHWPARAMS0 0x%08x\n",
+ 	    usb_rd(dwc, 0xc404), usb_rd(dwc, 0xc400), usb_rd(dwc, 0xc408), usb_rd(dwc, 0xc40c),
+ 	    usb_rd(dwc, 0xc140));
++	if (usb_from_dt) {
++		usb_phy_bringup(gcc, dwc);
++	}
+ 	if (enabled >= 2) {
+ 		sweet_usb_gadget_start(dwc);
+ 	}
+-- 
+2.47.3
+

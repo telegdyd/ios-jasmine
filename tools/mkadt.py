@@ -124,7 +124,7 @@ if BOARD == 'jasmine':
     # mock_utmi 0xf010, cfg_noc_usb3_axi 0x5018, aggre2_usb3_axi 0xf03c, ahb2phy 0x6a004,
     # rx0_usb2_clkref 0x88018 (the order of sweet_usb.c's usb_cbcr).
     USB = dict(reg=(0x0a800000, 0xd000, 0x0a8f8800, 0x400, 0x0c012000, 0x180, 0x00100000, 0x94000),
-               gcc=(0xf004, 0xf008, 0xf00c, 0xf010, 0x5018, 0xf03c, 0x6a004, 0x88018))
+               gcc=(0xf004, 0xf008, 0xf00c, 0xf010, 0x5018, 0xf03c, 0x6a004, 0x88018, 0x12000))  # + QUSB2PHY_PRIM_BCR
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
