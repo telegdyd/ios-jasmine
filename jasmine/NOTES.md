@@ -62,6 +62,9 @@ Build: `gh workflow run xnu.yml -R telegdyd/ios-jasmine --ref jasmine` (macOS ru
 
 - **Battery: XNU has no charger driver and no low-battery shutdown.** 2026-10-20 the lock screen ran the battery flat on PC USB. Keep sessions short. When the phone auto-boots on a charger (`oem off-mode-charge 0`) it lands in Nura's initramfs debug shell (no root), where the patched charger driver does charge; turn the screen off there: `tools/pmos-shell.py 'echo 0 > /sys/class/backlight/backlight/brightness'`. `fastboot getvar battery-voltage` reads the cell in fastboot.
 - iOS log of the lock screen boot: `logs/boot-0139-lockscreen.txt` (`tools/sweet-log.py` on the ring pulled with `dd if=/dev/mmcblk1 bs=512 skip=61063134 count=8193`). PosterBoard crashes with SIGTRAP (no wallpaper); bluetoothd and fairplayd.H2 respawn ~140 times each.
+- Respawn loop: **fairplayd.H2 is out of service** (launchd.plist patched in place on the phone 2026-10-21 03:53 with `tools/launchd-disable-inplace.py`: blocks 76 and 87 of the file at partition 4K block 1966695, sha256 3a6e896d...; original 7b41fa30...). **bluetoothd still starts** (at boot and about every 10 s) although its only job in the cache now has no MachServices/LaunchEvents and RunAtLoad/KeepAlive false: something else brings it up; not chased further (a few % CPU).
+- Settings (Preferences, pc 0) and Photos (abort) crashed once each in the j0012 sessions; Settings opened fine on 2026-10-21 02:40.
+- j0012 battery: percent from the IR-corrected (110 mOhm) averaged rest voltage; 46-50 % at 3.78-3.79 V while the gauge said 51-52 %.
 - `sweetlog=WORD,...` has no effect (conflicts with 0047's integer parse of the same boot-arg).
 
 - Under Nura's Linux, sustained eMMC reads hung the controller (CQE timeout, "cqhci: Failed to halt") and twice `reboot bootloader` from Nura hung. Linux sdhci-msm CQE on this Hynix eMMC; our XNU driver keeps CQE off.
