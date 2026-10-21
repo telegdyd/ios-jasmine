@@ -1,0 +1,98 @@
+From d0ca50d5eaf0f51f34fb89642d2f2b0b43d5d5ae Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 06:09:12 +0200
+Subject: [PATCH] jasmine-j0017: memory bandwidth on one core (is RAM the
+ renderer's brake?)
+
+After the four-core clock check, 64 MiB write / read / copy timed on one
+Gold core, the same as the Linux reference tool. RAM and bus run at what
+RPM picked with nobody voting for more. Under Nura's initramfs (also no
+interconnect votes): Silver 1382 MHz write 10.1 / read 2.1 / copy 1.5 GB/s,
+Gold write 4.8 / read 3.5 / copy 3.1 GB/s.
+---
+ osfmk/arm64/sweet_cpuclk.c | 55 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+
+diff --git a/osfmk/arm64/sweet_cpuclk.c b/osfmk/arm64/sweet_cpuclk.c
+index 688942e..431ca1c 100644
+--- a/osfmk/arm64/sweet_cpuclk.c
++++ b/osfmk/arm64/sweet_cpuclk.c
+@@ -19,6 +19,8 @@
+ #include <arm/machine_routines.h>
+ #include <arm/cpu_internal.h>
+ #include <pexpert/pexpert.h>
++#include <vm/vm_kern.h>
++#include <string.h>
+ 
+ void sweet_cpuclk_start(void);
+ uint32_t sweet_gold_clock(void);
+@@ -276,6 +278,58 @@ cpuclk_regs(void)
+ 	printf("SWEET CLK: speed-bin fuse 0x784130 = %#x %#x\n", cpuclk_rd(0x784130), cpuclk_rd(0x784134));
+ }
+ 
++/*
++ * Memory bandwidth, one core (the same 64 MiB write / read / copy as the
++ * Linux reference tools membench.c): is RAM or the bus the brake on the CPU
++ * renderer? RAM and bus run at whatever RPM picked; nothing votes for more.
++ */
++static void
++membench(void)
++{
++	vm_offset_t buf = 0;
++	vm_size_t size = 64u << 20;
++	if (kmem_alloc(kernel_map, &buf, size, KMA_DATA, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++		printf("SWEET MEM: no 64 MiB buffer\n");
++		return;
++	}
++	uint8_t *b = (uint8_t *)buf;
++	uint64_t t0, tw, tr, tc, nw, nr, nc;
++	volatile uint64_t sum = 0;
++	memset(b, 1, size);
++	t0 = mach_absolute_time();
++	for (int i = 0; i < 3; i++) {
++		memset(b, i + 2, size);
++		__asm__ volatile ("" : : "r"(b) : "memory");
++	}
++	tw = mach_absolute_time() - t0;
++	t0 = mach_absolute_time();
++	for (int i = 0; i < 3; i++) {
++		const uint64_t *p = (const uint64_t *)b;
++		uint64_t s = 0;
++		for (size_t k = 0; k < size / 8; k += 4) {
++			s += p[k] + p[k + 1] + p[k + 2] + p[k + 3];
++		}
++		sum += s;
++	}
++	tr = mach_absolute_time() - t0;
++	t0 = mach_absolute_time();
++	for (int i = 0; i < 3; i++) {
++		b[i] ^= 1;
++		__asm__ volatile ("" : : "r"(b) : "memory");
++		memcpy(b + size / 2, b, size / 2);
++		__asm__ volatile ("" : : "r"(b) : "memory");
++		sum += b[size / 2 + i];
++	}
++	tc = mach_absolute_time() - t0;
++	absolutetime_to_nanoseconds(tw, &nw);
++	absolutetime_to_nanoseconds(tr, &nr);
++	absolutetime_to_nanoseconds(tc, &nc);
++	printf("SWEET MEM: cpu %d, Gold %u MHz: write %llu MB/s, read %llu MB/s, copy %llu MB/s\n",
++	    cpu_number(), gold_mhz, 3ull * size * 1000 / (nw ? nw : 1), 3ull * size * 1000 / (nr ? nr : 1),
++	    3ull * (size / 2) * 1000 / (nc ? nc : 1));
++	kmem_free(kernel_map, buf, size);
++}
++
+ static void
+ cpuclk_thread(void *arg, wait_result_t result)
+ {
+@@ -286,6 +340,7 @@ cpuclk_thread(void *arg, wait_result_t result)
+ 		cpuclk_regs();
+ 		if (round == 0) {
+ 			gold_load_test();
++			membench();
+ 		}
+ 	}
+ }
+-- 
+2.47.3
+
