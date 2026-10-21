@@ -309,6 +309,8 @@ main(void)
       ((void (*)(void *, unsigned, unsigned, unsigned, unsigned, int))disp[677])(rctx, 0x8D40, 0x8CE0, GL_TEXTURE_2D,
                                                                                   tex, 0); /* glFramebufferTexture2D */
 
+      ((void (*)(void *, int, int, int, int))disp[335])(rctx, 0, 0, W, H); /* glViewport: an app sets it, EAGL has no drawable here */
+
       result best = {~0u};
       bool best_flip = false, best_ref_flip = false, any = false;
       uint8_t *out = malloc((size_t)H * pitch);
