@@ -359,7 +359,7 @@ main(void)
          CGContextRelease(g);
       }
       free(out);
-      printf("best: mode %u, %u pixels differ"\n", best_mode, best.diff);
+      printf("best: mode %u, %u pixels differ\n", best_mode, best.diff);
       CHECK(any && best.diff <= (unsigned)(W * H) / 50, "GPU render matches the CPU reference (at most 2%% of pixels differ)");
       CFRelease(surf);
    }
