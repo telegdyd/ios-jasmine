@@ -1,0 +1,121 @@
+From de4895234000d39e669187f86321b054024023c8 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 05:58:30 +0200
+Subject: [PATCH] jasmine-j0016: exact Gold L values, longer four-core check,
+ SoC temperatures
+
+MHz * 10 / 192 rounded down (0x39 for 1113.6 MHz): take the L values from
+the downstream perfcl table. The four-core check runs 100 workloads per core
+and logs the 14 TSENS v2 sensors (0.1 C, thermal-sensor@10ae000 TM region)
+before and after it: at 2 GHz without LMh or throttling, heat is next.
+1094/1382/1728 MHz all passed at XBL's Gold voltage (2026-10-21).
+---
+ osfmk/arm64/sweet_cpuclk.c | 45 +++++++++++++++++++++++++++++++++-----
+ 1 file changed, 39 insertions(+), 6 deletions(-)
+
+diff --git a/osfmk/arm64/sweet_cpuclk.c b/osfmk/arm64/sweet_cpuclk.c
+index 78f82f8..688942e 100644
+--- a/osfmk/arm64/sweet_cpuclk.c
++++ b/osfmk/arm64/sweet_cpuclk.c
+@@ -55,6 +55,7 @@ cpuclk_sleep(uint32_t secs)
+ #define GOLD_PLL        0x17816000ull   /* MODE 0x0, L 0x4, USER_CTL 0xc, CONFIG_CTL_LO 0x10 */
+ #define GOLD_RCG        0x17811050ull   /* CMD, CFG at +4 */
+ #define GOLD_WORK       4000000ull
++#define GOLD_LOAD_RUNS  100
+ 
+ static uint64_t gold_ref;               /* workload result at the boot clock */
+ static uint64_t gold_ref_ns;
+@@ -114,12 +115,17 @@ sweet_gold_clock(void)
+ {
+ 	uint32_t mhz = 0;
+ 	static const uint32_t steps[] = { 1113, 1401, 1747, 1958, 2150, 2208 };
++	static const uint32_t lvals[] = { 0x3a, 0x49, 0x5b, 0x66, 0x70, 0x73 };   /* sdm660.dtsi perfcl */
++	uint32_t newl = 0;
+ 	if (!PE_parse_boot_argn("sweetgold", &mhz, sizeof(mhz)) || mhz == 0) {
+ 		return 0;
+ 	}
+ 	int ok = 0;
+ 	for (uint32_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+-		ok |= steps[i] == mhz;
++		if (steps[i] == mhz) {
++			ok = 1;
++			newl = lvals[i];
++		}
+ 	}
+ 	gold_pll = (volatile uint32_t *)ml_io_map((vm_offset_t)GOLD_PLL, 0x1000);
+ 	gold_rcg = (volatile uint32_t *)ml_io_map((vm_offset_t)(GOLD_RCG & ~0xfffull), 0x1000) + (GOLD_RCG & 0xfff) / 4;
+@@ -133,8 +139,7 @@ sweet_gold_clock(void)
+ 	gold_ref = gold_timed(&ns_ref);
+ 	gold_ref_ns = ns_ref;
+ 
+-	/* MDIV: L = MHz / 19.2 (the downstream table's L values: 1113.6 -> 0x3a) */
+-	uint32_t newl = mhz * 10 / 192;
++	/* L = MHz / 19.2, from the table (1113.6 -> 0x3a) */
+ 	gold_pll[0] = 0x0;
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	gold_pll[1] = newl;
+@@ -176,7 +181,7 @@ gold_load_thread(void *arg, wait_result_t result)
+ 		thread_bind(p);
+ 		thread_block(THREAD_CONTINUE_NULL);
+ 	}
+-	for (int i = 0; i < 20; i++) {
++	for (int i = 0; i < GOLD_LOAD_RUNS; i++) {
+ 		if (gold_workload(GOLD_WORK) != gold_ref) {
+ 			__atomic_fetch_add(&gold_errors, 1, __ATOMIC_RELAXED);
+ 		}
+@@ -184,6 +189,32 @@ gold_load_thread(void *arg, wait_result_t result)
+ 	__atomic_fetch_add(&gold_done, 1, __ATOMIC_RELAXED);
+ }
+ 
++/*
++ * SoC temperatures, read only: TSENS v2 (mainline sdm660.dtsi
++ * thermal-sensor@10ae000, TM region 0x10ae000, SROT 0x10ad000): TM_Sn_STATUS at 0xa0 + 4n,
++ * bits 11:0 the last temperature in 0.1 C (signed), bit 21 valid.
++ */
++static void
++tsens_log(const char *when)
++{
++	volatile uint32_t *tm = (volatile uint32_t *)ml_io_map((vm_offset_t)0x10ac000, 0x4000);
++	if (tm == NULL) {
++		return;
++	}
++	tm += 0x2000 / 4;                       /* TM at 0x10ae000 */
++	char line[200];
++	int n = snprintf(line, sizeof(line), "SWEET TSENS: %s:", when);
++	for (int i = 0; i < 14 && n < (int)sizeof(line) - 12; i++) {
++		uint32_t v = tm[(0xa0 + 4 * i) / 4];
++		int t = (int)(v & 0xfff);
++		if (t & 0x800) {
++			t -= 0x1000;
++		}
++		n += snprintf(line + n, sizeof(line) - n, (v & (1u << 21)) ? " %d.%d" : " -", t / 10, (t < 0 ? -t : t) % 10);
++	}
++	printf("%s C\n", line);
++}
++
+ static void
+ gold_load_test(void)
+ {
+@@ -191,6 +222,7 @@ gold_load_test(void)
+ 		return;
+ 	}
+ 	uint32_t n = 0;
++	tsens_log("before the load test");
+ 	gold_done = gold_errors = 0;
+ 	uint64_t t0 = mach_absolute_time(), ns;
+ 	for (int cpu = 0; cpu < (int)real_ncpus; cpu++) {
+@@ -204,8 +236,9 @@ gold_load_test(void)
+ 		cpuclk_sleep(1);
+ 	}
+ 	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+-	printf("SWEET GOLD: %u MHz, %u cores x 20 runs at once: %u errors (%llu ms)\n",
+-	    gold_mhz, n, gold_errors, ns / 1000000);
++	printf("SWEET GOLD: %u MHz, %u cores x %u runs at once: %u errors (%llu ms)\n",
++	    gold_mhz, n, GOLD_LOAD_RUNS, gold_errors, ns / 1000000);
++	tsens_log("after the load test");
+ 	if (gold_errors) {
+ 		gold_back_to_gpll0("errors under load");
+ 	}
+-- 
+2.47.3
+
