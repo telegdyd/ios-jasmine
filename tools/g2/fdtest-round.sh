@@ -1,6 +1,7 @@
 #!/bin/bash
 # one hands-free fdtest round: boot the image with the live log, wait for
-# SweetGPU + sweetd, push the test, run it, then let the log run out
+# SweetGPU + sweetd, push the test, run it, then let the log run out.
+# BINS are pushed and run, PUSH only pushed (libraries), all from xnu/out-mesa.
 cd "/c/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine" || exit 1
 export MSYS_NO_PATHCONV=1
 IMG=$1
@@ -21,7 +22,7 @@ grep -q "SweetGPU service published" "$LOG" 2>/dev/null || { echo "SweetGPU neve
 echo "# SweetGPU up at $(date +%T)"
 # sweetd starts with launchd; retry the push until it gets through
 BINS=${BINS:-sweetgpu_fdtest}
-for b in $BINS; do
+for b in $BINS $PUSH; do
 	for i in $(seq 1 40); do
 		python tools/sweet-fs.py put "xnu/out-mesa/$b" /usr/local/bin/$b --mode 755 && break
 		sleep 3

@@ -63,6 +63,12 @@ jobs:
             codesign -f -s - --entitlements ios/entitlements.plist "out/$name"
             codesign -dv "out/$name" 2>&1 | head -3
           done
+          for src in ios/lib/*.c; do
+            name=$(basename "$src" .c)
+            xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror \
+              -dynamiclib -install_name "/usr/local/bin/$name.dylib" -o "out/$name.dylib" "$src"
+            codesign -f -s - "out/$name.dylib"
+          done
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
