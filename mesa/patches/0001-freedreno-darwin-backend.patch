@@ -1,12 +1,12 @@
-From 4889c9d44ab5d8746d9460bdc47dfa9825e9b6b7 Mon Sep 17 00:00:00 2001
+From d8dc40112b79db2ad838399412423bc3e550f946 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 16:45:54 +0200
+Date: Wed, 21 Oct 2026 16:49:35 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
  include/darwin-drm/xf86drm.h                  |  87 ++++++++
- meson.build                                   |   4 +
+ meson.build                                   |   5 +
  src/freedreno/drm/darwin/darwin_bo.c          | 108 +++++++++
  src/freedreno/drm/darwin/darwin_device.c      |  80 +++++++
  src/freedreno/drm/darwin/darwin_pipe.c        | 205 ++++++++++++++++++
@@ -16,7 +16,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/meson.build                     |   2 +-
  src/gallium/drivers/freedreno/meson.build     |  29 +++
  .../drivers/freedreno/sweetgpu_fdtest.c       | 127 +++++++++++
- 11 files changed, 770 insertions(+), 1 deletion(-)
+ 11 files changed, 771 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -118,7 +118,7 @@ index 0000000..e1858a1
 +
 +#endif /* _XF86DRM_H_ */
 diff --git a/meson.build b/meson.build
-index 5f19ef9..6e94ce1 100644
+index 5f19ef9..46c744c 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -159,6 +159,10 @@ pre_args += '-DHAVE_OPENGL_ES_2=@0@'.format(with_gles2.to_int())
@@ -132,6 +132,14 @@ index 5f19ef9..6e94ce1 100644
  system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android', 'managarm'].contains(host_machine.system())
  
  gallium_drivers = get_option('gallium-drivers')
+@@ -994,6 +998,7 @@ endif
+ 
+ with_gfx_compute = [
+   with_any_opengl,
++  host_machine.system() == 'darwin' and with_gallium_freedreno,
+   with_any_vk,
+   with_clc,
+   with_gallium_va and with_video_encode,
 diff --git a/src/freedreno/drm/darwin/darwin_bo.c b/src/freedreno/drm/darwin/darwin_bo.c
 new file mode 100644
 index 0000000..77eb82a
