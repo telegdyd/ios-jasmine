@@ -133,6 +133,7 @@ script file; Python on Windows needs `newline='\n'`; `wsl bash /mnt/c/...` paths
 > **2026-10-21 23:39: its step 1, kernel j0033, passed on the phone** (GPU.md "j0033 result"). Round scripts now
 > take `EXTRA_ARGS` (boot-args), `IOS_RUN` (ios-tools) and `PUSH`, and keep test output in `LOG.tests`;
 > `tools/g2/ci-wait.sh` re-runs CI jobs no macOS runner picked up. Phone state: running the j0033 test image.
+> **Step 2 brief for the next agent: [HANDOFF-G2-STEP2.md](HANDOFF-G2-STEP2.md).**
 
 ### Step A: decide how CoreAnimation reaches our GL (research only, nothing on the phone)
 
