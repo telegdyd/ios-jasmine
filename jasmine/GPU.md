@@ -187,6 +187,23 @@ in the one GPU address space), so instead of emulating the DRM ioctls Mesa gets 
   `-Dgles2=enabled`; a Linux host build in WSL (`~/ios-work/mesa/build-host`) compile-checks changes first.
   Next: the EAGL side (OpenGLES.framework's EAGLContext / renderbufferStorage:fromDrawable: on IOSurfaces),
   then CoreAnimation's renderer.
+- **2026-10-21 21:33: the GPU renders into IOSurfaces and samples them, with no copies.** Kernel j0032: SweetGPU
+  selector 6 maps an IOSurface's own memory (SweetSurface's kernel buffer, wrapped client memory or the panel
+  window) into the GPU address space as a buffer of the client (one handle per surface and client, the buffer holds
+  the surface; cacheable kinds are cleaned/invalidated around GPU work like the others), selector 7 returns a
+  buffer's GPU VA and size. Mesa: the darwin backend's `bo_from_dmabuf` takes an IOSurface id (a
+  `WINSYS_HANDLE_TYPE_FD` handle on Darwin), so gallium's `resource_from_handle` imports surfaces; sweetgl gained
+  `sgl_surface_create_iosurface` (render target) and `sgl_tex_image_iosurface` (texture, via
+  `st_context_teximage`, what EAGL's `texImageIOSurface:` needs). `sweetgpu_gltest` steps 5-6 passed first try:
+  the triangle rendered into a junk-filled 64x64 BGRA IOSurface reads back right through GL and in the surface's
+  memory through IOSurface.framework (top row first, as CA and the display want), and a CPU-painted BGRA
+  IOSurface samples right as a texture (`logs/netlog-j32-iosurface.txt`).
+  Known limits for CoreAnimation: freedreno on a5xx needs bytes per row in multiples of 256 (SweetSurface aligns
+  rows to 64, so a 1125-wide BGRA surface gets 4544 and would be refused; raise `SWEET_SURFACE_ROW_ALIGN` to 256,
+  scanout takes any pitch); wrapped client memory that starts inside its first page is refused for now; GPU VAs
+  are never reused (bump allocator, 28 GiB), fine for tests but not for a long-running renderer; no implicit sync
+  between processes. Next: the EAGL side (how CA reaches GL: OpenGLES.framework in the shared cache vs the
+  `IOAcceleratorES`/`gld*` renderer bundle of G0.1), then backboardd.
 - **Panics are visible now (j0030):** this board has no iBoot panic region, so `SavePanicInfo()` spins forever
   and a panic looked like a hang (ios-sapphire found the same). The panic text now goes out on the live log
   connection; `sweetpanic_test=SECS` checks it (passed 2026-10-21 20:32, `logs/netlog-j30-ptest.txt`).
