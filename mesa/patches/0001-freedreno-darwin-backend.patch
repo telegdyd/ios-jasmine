@@ -1,11 +1,11 @@
-From 0a09fbbf2198712701eaed7ec7acef18b13351e2 Mon Sep 17 00:00:00 2001
+From 4889c9d44ab5d8746d9460bdc47dfa9825e9b6b7 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 16:41:04 +0200
+Date: Wed, 21 Oct 2026 16:45:54 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
- include/darwin-drm/xf86drm.h                  |  79 +++++++
+ include/darwin-drm/xf86drm.h                  |  87 ++++++++
  meson.build                                   |   4 +
  src/freedreno/drm/darwin/darwin_bo.c          | 108 +++++++++
  src/freedreno/drm/darwin/darwin_device.c      |  80 +++++++
@@ -16,7 +16,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/meson.build                     |   2 +-
  src/gallium/drivers/freedreno/meson.build     |  29 +++
  .../drivers/freedreno/sweetgpu_fdtest.c       | 127 +++++++++++
- 11 files changed, 762 insertions(+), 1 deletion(-)
+ 11 files changed, 770 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -26,10 +26,10 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
 
 diff --git a/include/darwin-drm/xf86drm.h b/include/darwin-drm/xf86drm.h
 new file mode 100644
-index 0000000..1090fc8
+index 0000000..e1858a1
 --- /dev/null
 +++ b/include/darwin-drm/xf86drm.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,87 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -104,6 +104,14 @@ index 0000000..1090fc8
 +{ (void)fd; (void)flags; (void)handle; return -ENODEV; }
 +static inline int drmSyncobjDestroy(int fd, uint32_t handle)
 +{ (void)fd; (void)handle; return -ENODEV; }
++static inline int drmSyncobjFDToHandle(int fd, int obj_fd, uint32_t *handle)
++{ (void)fd; (void)obj_fd; (void)handle; return -ENODEV; }
++static inline int drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
++{ (void)fd; (void)handle; (void)sync_file_fd; return -ENODEV; }
++static inline int drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd)
++{ (void)fd; (void)handle; (void)sync_file_fd; return -ENODEV; }
++static inline int drmSyncobjReset(int fd, const uint32_t *handles, uint32_t handle_count)
++{ (void)fd; (void)handles; (void)handle_count; return -ENODEV; }
 +static inline int drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device)
 +{ (void)fd; (void)flags; (void)device; return -ENODEV; }
 +static inline void drmFreeDevice(drmDevicePtr *device) { (void)device; }
