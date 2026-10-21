@@ -1,0 +1,293 @@
+From 191fae95e7ffda81bac7edb106b646fdcfe049f1 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 03:11:15 +0200
+Subject: [PATCH] jasmine-j0011: backlight off with the display (PM660L WLED)
+
+jasmine's LCD is lit by the PM660L WLED; "display off" drew black at full
+backlight. sweet_pmic.c drives the WLED (qcom-wled.c WLED4: 12-bit level
+per string at sink + 0x57, SYNC toggle at sink + 0x47, module enable at
+ctrl + 0x46), ADT /sweet-pmic wled = <3 0xd800 0xd900 2>. AppleCLCD turns
+the module off on RequestPowerChange(0) (power button, auto-lock) and back
+on at the previous level; sweetbl_level= sets the level at boot, sweetbl=1
+publishes the backlight service (brightness slider, at the cost of
+CoreAnimation's digital dimming). The platform expert now sets up the
+PMIC and touch before registerService: SweetBattery and AppleCLCD started
+before it and missed the gauge.
+---
+ bsd/dev/sweet_pmic.c                     | 109 +++++++++++++++++++++++
+ iokit/Kernel/arm/SweetFramebuffer.cpp    |  43 +++++++--
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |   9 +-
+ 3 files changed, 153 insertions(+), 8 deletions(-)
+
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index 17e4569..70f4314 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -10,6 +10,7 @@
+  *   rtc      = <sid RDATA0> (u32), 4 bytes of seconds, little endian
+  *   charger  = <sid base> (u32), the PM660 charger (qcom,pm660-charger)
+  *   fg       = <sid base> (u32), the PM660 fuel gauge (read only)
++ *   wled     = <sid ctrl sink strings> (u32), the PM660L LCD backlight
+  *
+  * Arbiter v3 uses the v2 layout (Linux spmi-pmic-arb.c, see
+  * SweetPlatformExpert.cpp): the APID map at core + 0x800 + 4 * n holds the
+@@ -49,6 +50,8 @@ struct sweet_fg {
+ 	int online, charging, full;
+ };
+ int sweet_fg_read(struct sweet_fg *out);
++int sweet_wled_get(void);
++int sweet_wled_set(uint32_t level);
+ 
+ #define PMIC_MAX_KEYS   4
+ #define PMIC_NO_APID    0xffffu
+@@ -567,6 +570,111 @@ pmic_fg_init(DTEntry node)
+ 	}
+ }
+ 
++/*
++ * PM660L WLED (qcom,pm660l-wled, qcom-wled.c WLED4): the LCD backlight.
++ * ADT /sweet-pmic wled = <sid ctrl sink strings>. Brightness is 12 bits per
++ * string at sink + 0x57 + 0x10 * n (LSB, MSB), latched by toggling the sink
++ * SYNC bits (sink + 0x47, 0 then 0xf); the module is ctrl + 0x46 bit 7.
++ * Linux enforces WLED4's 0.4 % floor for non-zero levels; so do we.
++ */
++static uint32_t wled_strings, wled_ctrl, wled_sink, wled_level = 2048;
++static volatile uint32_t *wled_ctrl_rd, *wled_ctrl_wr, *wled_sink_rd, *wled_sink_wr;
++
++static int
++wled_update(volatile uint32_t *rd, volatile uint32_t *wr, uint32_t addr, uint8_t mask, uint8_t val)
++{
++	uint32_t old = 0;
++	lck_spin_lock(&sweet_pmic_lock);
++	int r = pmic_read(rd, addr, 1, &old);
++	if (r == 0) {
++		r = pmic_write(wr, addr, (uint8_t)((old & ~mask) | (val & mask)));
++	}
++	lck_spin_unlock(&sweet_pmic_lock);
++	return r;
++}
++
++int
++sweet_wled_get(void)
++{
++	return wled_sink_wr == NULL ? -1 : (int)wled_level;
++}
++
++/* 0: module off (backlight dark); else the 12-bit level on every string */
++int
++sweet_wled_set(uint32_t level)
++{
++	int r = 0;
++	if (wled_sink_wr == NULL) {
++		return -1;
++	}
++	if (level == 0) {
++		return wled_update(wled_ctrl_rd, wled_ctrl_wr, wled_ctrl + 0x46, 0x80, 0);
++	}
++	level = level > 0xfff ? 0xfff : (level < 17 ? 17 : level);       /* 0.4 % of 4095 */
++	for (uint32_t n = 0; n < wled_strings && r == 0; n++) {
++		lck_spin_lock(&sweet_pmic_lock);
++		r = pmic_write(wled_sink_wr, wled_sink + 0x57 + 0x10 * n, (uint8_t)level);
++		if (r == 0) {
++			r = pmic_write(wled_sink_wr, wled_sink + 0x58 + 0x10 * n, (uint8_t)(level >> 8));
++		}
++		lck_spin_unlock(&sweet_pmic_lock);
++	}
++	if (r == 0) {
++		r = wled_update(wled_sink_rd, wled_sink_wr, wled_sink + 0x47, 0x0f, 0);
++	}
++	if (r == 0) {
++		r = wled_update(wled_sink_rd, wled_sink_wr, wled_sink + 0x47, 0x0f, 0x0f);
++	}
++	if (r == 0) {
++		r = wled_update(wled_ctrl_rd, wled_ctrl_wr, wled_ctrl + 0x46, 0x80, 0x80);
++	}
++	if (r == 0) {
++		wled_level = level;
++	}
++	return r;
++}
++
++static void
++pmic_wled_init(DTEntry node)
++{
++	uint32_t const *w = NULL;
++	unsigned int size = 0;
++	uint16_t capid = PMIC_NO_APID, sapid = PMIC_NO_APID;
++	if (SecureDTGetProperty(node, "wled", (void const **)&w, &size) != kSuccess ||
++	    size < 4 * sizeof(uint32_t) || pmic_chnls_pa == 0) {
++		return;
++	}
++	wled_ctrl = w[1];
++	wled_sink = w[2];
++	wled_strings = w[3] > 4 ? 4 : w[3];
++	wled_ctrl_rd = pmic_channel(w[0], wled_ctrl, &capid);
++	wled_sink_rd = pmic_channel(w[0], wled_sink, &sapid);
++	wled_ctrl_wr = wled_ctrl_rd ? pmic_wchannel(capid) : NULL;
++	volatile uint32_t *swr = wled_sink_rd ? pmic_wchannel(sapid) : NULL;
++	uint32_t mod = 0, cur = 0;
++	int r = -1;
++	if (wled_ctrl_wr != NULL && swr != NULL) {
++		lck_spin_lock(&sweet_pmic_lock);
++		r = pmic_read(wled_ctrl_rd, wled_ctrl + 0x46, 1, &mod);
++		if (r == 0) {
++			r = pmic_read(wled_sink_rd, wled_sink + 0x57, 2, &cur);
++		}
++		lck_spin_unlock(&sweet_pmic_lock);
++	}
++	if (r != 0) {
++		printf("SWEET WLED: not accessible (%d), backlight left alone\n", r);
++		return;
++	}
++	wled_level = cur & 0xfff;
++	wled_sink_wr = swr;
++	uint32_t want = 0;
++	if (PE_parse_boot_argn("sweetbl_level", &want, sizeof(want)) && want != 0) {
++		r = sweet_wled_set(want);
++	}
++	printf("SWEET WLED: module %#x, boot level %u/4095, now %u (%d), %u strings\n",
++	    mod, cur & 0xfff, wled_level, r, wled_strings);
++}
++
+ int
+ sweet_pmic_init(void)
+ {
+@@ -619,6 +727,7 @@ sweet_pmic_init(void)
+ 
+ 	pmic_charger_init(node);
+ 	pmic_fg_init(node);
++	pmic_wled_init(node);
+ 
+ 	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
+ 	if (!enabled ||
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 4af9f54..f4dec49 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -80,6 +80,9 @@ class OSDictionary;
+ static void sweet_bl_log(const char *who, OSDictionary *d);
+ extern "C" void sweet_dcache_clean(vm_offset_t addr, unsigned length);  /* osfmk/arm/caches.c */
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++/* bsd/dev/sweet_pmic.c: jasmine PM660L WLED backlight (12-bit, 0 = off) */
++extern "C" int sweet_wled_get(void);
++extern "C" int sweet_wled_set(uint32_t level);
+ 
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+@@ -186,6 +189,8 @@ public:
+ 	uint32_t      fFitX, fFitW;
+ 	uint16_t     *fFitXMap, *fFitYMap;  /* panel column / row -> logical x / y */
+ 	bool          jasmineMdp(void);
++	bool          fWled;          /* jasmine: backlight is the PM660L WLED */
++	uint32_t      fWledOn;        /* WLED level to restore when the display turns on */
+ 	void          composeFit(uint8_t *dst, SweetSurface *s, int32_t sx, int32_t sy,
+ 	    int32_t dx, int32_t dy, int32_t w, int32_t h);
+ 	uint64_t      fFlipPhys[2];
+@@ -342,8 +347,23 @@ AppleCLCD::start(IOService *provider)
+ 	fBlLevel = 0x133;                       /* panel init level (stock DT) */
+ 	fBlSent = ~0u;
+ 	fBlCall = thread_call_allocate(&AppleCLCD::blWork, this);
+-	if (fDsi != NULL) {
+-		IOLog("SWEET FB: DSI0 ctrl %#x, brightness via DCS 0x51\n", *(volatile uint32_t *)(fDsi + 0x004));
++	/*
++	 * jasmine: an LCD lit by the PM660L WLED. Display off (power button,
++	 * auto-lock) switches the backlight off instead of drawing black at full
++	 * backlight; the level stays ABL's unless sweetbl_level= or sweetbl=1.
++	 */
++	int wl = topaz ? -1 : sweet_wled_get();
++	fWled = wl >= 0;
++	if (fWled) {
++		fWledOn = wl > 0 ? (uint32_t)wl : 2048;
++		fBlLevel = fWledOn * 0x7ff / 4095;
++	}
++	if (fDsi != NULL || fWled) {
++		if (fDsi != NULL) {
++			IOLog("SWEET FB: DSI0 ctrl %#x, brightness via DCS 0x51\n", *(volatile uint32_t *)(fDsi + 0x004));
++		} else {
++			IOLog("SWEET FB: backlight via the PM660L WLED, level %u/4095\n", fWledOn);
++		}
+ 		setProperty("IOMFBBrightnessLevel", (unsigned long long)(200u << 16), 32);
+ 		/*
+ 		 * Off unless sweetbl=1: with a backlight service CoreBrightness also
+@@ -631,8 +651,8 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		 * topaz: fade in cached memory and flip whole frames to the MDP.
+ 		 * Fading the uncached boot framebuffer in place crawled down the panel.
+ 		 */
+-		if (fb->fDsi != NULL) {
+-			/* the panel is dark (DCS 0x51 0); keep the last frame */
++		if (fb->fDsi != NULL || fb->fWled) {
++			/* the panel is dark (DCS 0x51 0 / WLED off); keep the last frame */
+ 			IOLockUnlock(fb->fLock);
+ 			sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 			return;
+@@ -851,6 +871,11 @@ AppleCLCD::dsiSend(const uint8_t hdr[4], const uint8_t *payload, uint32_t len)
+ void
+ AppleCLCD::setPanelOn(bool on)
+ {
++	if (fWled) {
++		int r = sweet_wled_set(on ? fWledOn : 0);
++		IOLog("SWEET FB: backlight %s (WLED %u): %d\n", on ? "on" : "off", on ? fWledOn : 0, r);
++		return;
++	}
+ 	uint8_t hdr[4] = { (uint8_t)(on ? 0x29 : 0x28), 0, 0x05, 0x80 };
+ 	IOLockLock(fBlLock);
+ 	bool done = dsiSend(hdr, NULL, 0);
+@@ -861,6 +886,12 @@ AppleCLCD::setPanelOn(bool on)
+ void
+ AppleCLCD::setPanelLevel(uint32_t level)
+ {
++	if (fWled) {
++		/* DBV 1..0x7ff -> WLED 12 bits */
++		fWledOn = level * 4095 / 0x7ff;
++		(void)sweet_wled_set(fWledOn);
++		return;
++	}
+ 	uint8_t cmd[3] = { 0x51, (uint8_t)(level >> 8), (uint8_t)level };   /* MSB first */
+ 	IOLockLock(fBlLock);
+ 	bool done = dsiDcsLong(cmd, sizeof(cmd));
+@@ -882,7 +913,7 @@ AppleCLCD::setProperties(OSObject *properties)
+ 	OSDictionary *d = OSDynamicCast(OSDictionary, properties);
+ 	sweet_bl_log("iomfb", d);
+ 	OSNumber *n = d ? OSDynamicCast(OSNumber, d->getObject("IOMFBBrightnessLevel")) : NULL;
+-	if (n == NULL || fDsi == NULL) {
++	if (n == NULL || (fDsi == NULL && !fWled)) {
+ 		return kIOReturnUnsupported;
+ 	}
+ 	uint64_t v = n->unsigned64BitValue();
+@@ -1399,7 +1430,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			}
+ 			uint32_t level = fFB->fBlLevel;
+ 			IOLockUnlock(fFB->fLock);
+-			if (changed && fFB->fDsi != NULL) {
++			if (changed && (fFB->fDsi != NULL || fFB->fWled)) {
+ 				if (off) {
+ 					fFB->setPanelOn(false);
+ 				} else {
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 6944572..02042c2 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -228,13 +228,18 @@ SweetPlatformExpert::start(IOService *provider)
+ 	if (!IODTPlatformExpert::start(provider)) {
+ 		return false;
+ 	}
++	/*
++	 * PMIC (RTC, charger, gauge, backlight) and touch before registerService
++	 * lets the other drivers start: SweetBattery and AppleCLCD look for them.
++	 */
++	bool rtc = sweet_pmic_init() != 0;
++	sweet_nvt_init();
+ 	registerService();
+ 	IOLog("SWEET: platform expert registered\n");
+ 	/* IOKitInitializeTime waits up to 30 s for IORTC before reading the clock */
+-	if (sweet_pmic_init()) {
++	if (rtc) {
+ 		publishResource("IORTC", this);
+ 	}
+-	sweet_nvt_init();
+ 	return true;
+ }
+ 
+-- 
+2.47.3
+
