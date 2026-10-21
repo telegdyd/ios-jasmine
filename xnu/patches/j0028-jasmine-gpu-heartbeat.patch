@@ -1,0 +1,122 @@
+From 86d9368cd37cb18aad2c2b108fa896fabe46102a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 19:58:21 +0200
+Subject: [PATCH] jasmine-j0028: SweetGPU debug logs every call; GPU state
+ before the timestamp read; heartbeat
+
+Mesa's first run still froze the phone right after "opened by", before the
+first buffer: inside one of the parameter calls, likely the timestamp
+query, the one call that reads the GPU core. sweetgpu_debug=1 now logs
+every user-client call on entry and dumps the clock controller / LDO state
+(GPU CX/GX GDSCs, gfx3d clock, GCC GPU AHB and BIMC branches; never the
+GPU core) before the timestamp read. sweetgpu_debug=2 adds a heartbeat:
+every 10 s that state, then one read of the GPU core, to see whether the
+GPU's registers stop answering on their own some time after bring-up.
+---
+ bsd/dev/sweet_gpu.c           | 46 +++++++++++++++++++++++++++++++++--
+ iokit/Kernel/arm/SweetGPU.cpp |  7 ++++++
+ 2 files changed, 51 insertions(+), 2 deletions(-)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 6a6f2a6..d9ede89 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -307,11 +307,13 @@ static void
+ gpu_state(const char *when)
+ {
+ 	printf("SWEET GPU: %s: CX GDSCR %08x (hw %08x), GX GDSCR %08x, clamp %08x, LDO ctl %08x st %08x, "
+-	    "gfx3d rcg %08x/%08x cbcr %08x, rbbmtimer %08x, rbcpr %08x, cxo %08x\n", when,
++	    "gfx3d rcg %08x/%08x cbcr %08x, rbbmtimer %08x, rbcpr %08x, cxo %08x; gcc gpu ahb %08x bimc_gfx %08x %08x\n", when,
+ 	    cc_rd(GPUCC_CX_GDSCR), cc_rd(GPUCC_CX_GDS_HW_CTRL), cc_rd(GPUCC_GX_GDSCR), cc_rd(GPUCC_CLAMP_IO),
+ 	    sg.ldo[LDO_PWRSWITCH_CTRL / 4], sg.ldo[LDO_PWRSWITCH_STATUS / 4],
+ 	    cc_rd(GPUCC_GFX3D_RCG), cc_rd(GPUCC_GFX3D_RCG + 4), cc_rd(GPUCC_GFX3D_CBCR),
+-	    cc_rd(GPUCC_RBBMTIMER_CBCR), cc_rd(GPUCC_RBCPR_CBCR), cc_rd(GPUCC_CXO_CBCR));
++	    cc_rd(GPUCC_RBBMTIMER_CBCR), cc_rd(GPUCC_RBCPR_CBCR), cc_rd(GPUCC_CXO_CBCR),
++	    *(volatile uint32_t *)(sg.gcc + GCC_GPU_CFG_AHB_CBCR), *(volatile uint32_t *)(sg.gcc + GCC_GPU_BIMC_GFX_CBCR),
++	    *(volatile uint32_t *)(sg.gcc + GCC_BIMC_GFX_CBCR));
+ }
+ 
+ static int
+@@ -941,6 +943,40 @@ sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms)
+ }
+ 
+ /* Values for userland (Mesa's MSM_PARAM_* counterparts, SweetGPU.cpp). */
++/* sweetgpu_debug: the clock controller / LDO state (never the GPU core), for SweetGPU.cpp */
++void sweet_gpu_debug_state(const char *when);
++void
++sweet_gpu_debug_state(const char *when)
++{
++	if (sg.gpucc != NULL) {
++		gpu_state(when);
++	}
++}
++
++/*
++ * sweetgpu_debug=2: every 10 s, the clock controller state, then (after a
++ * pause so the line leaves over USB) one read of the GPU core. Shows whether
++ * the GPU's registers stop answering some time after bring-up on their own.
++ */
++static void
++gpu_heartbeat(void)
++{
++	for (unsigned int n = 1; gpu_ready; n++) {
++		(void)tsleep(&sweet_gpu_chan, PZERO, "sweetgpuhb", hz * 10);
++		lck_mtx_lock(gpu_lock);
++		if (gpu_ready) {
++			char what[48];
++			snprintf(what, sizeof(what), "heartbeat %u, GPU core read next", n);
++			gpu_state(what);
++			delay(200000);
++			uint32_t st = gpu_rd(RBBM_STATUS), aon = gpu_rd(RBBM_ALWAYSON_COUNTER_LO);
++			printf("SWEET GPU: heartbeat %u: RBBM_STATUS %08x always-on %08x, completed %u\n", n, st, aon,
++			    sg.mem[FENCE_OFF / 4]);
++		}
++		lck_mtx_unlock(gpu_lock);
++	}
++}
++
+ uint64_t sweet_gpu_param(uint32_t which);
+ uint64_t
+ sweet_gpu_param(uint32_t which)
+@@ -1360,7 +1396,13 @@ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
+ 		sg.mem[FENCE_OFF / 4] = 0;
+ 		gpu_ready = true;
+ 		if (gpu_vm_selftest() == 0) {
++			uint32_t debug = 0;
+ 			sweet_gpu_publish();
++			gpu_state("published");
++			if (PE_parse_boot_argn("sweetgpu_debug", &debug, sizeof(debug)) && debug >= 2) {
++				printf("SWEET GPU: heartbeat every 10 s\n");
++				gpu_heartbeat();
++			}
+ 		} else {
+ 			gpu_ready = false;
+ 			printf("SWEET GPU: self-test failed, no SweetGPU service\n");
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index ac868ea..4ec0986 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -49,6 +49,7 @@ int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
+ uint32_t sweet_gpu_completed(void);
+ uint64_t sweet_gpu_param(uint32_t which);
+ int sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms);
++void sweet_gpu_debug_state(const char *when);
+ void sweet_gpu_publish(void);
+ }
+ 
+@@ -247,6 +248,12 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 	const uint64_t *in = args->scalarInput;
+ 	uint32_t nin = args->scalarInputCount;
+ 
++	GPULOG("call %u (%llx %llx)", selector, nin > 0 ? in[0] : 0, nin > 1 ? in[1] : 0);
++	if (sweet_gpu_debug && selector == 0 && nin > 0 && in[0] == 8) {
++		sweet_gpu_debug_state("timestamp read next");
++		IOSleep(150);
++	}
++
+ 	switch (selector) {
+ 	case 0:         /* get param */
+ 		if (nin < 1 || args->scalarOutputCount < 1) {
+-- 
+2.47.3
+
