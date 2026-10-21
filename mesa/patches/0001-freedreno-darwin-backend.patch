@@ -1,6 +1,6 @@
-From 5458f0ae1a4fac548591682cd623bf82f7c011ef Mon Sep 17 00:00:00 2001
+From 0a09fbbf2198712701eaed7ec7acef18b13351e2 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 16:38:12 +0200
+Date: Wed, 21 Oct 2026 16:41:04 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -15,8 +15,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/meson.build                 |  11 +
  src/freedreno/meson.build                     |   2 +-
  src/gallium/drivers/freedreno/meson.build     |  29 +++
- .../drivers/freedreno/sweetgpu_fdtest.c       | 124 +++++++++++
- 11 files changed, 759 insertions(+), 1 deletion(-)
+ .../drivers/freedreno/sweetgpu_fdtest.c       | 127 +++++++++++
+ 11 files changed, 762 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -720,7 +720,7 @@ index e8f01b8..a6c37f9 100644
  endif
  
 diff --git a/src/gallium/drivers/freedreno/meson.build b/src/gallium/drivers/freedreno/meson.build
-index b04379b..1a27aab 100644
+index b04379b..d828f3f 100644
 --- a/src/gallium/drivers/freedreno/meson.build
 +++ b/src/gallium/drivers/freedreno/meson.build
 @@ -322,3 +322,32 @@ gmemtool = executable(
@@ -737,7 +737,7 @@ index b04379b..1a27aab 100644
 +      freedreno_tracepoints[1],
 +      freedreno_xml_header_files,
 +    ],
-+    include_directories : [freedreno_includes, inc_util],
++    include_directories : [freedreno_includes, inc_util, inc_gallium_aux],
 +    dependencies : [
 +      idep_nir,
 +      idep_mesautil,
@@ -758,10 +758,10 @@ index b04379b..1a27aab 100644
 +endif
 diff --git a/src/gallium/drivers/freedreno/sweetgpu_fdtest.c b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
 new file mode 100644
-index 0000000..50a170f
+index 0000000..f6b655a
 --- /dev/null
 +++ b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,127 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -783,12 +783,15 @@ index 0000000..50a170f
 +#include "pipe/p_state.h"
 +#include "frontend/drm_driver.h"
 +#include "util/os_time.h"
++#include "util/driconf.h"
 +#include "util/u_inlines.h"
 +#include "util/xmlconfig.h"
 +
 +#include "freedreno_screen.h"
 +
++/* the options the pipe-loader would give freedreno: gallium's, then its own */
 +static const driOptionDescription fd_driconf[] = {
++#include "pipe-loader/driinfo_gallium.h"
 +#include "driinfo_freedreno.h"
 +};
 +
