@@ -1149,6 +1149,7 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    char cc[5];
    fourcc_str(fourcc, cc);
 
+   invert = flip_mode ? !invert : invert;
    struct surf_fmt f;
    bool ok = !planar && ((format && fmt_from_gl(format, type, &f)) || fmt_from_surface(fourcc, bpe, &f));
    if (!ok) {
@@ -1532,6 +1533,14 @@ install_texfns(void)
 
 /* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
 int sweetca_installed(void);
+void sweetca_set_flip(int mode);
+static int flip_mode; /* 0: flip the rows of a surface when CA says invert; 1: when it does not */
+
+__attribute__((visibility("default"))) void
+sweetca_set_flip(int mode)
+{
+   flip_mode = mode;
+}
 void sweetca_set_trace(int level);
 
 __attribute__((visibility("default"))) void

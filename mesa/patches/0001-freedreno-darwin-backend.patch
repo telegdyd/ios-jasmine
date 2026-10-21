@@ -1,6 +1,6 @@
-From 7a57c49d26f5f336fb47f72df5b397041691d4fd Mon Sep 17 00:00:00 2001
+From 2def827d19fef7770ca6180e846f9399cbcfa18d Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 01:12:47 +0200
+Date: Thu, 22 Oct 2026 01:20:41 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1576 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1585 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5309 insertions(+), 1 deletion(-)
+ 20 files changed, 5318 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..3f5296d
+index 0000000..7b57374
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1576 @@
+@@ -0,0 +1,1585 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2438,6 +2438,7 @@ index 0000000..3f5296d
 +   char cc[5];
 +   fourcc_str(fourcc, cc);
 +
++   invert = flip_mode ? !invert : invert;
 +   struct surf_fmt f;
 +   bool ok = !planar && ((format && fmt_from_gl(format, type, &f)) || fmt_from_surface(fourcc, bpe, &f));
 +   if (!ok) {
@@ -2821,6 +2822,14 @@ index 0000000..3f5296d
 +
 +/* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
 +int sweetca_installed(void);
++void sweetca_set_flip(int mode);
++static int flip_mode; /* 0: flip the rows of a surface when CA says invert; 1: when it does not */
++
++__attribute__((visibility("default"))) void
++sweetca_set_flip(int mode)
++{
++   flip_mode = mode;
++}
 +void sweetca_set_trace(int level);
 +
 +__attribute__((visibility("default"))) void

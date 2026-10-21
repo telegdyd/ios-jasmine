@@ -28,6 +28,7 @@
 
 extern int sweetca_installed(void);
 extern void sweetca_set_trace(int level);
+extern void sweetca_set_flip(int mode);
 
 #define W 256
 #define H 256
@@ -263,72 +264,57 @@ main(void)
          surf, GL_TEXTURE_2D, GL_RGBA, W, H, GL_BGRA, GL_UNSIGNED_BYTE, 0, NO);
       CHECK(bound && tex != 0, "texImageIOSurface: binds the surface to texture %u", tex);
 
-      /* the layer tree, drawn by CA on the CPU as the reference */
-      CALayer *root = make_tree();
-      [CATransaction flush];
-      CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-      CGContextRef g = CGBitmapContextCreate(NULL, W, H, 8, W * 4, cs,
-                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-      CGColorSpaceRelease(cs);
-      CGContextTranslateCTM(g, 0, H);
-      CGContextScaleCTM(g, 1, -1);
-      [root renderInContext:g];
-      const uint8_t *ref = CGBitmapContextGetData(g);
-      size_t ref_pitch = CGBitmapContextGetBytesPerRow(g);
-      samples("CPU reference", ref, ref_pitch);
-
-      Class CAR = NSClassFromString(@"CARenderer");
-      CHECK(CAR != Nil, "CARenderer class");
-      id renderer = ((id(*)(id, SEL, id, id))objc_msgSend)((id)CAR, sel_registerName("rendererWithEAGLContext:options:"),
-                                                          ctx, nil);
-      CHECK(renderer != nil, "+rendererWithEAGLContext:options: gives a renderer (CA's GLES renderer)");
-      if (!renderer)
-         return 1;
-      ((void (*)(id, SEL, id))objc_msgSend)(renderer, sel_registerName("setLayer:"), root);
-      ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("setBounds:"), CGRectMake(0, 0, W, H));
-      [CATransaction flush];
-
-      /*
-       * -[CARenderer setDestination:] calls GLESContext::set_destination_texture(0, arg, false)
-       * (target 0), which is not what a texture needs: call the virtual method with the
-       * target and the flip we want. GLESContext is at renderer->_priv + 0x18.
-       */
-      Ivar priv_iv = class_getInstanceVariable(CAR, "_priv");
-      char *priv = *(char **)((char *)(__bridge void *)renderer + ivar_getOffset(priv_iv));
-      void *glctx = priv ? *(void **)(priv + 0x18) : NULL;
-      CHECK(glctx != NULL, "renderer has a GLESContext");
-      if (!glctx)
-         return 1;
-      typedef void (*set_dest_t)(void *, unsigned long, unsigned long, bool);
-      set_dest_t set_dest = (set_dest_t)(*(void ***)glctx)[2];
-
       /* CA draws into the framebuffer bound on the context: ours has the surface's texture as its color */
       unsigned fbo = 0;
       ((void (*)(void *, int, unsigned *))disp[674])(rctx, 1, &fbo);                      /* glGenFramebuffers */
       ((void (*)(void *, unsigned, unsigned))disp[672])(rctx, 0x8D40, fbo);               /* glBindFramebuffer */
       ((void (*)(void *, unsigned, unsigned, unsigned, unsigned, int))disp[677])(rctx, 0x8D40, 0x8CE0, GL_TEXTURE_2D,
                                                                                   tex, 0); /* glFramebufferTexture2D */
-
       ((void (*)(void *, int, int, int, int))disp[335])(rctx, 0, 0, W, H); /* glViewport: an app sets it, EAGL has no drawable here */
 
       result best = {~0u};
-      bool best_flip = false, best_ref_flip = false, any = false;
+      unsigned best_mode = 0;
+      bool any = false;
       uint8_t *out = malloc((size_t)H * pitch);
-      for (int flip = 0; flip < 3; flip++) {
+      Class CAR = NSClassFromString(@"CARenderer");
+      CHECK(CAR != Nil, "CARenderer class");
+      /* modes of libsweetca's handling of IOSurface textures (sweetca_set_flip); a fresh layer tree each,
+       * so CA uploads its images again */
+      for (int mode = 0; mode < 2; mode++) {
+         sweetca_set_flip(mode);
+         /* the layer tree, drawn by CA on the CPU as the reference */
+         CALayer *root = make_tree();
+         [CATransaction flush];
+         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+         CGContextRef g = CGBitmapContextCreate(NULL, W, H, 8, W * 4, cs,
+                                                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+         CGColorSpaceRelease(cs);
+         CGContextTranslateCTM(g, 0, H);
+         CGContextScaleCTM(g, 1, -1);
+         [root renderInContext:g];
+         const uint8_t *ref = CGBitmapContextGetData(g);
+         size_t ref_pitch = CGBitmapContextGetBytesPerRow(g);
+         if (mode == 0)
+            samples("CPU reference", ref, ref_pitch);
+
+         id renderer = ((id(*)(id, SEL, id, id))objc_msgSend)((id)CAR, sel_registerName("rendererWithEAGLContext:options:"),
+                                                             ctx, nil);
+         CHECK(renderer != nil, "+rendererWithEAGLContext:options: gives a renderer (CA's GLES renderer)");
+         if (!renderer)
+            return 1;
+         ((void (*)(id, SEL, id))objc_msgSend)(renderer, sel_registerName("setLayer:"), root);
+         ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("setBounds:"), CGRectMake(0, 0, W, H));
+         [CATransaction flush];
+
          /* junk first, so pixels the GPU did not write stand out */
          IOSurfaceLock(surf, 0, NULL);
          memset(IOSurfaceGetBaseAddress(surf), 0x5a, (size_t)H * pitch);
          IOSurfaceUnlock(surf, 0, NULL);
 
-         if (flip)
-            set_dest(glctx, GL_TEXTURE_2D, tex, flip == 2); /* variants 1, 2: also name it as the destination texture, flipped in 2 */
          double t0 = CACurrentMediaTime();
          ((void (*)(id, SEL, CFTimeInterval, void *))objc_msgSend)(renderer, sel_registerName("beginFrameAtTime:timeStamp:"),
                                                                    t0, NULL);
          ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("addUpdateRect:"), CGRectMake(0, 0, W, H));
-         printf("nextFrameTime %.3f, missing content %d\n",
-                ((double (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("nextFrameTime")),
-                ((BOOL(*)(id, SEL))objc_msgSend)(renderer, sel_registerName("hasMissingContent")));
          ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("render"));
          ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("endFrame"));
          double t1 = CACurrentMediaTime();
@@ -337,38 +323,23 @@ main(void)
          IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
          memcpy(out, IOSurfaceGetBaseAddress(surf), (size_t)H * pitch);
          IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
-         printf("render, variant %d took %.0f ms\n", flip, (t1 - t0) * 1000);
+         printf("render, mode %d took %.0f ms\n", mode, (t1 - t0) * 1000);
          char name[64];
-         snprintf(name, sizeof(name), "GPU, variant %d", flip);
+         snprintf(name, sizeof(name), "GPU, mode %d", mode);
          samples(name, out, pitch);
-         for (int rf = 0; rf < 2; rf++) {
-            result r = compare(out, pitch, ref, ref_pitch, rf != 0);
-            printf(" flip=%d vs %s reference: %u of %d pixels differ by more than %d (image %u, rounded %u, opacity %u, "
-                   "rotated %u, text %u)\n",
-                   flip, rf ? "flipped" : "plain", r.diff, W * H, TOL, r.region[0], r.region[1], r.region[2],
-                   r.region[3], r.region[4]);
-            if (r.diff < best.diff) {
-               best = r;
-               best_flip = flip != 0;
-               best_ref_flip = rf != 0;
-               any = true;
-            }
-         }
-      }
-      /* where they differ: 16x16 blocks, '.' none, else the count in tens (9 = 90 or more) */
-      {
-         uint8_t *g = malloc((size_t)H * pitch);
-         IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
-         memcpy(g, IOSurfaceGetBaseAddress(surf), (size_t)H * pitch);
-         IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
-         printf(" difference map (last render, plain reference):\n");
+         result r = compare(out, pitch, ref, ref_pitch, false);
+         printf(" mode %d: %u of %d pixels differ by more than %d (image %u, rounded %u, opacity %u, "
+                "rotated %u, text %u)\n",
+                mode, r.diff, W * H, TOL, r.region[0], r.region[1], r.region[2], r.region[3], r.region[4]);
+         /* where they differ: 16x16 blocks, '.' none, else the count in tens (9 = 90 or more) */
+         printf(" difference map:\n");
          for (int by = 0; by < H / 16; by++) {
             char row[H / 16 + 1];
             for (int bx = 0; bx < W / 16; bx++) {
                int n = 0;
                for (int y = 0; y < 16; y++)
                   for (int x = 0; x < 16; x++) {
-                     const uint8_t *a = g + (size_t)(by * 16 + y) * pitch + (bx * 16 + x) * 4;
+                     const uint8_t *a = out + (size_t)(by * 16 + y) * pitch + (bx * 16 + x) * 4;
                      const uint8_t *b = ref + (size_t)(by * 16 + y) * ref_pitch + (bx * 16 + x) * 4;
                      int d = 0;
                      for (int c = 0; c < 3; c++)
@@ -380,13 +351,16 @@ main(void)
             row[W / 16] = 0;
             printf("  %s\n", row);
          }
-         free(g);
+         if (r.diff < best.diff) {
+            best = r;
+            best_mode = mode;
+            any = true;
+         }
+         CGContextRelease(g);
       }
       free(out);
-      printf("best: destination flip=%d against the %s reference, %u pixels differ\n", best_flip,
-             best_ref_flip ? "flipped" : "plain", best.diff);
+      printf("best: mode %u, %u pixels differ"\n", best_mode, best.diff);
       CHECK(any && best.diff <= (unsigned)(W * H) / 50, "GPU render matches the CPU reference (at most 2%% of pixels differ)");
-      CGContextRelease(g);
       CFRelease(surf);
    }
    if (failures) {
