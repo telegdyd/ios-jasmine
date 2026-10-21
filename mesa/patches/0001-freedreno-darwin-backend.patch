@@ -1,6 +1,6 @@
-From 2e6ffe2ccabee71e4db9a2fd21496974a4acb220 Mon Sep 17 00:00:00 2001
+From 671b556f1df2ac7b46784470fb3f1d9beb428a6e Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 01:51:20 +0200
+Date: Thu, 22 Oct 2026 01:58:07 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1615 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1622 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 ++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5348 insertions(+), 1 deletion(-)
+ 20 files changed, 5355 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..71e5b92
+index 0000000..00843ff
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1615 @@
+@@ -0,0 +1,1622 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1812,6 +1812,9 @@ index 0000000..71e5b92
 +{
 +   CUR(rctx);
 +   GLenum t = tgt(c, target);
++   if (trace_on > 1)
++      sca_log("sweetca: TexImage2D tex %u target %#x level %d ifmt %#x %dx%d fmt %#x type %#x data %p", c->held[c->active], target, level,
++              ifmt, w, h, format, type, pixels);
 +   set_swizzle(c, t, NULL, false);
 +   if (format == GL_BGRA_EXT_ && (ifmt == GL_RGBA || ifmt == GL_RGBA8))
 +      ifmt = GL_BGRA_EXT_;
@@ -1846,6 +1849,10 @@ index 0000000..71e5b92
 +                    GLsizei w, GLsizei h)
 +{
 +   CUR(rctx);
++   if (trace_on > 1)
++      sca_log("sweetca: CopyTexSubImage2D tex %u (%ux%u) level %d at %d,%d from %d,%d size %dx%d, fbo %u", c->held[c->active],
++              c->tex_w[c->held[c->active] % TEXMAX], c->tex_h[c->held[c->active] % TEXMAX], level, xo, yo, x, y, w, h,
++              c->fbo);
 +   glCopyTexSubImage2D(tgt(c, target), level, xo, yo, x, y, w, h);
 +   POST(56);
 +}

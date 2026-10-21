@@ -523,6 +523,9 @@ w_TexImage2D(void *rctx, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsi
 {
    CUR(rctx);
    GLenum t = tgt(c, target);
+   if (trace_on > 1)
+      sca_log("sweetca: TexImage2D tex %u target %#x level %d ifmt %#x %dx%d fmt %#x type %#x data %p", c->held[c->active], target, level,
+              ifmt, w, h, format, type, pixels);
    set_swizzle(c, t, NULL, false);
    if (format == GL_BGRA_EXT_ && (ifmt == GL_RGBA || ifmt == GL_RGBA8))
       ifmt = GL_BGRA_EXT_;
@@ -557,6 +560,10 @@ w_CopyTexSubImage2D(void *rctx, GLenum target, GLint level, GLint xo, GLint yo, 
                     GLsizei w, GLsizei h)
 {
    CUR(rctx);
+   if (trace_on > 1)
+      sca_log("sweetca: CopyTexSubImage2D tex %u (%ux%u) level %d at %d,%d from %d,%d size %dx%d, fbo %u", c->held[c->active],
+              c->tex_w[c->held[c->active] % TEXMAX], c->tex_h[c->held[c->active] % TEXMAX], level, xo, yo, x, y, w, h,
+              c->fbo);
    glCopyTexSubImage2D(tgt(c, target), level, xo, yo, x, y, w, h);
    POST(56);
 }
