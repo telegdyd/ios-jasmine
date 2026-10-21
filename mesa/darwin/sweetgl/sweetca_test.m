@@ -355,6 +355,33 @@ main(void)
             }
          }
       }
+      /* where they differ: 16x16 blocks, '.' none, else the count in tens (9 = 90 or more) */
+      {
+         uint8_t *g = malloc((size_t)H * pitch);
+         IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
+         memcpy(g, IOSurfaceGetBaseAddress(surf), (size_t)H * pitch);
+         IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
+         printf(" difference map (last render, plain reference):\n");
+         for (int by = 0; by < H / 16; by++) {
+            char row[H / 16 + 1];
+            for (int bx = 0; bx < W / 16; bx++) {
+               int n = 0;
+               for (int y = 0; y < 16; y++)
+                  for (int x = 0; x < 16; x++) {
+                     const uint8_t *a = g + (size_t)(by * 16 + y) * pitch + (bx * 16 + x) * 4;
+                     const uint8_t *b = ref + (size_t)(by * 16 + y) * ref_pitch + (bx * 16 + x) * 4;
+                     int d = 0;
+                     for (int c = 0; c < 3; c++)
+                        d = abs(a[c] - b[c]) > d ? abs(a[c] - b[c]) : d;
+                     n += d > TOL;
+                  }
+               row[bx] = n == 0 ? '.' : (char)('0' + (n / 10 > 9 ? 9 : n / 10));
+            }
+            row[W / 16] = 0;
+            printf("  %s\n", row);
+         }
+         free(g);
+      }
       free(out);
       printf("best: destination flip=%d against the %s reference, %u pixels differ\n", best_flip,
              best_ref_flip ? "flipped" : "plain", best.diff);

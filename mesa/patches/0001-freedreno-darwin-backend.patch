@@ -1,6 +1,6 @@
-From c0b07eb2497b21aed8686045b9b86101e2f74303 Mon Sep 17 00:00:00 2001
+From 42af096694659966f7f101830b764a18c7ebb0c9 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 00:58:15 +0200
+Date: Thu, 22 Oct 2026 01:05:26 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1565 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1576 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5298 insertions(+), 1 deletion(-)
+ 20 files changed, 5309 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..891e0e5
+index 0000000..3f5296d
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1565 @@
+@@ -0,0 +1,1576 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2388,7 +2388,7 @@ index 0000000..891e0e5
 + */
 +static bool
 +copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf_fmt *f, size_t w,
-+             size_t h, size_t pitch, size_t bpe)
++             size_t h, size_t pitch, size_t bpe, bool invert)
 +{
 +   if (bpe == 0 || pitch % bpe != 0)
 +      return false;
@@ -2400,8 +2400,19 @@ index 0000000..891e0e5
 +   glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
 +   glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(pitch / bpe));
 +   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-+   glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type, base);
-+   GLenum e = glGetError();
++   GLenum e;
++   if (invert) {
++      /* rows bottom first: the texture is the surface flipped vertically */
++      uint8_t *flipped = malloc(pitch * h);
++      for (size_t y = 0; flipped && y < h; y++)
++         memcpy(flipped + y * pitch, (const uint8_t *)base + (h - 1 - y) * pitch, pitch);
++      glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type,
++                   flipped ? flipped : base);
++      free(flipped);
++   } else {
++      glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type, base);
++   }
++   e = glGetError();
 +   glPixelStorei(GL_UNPACK_ROW_LENGTH, row);
 +   glPixelStorei(GL_UNPACK_ALIGNMENT, align);
 +   IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
@@ -2415,7 +2426,7 @@ index 0000000..891e0e5
 +/* the surface's memory as the storage of the texture bound to target */
 +static bool
 +bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GLenum type,
-+             uint32_t plane, const char *why)
++             uint32_t plane, bool invert, const char *why)
 +{
 +   static int logged;
 +   uint32_t fourcc = IOSurfaceGetPixelFormat(s);
@@ -2439,11 +2450,11 @@ index 0000000..891e0e5
 +   set_swizzle(c, t, f.swz, f.swizzled);
 +   bool done = false;
 +   const char *how = "in place";
-+   if (pitch % 64 == 0)
++   if (pitch % 64 == 0 && !invert)
 +      done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, f.f);
 +   if (!done && format) {
 +      how = "copied";
-+      done = copy_surface(c, s, t, &f, w, h, pitch, bpe);
++      done = copy_surface(c, s, t, &f, w, h, pitch, bpe, invert);
 +   }
 +   if (!done) {
 +      if (logged++ < 40)
@@ -2454,8 +2465,8 @@ index 0000000..891e0e5
 +   if (strcmp(how, "in place") == 0)
 +      note_size(c, c->held[c->active], w, h);
 +   if (trace_on && logged++ < 80)
-+      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x)", why,
-+              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type);
++      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, invert %d)", why,
++              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, invert);
 +   return true;
 +}
 +
@@ -2691,7 +2702,7 @@ index 0000000..891e0e5
 +   }
 +   if (cur != c)
 +      bind_ctx(c);
-+   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, "texImageIOSurface");
++   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, invert, "texImageIOSurface");
 +}
 +
 +static BOOL
@@ -2702,7 +2713,7 @@ index 0000000..891e0e5
 +      return ((BOOL(*)(id, SEL, NSUInteger, IOSurfaceRef, BOOL))orig_attach)(self, cmd, target, s, inverted);
 +   if (cur != c)
 +      bind_ctx(c);
-+   return bind_surface(c, s, (GLenum)target, 0, 0, 0, "attachImage");
++   return bind_surface(c, s, (GLenum)target, 0, 0, 0, inverted, "attachImage");
 +}
 +
 +static BOOL

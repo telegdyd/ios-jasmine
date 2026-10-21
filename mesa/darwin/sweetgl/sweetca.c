@@ -1099,7 +1099,7 @@ fmt_from_surface(uint32_t fourcc, size_t bpe, struct surf_fmt *o)
  */
 static bool
 copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf_fmt *f, size_t w,
-             size_t h, size_t pitch, size_t bpe)
+             size_t h, size_t pitch, size_t bpe, bool invert)
 {
    if (bpe == 0 || pitch % bpe != 0)
       return false;
@@ -1111,8 +1111,19 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
    glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
    glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(pitch / bpe));
    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-   glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type, base);
-   GLenum e = glGetError();
+   GLenum e;
+   if (invert) {
+      /* rows bottom first: the texture is the surface flipped vertically */
+      uint8_t *flipped = malloc(pitch * h);
+      for (size_t y = 0; flipped && y < h; y++)
+         memcpy(flipped + y * pitch, (const uint8_t *)base + (h - 1 - y) * pitch, pitch);
+      glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type,
+                   flipped ? flipped : base);
+      free(flipped);
+   } else {
+      glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type, base);
+   }
+   e = glGetError();
    glPixelStorei(GL_UNPACK_ROW_LENGTH, row);
    glPixelStorei(GL_UNPACK_ALIGNMENT, align);
    IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
@@ -1126,7 +1137,7 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
 /* the surface's memory as the storage of the texture bound to target */
 static bool
 bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GLenum type,
-             uint32_t plane, const char *why)
+             uint32_t plane, bool invert, const char *why)
 {
    static int logged;
    uint32_t fourcc = IOSurfaceGetPixelFormat(s);
@@ -1150,11 +1161,11 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    set_swizzle(c, t, f.swz, f.swizzled);
    bool done = false;
    const char *how = "in place";
-   if (pitch % 64 == 0)
+   if (pitch % 64 == 0 && !invert)
       done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, f.f);
    if (!done && format) {
       how = "copied";
-      done = copy_surface(c, s, t, &f, w, h, pitch, bpe);
+      done = copy_surface(c, s, t, &f, w, h, pitch, bpe, invert);
    }
    if (!done) {
       if (logged++ < 40)
@@ -1165,8 +1176,8 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    if (strcmp(how, "in place") == 0)
       note_size(c, c->held[c->active], w, h);
    if (trace_on && logged++ < 80)
-      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x)", why,
-              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type);
+      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, invert %d)", why,
+              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, invert);
    return true;
 }
 
@@ -1402,7 +1413,7 @@ m_tex_iosurface(id self, SEL cmd, IOSurfaceRef s, NSUInteger target, NSUInteger 
    }
    if (cur != c)
       bind_ctx(c);
-   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, "texImageIOSurface");
+   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, invert, "texImageIOSurface");
 }
 
 static BOOL
@@ -1413,7 +1424,7 @@ m_attach(id self, SEL cmd, NSUInteger target, IOSurfaceRef s, BOOL inverted)
       return ((BOOL(*)(id, SEL, NSUInteger, IOSurfaceRef, BOOL))orig_attach)(self, cmd, target, s, inverted);
    if (cur != c)
       bind_ctx(c);
-   return bind_surface(c, s, (GLenum)target, 0, 0, 0, "attachImage");
+   return bind_surface(c, s, (GLenum)target, 0, 0, 0, inverted, "attachImage");
 }
 
 static BOOL
