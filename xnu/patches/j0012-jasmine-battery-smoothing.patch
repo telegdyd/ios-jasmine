@@ -1,0 +1,79 @@
+From a515aad43ca9ab4c09dac9cc735ffc70b56bd5a7 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 03:35:54 +0200
+Subject: [PATCH] jasmine-j0012: steadier battery percent
+
+The percent jumped between 32 % (charging) and 46 % (discharging): the
+IR correction used 150 mOhm. Measured on 2026-10-21 from a plug/unplug
+pair (3900 mV at +829 mA, 3746 mV at -602 mA): about 110 mOhm. The rest
+voltage estimate is now averaged over polls and the published percent
+moves by at most 1 % per poll.
+---
+ iokit/Kernel/arm/SweetBattery.cpp | 25 +++++++++++++++++++------
+ 1 file changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 582daf4..a1a39a9 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -44,6 +44,8 @@ private:
+ 	int fLastMode;
+ 	unsigned fDesign;       /* mAh: topaz 5020, jasmine 3000 (DT charge-full-design) */
+ 	int fTempC100;          /* centidegrees C; 2500 when not measured */
++	int fOcvAvg;            /* jasmine: averaged rest voltage estimate, mV (0 = none yet) */
++	unsigned fPercent;      /* jasmine: last published percent (0 = none yet) */
+ 	bool pollJasmine(void);
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+@@ -72,6 +74,8 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	fTimerAdded = fRunning = fReal = fJasmine = false;
+ 	fDesign = 5020;
+ 	fTempC100 = 2500;
++	fOcvAvg = 0;
++	fPercent = 0;
+ 	if (dictionary) {
+ 		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
+ 		if (!it) {
+@@ -275,8 +279,10 @@ SweetBattery::pollTopaz(void)
+ /*
+  * jasmine: the PM660 fuel gauge's voltage, current and temperature and the
+  * charger state. Percent is the voltage curve at an IR-corrected voltage
+- * (~150 mOhm): the gauge's own SOC on this phone is badly skewed (1 % at
+- * 3.57 V, see the Nura FG notes), so it is only logged. Never below 1 %.
++ * (110 mOhm: 3900 mV at +829 mA vs 3746 mV at -602 mA, 2026-10-21),
++ * averaged over polls and moved by at most 1 % per poll: the gauge's own SOC
++ * on this phone is badly skewed (1 % at 3.57 V, see the Nura FG notes), so
++ * it is only logged. Never below 1 %.
+  */
+ bool
+ SweetBattery::pollJasmine(void)
+@@ -285,15 +291,22 @@ SweetBattery::pollJasmine(void)
+ 	if (sweet_fg_read(&f) != 0 || f.mv < 2800 || f.mv > 4600) {
+ 		return false;
+ 	}
+-	int ocv = f.mv - f.ma * 15 / 100;
+-	unsigned percent = estimatePercent(ocv < 0 ? 0 : (unsigned)ocv);
++	int ocv = f.mv - f.ma * 11 / 100;
++	fOcvAvg = fOcvAvg == 0 ? ocv : fOcvAvg + (ocv - fOcvAvg) / 4;
++	unsigned percent = estimatePercent(fOcvAvg < 0 ? 0 : (unsigned)fOcvAvg);
++	if (fPercent != 0 && percent > fPercent + 1) {
++		percent = fPercent + 1;
++	} else if (fPercent != 0 && percent + 1 < fPercent) {
++		percent = fPercent - 1;
++	}
++	fPercent = percent;
+ 	fTempC100 = f.temp_dc * 10;
+ 	publish(percent, (unsigned)f.mv, f.ma, f.online != 0, f.online != 0, f.charging != 0,
+ 	    f.full != 0, true, true);
+ 	static unsigned logs;
+ 	if (logs++ % 6 == 0) {
+-		IOLog("SWEET BATTERY: jasmine %d mV %d mA (ocv ~%d mV) %d.%d C -> %u%% (gauge %d%%) usb %d charging %d full %d\n",
+-		    f.mv, f.ma, ocv, f.temp_dc / 10, (f.temp_dc < 0 ? -f.temp_dc : f.temp_dc) % 10,
++		IOLog("SWEET BATTERY: jasmine %d mV %d mA (ocv ~%d mV, avg %d) %d.%d C -> %u%% (gauge %d%%) usb %d charging %d full %d\n",
++		    f.mv, f.ma, ocv, fOcvAvg, f.temp_dc / 10, (f.temp_dc < 0 ? -f.temp_dc : f.temp_dc) % 10,
+ 		    percent, f.fg_soc, f.online, f.charging, f.full);
+ 	}
+ 	return true;
+-- 
+2.47.3
+
