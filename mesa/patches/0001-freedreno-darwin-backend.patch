@@ -1,6 +1,6 @@
-From 1d1173949242011977e2534f276d3e50a42ef498 Mon Sep 17 00:00:00 2001
+From 0fc7043bc284118590a2c4b09c68972d206935c5 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 17:28:11 +0200
+Date: Wed, 21 Oct 2026 20:20:56 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -15,8 +15,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/meson.build                 |  11 +
  src/freedreno/meson.build                     |   2 +-
  src/gallium/drivers/freedreno/meson.build     |  32 +++
- .../drivers/freedreno/sweetgpu_fdtest.c       | 136 ++++++++++++
- 11 files changed, 783 insertions(+), 1 deletion(-)
+ .../drivers/freedreno/sweetgpu_fdtest.c       | 140 ++++++++++++
+ 11 files changed, 787 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -777,10 +777,10 @@ index b04379b..28c2fea 100644
 +endif
 diff --git a/src/gallium/drivers/freedreno/sweetgpu_fdtest.c b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
 new file mode 100644
-index 0000000..f9ea9b4
+index 0000000..6605dbb
 --- /dev/null
 +++ b/src/gallium/drivers/freedreno/sweetgpu_fdtest.c
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,140 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -800,6 +800,7 @@ index 0000000..f9ea9b4
 +#include "pipe/p_defines.h"
 +#include "pipe/p_screen.h"
 +#include "pipe/p_state.h"
++#include "compiler/glsl_types.h"
 +#include "frontend/drm_driver.h"
 +#include "util/os_time.h"
 +#include "util/driconf.h"
@@ -819,6 +820,8 @@ index 0000000..f9ea9b4
 +{
 +   /* unbuffered: whatever happens, the last step printed is the last one reached */
 +   setvbuf(stdout, NULL, _IONBF, 0);
++   /* what a GL frontend does first: ir3 builds GLSL types (tgsi_to_nir, UBO lowering) */
++   glsl_type_singleton_init_or_ref();
 +   printf("step: options\n");
 +   driOptionCache options, options_info;
 +   driParseOptionInfo(&options_info, fd_driconf, ARRAY_SIZE(fd_driconf));
@@ -913,6 +916,7 @@ index 0000000..f9ea9b4
 +   pipe->destroy(pipe);
 +   screen->destroy(screen);
 +   close(fd);
++   glsl_type_singleton_decref();
 +
 +   printf("%s\n", done && bad == 0 ? "PASS: the GPU cleared the render target" : "FAIL");
 +   return done && bad == 0 ? 0 : 1;
