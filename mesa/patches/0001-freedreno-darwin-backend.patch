@@ -1,6 +1,6 @@
-From 2def827d19fef7770ca6180e846f9399cbcfa18d Mon Sep 17 00:00:00 2001
+From c1684ff3c015b0f47e32e38df559f37928a49147 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 01:20:41 +0200
+Date: Thu, 22 Oct 2026 01:25:45 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -1283,7 +1283,7 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..7b57374
+index 0000000..aa806c2
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
 @@ -0,0 +1,1585 @@
@@ -1353,6 +1353,7 @@ index 0000000..7b57374
 +#define MAX_CTX 32
 +
 +static int trace_on;
++static int flip_mode; /* 0: flip the rows of a surface when CA says invert; 1: when it does not */
 +
 +static void
 +sca_log(const char *fmt, ...)
@@ -2823,7 +2824,6 @@ index 0000000..7b57374
 +/* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
 +int sweetca_installed(void);
 +void sweetca_set_flip(int mode);
-+static int flip_mode; /* 0: flip the rows of a surface when CA says invert; 1: when it does not */
 +
 +__attribute__((visibility("default"))) void
 +sweetca_set_flip(int mode)

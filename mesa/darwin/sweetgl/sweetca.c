@@ -64,6 +64,7 @@
 #define MAX_CTX 32
 
 static int trace_on;
+static int flip_mode; /* 0: flip the rows of a surface when CA says invert; 1: when it does not */
 
 static void
 sca_log(const char *fmt, ...)
@@ -1534,7 +1535,6 @@ install_texfns(void)
 /* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
 int sweetca_installed(void);
 void sweetca_set_flip(int mode);
-static int flip_mode; /* 0: flip the rows of a surface when CA says invert; 1: when it does not */
 
 __attribute__((visibility("default"))) void
 sweetca_set_flip(int mode)
