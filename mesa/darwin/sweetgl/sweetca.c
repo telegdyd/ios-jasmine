@@ -161,6 +161,11 @@ post(int slot)
          logged[slot][k]++;
       sca_log("sweetca: GL error %#x after slot %d %s", e, slot,
               sca_slot_names[slot] ? sca_slot_names[slot] : "?");
+      if (e == GL_INVALID_FRAMEBUFFER_OPERATION) {
+         GLint fb = -1;
+         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+         sca_log("sweetca:   framebuffer %d status %#x", fb, glCheckFramebufferStatus(GL_FRAMEBUFFER));
+      }
    }
 }
 #define POST(slot)                                                               \

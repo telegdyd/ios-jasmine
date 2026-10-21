@@ -1,6 +1,6 @@
-From cec150495e2c79c43b4f6063ecd5988ab34feca7 Mon Sep 17 00:00:00 2001
+From 92a647f5486d3ea663e8612eae4a3bd85a6e3459 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 00:25:50 +0200
+Date: Thu, 22 Oct 2026 00:33:25 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1537 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1542 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5270 insertions(+), 1 deletion(-)
+ 20 files changed, 5275 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..8470379
+index 0000000..0944feb
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1537 @@
+@@ -0,0 +1,1542 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1450,6 +1450,11 @@ index 0000000..8470379
 +         logged[slot][k]++;
 +      sca_log("sweetca: GL error %#x after slot %d %s", e, slot,
 +              sca_slot_names[slot] ? sca_slot_names[slot] : "?");
++      if (e == GL_INVALID_FRAMEBUFFER_OPERATION) {
++         GLint fb = -1;
++         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
++         sca_log("sweetca:   framebuffer %d status %#x", fb, glCheckFramebufferStatus(GL_FRAMEBUFFER));
++      }
 +   }
 +}
 +#define POST(slot)                                                               \

@@ -302,6 +302,13 @@ main(void)
       typedef void (*set_dest_t)(void *, unsigned long, unsigned long, bool);
       set_dest_t set_dest = (set_dest_t)(*(void ***)glctx)[2];
 
+      /* CA draws into the framebuffer bound on the context: ours has the surface's texture as its color */
+      unsigned fbo = 0;
+      ((void (*)(void *, int, unsigned *))disp[674])(rctx, 1, &fbo);                      /* glGenFramebuffers */
+      ((void (*)(void *, unsigned, unsigned))disp[672])(rctx, 0x8D40, fbo);               /* glBindFramebuffer */
+      ((void (*)(void *, unsigned, unsigned, unsigned, unsigned, int))disp[677])(rctx, 0x8D40, 0x8CE0, GL_TEXTURE_2D,
+                                                                                  tex, 0); /* glFramebufferTexture2D */
+
       result best = {~0u};
       bool best_flip = false, best_ref_flip = false, any = false;
       uint8_t *out = malloc((size_t)H * pitch);
@@ -311,7 +318,8 @@ main(void)
          memset(IOSurfaceGetBaseAddress(surf), 0x5a, (size_t)H * pitch);
          IOSurfaceUnlock(surf, 0, NULL);
 
-         set_dest(glctx, GL_TEXTURE_2D, tex, flip != 0);
+         if (flip)
+            set_dest(glctx, GL_TEXTURE_2D, tex, false); /* variant 1: also name it as the destination texture */
          double t0 = CACurrentMediaTime();
          ((void (*)(id, SEL, CFTimeInterval, void *))objc_msgSend)(renderer, sel_registerName("beginFrameAtTime:timeStamp:"),
                                                                    t0, NULL);
@@ -327,9 +335,9 @@ main(void)
          IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
          memcpy(out, IOSurfaceGetBaseAddress(surf), (size_t)H * pitch);
          IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
-         printf("render with flip=%d took %.0f ms\n", flip, (t1 - t0) * 1000);
+         printf("render, variant %d took %.0f ms\n", flip, (t1 - t0) * 1000);
          char name[64];
-         snprintf(name, sizeof(name), "GPU, destination flip=%d", flip);
+         snprintf(name, sizeof(name), "GPU, variant %d", flip);
          samples(name, out, pitch);
          for (int rf = 0; rf < 2; rf++) {
             result r = compare(out, pitch, ref, ref_pitch, rf != 0);
