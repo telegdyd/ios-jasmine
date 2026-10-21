@@ -97,7 +97,8 @@ You need a Mi A2 (`jasmine`, SDM660) with an **unlocked bootloader**, a PC with 
 | `abmark=b` | Mark `boot_b` successful once the root is up (standalone image only) |
 | `chgmv=`, `chgfcc=`, `chgicl=`, `sweetchg=0` | Charger float voltage, charge current, input limit; `0` leaves the charger alone |
 | `sweetgpu=1/2/3`, `gpumhz=160/266` | GPU bring-up steps (power, command processor, zap shader), GPU clock |
-| `sweetusb=0`, `sweetusblog=0`, `sweetusbcmd=0` | USB Ethernet, live log, command port off |
+| `sweetusb=0`, `sweetusblog=0`, `sweetusbcmd=0`, `sweetusbfs=0` | USB Ethernet, live log, command port, file server off |
+| `sweetwdt=SECS` | Hardware watchdog (test images): a hang resets into fastboot |
 | `ufslogsecs=` | Persistent log flush interval (default 10 s) |
 | `sweetmdp=0`, `sweetfb_fit=0` | Old CPU copy into the boot framebuffer; crop instead of fitting |
 
@@ -108,7 +109,7 @@ You need a Mi A2 (`jasmine`, SDM660) with an **unlocked bootloader**, a PC with 
 3. **GPU (Adreno 512), in progress** (`jasmine/GPU.md`):
    - G1, the GPU in the kernel: ~~power~~, ~~command processor~~, ~~zap shader~~, ~~266 MHz~~. Next: an RPM client for the voltage vote (up to 750 MHz), then a first real job.
    - G2, CoreAnimation on the GPU: Mesa freedreno (Gallium, a5xx) built for iOS, behind iOS's OpenGL ES. iOS picks its GL renderer bundle by the `IOGLESBundleName` property of the kernel's `IOAcceleratorES` service, so our own `gld*` renderer plugs in without changing iOS binaries.
-4. **USB**: ~~Ethernet, live log, command port, hands-free test loop, file transfer~~. Next: faster transfers (more than one frame in flight, interrupts instead of polling), and a hardware watchdog so a hung test also comes back by itself.
+4. **USB**: ~~Ethernet, live log, command port, hands-free test loop, file transfer~~. ~~hardware watchdog for test boots~~. Next: faster transfers (more than one frame in flight, interrupts instead of polling).
 5. **Wi-Fi** (WCN3990 behind the modem DSP; topaz's `TopazModem` is the model).
 6. Brightness over DSI DCS, stopping the `bluetoothd` respawn loop, audio.
 
@@ -150,6 +151,7 @@ Not in git: partition backups, live device trees, Apple and Qualcomm firmware, r
 | j0022 | USB command port (`reboot`), USB Ethernet on by default on jasmine |
 | j0023 | USB after a normal boot: QUSB2 PHY init and DWC3 setup (ABL only sets USB up for fastboot) |
 | j0024 | File access to the iOS root over USB Ethernet (port 5142: put, get, ls, mkdir, rm) |
+| j0025 | APSS hardware watchdog for test boots (`sweetwdt=`): a hung test kernel resets into fastboot |
 
 ## Key hardware facts (jasmine)
 
