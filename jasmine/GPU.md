@@ -295,6 +295,75 @@ it during CA's first `initWithAPI:3`, its initializer installs the EAGL replacem
 CA's `initWithAPI:2` retry gets our ES 3 context. Works with the code as read, but leans on that retry. topaz has
 not published its CA side (`89451b8` still the head at 22:00).
 
+#### G2 comparison with ios-sailfish (2026-10-21 ~23:00, research only)
+
+[joranv1/ios-sailfish](https://github.com/joranv1/ios-sailfish) (Pixel 1, Snapdragon 821, **Adreno 530**, a5xx
+like ours; also an ios-sweet fork; public since 2026-10-21 18:19, head `ce63752`) has **CoreAnimation on the GPU**:
+lock screen, home screen, Control Center, notification center blur, Settings and the stock apps rendered by
+freedreno at 600 MHz, 15-35 fps (backboardd's CPU work is now the limit). Their route is **our route 2**: EAGL
+methods replaced in backboardd by a dylib, CA's own `OGL::Renderer` on Mesa GL ES. That confirms step A's choice;
+nothing in their tree argues for the `gld*` plugin.
+
+| | jasmine (ours) | sailfish |
+| --- | --- | --- |
+| iOS root | iPhone X (`D22AP`) 16.7.16 cache | iPhone 8 (`D20AP`) 16.7.16 cache: **different addresses** (their `create_shader` 0x1884af0d8 is mid-function in ours) |
+| Kernel UAPI | SweetGPU sel 0-7, own shape | sel 10-16, msm-shaped (GEM new/close, submit with bo list, cpu-prep, fence page) |
+| Mesa glue | `src/freedreno/drm/darwin/` backend in Mesa (patch 0001) | Mesa almost unpatched (48-line `mesa.patch`); `sweet_drm.c` (529 lines) emulates libdrm + msm ioctls in user space |
+| GL frontend | `sweetgl` gallium frontend (Haiku hgl style) | `sweetgl.c` (315 lines, st/mesa contexts) |
+| EAGL / CA | not started | `eagl.c` (2235 lines): 1036-slot GLI table generated from GLEngine's layout (`gen-dispatch.py`, `ios-dispatch.txt`), EAGL swizzles, IOSurface textures via `get_egl_image` |
+| Injection | planned: answer dyld's AMFI call | done: MAC policy renamed `"AMFI"` + `mpo_policy_syscall` op 0x5a → 0x7b (0139); boot-arg `sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib` (0104, 0163): **no launchd plist change** |
+| Present | CPU `composeFit` | GPU scales into two panel buffers the MDP flips (0164) |
+
+**What their log says CA needs beyond the 60 GLI calls of step A** (each one cost them a boot; we inherit the
+answers):
+
+- **Mesa settings:** `FD_MESA_DEBUG=sysmem,nofp16`, `IR3_SHADER_DEBUG=nofp16`. GMEM tile restore/resolve overran
+  unpadded IOSurfaces and faulted the GPU on the display surface; fp16 lowering of mediump broke CA's shaders.
+- **GL ES 3.1 contexts**, not 3.0 (the rect emulation needs `glGetTexLevelParameteriv`).
+- **`GL_TEXTURE_RECTANGLE` emulation:** rect targets become 2D, `sampler2DRect` shaders rewritten with a per-draw
+  texel scale; separate 2D/rect bindings per unit.
+- **`GL_EXT_shader_framebuffer_fetch` emulation** (CA drops blend-mode layers without it): shader rewrite to sample
+  a copy of the framebuffer texture, plus a texture barrier before draws that sample their own target.
+- **CA's format-0 32-bit images are A,R,G,B in memory:** RGBA binding with a swizzle.
+- **One Mesa resource per IOSurface**, so render-then-sample through two GL textures stays ordered.
+- **Three GL texture functions missing from QuartzCore's own GL renderer** (0x14 colour matrix without premultiply:
+  lock screen clock; 0x2d vibrant colour matrix: CC/App Library plates; 0x26/0x27 variable blur: notification
+  centre), patched into QuartzCore's `tex_fragment_shaders` table and `create_shader`'s uniform switch at load.
+  Addresses are iPhone 8 cache; their code checks the table (`"colorMatrix4x4Bias(s0)"` at 0x13) and refuses on
+  ours, so we find both tables in the iPhone X cache (`~/ios-work/gl/out/qc.s`).
+- **Kernel IOSurface fixes:** explicit row bytes rounded to 64 only for backboardd, as asked for others (CoreUI
+  glyphs striped otherwise); surfaces created over the caller's own pages (`IOSurfaceAddress`, read-only client
+  memory allowed: icons were invisible). Our topaz patches 0134/0139 cover part of this; check against their
+  0157-0162.
+- **a5xx pitch:** their `mesa.patch` lets linear imports use 64-byte pitch alignment
+  (`fd_layout_resource_for_handle`), so the "256-byte rows" limit noted under 21:33 is solved in Mesa instead of
+  raising `SWEET_SURFACE_ROW_ALIGN`.
+- **GPU robustness:** SMMU faults non-fatal and logged (0155); every GPU mapping padded with 128 KB mapped to a
+  shared scratch page (0156: fetch overruns hung the A530 even with faults terminated).
+
+**Decision: keep our kernel UAPI and Mesa backend, port their EAGL layer onto it.** Ours already passes the same
+tests (IOSurface render and sample included); swapping in their msm emulation would mean rewriting SweetGPU's
+user client for nothing. `eagl.c` touches the GPU side in few places (`sweet_drm_import_iosurface`, `sweetgl_*`
+context calls, `sweetgl_screen`, the `get_egl_image` hook), which map onto our selector 6 import and sweetgl API.
+
+**Licence:** neither ios-sailfish nor ios-sweet carries a licence file. Ask the author (Joran Vancoillie) before
+copying `eagl.c` verbatim; credit them in any case.
+
+**Next steps (replaces step A's order):**
+
+1. **Kernel j0033** (no root changes): sweet_amfi named `"AMFI"` with the dyld policy call; `sweetenv` boot-arg
+   (several `NAME:VARS` entries); SMMU faults non-fatal; scratch-page padding of GPU mappings; IOSurface row-bytes
+   and client-address fixes as far as ours lack them. Check: `DYLD_INSERT_LIBRARIES` honoured on a test program
+   through sweetd.
+2. **libsweetca = our sweetgl + their EAGL layer:** dispatch table generated from our GLEngine dump (verify
+   `ios-dispatch.txt`'s slot layout against the iPhone X cache), Mesa env settings above, the 64-byte pitch patch,
+   texture-function fixes with iPhone X addresses. Check with the CARenderer harness (step C) through sweetd, CA
+   layers into an IOSurface, pixel-checked.
+3. **backboardd** (needs the user's OK: the dylib goes onto the root, e.g. `/usr/lib/sweetgl.dylib`): boot with
+   `sweetenv=backboardd:DYLD_INSERT_LIBRARIES=...`. A boot without the boot-arg is today's CPU renderer, so the
+   root's launchd plists stay untouched.
+4. Later: GPU present into flip buffers (their 0164), GPU clock above 266 MHz (needs the CX corner vote).
+
 - Mesa freedreno (Gallium, a5xx) built for iOS (cross-compiled on GitHub's macOS runners, as XNU is) with a
   small kernel interface to the G1 driver (like UniXNU's `turnip-darwin-kmd`, but for freedreno's DRM-style
   winsys).

@@ -126,6 +126,11 @@ script file; Python on Windows needs `newline='\n'`; `wsl bash /mnt/c/...` paths
 
 ## 5. Next steps, in order
 
+> **Update 2026-10-21 ~23:00:** [joranv1/ios-sailfish](https://github.com/joranv1/ios-sailfish) (Pixel 1,
+> Adreno 530) runs CoreAnimation on freedreno by our route 2. GPU.md "G2 comparison with ios-sailfish" lists
+> what CA needed there and **replaces steps B-D below with its four next steps** (j0033 kernel prerequisites,
+> their EAGL layer ported onto our sweetgl, backboardd via the `sweetenv` boot-arg). Step A is done.
+
 ### Step A: decide how CoreAnimation reaches our GL (research only, nothing on the phone)
 
 **Done 2026-10-21 ~22:00**: results and recommendation (route 2, EAGL on sweetgl, tested first through CARenderer
