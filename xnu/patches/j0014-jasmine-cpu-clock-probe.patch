@@ -1,6 +1,6 @@
-From 41785a2e8ae3d4e0cd97b6b072a576bbf7222522 Mon Sep 17 00:00:00 2001
+From 93f0288b19f369e343908969a3689a0b177ff7b1 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 04:21:03 +0200
+Date: Wed, 21 Oct 2026 04:27:13 +0200
 Subject: [PATCH] jasmine-j0014: measure the real CPU clock
 
 Nothing sets the Kryo 260 clocks after the bootloader (no cpufreq in the
@@ -11,9 +11,9 @@ off), 20 s and 120 s after the platform expert starts. Read only;
 sweetclk=0 disables it.
 ---
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
- osfmk/arm64/sweet_cpuclk.c               | 115 +++++++++++++++++++++++
+ osfmk/arm64/sweet_cpuclk.c               | 118 +++++++++++++++++++++++
  osfmk/conf/files.arm64                   |   1 +
- 3 files changed, 119 insertions(+)
+ 3 files changed, 122 insertions(+)
  create mode 100644 osfmk/arm64/sweet_cpuclk.c
 
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
@@ -39,10 +39,10 @@ index 02042c2..7a9d14b 100644
  
 diff --git a/osfmk/arm64/sweet_cpuclk.c b/osfmk/arm64/sweet_cpuclk.c
 new file mode 100644
-index 0000000..15e8d60
+index 0000000..8abd9cf
 --- /dev/null
 +++ b/osfmk/arm64/sweet_cpuclk.c
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,118 @@
 +/*
 + * CPU clock probe (jasmine bring-up, read only): how fast do the cores really
 + * run? Nothing sets the Kryo 260 clocks after the bootloader (no cpufreq in
@@ -51,14 +51,17 @@ index 0000000..15e8d60
 + * core) against the 19.2 MHz system counter, 100 ms with interrupts off,
 + * bound to that CPU. Runs 20 s and 120 s after start. sweetclk=0 disables it.
 + */
-+#if defined(ARM64_BOARD_CONFIG_SWEET)
-+#include <sys/param.h>
-+#include <sys/systm.h>
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <stdint.h>
++#include <kern/misc_protos.h>
 +#include <kern/clock.h>
 +#include <kern/thread.h>
 +#include <kern/processor.h>
 +#include <kern/sched_prim.h>
-+#include <machine/machine_routines.h>
++#include <arm/machine_routines.h>
++#include <arm/cpu_internal.h>
 +#include <pexpert/pexpert.h>
 +
 +void sweet_cpuclk_start(void);
@@ -134,7 +137,7 @@ index 0000000..15e8d60
 +	}
 +	for (int round = 0; round < 2; round++) {
 +		cpuclk_sleep(round == 0 ? 20 : 100);
-+		for (int cpu = 0; cpu < (int)ml_get_max_cpus(); cpu++) {
++		for (int cpu = 0; cpu < (int)real_ncpus; cpu++) {
 +			processor_t p = cpu_to_processor(cpu);
 +			if (p == PROCESSOR_NULL) {
 +				continue;
@@ -157,7 +160,7 @@ index 0000000..15e8d60
 +		thread_deallocate(thread);
 +	}
 +}
-+#endif /* ARM64_BOARD_CONFIG_SWEET */
++#endif /* SWEET */
 diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
 index b0dad49..e0832af 100644
 --- a/osfmk/conf/files.arm64
