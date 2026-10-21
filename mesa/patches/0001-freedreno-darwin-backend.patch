@@ -1,6 +1,6 @@
-From d8dc40112b79db2ad838399412423bc3e550f946 Mon Sep 17 00:00:00 2001
+From 85f5c23810f85f3c4c0bf01629c89f7ce076e40b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 21 Oct 2026 16:49:35 +0200
+Date: Wed, 21 Oct 2026 16:53:08 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -14,9 +14,9 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/freedreno_device.c          |  15 ++
  src/freedreno/drm/meson.build                 |  11 +
  src/freedreno/meson.build                     |   2 +-
- src/gallium/drivers/freedreno/meson.build     |  29 +++
+ src/gallium/drivers/freedreno/meson.build     |  32 +++
  .../drivers/freedreno/sweetgpu_fdtest.c       | 127 +++++++++++
- 11 files changed, 771 insertions(+), 1 deletion(-)
+ 11 files changed, 774 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -736,10 +736,10 @@ index e8f01b8..a6c37f9 100644
  endif
  
 diff --git a/src/gallium/drivers/freedreno/meson.build b/src/gallium/drivers/freedreno/meson.build
-index b04379b..d828f3f 100644
+index b04379b..28c2fea 100644
 --- a/src/gallium/drivers/freedreno/meson.build
 +++ b/src/gallium/drivers/freedreno/meson.build
-@@ -322,3 +322,32 @@ gmemtool = executable(
+@@ -322,3 +322,35 @@ gmemtool = executable(
    build_by_default : with_tools.contains('freedreno'),
    install : false,
  )
@@ -750,6 +750,9 @@ index b04379b..d828f3f 100644
 +    'sweetgpu_fdtest',
 +    [
 +      'sweetgpu_fdtest.c',
++      # freedreno references renderonly (KMS scanout buffers, unused here);
++      # libgallium has it only with libdrm
++      '../../auxiliary/renderonly/renderonly.c',
 +      freedreno_tracepoints[1],
 +      freedreno_xml_header_files,
 +    ],
