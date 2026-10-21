@@ -52,7 +52,7 @@ COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
 RESET = None
-SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = GPU = USB = None
+SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = GPU = USB = WDT = None
 
 if BOARD == 'jasmine':
     # Mi A2 (jasmine, SDM660), 4 GB: /proc/iomem System RAM ff700000-17e4bffff
@@ -125,6 +125,8 @@ if BOARD == 'jasmine':
     # rx0_usb2_clkref 0x88018 (the order of sweet_usb.c's usb_cbcr).
     USB = dict(reg=(0x0a800000, 0xd000, 0x0a8f8800, 0x400, 0x0c012000, 0x180, 0x00100000, 0x94000),
                gcc=(0xf004, 0xf008, 0xf00c, 0xf010, 0x5018, 0xf03c, 0x6a004, 0x88018, 0x12000))  # + QUSB2PHY_PRIM_BCR
+    # bsd/dev/sweet_wdt.c: APSS watchdog (stock DT qcom,wdt@17817000, msm-watchdog), armed by sweetwdt=
+    WDT = (0x17817000, 0x1000)
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -347,6 +349,8 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     usb = [node('sweet-usb', [ph(), ('compatible', cstr('qcom,sdm660-dwc3')), ('reg', u64(*USB['reg'])),
                               ('gcc-usb', u32(*USB['gcc']))])] if USB and not qemu else []
 
+    wdt = [node('sweet-wdt', [ph(), ('compatible', cstr('qcom,msm-watchdog')), ('reg', u64(*WDT))])] if WDT and not qemu else []
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -383,7 +387,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch + mdp + gpu + usb)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ufs + emmc + reset + pmic + touch + mdp + gpu + usb + wdt)
 
 
 if __name__ == '__main__':

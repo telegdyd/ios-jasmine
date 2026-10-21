@@ -1,0 +1,186 @@
+From 11e706aa96d62ff70bba617d76588bf8458d491e Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 21 Oct 2026 15:36:12 +0200
+Subject: [PATCH] jasmine-j0025: APSS hardware watchdog for test boots
+ (sweetwdt=SECS)
+
+A hung test kernel now resets into fastboot by itself: sweetwdt= sets the
+PMIC PON reboot mode to bootloader, then arms the watchdog at 0x17817000
+(bark SECS, bite +3 s, 32768 Hz) and pets it from a kernel thread every
+SECS/4. sweetwdt_test=N stops petting after N s to test the bite. Off by
+default (the slot b image). ADT /sweet-wdt.
+---
+ bsd/conf/files                           |   1 +
+ bsd/dev/sweet_wdt.c                      | 109 +++++++++++++++++++++++
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |  13 +++
+ 3 files changed, 123 insertions(+)
+ create mode 100644 bsd/dev/sweet_wdt.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 1e855a5..c1a06c9 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,7 @@ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_pmic.c			standard
+ bsd/dev/sweet_gpu.c			standard
+ bsd/dev/sweet_netfs.c			standard
++bsd/dev/sweet_wdt.c			standard
+ bsd/dev/sweet_nvt.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_i2c1.c			standard
+diff --git a/bsd/dev/sweet_wdt.c b/bsd/dev/sweet_wdt.c
+new file mode 100644
+index 0000000..ead703d
+--- /dev/null
++++ b/bsd/dev/sweet_wdt.c
+@@ -0,0 +1,109 @@
++/*
++ * APSS hardware watchdog for test boots (jasmine): a hung test kernel resets
++ * the phone into fastboot by itself, so the PC can boot the next image
++ * (tools/sweet-run.py) without anyone pressing buttons.
++ *
++ * sweetwdt=SECS arms it (default 0: off, as in the slot b image): first the
++ * PMIC PON reboot mode is set to "bootloader" (j0003), so whatever resets
++ * the phone lands in fastboot; then the watchdog (stock DT qcom,wdt@17817000,
++ * msm-watchdog v2 layout as Linux qcom-wdt's kpss table, 32768 Hz sleep
++ * clock) barks after SECS and bites 3 s later, and a kernel thread pets it
++ * every SECS / 4. The bark interrupt is not handled; the bite resets the SoC.
++ * sweetwdt_test=N stops petting N seconds after boot, to test the bite.
++ * ADT /sweet-wdt reg = <base size>.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++extern int sweet_pon_bootloader(void);  /* SweetPlatformExpert.cpp (j0003) */
++
++void sweet_wdt_start(void);
++
++#define WDT_RST         0x04
++#define WDT_EN          0x08
++#define WDT_STS         0x0c
++#define WDT_BARK_TIME   0x10
++#define WDT_BITE_TIME   0x14
++#define WDT_HZ          32768u
++
++static volatile uint32_t *wdt;
++static uint32_t wdt_secs, wdt_test;
++static int wdt_chan;
++
++static inline void
++wdt_wr(uint32_t off, uint32_t v)
++{
++	wdt[off / 4] = v;
++	__builtin_arm_dsb(0xf);
++}
++
++static void
++wdt_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint64_t start = mach_absolute_time(), ns;
++	for (;;) {
++		uint64_t deadline;
++		clock_interval_to_deadline(wdt_secs * 250, NSEC_PER_MSEC, &deadline);
++		(void)assert_wait_deadline(&wdt_chan, THREAD_UNINT, deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++		absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++		if (wdt_test != 0 && ns / NSEC_PER_SEC >= wdt_test) {
++			printf("SWEET WDT: test: no more petting after %u s, bite expected in %u s\n", wdt_test, wdt_secs + 3);
++			return;
++		}
++		wdt_wr(WDT_RST, 1);
++	}
++}
++
++void
++sweet_wdt_start(void)
++{
++	DTEntry e;
++	const uint64_t *reg;
++	unsigned int size;
++	thread_t thread;
++
++	PE_parse_boot_argn("sweetwdt", &wdt_secs, sizeof(wdt_secs));
++	PE_parse_boot_argn("sweetwdt_test", &wdt_test, sizeof(wdt_test));
++	if (wdt_secs == 0) {
++		return;
++	}
++	if (wdt_secs < 8 || wdt_secs > 120) {
++		printf("SWEET WDT: sweetwdt=%u out of range (8..120 s), not armed\n", wdt_secs);
++		return;
++	}
++	if (SecureDTLookupEntry(NULL, "/sweet-wdt", &e) != kSuccess ||
++	    SecureDTGetProperty(e, "reg", (const void **)&reg, &size) != kSuccess || size < 2 * sizeof(uint64_t)) {
++		printf("SWEET WDT: no /sweet-wdt node, not armed\n");
++		return;
++	}
++	int pon = sweet_pon_bootloader();
++	wdt = (volatile uint32_t *)ml_io_map(reg[0], reg[1]);
++	printf("SWEET WDT: was EN %#x STS %#x BARK %#x BITE %#x; PON reboot mode bootloader: %d\n",
++	    wdt[WDT_EN / 4], wdt[WDT_STS / 4], wdt[WDT_BARK_TIME / 4], wdt[WDT_BITE_TIME / 4], pon);
++	if (pon != 0) {
++		printf("SWEET WDT: PON reboot mode not set, a bite would boot slot b: not armed\n");
++		return;
++	}
++	wdt_wr(WDT_EN, 0);
++	wdt_wr(WDT_RST, 1);
++	wdt_wr(WDT_BARK_TIME, wdt_secs * WDT_HZ);
++	wdt_wr(WDT_BITE_TIME, (wdt_secs + 3) * WDT_HZ);
++	wdt_wr(WDT_EN, 1);
++	printf("SWEET WDT: armed: bark %u s, bite %u s, pet every %u ms; EN %#x%s\n", wdt_secs, wdt_secs + 3,
++	    wdt_secs * 250, wdt[WDT_EN / 4], wdt_test ? " (test: petting stops)" : "");
++	if (kernel_thread_start(wdt_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 384b73e..f38c815 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -23,6 +23,8 @@ extern "C" void sweet_nvt_init(void);
+ /* osfmk/arm64/sweet_cpuclk.c: measured CPU clock, logged 20 s and 120 s in */
+ extern "C" void sweet_cpuclk_start(void);
+ extern "C" void sweet_gpu_start(void);
++extern "C" void sweet_wdt_start(void);
++extern "C" int sweet_pon_bootloader(void);
+ extern "C" uint32_t sweet_gold_clock(void);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+@@ -87,6 +89,16 @@ sweet_pon_read(uint8_t *v)
+ 	return r;
+ }
+ 
++/* Reboot mode "bootloader" into PON SOFT_RB_SPARE, keeping the bits below the shift. */
++static int sweet_pon_set_bootloader(void);
++
++/* For sweet_wdt.c: arm "bootloader" before the watchdog, so a bite lands in fastboot. 0 = set. */
++int
++sweet_pon_bootloader(void)
++{
++	return sweet_pon_set_bootloader();
++}
++
+ /* Reboot mode "bootloader" into PON SOFT_RB_SPARE, keeping the bits below the shift. */
+ static int
+ sweet_pon_set_bootloader(void)
+@@ -247,6 +259,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	}
+ 	sweet_cpuclk_start();
+ 	sweet_gpu_start();      /* sweetgpu=: Adreno bring-up steps */
++	sweet_wdt_start();      /* sweetwdt=: hardware watchdog for test boots */
+ 	return true;
+ }
+ 
+-- 
+2.47.3
+
