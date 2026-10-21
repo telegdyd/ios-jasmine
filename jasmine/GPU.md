@@ -134,21 +134,26 @@ Each stage is useful on its own.
 
 #### G2 design (2026-10-21)
 
-Mesa's freedreno talks to the kernel only through its `src/freedreno/drm/msm` backend: `drmCommandWrite[Read]`
-with the `struct drm_msm_*` of `include/drm-uapi/msm_drm.h` (GET_PARAM, GEM_NEW, GEM_INFO, GEM_CPU_PREP/FINI,
-GEM_SUBMIT, WAIT_FENCE, SUBMITQUEUE_NEW/CLOSE/QUERY, MADVISE), `DRM_IOCTL_GEM_CLOSE` and `mmap` of a BO's offset.
-So the kernel exposes exactly that and Mesa needs no new backend:
+Mesa's freedreno talks to the kernel through a backend in `src/freedreno/drm/` (`msm/` for Linux DRM, `virtio/`).
+The kernel interface was kept smaller than msm's (no BO list, relocations or submit queues: every buffer stays mapped
+in the one GPU address space), so instead of emulating the DRM ioctls Mesa gets its own backend:
 
-- **Kernel:** `SweetGPU` (IOService, published when the GPU is up at boot) and `SweetGPUUserClient`, one external
-  method per `DRM_MSM_*` number taking the same structs, plus GEM_CLOSE. Behind it: the bring-up of j0018-j0020
-  as the driver's init (power, 266 MHz, SMMU, microcode, zap); a GPU VA space in SMMU context bank 0 with real 4K
-  page tables (L1/L2/L3); BOs = kernel memory (IOBufferMemoryDescriptor, 16K pages as four 4K PTEs) mapped into the
-  GPU VA and, write-combined, into the client task (`clientMemoryForType`, type = BO handle); submit = one
-  `CP_INDIRECT_BUFFER_PFE` per command buffer into the ring, then `CP_EVENT_WRITE CACHE_FLUSH_TS` of the fence
-  seqno to a fence word; fences polled (interrupts later).
-- **Userland:** a small "libdrm-darwin" (`drmCommandWriteRead` -> `IOConnectCallStructMethod`, `mmap` of the
-  offset -> `IOConnectMapMemory64`) under Mesa freedreno (Gallium, a5xx) cross-built for iOS on the macOS
-  runner. First milestone: a test program that clears and reads back a render target through Gallium; then GL ES.
+- **Kernel (j0026, `sweetgpu=4`):** `SweetGPU` (IOService, published once the GPU is up and a kernel self-test of
+  the whole path passed) and `SweetGPUUserClient`: get-param, buffer new/free (IOBufferMemoryDescriptor,
+  write-combined, mapped into the client by `clientMemoryForType` with the handle as type), submit (indirect buffers
+  by GPU VA) and wait/completed fences. Behind it: j0018-j0020's bring-up as the driver's init; client buffers get
+  GPU VAs from 32 GiB up in SMMU context bank 0 with 4K page tables (tables in kernel memory, cleaned for the
+  non-coherent walk); submit = `CP_INDIRECT_BUFFER_PFE` per command buffer, then `CP_EVENT_WRITE CACHE_FLUSH_TS`
+  of a seqno into a fence word (polled; interrupts later). Self-test: an IB in one non-contiguous kernel buffer
+  writes into another with `CP_MEM_WRITE`.
+- **Userland (`mesa/`, CI `build=mesa`):** Mesa 26.2.5 + `mesa/patches/0001`: `src/freedreno/drm/darwin/` (the
+  SweetGPU backend; IOKit declarations of its own, the iPhoneOS SDK has the library but no headers;
+  `fd_device_new` takes it on Apple platforms and ignores the fd) and `sweetgpu_fdtest`, cross-built with
+  `mesa/ios-arm64.ini` (freedreno only, no GL/EGL/Vulkan/LLVM; libdrm from Mesa's subproject for the headers).
+  First milestone: `sweetgpu_fdtest` clears a 64x64 RGBA8 render target on the GPU (GMEM, then resolve), waits on
+  the fence and reads it back. Then a triangle (ir3 shaders), then GL ES.
+- **Running our programs on the phone** is up to the user for now (an automated safety check stops me from
+  setting up launchd jobs that start them); `sweet-fs.py` puts binaries on the root and fetches their output.
 - **CoreAnimation:** to decide after the first milestone: a GL ES implementation in place of OpenGLES.framework for
   backboardd, or the `gld*` renderer plugin (G0.1).
 
