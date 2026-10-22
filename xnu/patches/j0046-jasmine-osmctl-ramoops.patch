@@ -1,0 +1,83 @@
+From 2a362970b39fbe4df44a88a239714a84c35ae7b7 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 07:59:07 +0200
+Subject: [PATCH] jasmine-j0046: osmctl "ramoops": read the stock-kernel
+ reference back
+
+Live session 2026-10-22 07:52 (j45): neither OSM core executes (Silver's
+neither, with its cores off), and the APCS clock branches that look like
+the OSM's are secure. To see whether OSM works at all on this firmware, the
+backed-up msm-4.4 Android boot image is booted with a static /init
+(tools/cpuclk/refinit.c, no Android userspace) that logs cpu4's cpufreq and
+a timed workload at 300 / 1747 / 2208 MHz as "SWEETREF" lines and reboots
+into fastboot; its kernel log stays in ramoops at 0xa0000000 (stock DT)
+over the warm reboot. "ramoops [SKIP]" returns those lines.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/arm64/sweet_osm.c | 42 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 41 insertions(+), 1 deletion(-)
+
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 507862c..ec63670 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1202,6 +1202,8 @@ osm_phase2(void)
+  *   tsens          temperatures                   state         PLL / RCG / OSM / CPRh / SAW line
+  *   table          this chip's CPRh corners and OSM LUT (computed from the fuses)
+  *   prog           CPRh open loop + Gold SAW AVS + OSM LUT / policy / TZ corners, not enabled
++ *   ramoops [SKIP] "SWEETREF" lines left in the ramoops region (0xa0000000) by the stock-kernel
++ *                  reference (tools/cpuclk/refinit.c), after skipping SKIP of them
+  * Direct accesses only inside the blocks this work touches (osm_ok()); a read of
+  * an unimplemented offset can still SError (the panic then goes out on the live
+  * log and the phone resets into fastboot). Every write goes through a register
+@@ -1382,7 +1384,45 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		int rc = osm_program(osm_ptr(OSM_GOLD));
+ 		return snprintf(out, len, "prog: CPRh open loop, SAW AVS, OSM programmed: rc %d (not enabled)\n", rc);
+ 	}
+-	return snprintf(out, len, "%s: ? (r w tr tw check tsens state table prog)\n", c);
++	if (!strcmp(c, "ramoops")) {
++		/*
++		 * The 4 MiB ramoops region at 0xa0000000 (outside XNU's RAM; the stock and
++		 * Nura DTs put pstore there, DRAM keeps it over a warm reboot): the lines
++		 * containing "SWEETREF" (tools/cpuclk/refinit.c), after skipping SKIP of them.
++		 */
++		static volatile uint8_t *ro;
++		if (ro == NULL) {
++			ro = (volatile uint8_t *)ml_io_map(0xa0000000, 0x400000);
++		}
++		uint32_t skip = (uint32_t)a, seen = 0;
++		int k = 0;
++		static const char key[] = "SWEETREF";
++		for (uint32_t i = 0; i + 8 < 0x400000 && k < (int)len - 200; i++) {
++			if (ro[i] != 'S') {
++				continue;
++			}
++			uint32_t j = 0;
++			while (j < 8 && ro[i + j] == (uint8_t)key[j]) {
++				j++;
++			}
++			if (j < 8) {
++				continue;
++			}
++			if (seen++ < skip) {
++				continue;
++			}
++			k += snprintf(out + k, len - k, "%06x: ", i);
++			for (j = 0; i + j < 0x400000 && j < 180 && ro[i + j] != '\n' && ro[i + j] != 0; j++) {
++				uint8_t ch = ro[i + j];
++				out[k++] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '.';
++			}
++			out[k++] = '\n';
++			out[k] = 0;
++			i += j;
++		}
++		return k + snprintf(out + k, len - k, "(%u matches seen)\n", seen);
++	}
++	return snprintf(out, len, "%s: ? (r w tr tw check tsens state table prog ramoops)\n", c);
+ }
+ 
+ /* bsd/dev/sweet_usb.c command port: line in, reply out; 0 = not ours (no sweetosm) */
+-- 
+2.47.3
+
