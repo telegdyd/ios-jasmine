@@ -1,6 +1,6 @@
-From 35538fd613cb4ee690bd7edae3a61de409383a12 Mon Sep 17 00:00:00 2001
+From f7371fc4f168ee6807ba7512941f51269c7ad4a9 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 02:28:31 +0200
+Date: Thu, 22 Oct 2026 02:35:21 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1696 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1719 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 ++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5429 insertions(+), 1 deletion(-)
+ 20 files changed, 5452 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..484775f
+index 0000000..765736d
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1696 @@
+@@ -0,0 +1,1719 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2295,6 +2295,29 @@ index 0000000..484775f
 +      texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
 +
 +   GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
++   if (p && (p->flags & OBJ_FBFETCH) && fbtex && (getenv("SWEETCA_DIAG") || flip_mode == 4)) {
++      /* character map of the 68x68 texture on unit 1: b background, 0 black, ? other */
++      GLuint t1 = c->held[1], tmp = 0;
++      static int done;
++      if (t1 && !done++) {
++         static uint8_t px[68 * 68 * 4];
++         glGenFramebuffers(1, &tmp);
++         glBindFramebuffer(GL_READ_FRAMEBUFFER, tmp);
++         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t1, 0);
++         glReadPixels(0, 0, 68, 68, GL_RGBA, GL_UNSIGNED_BYTE, px);
++         glBindFramebuffer(GL_READ_FRAMEBUFFER, c->fbo);
++         glDeleteFramebuffers(1, &tmp);
++         for (int y = 0; y < 68; y += 2) {
++            char row[40];
++            for (int x = 0; x < 68; x += 2) {
++               const uint8_t *q = px + (y * 68 + x) * 4;
++               row[x / 2] = (q[0] == 0x21 && q[1] == 0x45 && q[2] == 0x79) ? 'b' : (q[0] | q[1] | q[2]) == 0 ? '0' : '?';
++            }
++            row[34] = 0;
++            sca_log("sweetca: tex%u y%02d %s", t1, y, row);
++         }
++      }
++   }
 +   if (p && (p->flags & OBJ_FBFETCH) && fbtex) {
 +      set_unit(c, c->fbfetch_unit, fbtex);
 +      if (p->fb_sampler_loc >= 0)

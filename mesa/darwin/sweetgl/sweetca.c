@@ -1006,6 +1006,29 @@ draw_prep(struct sca_ctx *c)
       texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
 
    GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
+   if (p && (p->flags & OBJ_FBFETCH) && fbtex && (getenv("SWEETCA_DIAG") || flip_mode == 4)) {
+      /* character map of the 68x68 texture on unit 1: b background, 0 black, ? other */
+      GLuint t1 = c->held[1], tmp = 0;
+      static int done;
+      if (t1 && !done++) {
+         static uint8_t px[68 * 68 * 4];
+         glGenFramebuffers(1, &tmp);
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, tmp);
+         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t1, 0);
+         glReadPixels(0, 0, 68, 68, GL_RGBA, GL_UNSIGNED_BYTE, px);
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, c->fbo);
+         glDeleteFramebuffers(1, &tmp);
+         for (int y = 0; y < 68; y += 2) {
+            char row[40];
+            for (int x = 0; x < 68; x += 2) {
+               const uint8_t *q = px + (y * 68 + x) * 4;
+               row[x / 2] = (q[0] == 0x21 && q[1] == 0x45 && q[2] == 0x79) ? 'b' : (q[0] | q[1] | q[2]) == 0 ? '0' : '?';
+            }
+            row[34] = 0;
+            sca_log("sweetca: tex%u y%02d %s", t1, y, row);
+         }
+      }
+   }
    if (p && (p->flags & OBJ_FBFETCH) && fbtex) {
       set_unit(c, c->fbfetch_unit, fbtex);
       if (p->fb_sampler_loc >= 0)
