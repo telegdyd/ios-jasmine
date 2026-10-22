@@ -40,6 +40,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 #include <mach/mach.h>
 #include <mach/vm_page_size.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -324,13 +326,44 @@ trace_fb(const char *when)
            px[6], px[7]);
 }
 
+static double
+now_ms(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+/* every 100 flushes (CA flushes once per frame): wall time, time in glFinish, draws */
+static void
+flush_stats(double wait_ms)
+{
+   static unsigned n, draws0;
+   static double t0, waited;
+   double t = now_ms();
+   if (n == 0)
+      t0 = t;
+   waited += wait_ms;
+   if (++n == 101) {
+      sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in glFinish), %u draws", t - t0,
+              (t - t0) / 100, waited / 100, n_draws - draws0);
+      n = 1;
+      t0 = t;
+      waited = 0;
+      draws0 = n_draws;
+   }
+}
+
 static void
 w_Flush(void *rctx)
 {
+   static unsigned traced;
    CUR(rctx);
    (void)c;
+   double t = now_ms();
    glFinish();
-   if (trace_on)
+   flush_stats(now_ms() - t);
+   if (trace_on && traced++ < 20)
       trace_fb("flush");
    POST(90);
 }
@@ -1251,11 +1284,46 @@ static IMP orig_init, orig_init_api, orig_init_share, orig_dealloc, orig_api, or
 static struct sgl_display *dpy;
 static pthread_mutex_t dpy_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* IOKit, declared by hand like the darwin backend does (the SDK has no IOKit headers) */
+typedef mach_port_t sca_io_object_t;
+extern const mach_port_t kIOMainPortDefault;
+CFMutableDictionaryRef IOServiceMatching(const char *name);
+sca_io_object_t IOServiceGetMatchingService(mach_port_t main, CFMutableDictionaryRef matching);
+kern_return_t IOObjectRelease(sca_io_object_t object);
+
+/*
+ * The kernel publishes SweetGPU only once the GPU is up and has passed its
+ * self-test, which can be after backboardd asks for its first context (step 3
+ * round a: backboardd gave up on the GPU 25 s before it was there). Wait for
+ * it, as CA itself waits for an IOAcceleratorES service before trying Metal:
+ * at most 30 s, once per process.
+ */
+static void
+wait_for_gpu(void)
+{
+   static bool waited;
+   if (waited)
+      return;
+   waited = true;
+   for (int i = 0; i < 300; i++) {
+      sca_io_object_t s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("SweetGPU"));
+      if (s) {
+         IOObjectRelease(s);
+         if (i > 0)
+            sca_log("sweetca: SweetGPU appeared after %d ms", i * 100);
+         return;
+      }
+      usleep(100000);
+   }
+   sca_log("sweetca: no SweetGPU service after 30 s");
+}
+
 static struct sgl_display *
 display(void)
 {
    pthread_mutex_lock(&dpy_lock);
    if (!dpy) {
+      wait_for_gpu();
       /* before the screen: render straight to memory, no GMEM tiles (their restore and
        * resolve overran unpadded IOSurfaces on the Pixel), and no fp16 lowering of mediump */
       setenv("FD_MESA_DEBUG", "sysmem,nofp16", 0);
