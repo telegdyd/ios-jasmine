@@ -1,0 +1,7 @@
+shim/out/jasmine-j57p.adt: 68816 bytes
+uibench: start 22:58:13
+uibench: end 23:01:33
+logs/netlog-j57p-ui.txt:
+  frame interval while moving: median 124.5 ms, best 112.8, worst 124.5 (2 x 100 frames); glFinish 6.9 ms
+  flicker: 0 A-B-A in the dock band, 0 on the whole panel, in 900 frames
+  GPU jobs drawing into a surface on the display: 0

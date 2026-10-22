@@ -1,4 +1,4 @@
-From 4a63d4ca24667506b2a0bee523b883ef21cdd8e9 Mon Sep 17 00:00:00 2001
+From 4b86bed776ed82f0a5aa4544a590d94688a11016 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 22:12:04 +0200
 Subject: [PATCH] jasmine-j0057: sampling profiler over the command port (prof
@@ -15,7 +15,7 @@ Subject: [PATCH] jasmine-j0057: sampling profiler over the command port (prof
  osfmk/kern/sched_prim.c  |   4 +
  osfmk/kern/timer_call.h  |   1 +
  7 files changed, 618 insertions(+), 1 deletion(-)
- create mode 100755 osfmk/arm64/sweet_prof.c
+ create mode 100644 osfmk/arm64/sweet_prof.c
 
 diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
 index dd344e9..4ce8bd5 100755
@@ -93,7 +93,7 @@ index 82607ee..6cb2ea5 100644
 +	return (int)k;
 +}
 diff --git a/osfmk/arm64/sweet_prof.c b/osfmk/arm64/sweet_prof.c
-new file mode 100755
+new file mode 100644
 index 0000000..f7c8a18
 --- /dev/null
 +++ b/osfmk/arm64/sweet_prof.c
@@ -689,7 +689,7 @@ index aad9f3b..bccb7cb 100644
  static_assert(sizeof(running_timer_funcs) / sizeof(running_timer_funcs[0])
      == RUNNING_TIMER_MAX, "missing running timer function");
 diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
-index 8e29586..0bf1d1d 100644
+index e1b21a4..3f07f68 100644
 --- a/osfmk/kern/sched_prim.c
 +++ b/osfmk/kern/sched_prim.c
 @@ -99,6 +99,8 @@
@@ -701,7 +701,7 @@ index 8e29586..0bf1d1d 100644
  #include <kern/sfi.h>
  #include <kern/syscall_subr.h>
  #include <kern/task.h>
-@@ -3752,6 +3754,8 @@ thread_dispatch(
+@@ -3755,6 +3757,8 @@ thread_dispatch(
  			 * CPU is not running.
  			 */
  			kperf_running_setup(processor, processor->last_dispatch);

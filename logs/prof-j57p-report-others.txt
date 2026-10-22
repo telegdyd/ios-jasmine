@@ -1,0 +1,459 @@
+# 133339 records over 20.0 s, on-CPU sample every 1 ms per busy CPU, census every 2 ms; dropped 0
+
+## CPU time per process (ms per second, all CPUs)
+   901.0  launchd[1]
+   561.2  vmd[207]
+   422.8  mediaserverd[27]
+   336.3  backboardd[55]
+   179.1  SpringBoard[25]
+   122.6  logd[88]
+    88.3  kernel_task[0]
+     8.8  contextstored[54]
+
+## busiest threads (ms per second)
+   450.0  launchd[1] tid 2672 ""
+   426.8  vmd[207] tid 1789 ""
+   421.3  mediaserverd[27] tid 550 ""
+   275.8  backboardd[55] tid 586 "com.apple.coreanimation.display.primary"
+   257.7  launchd[1] tid 219 ""
+   193.3  launchd[1] tid 220 ""
+   135.3  SpringBoard[25] tid 249 ""
+   134.3  vmd[207] tid 2561 ""
+
+## launchd[1] threads: ms per second on CPU (user / kernel), waiting, runnable
+  450.0 ( 153.6 /  296.4)  wait    0.0  runnable    0.0  tid 2672 ""
+  257.7 (  89.0 /  168.7)  wait    0.0  runnable    0.0  tid 219 ""
+  193.3 (  66.5 /  126.9)  wait    0.0  runnable    0.0  tid 220 ""
+    0.1 (   0.0 /    0.1)  wait    0.0  runnable    0.0  tid 3233 "user/501/com.apple.bluetoothd throttled after exit()"
+
+### tid 2672 "": 450.0 ms/s on CPU
+self time by image:
+   65.9%  kernel
+    6.0%  libdispatch.dylib
+    5.7%  libsystem_malloc.dylib
+    5.3%  libsystem_platform.dylib
+    4.8%  libxpc.dylib
+    4.0%  launchd
+    3.1%  libsystem_c.dylib
+    1.8%  libobjc.A.dylib
+    1.5%  libsystem_kernel.dylib
+    1.0%  libsystem_pthread.dylib
+    0.4%  libsystem_sandbox.dylib
+    0.3%  RTCReporting
+self time by function:
+   19.5%  kernel: _ml_set_interrupts_enabled_with_debug
+    3.5%  libdispatch.dylib: non-external (was a private external)
+    3.3%  libsystem_malloc.dylib: non-external (was a private external)
+    2.6%  libsystem_platform.dylib: __platform_strcmp
+    1.7%  libsystem_c.dylib: non-external (was a private external)
+    1.5%  kernel: _kevent_register
+    1.3%  libxpc.dylib: non-external (was a private external)
+    0.9%  kernel: _ccsha256_ltc_compress
+inclusive (function on the stack):
+   99.5%  libsystem_pthread.dylib: _start_wqthread
+   66.4%  libsystem_pthread.dylib: __pthread_wqthread
+   66.2%  libdispatch.dylib: __dispatch_workloop_worker_thread
+   65.5%  libdispatch.dylib: non-external (was a private external)
+   45.8%  kernel: _sleh_synchronous
+   45.4%  kernel: _fleh_synchronous
+   39.2%  launchd: 0x439fb
+   36.7%  launchd: 0x43b3f
+   35.5%  kernel: _unix_syscall
+   32.3%  libsystem_kernel.dylib: ___workq_kernreturn
+   23.9%  kernel: _kevent_modern_internal
+   23.5%  launchd: 0x438cf
+   22.4%  launchd: 0x2d093
+   20.8%  launchd: 0x30d37
+   19.5%  kernel: _ml_set_interrupts_enabled_with_debug
+   18.0%  kernel: _workq_select_threadreq_or_park_and_unlock
+kernel stacks (leaf < callers):
+    5.0%  _ml_set_interrupts_enabled_with_debug
+    2.2%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _workq_kern_threadreq_initiate
+    2.0%  _ml_set_interrupts_enabled_with_debug < _waitq_resume_identified_thread < _ipc_mqueue_send_locked < _ipc_kmsg_send
+    1.9%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    1.6%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _mpsc_daemon_enqueue
+    0.9%  _kevent_register < _kevent_modern_internal < _kevent_id < _unix_syscall
+    0.6%  _unix_syscall < _sleh_synchronous < _fleh_synchronous
+    0.6%  _kevent_register < _kevent_modern_internal < _workq_handle_stack_events < _workq_kernreturn
+
+### tid 219 "": 257.7 ms/s on CPU
+self time by image:
+   65.5%  kernel
+    6.9%  libsystem_malloc.dylib
+    5.7%  libdispatch.dylib
+    5.2%  libsystem_platform.dylib
+    4.6%  libxpc.dylib
+    4.4%  launchd
+    2.6%  libsystem_c.dylib
+    1.8%  libobjc.A.dylib
+    1.5%  libsystem_kernel.dylib
+    1.3%  libsystem_pthread.dylib
+    0.3%  libsystem_sandbox.dylib
+    0.2%  DocumentManagerCore
+self time by function:
+   19.2%  kernel: _ml_set_interrupts_enabled_with_debug
+    4.0%  libsystem_malloc.dylib: non-external (was a private external)
+    3.4%  libdispatch.dylib: non-external (was a private external)
+    2.5%  libsystem_platform.dylib: __platform_strcmp
+    1.6%  libsystem_c.dylib: non-external (was a private external)
+    1.6%  kernel: _kevent_register
+    1.1%  libxpc.dylib: non-external (was a private external)
+    1.0%  kernel: _ccsha256_ltc_compress
+inclusive (function on the stack):
+   99.4%  libsystem_pthread.dylib: _start_wqthread
+   66.6%  libsystem_pthread.dylib: __pthread_wqthread
+   66.5%  libdispatch.dylib: __dispatch_workloop_worker_thread
+   65.7%  libdispatch.dylib: non-external (was a private external)
+   45.6%  kernel: _sleh_synchronous
+   44.9%  kernel: _fleh_synchronous
+   39.6%  launchd: 0x439fb
+   36.8%  launchd: 0x43b3f
+   36.0%  kernel: _unix_syscall
+   31.9%  libsystem_kernel.dylib: ___workq_kernreturn
+   24.7%  kernel: _kevent_modern_internal
+   23.7%  launchd: 0x438cf
+   22.6%  launchd: 0x2d093
+   20.6%  launchd: 0x30d37
+   19.2%  kernel: _ml_set_interrupts_enabled_with_debug
+   18.3%  kernel: _workq_select_threadreq_or_park_and_unlock
+kernel stacks (leaf < callers):
+    4.7%  _ml_set_interrupts_enabled_with_debug
+    2.3%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _workq_kern_threadreq_initiate
+    1.8%  _ml_set_interrupts_enabled_with_debug < _waitq_resume_identified_thread < _ipc_mqueue_send_locked < _ipc_kmsg_send
+    1.6%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _mpsc_daemon_enqueue
+    1.5%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    0.8%  _kevent_register < _kevent_modern_internal < _kevent_id < _unix_syscall
+    0.7%  _kevent_register < _kevent_modern_internal < _workq_handle_stack_events < _workq_kernreturn
+    0.7%  _ml_set_interrupts_enabled_with_debug < _turnstile_cleanup < _turnstile_update_inheritor_complete < _ipc_port_adjust_special_reply_port_l...
+
+## SpringBoard[25] threads: ms per second on CPU (user / kernel), waiting, runnable
+  135.3 ( 122.2 /   13.1)  wait  862.9  runnable    6.6  tid 249 ""
+   15.8 (  14.1 /    1.7)  wait  348.3  runnable    4.7  tid 2300 "com.apple.UIKit.inProcessAnimationManager"
+    8.2 (   3.6 /    4.6)  wait  482.6  runnable    7.9  tid 2995 ""
+    8.1 (   6.7 /    1.5)  wait  327.4  runnable    3.3  tid 1024 "com.apple.uikit.eventfetch-thread"
+    5.1 (   2.9 /    2.3)  wait  284.4  runnable    9.5  tid 3169 ""
+    3.1 (   1.6 /    1.5)  wait  546.8  runnable   11.7  tid 3158 ""
+    1.4 (   0.8 /    0.6)  wait  150.6  runnable    6.1  tid 3248 ""
+    1.1 (   0.8 /    0.3)  wait  430.6  runnable    4.8  tid 3167 ""
+
+### tid 249 "": 135.3 ms/s on CPU
+self time by image:
+   21.2%  libobjc.A.dylib
+   15.7%  CoreFoundation
+   14.5%  UIKitCore
+    9.7%  kernel
+    7.3%  QuartzCore
+    5.7%  libsystem_malloc.dylib
+    3.2%  Foundation
+    2.5%  libdispatch.dylib
+    2.2%  libsystem_platform.dylib
+    1.7%  libicucore.A.dylib
+    1.4%  CoreGraphics
+    1.1%  dyld
+self time by function:
+    8.7%  libobjc.A.dylib: _objc_msgSend
+    3.5%  libsystem_malloc.dylib: non-external (was a private external)
+    3.2%  UIKitCore: _UIWebViewStandardViewportWidth
+    1.8%  CoreFoundation: non-external (was a private external)
+    1.8%  kernel: _ml_set_interrupts_enabled_with_debug
+    1.8%  kernel: _fbcon_transmit_data
+    1.6%  libdispatch.dylib: __dispatch_data_format_type_utf_any
+    1.2%  UIKitCore: non-external (was a private external)
+inclusive (function on the stack):
+   62.5%  UIKitCore: non-external (was a private external)
+   61.0%  CoreFoundation: ___CFRunLoopRun
+   60.1%  CoreFoundation: _CFRunLoopRunSpecific
+   58.6%  GraphicsServices: _GSEventRunModal
+   56.8%  UIKitCore: -[UIApplication _run]
+   55.4%  UIKitCore: _UIApplicationMain
+   54.7%  SpringBoard: _SBSystemAppMain
+   54.1%  dyld: non-external (was a private external)
+   51.7%  ?: -0x1
+   32.3%  UIKitCore: ___processEventQueue
+   31.0%  CoreFoundation: ___CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__
+   29.7%  CoreFoundation: ___CFRunLoopDoSource0
+   28.7%  CoreFoundation: ___CFRunLoopDoSources0
+   25.7%  UIKitCore: ___dispatchPreprocessedEventFromEventQueue
+   24.5%  CoreFoundation: non-external (was a private external)
+   22.5%  UIKitCore: -[UIWindow sendEvent:]
+kernel stacks (leaf < callers):
+    1.8%  _fbcon_transmit_data < __cnputs < _console_ring_try_empty < _console_printbuf_putc
+    0.7%  _ml_set_interrupts_enabled_with_debug
+    0.4%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    0.3%  _ccsha256_ltc_compress < _ccdigest_update < _ikm_sign < _ipc_kmsg_copyin_from_user
+    0.2%  _pmap_enter_options_internal < _pmap_enter_options_addr < _vm_fault_attempt_pmap_enter < _vm_fault_pmap_enter_with_object_lock
+    0.1%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _workq_kern_threadreq_initiate
+    0.1%  _vm_fault_internal < _vm_fault$XNU_INTERNAL < _handle_user_abort < _sleh_synchronous
+    0.1%  _memcmp_zero_ptr_aligned < _zalloc_ext < _ipc_kmsg_alloc < _ipc_kmsg_get_from_user
+off CPU (census, ms per second): wait 862.9, runnable 6.6
+    852.9  wait trap -47  ___CFRunLoopServiceMachPort < ___CFRunLoopRun < _CFRunLoopRunSpecific
+      2.4  wait trap -47  __dispatch_mach_send_and_wait_for_reply < non-external (was a private external) < _xpc_connection_send_message_with_reply_sync
+      1.0  runnable trap -47  ___CFRunLoopServiceMachPort < ___CFRunLoopRun < _CFRunLoopRunSpecific
+      0.8  wait trap -47  __xpc_pipe_mach_msg < __xpc_pipe_routine < __xpc_interface_routine
+      0.4  wait trap -47240400  _NSBundleResourceRequestLoadingPriorityUrgent < non-external (was a private external) < CAAnimation_setter(CAAnimation*, unsigned int, ...
+      0.3  runnable trap -47  _firehose_drain_notifications_once < non-external (was a private external) < non-external (was a private external)
+      0.3  wait trap 12672  icu::RegexMatcher::reset(UText*) < icu::RegexMatcher::RegexMatcher(icu::RegexPatte... < icu::RegexPattern::matcher(UErrorCode&) const
+      0.3  wait trap -1076600396  __nanov2_free < -[__NSArrayI dealloc] < -[UIView _updateEmbeddedViewControllerContentOv...
+
+### tid 2300 "com.apple.UIKit.inProcessAnimationManager": 15.8 ms/s on CPU
+self time by image:
+   22.2%  libobjc.A.dylib
+   19.3%  CoreFoundation
+   17.1%  UIKitCore
+   10.8%  kernel
+    6.6%  QuartzCore
+    6.0%  libdispatch.dylib
+    5.4%  libsystem_malloc.dylib
+    3.2%  libsystem_blocks.dylib
+    3.2%  Foundation
+    2.5%  libsystem_platform.dylib
+    1.3%  libsystem_pthread.dylib
+    0.9%  libsystem_kernel.dylib
+self time by function:
+    6.0%  libobjc.A.dylib: _objc_msgSend
+    5.1%  kernel: _ml_set_interrupts_enabled_with_debug
+    3.8%  libdispatch.dylib: __dispatch_data_format_type_utf_any
+    3.8%  UIKitCore: _UIWebViewStandardViewportWidth
+    3.2%  libsystem_malloc.dylib: non-external (was a private external)
+    1.9%  CoreFoundation: non-external (was a private external)
+    1.3%  CoreFoundation: ___CFRunLoopRun
+    1.3%  libsystem_blocks.dylib: non-external (was a private external)
+inclusive (function on the stack):
+  100.0%  UIKitCore: ___66-[UIViewInProcessAnimationManager startAdvancingAnimationManager:]_block_invoke_3
+  100.0%  Foundation: ___NSThread__start__
+   99.7%  Foundation: -[NSRunLoop(NSRunLoop) run]
+   99.7%  libsystem_pthread.dylib: __pthread_start
+   99.4%  libsystem_pthread.dylib: _thread_start
+   98.7%  Foundation: -[NSRunLoop(NSRunLoop) runMode:beforeDate:]
+   95.6%  CoreFoundation: _CFRunLoopRunSpecific
+   95.3%  CoreFoundation: ___CFRunLoopRun
+   87.0%  CoreFoundation: ___CFRunLoopDoSource1
+   86.7%  CoreFoundation: non-external (was a private external)
+   86.1%  CoreFoundation: ___CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__
+   82.6%  QuartzCore: display_timer_callback(__CFMachPort*, void*, long, void*)
+   80.1%  QuartzCore: CA::Display::DisplayLink::dispatch_items(unsigned long long, unsigned long long, unsign...
+   77.2%  UIKitCore: -[UIViewInProcessAnimationManager _displayLinkFire:]
+   76.6%  libdispatch.dylib: non-external (was a private external)
+   76.6%  UIKitCore: -[UIViewInProcessAnimationManager _performTick:cancel:force:eventName:entry:exit:]
+kernel stacks (leaf < callers):
+    3.2%  _ml_set_interrupts_enabled_with_debug
+    0.9%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    0.6%  _ipc_mqueue_receive_on_thread_and_unlock < _ipc_mqueue_receive < _mach_msg_trap_receive < _mach_msg2_trap
+    0.6%  _ml_set_interrupts_enabled_with_debug < _semaphore_wait_internal < _semaphore_timedwait_trap_internal < _mach_syscall
+    0.6%  _mach_syscall < _sleh_synchronous < _fleh_synchronous
+    0.6%  _os_ref_retain_internal < _port_name_to_semaphore < _semaphore_timedwait_trap_internal < _mach_syscall
+    0.3%  _zone_element_bounds_check < _copy_validate < _copyin < _kevent_modern_internal
+    0.3%  _ccsha256_ltc_compress < _ccdigest_final_64be < _ikm_validate_sig_internal < _ipc_kmsg_copyout
+off CPU (census, ms per second): wait 348.3, runnable 4.7
+    131.2  wait trap -47  ___CFRunLoopServiceMachPort < ___CFRunLoopRun < _CFRunLoopRunSpecific
+    124.1  wait trap -36  __dispatch_semaphore_wait_slow < ___66-[UIViewInProcessAnimationManager startAdv... < ___NSThread__start__
+     93.0  wait trap -38  __dispatch_semaphore_wait_slow < -[UIViewInProcessAnimationManager _processPostT... < ___82-[UIViewInProcessAnimationManager _perform...
+      3.8  runnable trap -38  __dispatch_semaphore_wait_slow < -[UIViewInProcessAnimationManager _processPostT... < ___82-[UIViewInProcessAnimationManager _perform...
+      0.5  runnable trap -47  ___CFRunLoopServiceMachPort < ___CFRunLoopRun < _CFRunLoopRunSpecific
+      0.1  runnable trap 0  _objc_retain_x8 < ___82-[UIViewInProcessAnimationManager _perform... < non-external (was a private external)
+      0.1  runnable trap 8320  _NSAllocateObject < +[NSValue valueWithBytes:objCType:] < -[UIInterpolatedTransform getValue]
+      0.1  runnable trap 169  non-external (was a private external) < __objc_rootAllocWithZone < _objc_opt_new
+
+## mediaserverd[27] threads: ms per second on CPU (user / kernel), waiting, runnable
+  421.3 ( 235.9 /  185.5)  wait    0.0  runnable    0.0  tid 550 ""
+    0.6 (   0.3 /    0.3)  wait    0.0  runnable    0.0  tid 2486 ""
+    0.6 (   0.2 /    0.4)  wait    0.0  runnable    0.0  tid 433 ""
+    0.2 (   0.1 /    0.1)  wait    0.0  runnable    0.0  tid 943 ""
+    0.1 (   0.0 /    0.1)  wait    0.0  runnable    0.0  tid 3236 ""
+    0.1 (   0.0 /    0.1)  wait    0.0  runnable    0.0  tid 3219 ""
+    0.1 (   0.1 /    0.0)  wait    0.0  runnable    0.0  tid 1440 "com.apple.CoreMotion.MotionThread"
+
+### tid 550 "": 421.3 ms/s on CPU
+self time by image:
+   44.0%  kernel
+   12.4%  libxpc.dylib
+   10.7%  libdispatch.dylib
+    9.3%  libsystem_malloc.dylib
+    5.2%  libsystem_trace.dylib
+    4.5%  libobjc.A.dylib
+    3.0%  libsystem_c.dylib
+    2.4%  libsystem_platform.dylib
+    2.1%  libsystem_kernel.dylib
+    1.7%  BTAudioHALPlugin
+    1.2%  CoreFoundation
+    0.8%  dyld
+self time by function:
+   15.1%  kernel: _ml_set_interrupts_enabled_with_debug
+    6.5%  libdispatch.dylib: non-external (was a private external)
+    5.4%  libsystem_malloc.dylib: non-external (was a private external)
+    2.8%  libxpc.dylib: non-external (was a private external)
+    2.4%  libsystem_trace.dylib: __os_log_impl_flatten_and_send
+    1.9%  libsystem_c.dylib: non-external (was a private external)
+    1.6%  kernel: _ccsha256_ltc_compress
+    1.2%  libobjc.A.dylib: _objc_msgSend
+inclusive (function on the stack):
+  100.0%  libdispatch.dylib: non-external (was a private external)
+  100.0%  libdispatch.dylib: __dispatch_workloop_worker_thread
+  100.0%  libsystem_pthread.dylib: __pthread_wqthread
+  100.0%  libsystem_pthread.dylib: _start_wqthread
+   89.6%  libdispatch.dylib: __dispatch_mach_cancel_invoke
+   88.5%  libxpc.dylib: __xpc_connection_mach_event
+   87.1%  libxpc.dylib: __xpc_connection_call_event_handler
+   78.8%  BTAudioHALPlugin: 0x32b13
+   61.1%  BTAudioHALPlugin: 0x325eb
+   61.1%  libxpc.dylib: _xpc_connection_resume
+   60.9%  libxpc.dylib: __xpc_connection_activate_if_needed
+   59.6%  libxpc.dylib: __xpc_connection_init
+   58.3%  libxpc.dylib: non-external (was a private external)
+   50.4%  libxpc.dylib: __xpc_connection_bootstrap_look_up_slow
+   46.7%  libxpc.dylib: __xpc_interface_routine
+   42.5%  libxpc.dylib: __xpc_pipe_routine
+kernel stacks (leaf < callers):
+    4.4%  _ml_set_interrupts_enabled_with_debug
+    3.6%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _workq_kern_threadreq_initiate
+    1.5%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    1.4%  _ml_set_interrupts_enabled_with_debug < _ipc_mqueue_receive_on_thread_and_unlock < _ipc_mqueue_receive < _mach_msg_trap_receive
+    0.9%  _ml_set_interrupts_enabled_with_debug < _thread_set_workq_pri < _workq_schedule_creator < _workq_kern_threadreq_initiate
+    0.8%  _ml_set_interrupts_enabled_with_debug < _turnstile_cleanup < _ipc_port_adjust_special_reply_port_l... < _mach_msg_receive_results_complete
+    0.6%  _ccsha256_ltc_compress < _ccdigest_update < _ikm_sign < _ipc_kmsg_copyin_from_user
+    0.6%  _ipc_kmsg_copyin_from_user < _mach_msg_trap_send < _mach_msg2_trap < _mach_syscall
+
+### tid 2486 "": 0.6 ms/s on CPU
+self time by image:
+   45.5%  kernel
+   18.2%  libdispatch.dylib
+    9.1%  BaseBoard
+    9.1%  libsystem_blocks.dylib
+    9.1%  dyld
+    9.1%  libxpc.dylib
+self time by function:
+   36.4%  kernel: _ml_set_interrupts_enabled_with_debug
+    9.1%  libdispatch.dylib: -[OS_dispatch_data debugDescription].cold.1
+    9.1%  kernel: _ipc_port_make_send_any_locked
+    9.1%  libdispatch.dylib: non-external (was a private external)
+    9.1%  BaseBoard: _BSSettingsDecodeSettingEntries
+    9.1%  libsystem_blocks.dylib: non-external (was a private external)
+    9.1%  dyld: non-external (was a private external)
+    9.1%  libxpc.dylib: _xpc_uint64_get_value
+inclusive (function on the stack):
+  100.0%  libsystem_pthread.dylib: _start_wqthread
+   63.6%  libdispatch.dylib: non-external (was a private external)
+   63.6%  libsystem_pthread.dylib: __pthread_wqthread
+   54.5%  libdispatch.dylib: __dispatch_workloop_worker_thread
+   36.4%  BoardServices: -[BSXPCServiceConnection _connection_handleMessage:fromPeer:withHandoff:]
+   36.4%  kernel: _ml_set_interrupts_enabled_with_debug
+   36.4%  libsystem_kernel.dylib: ___workq_kernreturn
+   27.3%  BaseBoard: -[BSSettings initWithXPCDictionary:]
+   27.3%  BaseBoard: _BSCreateDeserializedBSXPCEncodableObjectFromXPCDictionary
+   27.3%  BaseBoard: _BSCreateDeserializedBSXPCEncodableObjectFromXPCDictionaryWithKey
+   27.3%  FrontBoardServices: -[FBSDisplayLayoutElement initWithXPCDictionary:]
+   27.3%  BaseBoard: non-external (was a private external)
+   27.3%  BaseBoard: _BSCreateDeserializedArrayFromXPCDictionaryWithKey
+   27.3%  BaseBoard: _BSDeserializeArrayOfBSXPCEncodableObjectsFromXPCDictionaryWithKey
+   27.3%  FrontBoardServices: -[FBSDisplayLayout initWithXPCDictionary:]
+   27.3%  FrontBoardServices: -[_FBSDisplayLayoutService updateLayout:withTransition:]
+kernel stacks (leaf < callers):
+   18.2%  _ml_set_interrupts_enabled_with_debug
+    9.1%  _ml_set_interrupts_enabled_with_debug < _waitq_assert_wait64 < _assert_wait < _workq_park_and_unlock
+    9.1%  _ipc_port_make_send_any_locked < _ipc_kobject_make_send_lazy_alloc_port < _convert_voucher_to_port < _ipc_voucher_receive_postprocessing
+    9.1%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _workq_kern_threadreq_initiate
+
+## vmd[207] threads: ms per second on CPU (user / kernel), waiting, runnable
+  426.8 ( 324.9 /  102.0)  wait    0.0  runnable    0.0  tid 1789 ""
+  134.3 (  84.4 /   49.9)  wait    0.0  runnable    0.0  tid 2561 ""
+    0.2 (   0.1 /    0.1)  wait    0.0  runnable    0.0  tid 1788 ""
+
+### tid 1789 "": 426.8 ms/s on CPU
+self time by image:
+   23.9%  kernel
+   17.1%  CoreFoundation
+   16.7%  libobjc.A.dylib
+   12.7%  libsystem_malloc.dylib
+    6.2%  Foundation
+    5.2%  libdispatch.dylib
+    4.3%  libsystem_platform.dylib
+    3.3%  libxpc.dylib
+    1.9%  libsystem_trace.dylib
+    1.5%  libsystem_blocks.dylib
+    1.4%  libsystem_c.dylib
+    1.2%  CoreTelephony
+self time by function:
+   10.8%  kernel: _ml_set_interrupts_enabled_with_debug
+    7.6%  libsystem_malloc.dylib: non-external (was a private external)
+    3.5%  libobjc.A.dylib: _objc_msgSend
+    2.4%  CoreFoundation: non-external (was a private external)
+    2.3%  libdispatch.dylib: non-external (was a private external)
+    1.9%  libobjc.A.dylib: search_method_list(method_list_t const*, objc_selector*)
+    1.9%  CoreFoundation: ___CFStringAppendFormatCore
+    1.3%  libsystem_platform.dylib: __platform_strcmp
+inclusive (function on the stack):
+   99.9%  libdispatch.dylib: non-external (was a private external)
+   97.0%  libdispatch.dylib: __dispatch_workloop_worker_thread
+   94.8%  vmd: 0x391cb
+   93.9%  libsystem_pthread.dylib: __pthread_wqthread
+   92.9%  vmd: 0x58f77
+   86.9%  libsystem_pthread.dylib: _start_wqthread
+   62.9%  CoreTelephony: -[CoreTelephonyClient synchronousProxyWithErrorHandler:]
+   62.6%  CoreTelephony: -[CoreTelephonyClientMux synchronousProxyWithErrorHandler:]
+   62.4%  vmd: 0x586c7
+   61.2%  vmd: 0x58747
+   57.2%  vmd: 0x591eb
+   57.1%  CoreTelephony: -[CoreTelephonyClient getActiveContexts:]
+   57.1%  CoreTelephony: ____ZN8dispatch9sync_implIZ59-[CoreTelephonyClientMux synchronousProxyWithErrorHandler:...
+   49.6%  libdispatch.dylib: __dispatch_lane_barrier_sync_invoke_and_complete
+   40.0%  Foundation: non-external (was a private external)
+   37.3%  Foundation: -[NSXPCConnection _sendInvocation:orArguments:count:methodSignature:selector:withProxy:]
+kernel stacks (leaf < callers):
+    5.0%  _ml_set_interrupts_enabled_with_debug
+    1.9%  _ml_set_interrupts_enabled_with_debug < _ast_taken_user < user_take_ast
+    1.2%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _workq_kern_threadreq_initiate
+    1.1%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    0.4%  _kevent_register < _kevent_modern_internal < _kevent_id < _unix_syscall
+    0.3%  _ml_set_interrupts_enabled_with_debug < _waitq_assert_wait64_locked < _ipc_mqueue_receive_on_thread_and_unlock < _ipc_mqueue_receive
+    0.3%  _sleh_synchronous < _fleh_synchronous
+    0.2%  _ml_set_interrupts_enabled_with_debug < _workq_thread_reset_pri < _workq_schedule_creator < _workq_kern_threadreq_initiate
+
+### tid 2561 "": 134.3 ms/s on CPU
+self time by image:
+   37.2%  kernel
+   17.8%  CoreFoundation
+   10.1%  libobjc.A.dylib
+    9.4%  libsystem_malloc.dylib
+    8.0%  libdispatch.dylib
+    3.1%  Foundation
+    2.7%  libsystem_trace.dylib
+    2.0%  libsystem_platform.dylib
+    1.8%  libxpc.dylib
+    1.5%  libsystem_blocks.dylib
+    1.4%  libsystem_kernel.dylib
+    1.3%  libsystem_c.dylib
+self time by function:
+   14.9%  kernel: _ml_set_interrupts_enabled_with_debug
+    5.7%  libsystem_malloc.dylib: non-external (was a private external)
+    4.8%  libdispatch.dylib: non-external (was a private external)
+    3.6%  CoreFoundation: ___CFStringAppendFormatCore
+    2.1%  libobjc.A.dylib: _objc_msgSend
+    2.0%  CoreFoundation: non-external (was a private external)
+    1.3%  kernel: _ccsha256_ltc_compress
+    1.2%  libsystem_trace.dylib: __os_log_impl_flatten_and_send
+inclusive (function on the stack):
+  100.0%  libsystem_pthread.dylib: _start_wqthread
+   86.3%  libsystem_pthread.dylib: __pthread_wqthread
+   86.0%  libdispatch.dylib: __dispatch_workloop_worker_thread
+   85.7%  libdispatch.dylib: non-external (was a private external)
+   43.6%  libxpc.dylib: __xpc_connection_call_reply_async
+   37.4%  libxpc.dylib: __xpc_connection_reply_callout
+   36.4%  Foundation: ___88-[NSXPCConnection _sendInvocation:orArguments:count:methodSignature:selector:withP...
+   24.8%  kernel: _fleh_synchronous
+   24.7%  kernel: _sleh_synchronous
+   20.1%  libsystem_trace.dylib: __os_log
+   19.7%  Foundation: ___NSXPCCONNECTION_IS_CALLING_OUT_TO_ERROR_BLOCK__
+   19.4%  libsystem_trace.dylib: __os_log_impl_flatten_and_send
+   19.3%  CoreTelephony: ___60-[CoreTelephonyClientMux _computeNotificationSetForced_sync]_block_invoke
+   19.0%  CoreTelephony: ___60-[CoreTelephonyClientMux _computeNotificationSetForced_sync]_block_invoke.cold.1
+   18.8%  libsystem_trace.dylib: __os_log_error_impl
+   16.2%  libsystem_trace.dylib: __os_log_fmt_flatten_object
+kernel stacks (leaf < callers):
+    6.4%  _ml_set_interrupts_enabled_with_debug
+    2.2%  _ml_set_interrupts_enabled_with_debug < _waitq_select_queue_flush < _waitq_wakeup64_all_locked < _ipc_port_clear_receiver
+    1.6%  _ml_set_interrupts_enabled_with_debug < _ast_taken_user < user_take_ast
+    1.5%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    0.4%  _ipc_right_destruct < _mach_port_destruct < _mach_syscall < _sleh_synchronous
+    0.4%  _ipc_kmsg_copyin_from_user < _mach_msg_trap_send < _mach_msg2_trap < _mach_syscall
+    0.4%  _ccsha256_ltc_compress < _ccdigest_update < _ikm_sign < _ipc_kmsg_copyin_from_user
+    0.3%  _kqueue_scan < _kevent_modern_internal < _workq_setup_thread < _workq_setup_and_run

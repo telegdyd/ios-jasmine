@@ -1,0 +1,483 @@
+# 133339 records over 20.0 s, on-CPU sample every 1 ms per busy CPU, census every 2 ms; dropped 0
+
+## CPU time per process (ms per second, all CPUs)
+   901.0  launchd[1]
+   561.2  vmd[207]
+   422.8  mediaserverd[27]
+   336.3  backboardd[55]
+   179.1  SpringBoard[25]
+   122.6  logd[88]
+    88.3  kernel_task[0]
+     8.8  contextstored[54]
+     8.8  biomed[40]
+     8.2  nanotimekitcompa[272]
+     6.9  ?[270]
+     4.9  locationd[60]
+     3.7  ?[271]
+     3.5  ?[269]
+     3.5  cfprefsd[91]
+     3.0  aggregated[74]
+     1.6  callservicesd[126]
+     1.6  mobileassetd[92]
+     1.5  thermalmonitord[53]
+     1.1  notifyd[89]
+     1.0  powerd[37]
+     1.0  sharingd[58]
+     0.9  akd[145]
+     0.8  ind[136]
+     0.8  runningboardd[24]
+
+## busiest threads (ms per second)
+   450.0  launchd[1] tid 2672 ""
+   426.8  vmd[207] tid 1789 ""
+   421.3  mediaserverd[27] tid 550 ""
+   275.8  backboardd[55] tid 586 "com.apple.coreanimation.display.primary"
+   257.7  launchd[1] tid 219 ""
+   193.3  launchd[1] tid 220 ""
+   135.3  SpringBoard[25] tid 249 ""
+   134.3  vmd[207] tid 2561 ""
+    50.4  logd[88] tid 390 ""
+    47.0  logd[88] tid 397 ""
+    31.0  kernel_task[0] tid 105 "daemon.deferred-deallocation"
+    21.8  kernel_task[0] tid 200 ""
+    18.0  logd[88] tid 402 ""
+    15.8  SpringBoard[25] tid 2300 "com.apple.UIKit.inProcessAnimationManager"
+    10.9  kernel_task[0] tid 417 "thread call qos-ui #1"
+     9.7  backboardd[55] tid 600 "backbo:traceq0"
+     8.8  backboardd[55] tid 2972 ""
+     8.6  backboardd[55] tid 563 "com.apple.coreanimation.render-server"
+     8.2  backboardd[55] tid 3023 ""
+     8.2  SpringBoard[25] tid 2995 ""
+     8.1  SpringBoard[25] tid 1024 "com.apple.uikit.eventfetch-thread"
+     7.3  backboardd[55] tid 3148 ""
+     7.3  logd[88] tid 388 ""
+     7.0  backboardd[55] tid 3201 ""
+     6.9  kernel_task[0] tid 162 ""
+
+## backboardd[55] threads: ms per second on CPU (user / kernel), waiting, runnable
+  275.8 ( 149.9 /  126.0)  wait  204.3  runnable   24.0  tid 586 "com.apple.coreanimation.display.primary"
+    9.7 (   2.8 /    6.9)  wait  435.4  runnable   37.8  tid 600 "backbo:traceq0"
+    8.8 (   5.6 /    3.3)  wait  423.0  runnable    6.0  tid 2972 ""
+    8.6 (   3.9 /    4.7)  wait  615.4  runnable    0.5  tid 563 "com.apple.coreanimation.render-server"
+    8.2 (   4.8 /    3.4)  wait  438.3  runnable    5.5  tid 3023 ""
+    7.3 (   4.6 /    2.8)  wait  599.5  runnable    4.0  tid 3148 ""
+    7.0 (   4.2 /    2.9)  wait  570.0  runnable    4.9  tid 3201 ""
+    5.3 (   3.8 /    1.6)  wait  175.8  runnable    3.8  tid 3047 ""
+    4.4 (   2.4 /    2.0)  wait  318.6  runnable    2.6  tid 3220 ""
+    1.3 (   0.7 /    0.6)  wait  101.1  runnable    0.0  tid 979 "IOHIDEvent Server Connection - Root"
+    0.1 (   0.0 /    0.1)  wait   99.9  runnable    0.0  tid 606 "com.apple.CoreMotion.MotionThread"
+    0.0 (   0.0 /    0.0)  wait   25.0  runnable    0.0  tid 3216 ""
+    0.0 (   0.0 /    0.0)  wait  111.3  runnable    0.0  tid 327 ""
+
+### tid 586 "com.apple.coreanimation.display.primary": 275.8 ms/s on CPU
+self time by image:
+   45.7%  kernel
+   30.6%  libsweetca.dylib
+   14.2%  QuartzCore
+    5.2%  libsystem_malloc.dylib
+    1.5%  libsystem_platform.dylib
+    1.1%  libsystem_pthread.dylib
+    0.5%  libsystem_kernel.dylib
+    0.2%  libdyld.dylib
+    0.2%  libsystem_c.dylib
+    0.2%  IOKit
+    0.1%  RTCReporting
+    0.1%  CoreFoundation
+self time by function:
+   22.4%  kernel: AppleCLCD::composeFit(unsigned char*, SweetSurface*, int, int, int, int, int, int)
+    4.4%  kernel: _ml_set_interrupts_enabled_with_debug
+    3.0%  libsystem_malloc.dylib: non-external (was a private external)
+    2.5%  kernel: SweetGPUBuffer::create(unsigned long long, bool)
+    2.0%  libsweetca.dylib: _fd5_program_emit
+    1.7%  kernel: _pt_l3
+    1.7%  kernel: _FlushPoC_DcacheRegion
+    1.0%  libsweetca.dylib: _fd5_emit_state
+    1.0%  libsystem_pthread.dylib: non-external (was a private external)
+    0.9%  QuartzCore: CA::Render::Updater::prepare_layer(CA::Render::Updater::GlobalState&, CA::Render::Updat...
+    0.9%  QuartzCore: CA::Render::Updater::prepare_layer0(CA::Render::Updater::GlobalState&, CA::Render::Laye...
+    0.8%  libsweetca.dylib: _fd_submit_append_bo
+    0.8%  kernel: AppleCLCD::present(unsigned char const*)
+    0.7%  kernel: _ccsha256_ltc_compress
+    0.7%  kernel: OSMetaClassBase::safeMetaCast(OSMetaClassBase const*, OSMetaClass const*)
+    0.7%  libsweetca.dylib: _slab_destroy_child
+    0.6%  QuartzCore: CA::OGL::Shape::FillRenderer::render_lines(CA::OGL::Shape::Lines&, CA::Bounds const&) c...
+    0.6%  libsweetca.dylib: __mesa_hash_table_search_pre_hashed
+    0.5%  QuartzCore: CA::OGL::GLContext::update_shader()
+    0.5%  QuartzCore: CA::Render::Updater::layer_node(CA::Render::Layer const*, CA::Render::Updater::GlobalSt...
+    0.5%  libsweetca.dylib: _u_vbuf_draw_vbo
+    0.5%  libsystem_platform.dylib: __platform_memmove
+    0.5%  libsweetca.dylib: _emit_common_consts
+    0.5%  libsweetca.dylib: _st_update_rasterizer
+    0.5%  libsystem_malloc.dylib: _tiny_free_list_add_ptr
+inclusive (function on the stack):
+   61.0%  QuartzCore: CA::OGL::ImagingNode::render(CA::OGL::ImagingNode::RenderClosure*, unsigned int)
+   56.8%  QuartzCore: CA::OGL::LayerNode::apply(float, CA::OGL::Surface**, float*)
+   55.1%  QuartzCore: CA::OGL::render_layers(CA::OGL::Renderer&, CA::OGL::Layer*)
+   44.7%  kernel: _sleh_synchronous
+   43.8%  kernel: _fleh_synchronous
+   42.3%  libsystem_kernel.dylib: _mach_msg2_trap
+   42.1%  kernel: _mach_syscall
+   41.6%  kernel: _mach_msg2_trap
+   40.7%  QuartzCore: CA::OGL::GLContext::draw_elements(CA::OGL::PrimitiveMode, unsigned int, unsigned short ...
+   40.6%  kernel: _mach_msg_trap_send
+   39.6%  kernel: _ipc_kmsg_send
+   39.3%  QuartzCore: CA::WindowServer::Server::render_for_time(double, CVTimeStamp const*, unsigned long lon...
+   38.9%  IOKit: 0x18e553407
+   38.9%  kernel: _ipc_kobject_server
+   38.8%  QuartzCore: CA::WindowServer::IOMFBServer::vsync_callback(__IOMobileFramebuffer*, unsigned long lon...
+   38.1%  QuartzCore: display_timer_callback(__CFMachPort*, void*, long, void*)
+   37.7%  CoreFoundation: non-external (was a private external)
+   37.2%  CoreFoundation: ___CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__
+   36.7%  CoreFoundation: ___CFRunLoopDoSource1
+   36.5%  CoreFoundation: ___CFRunLoopRun
+   36.4%  CoreFoundation: _CFRunLoopRunSpecific
+   36.3%  CoreFoundation: _CFRunLoopRun
+   36.1%  kernel: __Xio_connect_method
+   36.0%  QuartzCore: CA::WindowServer::IOMFBServer::thread_body(void*)
+   36.0%  kernel: _is_io_connect_method
+   35.7%  QuartzCore: thread_fun(void*)
+   35.6%  libsystem_pthread.dylib: __pthread_start
+   35.5%  libsystem_pthread.dylib: _thread_start
+   33.8%  libsweetca.dylib: _w_DrawElements
+   29.2%  QuartzCore: CA::WindowServer::IOMFBDisplay::finish_update(CA::Render::Update*, unsigned int)
+   28.4%  QuartzCore: CA::OGL::Context::ClippedArray::next_rect(CA::Bounds&)
+   27.6%  IOKit: 0x18e55278f
+   24.6%  IOMobileFramebuffer: _kern_SwapEnd
+   24.4%  libsweetca.dylib: __mesa_DrawElementsBaseVertex
+   24.4%  IOKit: 0x18e5526d7
+   24.2%  kernel: IOMobileFramebufferUserClient::externalMethod(unsigned int, IOExternalMethodArguments*,...
+   24.1%  kernel: AppleCLCD::swap(unsigned char const*)
+   23.8%  kernel: AppleCLCD::present(unsigned char const*)
+   23.0%  libsweetca.dylib: __mesa_validated_drawrangeelements
+   22.4%  kernel: AppleCLCD::composeFit(unsigned char*, SweetSurface*, int, int, int, int, int, int)
+   21.2%  QuartzCore: CA::OGL::render_contents_background(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   20.9%  QuartzCore: CA::OGL::ImagingNode::retain_surface(float&, unsigned int)
+   20.5%  QuartzCore: CA::OGL::capture_backdrop(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   20.1%  libsweetca.dylib: _fd_draw_vbo
+   19.8%  libsweetca.dylib: _u_vbuf_draw_vbo
+   13.7%  QuartzCore: CA::OGL::emit_filter(CA::OGL::Renderer&, CA::OGL::Filter const&, CA::OGL::Layer const&,...
+   13.7%  QuartzCore: CA::OGL::(anonymous namespace)::filter_backdrop(CA::OGL::Renderer&, CA::OGL::Layer cons...
+   13.6%  QuartzCore: CA::OGL::emit_one_part_rect(CA::OGL::Context&, CA::OGL::RectState const&, float const*,...
+   11.4%  QuartzCore: CA::OGL::render_background(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   11.3%  kernel: SweetGPUUserClient::externalMethod(unsigned int, IOExternalMethodArguments*, IOExternal...
+kernel stacks (leaf < callers):
+   22.4%  AppleCLCD::composeFit(unsigned char*,... < AppleCLCD::present(unsigned char const*) < AppleCLCD::swap(unsigned char const*) < IOMobileFramebufferUserClient::extern...
+    2.5%  SweetGPUBuffer::create(unsigned long ... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    1.7%  _ml_set_interrupts_enabled_with_debug < _thread_block_reason < _delay_for_interval < _sweet_gpu_wait
+    0.9%  _FlushPoC_DcacheRegion < _IOFlushProcessorCache < SweetGPUUserClient::maintain(SweetGPU... < SweetGPUUserClient::retireJobs(unsign...
+    0.9%  _pt_l3 < _sweet_gpu_vm_unmap < SweetGPUBuffer::free() < SweetGPUUserClient::externalMethod(un...
+    0.9%  _pt_l3 < _sweet_gpu_vm_map < SweetGPUBuffer::mapGPU(bool) < SweetGPUBuffer::create(unsigned long ...
+    0.8%  AppleCLCD::present(unsigned char const*) < AppleCLCD::swap(unsigned char const*) < IOMobileFramebufferUserClient::extern... < _is_io_connect_method
+    0.8%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _ksyn_cvsignal
+    0.5%  _ml_set_interrupts_enabled_with_debug < _cpu_broadcast_xcall_internal < _cpu_broadcast_xcall_simple < _sweet_gpu_flush_all
+    0.5%  _FlushPoC_DcacheRegion < _sweet_gpu_vm_map < SweetGPUBuffer::mapGPU(bool) < SweetGPUBuffer::create(unsigned long ...
+    0.4%  _fbcon_transmit_data < __cnputs < _console_ring_try_empty < _console_printbuf_putc
+    0.4%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    0.4%  _FlushPoC_DcacheRegion < _sweet_gpu_vm_unmap < SweetGPUBuffer::free() < SweetGPUUserClient::externalMethod(un...
+    0.4%  SweetGPUUserClient::bufferAt(unsigned... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    0.3%  _ml_set_interrupts_enabled_with_debug < _assert_wait_deadline < _delay_for_interval < _sweet_gpu_wait
+    0.3%  OSMetaClassBase::safeMetaCast(OSMetaC... < SweetGPUUserClient::addBuffer(SweetGP... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method
+    0.3%  OSMetaClassBase::safeMetaCast(OSMetaC... < SweetGPUUserClient::bufferAt(unsigned... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method
+    0.3%  _ccsha256_ltc_compress < _ccdigest_update < _ikm_sign < _ipc_kmsg_send
+    0.3%  OSArray::getObject(unsigned int) const < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    0.2%  _memcmp_zero_ptr_aligned < _zalloc_item < _kalloc_ext < _ipc_kmsg_alloc
+    0.2%  _ipc_kmsg_copyin_from_user < _mach_msg_trap_send < _mach_msg2_trap < _mach_syscall
+    0.2%  _ml_set_interrupts_enabled_with_debug < _thread_block_reason < _delay_for_interval < AppleCLCD::swap(unsigned char const*)
+    0.1%  ___psynch_cvsignal < _psynch_cvsignal < _unix_syscall < _sleh_synchronous
+    0.1%  SweetGPUUserClient::retireJobs(unsign... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    0.1%  _sweet_gpu_wait < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+off CPU (census, ms per second): wait 204.3, runnable 24.0
+    146.4  wait trap -47  ___CFRunLoopServiceMachPort < ___CFRunLoopRun < _CFRunLoopRunSpecific
+     35.1  wait trap -47  0x18e553407 < 0x18e551bbf < _darwin_pipe_wait
+     19.2  runnable trap -47  0x18e553407 < 0x18e551bbf < _darwin_pipe_wait
+     10.5  wait trap -47  0x18e553407 < 0x18e55278f < 0x18e5526d7
+      3.1  runnable trap -47  0x18e553407 < 0x18e55278f < 0x18e5526d7
+      1.0  wait trap -47  0x18e553407 < 0x18e551bbf < _darwin_bo_new
+      0.9  runnable trap -47  0x18e553407 < 0x18e551bbf < _darwin_bo_new
+      0.6  wait trap 304  _cnd_signal < _util_queue_add_job_locked < _u_trace_context_process
+      0.5  wait trap -47  0x18e55cad7 < _darwin_bo_map < _fd_bo_map
+      0.4  wait trap -47  0x18e553407 < 0x18e55278f < _flush_submit_list
+      0.4  wait trap -47222716  non-external (was a private external) < non-external (was a private external) < non-external (was a private external)
+      0.4  wait trap -1186756948  _clock_gettime < _w_Flush < CA::WindowServer::IOMFBDisplay::finish_update(C...
+      0.3  wait trap 0  _fd5_program_emit < _fd5_emit_state < _draw_impl
+      0.3  wait trap 0  _fd5_emit_sysmem_fini < _batch_flush < _fd_batch_flush
+      0.2  wait trap 0  _fd_submit_flush < _batch_flush < _fd_batch_flush
+      0.2  wait trap 0  _emit_msaa < _fd_gmem_render_tiles < _batch_flush
+      0.2  wait trap -47222636  _fd_submit_append_bo < _fd_submit_sp_flush < _fd_gmem_render_tiles
+      0.2  wait trap -1076600772  non-external (was a private external) < _u_trace_flush < _batch_flush
+      0.2  wait trap -46581192  _fd_submit_append_bo < _flush_submit_list < _flush_deferred_submits
+      0.2  wait trap -46580884  _fd_bc_add_flush_deps < _fd_context_flush < _draw_prep
+      0.2  wait trap -46618832  CA::Transform::apply_to_point4(double*, long, d... < CA::OGL::render_shape(CA::OGL::Renderer&, CA::O... < CA::OGL::render_subclass(CA::OGL::Renderer&, CA...
+      0.2  wait trap -47  0x18e553407 < 0x18e551bbf < _darwin_bo_from_iosurface
+      0.2  wait trap -46580884  _fd5_emit_shader_obj < _fd5_program_emit < _fd5_emit_state
+      0.2  wait trap -47222716  _small_malloc_from_free_list < non-external (was a private external) < non-external (was a private external)
+      0.2  wait trap -46581192  _st_finalize_texture < _st_update_fragment_textures < _st_prepare_draw
+
+### tid 600 "backbo:traceq0": 9.7 ms/s on CPU
+self time by image:
+   71.1%  kernel
+   14.4%  libsystem_pthread.dylib
+    5.7%  libsweetca.dylib
+    5.2%  libsystem_malloc.dylib
+    2.1%  libsystem_platform.dylib
+    1.0%  libsystem_kernel.dylib
+    0.5%  RTCReporting
+self time by function:
+   34.5%  kernel: _ml_set_interrupts_enabled_with_debug
+   11.3%  libsystem_pthread.dylib: non-external (was a private external)
+    3.1%  libsystem_malloc.dylib: non-external (was a private external)
+    2.6%  kernel: _unix_syscall
+    2.6%  kernel: _ksyn_wqfind
+    2.6%  kernel: __psynch_cvwait
+    2.1%  kernel: _ksyn_wqrelease
+    2.1%  kernel: _kfree_type_impl_internal
+    2.1%  kernel: _ksyn_queue_insert
+    2.1%  libsweetca.dylib: _util_queue_thread_func
+    2.1%  kernel: _arm_prepare_syscall_return
+    1.5%  libsystem_pthread.dylib: _pthread_self.cold.1
+    1.5%  kernel: _zfree_item
+    1.5%  kernel: _uthread_reset_proc_refcount
+    1.0%  kernel: _hw_lock_init
+    1.0%  kernel: _lck_grp_deallocate
+    1.0%  kernel: _zone_meta_find_and_clear_bit
+    1.0%  libsystem_malloc.dylib: __szone_free
+    1.0%  libsystem_pthread.dylib: __pthread_mutex_unlock_init_slow
+    1.0%  libsweetca.dylib: _u_trace_fini
+    1.0%  libsystem_platform.dylib: __os_unfair_lock_lock_slow
+    1.0%  kernel: _zone_require_ro
+    1.0%  libsystem_malloc.dylib: _tiny_madvise_free_range_no_lock
+    1.0%  libsweetca.dylib: _ntt_emit_instr.cold.3
+    1.0%  kernel: _psynch_cvcontinue
+inclusive (function on the stack):
+  100.0%  libsweetca.dylib: _impl_thrd_routine
+  100.0%  libsystem_pthread.dylib: __pthread_start
+  100.0%  libsystem_pthread.dylib: _thread_start
+   99.0%  libsweetca.dylib: _util_queue_thread_func
+   75.8%  libsweetca.dylib: _cnd_wait
+   66.5%  libsystem_kernel.dylib: ___psynch_cvwait
+   34.5%  kernel: _ml_set_interrupts_enabled_with_debug
+   27.3%  kernel: _fleh_synchronous
+   25.8%  kernel: _sleh_synchronous
+   21.6%  kernel: _unix_syscall
+   16.5%  kernel: _psynch_cvwait
+   16.0%  kernel: __psynch_cvwait
+   12.4%  kernel: _psynch_cvcontinue
+   11.9%  libsystem_pthread.dylib: non-external (was a private external)
+    7.2%  libsystem_malloc.dylib: non-external (was a private external)
+    7.2%  kernel: _ksyn_wqfind
+    5.7%  kernel: _ksyn_wait
+    4.1%  kernel: _ksyn_wqrelease
+    3.6%  kernel: _ksyn_wait.cold.2
+    3.6%  kernel: _assert_wait_deadline_with_leeway
+    2.6%  kernel: _kfree_type_impl_internal
+    2.6%  kernel: _zfree_item
+    2.6%  kernel: _kalloc_type_impl_internal
+    2.6%  kernel: _unix_syscall_return
+    2.6%  libsystem_kernel.dylib: ___ulock_wait
+    2.1%  kernel: _ksyn_queue_insert
+    2.1%  kernel: _arm_prepare_syscall_return
+    1.5%  libsystem_pthread.dylib: _pthread_self.cold.1
+    1.5%  libsweetca.dylib: _cleanup_chunk
+    1.5%  kernel: _uthread_reset_proc_refcount
+    1.5%  libsweetca.dylib: _process_flush
+    1.5%  kernel: _zalloc_item
+    1.0%  kernel: _hw_lock_init
+    1.0%  kernel: _lck_grp_deallocate
+    1.0%  kernel: _zone_meta_find_and_clear_bit
+    1.0%  libsystem_malloc.dylib: __szone_free
+    1.0%  libsystem_pthread.dylib: __pthread_mutex_unlock_init_slow
+    1.0%  libsweetca.dylib: _mtx_unlock
+    1.0%  libsweetca.dylib: _u_trace_fini
+    1.0%  kernel: _ast_taken_user
+    1.0%  kernel: user_take_ast
+    1.0%  libsystem_platform.dylib: __os_unfair_lock_lock_slow
+    1.0%  kernel: _zone_require_ro
+    1.0%  libsystem_malloc.dylib: _tiny_madvise_free_range_no_lock
+    1.0%  libsweetca.dylib: _ntt_emit_instr.cold.3
+    1.0%  kernel: _mach_kauth_cred_thread_update
+    1.0%  kernel: _lck_mtx_unlock_contended
+    0.5%  kernel: __enable_preemption
+    0.5%  kernel: _uthread_get_uukwe
+    0.5%  kernel: _lck_mtx_unlock_slow
+kernel stacks (leaf < callers):
+   27.8%  _ml_set_interrupts_enabled_with_debug
+    3.1%  _ml_set_interrupts_enabled_with_debug < _assert_wait_deadline_with_leeway < _ksyn_wait.cold.2 < _ksyn_wait
+    2.6%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    2.1%  _unix_syscall < _sleh_synchronous < _fleh_synchronous
+    2.1%  _arm_prepare_syscall_return < _unix_syscall_return < _psynch_cvcontinue
+    2.1%  _ksyn_wqfind < __psynch_cvwait < _psynch_cvwait < _unix_syscall
+    1.5%  _ksyn_queue_insert < _ksyn_wait < __psynch_cvwait < _psynch_cvwait
+    1.5%  _uthread_reset_proc_refcount < _unix_syscall < _sleh_synchronous < _fleh_synchronous
+    1.5%  __psynch_cvwait < _unix_syscall < _sleh_synchronous < _fleh_synchronous
+    1.5%  _kfree_type_impl_internal < _psynch_cvcontinue
+    1.0%  _ksyn_wqrelease
+    1.0%  _hw_lock_init < _ksyn_wqfind < __psynch_cvwait < _psynch_cvwait
+    1.0%  __psynch_cvwait < _psynch_cvwait < _unix_syscall < _sleh_synchronous
+    1.0%  _ksyn_wqrelease < _psynch_cvcontinue
+    1.0%  _psynch_cvcontinue
+    1.0%  _zfree_item < _psynch_cvcontinue
+    0.5%  _ksyn_wait.cold.2 < __psynch_cvwait < _psynch_cvwait < _unix_syscall
+    0.5%  _kfree_type_impl_internal
+    0.5%  __enable_preemption < _zfree_item < _psynch_cvcontinue
+    0.5%  _ksyn_queue_insert < __psynch_cvwait < _psynch_cvwait < _unix_syscall
+    0.5%  _lck_grp_deallocate < _psynch_cvcontinue
+    0.5%  _zone_meta_find_and_clear_bit < _kalloc_type_impl_internal < _ksyn_wqfind < __psynch_cvwait
+    0.5%  _uthread_get_uukwe
+    0.5%  _lck_mtx_unlock_slow < _ksyn_wqrelease < _psynch_cvcontinue
+    0.5%  _sweet_pthread_current_uthread
+off CPU (census, ms per second): wait 435.4, runnable 37.8
+    434.9  wait trap 305  _cnd_wait < _util_queue_thread_func < _impl_thrd_routine
+     36.0  runnable trap 305  _cnd_wait < _util_queue_thread_func < _impl_thrd_routine
+      0.5  wait trap 301  non-external (was a private external) < non-external (was a private external) < _cnd_wait
+      0.2  runnable trap 516  _util_queue_thread_func < _impl_thrd_routine < __pthread_start
+      0.2  runnable trap -46581192  _process_flush < _util_queue_thread_func < _impl_thrd_routine
+      0.2  runnable trap -46586664  non-external (was a private external) < non-external (was a private external) < _cnd_wait
+      0.2  runnable trap 305  non-external (was a private external) < _cnd_wait < _util_queue_thread_func
+      0.2  runnable trap -46580884  non-external (was a private external) < _mtx_lock < _util_queue_thread_func
+      0.1  runnable trap -46561756  non-external (was a private external) < _cnd_wait < _util_queue_thread_func
+      0.1  runnable trap -46562268  _pthread_self.cold.1 < _util_queue_thread_func < _impl_thrd_routine
+      0.1  runnable trap -1076600396  non-external (was a private external) < _util_queue_thread_func < _impl_thrd_routine
+      0.1  runnable trap -1076600396  _szone_try_free_default < _impl_thrd_routine < __pthread_start
+      0.1  runnable trap -46580884  __pthread_mutex_check_init_slow < _mtx_lock < _util_queue_thread_func
+      0.1  runnable trap 1  non-external (was a private external) < _cnd_wait < _util_queue_thread_func
+      0.1  runnable trap -1076600396  __szone_free < _util_queue_thread_func < _impl_thrd_routine
+      0.1  runnable trap -46581192  __pthread_mutex_unlock_init_slow < _util_queue_thread_func < _impl_thrd_routine
+
+### tid 2972 "": 8.8 ms/s on CPU
+self time by image:
+   36.9%  kernel
+   11.4%  libobjc.A.dylib
+    9.1%  libdispatch.dylib
+    6.8%  CoreFoundation
+    5.7%  libsystem_malloc.dylib
+    4.5%  QuartzCore
+    4.5%  IOKit
+    4.0%  backboardd
+    2.8%  Foundation
+    2.8%  libsystem_platform.dylib
+    2.3%  RTCReporting
+    2.3%  BackBoardHIDEventFoundation
+self time by function:
+   15.9%  kernel: _ml_set_interrupts_enabled_with_debug
+    5.1%  libdispatch.dylib: non-external (was a private external)
+    4.5%  libobjc.A.dylib: _objc_msgSend
+    4.0%  libsystem_malloc.dylib: non-external (was a private external)
+    2.8%  kernel: _kevent_register
+    2.8%  libsystem_platform.dylib: non-external (was a private external)
+    2.3%  RTCReporting: ___createAWDAdaptorInstance_block_invoke.cold.1
+    1.1%  kernel: _kqworkloop_get_or_create
+    1.1%  kernel: _kernel_preempt_check
+    1.1%  libobjc.A.dylib: _class_copyMethodList
+    1.1%  Foundation: non-external (was a private external)
+    1.1%  dyld: non-external (was a private external)
+    1.1%  libdispatch.dylib: __dispatch_data_format_type_utf_any
+    1.1%  QuartzCore: non-external (was a private external)
+    1.1%  libdispatch.dylib: -[OS_dispatch_data debugDescription].cold.1
+    1.1%  CoreFoundation: -[NSSet initWithArray:range:copyItems:]
+    1.1%  QuartzCore: CA::Render::Updater::prepare_layer0(CA::Render::Updater::GlobalState&, CA::Render::Laye...
+    1.1%  QuartzCore: CA::Render::BackdropState::collect(unsigned int)
+    0.6%  libdispatch.dylib: __dispatch_queue_priority_inherit_from_target
+    0.6%  IOHIDMotionEventSessionFilter: 0x35c0
+    0.6%  kernel: _uthread_get_syscall_rejection_mask
+    0.6%  kernel: _lck_rw_done
+    0.6%  libobjc.A.dylib: non-external (was a private external)
+    0.6%  libsystem_malloc.dylib: _tiny_free_list_remove_ptr
+    0.6%  libobjc.A.dylib: _mapStrHash(_NXMapTable*, void const*)
+inclusive (function on the stack):
+   92.0%  libsystem_pthread.dylib: _start_wqthread
+   81.8%  libdispatch.dylib: non-external (was a private external)
+   80.1%  libsystem_pthread.dylib: __pthread_wqthread
+   77.8%  libdispatch.dylib: __dispatch_workloop_worker_thread
+   49.4%  IOHIDEventServicePlugin: 0x2203
+   48.3%  IOKit: 0x18e555fa3
+   48.3%  IOHIDEventServicePlugin: 0x2107
+   38.6%  IOKit: 0x18e55b01b
+   35.8%  BackBoardHIDEventFoundation: __BKIOHIDEventCallback
+   35.2%  BackBoardHIDEventFoundation: __BKHandleIOHIDEventFromSender
+   35.2%  IOKit: 0x18e55526f
+   34.7%  BackBoardHIDEventFoundation: -[BKHIDSystem processEvent:sender:dispatcher:]
+   34.1%  BackBoardHIDEventFoundation: -[BKHIDPrimaryEventProcessor processEvent:sender:dispatcher:]
+   33.0%  backboardd: 0x3b03f
+   32.4%  backboardd: 0x3d37f
+   32.4%  libdispatch.dylib: __dispatch_sync_invoke_and_complete_recurse
+   32.4%  backboardd: 0x3cadb
+   26.7%  kernel: _sleh_synchronous
+   26.7%  kernel: _fleh_synchronous
+   20.5%  kernel: _unix_syscall
+   17.0%  libsystem_kernel.dylib: ___workq_kernreturn
+   16.5%  kernel: _kevent_modern_internal
+   15.9%  kernel: _ml_set_interrupts_enabled_with_debug
+   13.6%  kernel: _kevent_register
+    9.1%  libsystem_kernel.dylib: _kevent_id
+    9.1%  CoreFoundation: non-external (was a private external)
+    8.5%  kernel: _kevent_id
+    8.5%  kernel: _workq_select_threadreq_or_park_and_unlock
+    8.5%  backboardd: 0x72adf
+    8.0%  QuartzCore: -[CAWindowServerDisplay convertPoint:toContextId:]
+    8.0%  backboardd: 0x1d64f
+    8.0%  backboardd: 0x71e4f
+    8.0%  backboardd: 0x710fb
+    7.4%  kernel: _workq_kern_threadreq_initiate
+    7.4%  kernel: _kqueue_threadreq_initiate
+    7.4%  backboardd: 0x73ea7
+    7.4%  libdispatch.dylib: __dispatch_kq_drain
+    7.4%  QuartzCore: (anonymous namespace)::ConvertContextPoint::operator()(CGPoint const&)
+    6.8%  BaseBoard: non-external (was a private external)
+    6.8%  kernel: _workq_kernreturn
+    6.2%  IOKit: 0x18e5a73bb
+    6.2%  CoreFoundation: _CFArrayApplyFunction
+    6.2%  IOKit: 0x18e55af4f
+    6.2%  libsystem_malloc.dylib: non-external (was a private external)
+    6.2%  Foundation: -[NSXPCConnection _decodeAndInvokeMessageWithEvent:reply:flags:]
+    6.2%  Foundation: _message_handler_message
+    6.2%  Foundation: _message_handler
+    6.2%  libxpc.dylib: __xpc_connection_call_event_handler
+    6.2%  libxpc.dylib: __xpc_connection_mach_event
+    6.2%  backboardd: 0x6ee43
+kernel stacks (leaf < callers):
+    4.5%  _ml_set_interrupts_enabled_with_debug
+    2.3%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _workq_kern_threadreq_initiate
+    1.7%  _ml_set_interrupts_enabled_with_debug < _thread_set_workq_pri < _workq_schedule_creator < _workq_kern_threadreq_initiate
+    1.7%  _kevent_register < _kevent_modern_internal < _workq_handle_stack_events < _workq_kernreturn
+    1.1%  _kqworkloop_get_or_create < _kevent_id < _unix_syscall < _sleh_synchronous
+    1.1%  _kernel_preempt_check < _knote_unlock < _kevent_register < _kevent_modern_internal
+    1.1%  _kevent_register < _kevent_modern_internal < _kevent_id < _unix_syscall
+    1.1%  _ml_set_interrupts_enabled_with_debug < _thread_set_mode_and_absolute_pri_int... < _thread_set_workq_pri < _workq_schedule_creator
+    1.1%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    1.1%  _ml_set_interrupts_enabled_with_debug < _waitq_assert_wait64 < _assert_wait < _workq_park_and_unlock
+    0.6%  _uthread_get_syscall_rejection_mask < _sleh_synchronous < _fleh_synchronous
+    0.6%  _lck_rw_done < _lck_rw_unlock_shared < _arm_fast_fault_internal < _arm_fast_fault
+    0.6%  _ml_set_interrupts_enabled_with_debug < _do_waitq_select_n_locked_sets < _waitq_wakeup64_identify_locked < _ipc_mqueue_send_locked
+    0.6%  _ml_set_interrupts_enabled_with_debug < _thread_unfreeze_base_pri < _workq_select_threadreq_or_park_and_u... < _workq_kernreturn
+    0.6%  _ml_get_timebase < _workq_schedule_creator < _workq_select_threadreq_or_park_and_u... < _workq_unpark_select_threadreq_or_par...
+    0.6%  _filt_wlvalidate_kev_flags < _kevent_register < _kevent_modern_internal < _workq_handle_stack_events
+    0.6%  _ml_set_interrupts_enabled_with_debug < _waitq_resume_identified_thread < _ipc_mqueue_send_locked < _ipc_kmsg_send
+    0.6%  _kqworkloop_unbind_locked < _kqueue_scan < _kevent_modern_internal < _workq_handle_stack_events
+    0.6%  _proc_require < _thread_supports_cooperative_workqueue < _workq_setup_and_run < _workq_select_threadreq_or_park_and_u...
+    0.6%  _arm_fast_fault_internal < _arm_fast_fault < _handle_user_abort < _sleh_synchronous
+    0.6%  _sleh_synchronous < _fleh_synchronous
+    0.6%  _workq_select_threadreq_or_park_and_u... < _workq_kernreturn < _unix_syscall < _sleh_synchronous
+    0.6%  _kevent_cleanup < _kevent_modern_internal < _kevent_id < _unix_syscall
+    0.6%  _workq_threadreq_enqueue < _workq_kern_threadreq_initiate < _kqueue_threadreq_initiate < _kevent_register
+    0.6%  _ml_set_interrupts_enabled_with_debug < _workq_unpark_select_threadreq_or_par... < _workq_unpark_continue
+off CPU (census, ms per second): wait 423.0, runnable 6.0
+    422.5  wait trap 368  _start_wqthread
+      3.7  runnable trap 368  _start_wqthread
+      0.6  runnable trap 374  __dispatch_kq_drain < non-external (was a private external) < non-external (was a private external)
+      0.4  runnable trap 374  __dispatch_kq_drain < non-external (was a private external) < -[AWScheduler armEvents]
+      0.3  wait trap 515  CA::Render::BackdropState::collect(unsigned int) < CA::Render::Update::~Update() < (anonymous namespace)::ConvertContextPoint::ope...
+      0.1  runnable trap 223571968  _weak_clear_no_lock < objc_object::clearDeallocating_slow() < _objc_destructInstance
+      0.1  runnable trap -1416951816  _objc_storeStrong < _objc_destructInstance < __objc_rootDealloc
+      0.1  runnable trap 0  non-external (was a private external) < non-external (was a private external) < __Block_release
+      0.1  runnable trap -47  __dispatch_mach_msg_send < __dispatch_mach_send_drain < __dispatch_mach_send_msg
+      0.1  runnable trap 223799824  -[BSAbsoluteMachTimer .cxx_destruct] < _objc_destructInstance < __objc_rootDealloc
+      0.1  wait trap 374  __dispatch_kq_drain < non-external (was a private external) < non-external (was a private external)
+      0.1  runnable trap -1187791208  non-external (was a private external) < non-external (was a private external) < __dispatch_lane_resume_activate
+      0.1  runnable trap 234322832  +[BKHIDEventProcessorRegistry sharedInstance] < 0x8b447 < non-external (was a private external)
+      0.1  runnable trap 223603040  _empty < -[NSConcreteMapTable removeAllItems] < _BSIntegerMapRemoveAllObjects
+      0.1  runnable trap 0  _start_wqthread
+      0.1  wait trap 515  non-external (was a private external) < non-external (was a private external) < ___CFBasicHashRehash
+      0.1  runnable trap 223571968  weak_entry_for_referent(weak_table_t*, objc_obj... < _weak_clear_no_lock < objc_object::clearDeallocating_slow()
+      0.1  runnable trap 223576568  _updateDeadline < -[AWRemoteClient nextTimerForTime:] < -[AWScheduler armEvents]
+      0.1  runnable trap -1416970260  _objc_release_x9 < non-external (was a private external) < non-external (was a private external)
+      0.1  runnable trap -47222636  non-external (was a private external) < non-external (was a private external) < non-external (was a private external)

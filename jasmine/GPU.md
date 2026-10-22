@@ -631,3 +631,69 @@ reads them (lock, the display's copy). All rounds: 4 Gold cores (`cpus=4`), user
   frame. Copied at the swap, nothing can overwrite it first; the 30 Hz pacing (`sweetfb_hz=30`) goes too.
   A-B-A checksums catch half-drawn frames poorly (new content, not an old frame): the held-surface count is
   the measure. Next: `sweetfb_sync=1` the default on jasmine.
+
+#### Where a moving frame goes (j0057 sampling profile, 2026-10-22 22:59 to 23:15)
+
+**j0057** (CI `39846789084`; tested on jasmine-merge j0056 + j0057, without j0052): a sampling profiler driven
+over the command port. `prof start SECS [US [CENSUS_US [NAMES]]]` arms a per-CPU running timer (as kperf's,
+`RUNNING_TIMER_SWEETPROF`) that fires every US while a non-idle thread runs, on a fixed grid, and records the
+interrupted thread: pid, tid, user or kernel mode, up to 16 kernel frames, user PC/LR and 32 frame-pointer frames
+(user stacks read through `at s1e0r` and the physical aperture, so nothing can fault at interrupt level). A kernel
+thread every CENSUS_US records each waiting or runnable thread of the named tasks (state, block hint, x16 trap,
+saved user stack). At the end a meta table (kernel and shared-cache slides, task/thread names, file mappings) is
+written; `prof stat`, `prof get OFF` (hex), `prof meta OFF` read it out. `tools/g2/prof.py fetch` (Windows) /
+`report` (WSL: ipsw per image, the kernel's and libsweetca's Mach-O symbols), `tools/g2/profsplit.py` (per-frame
+split of CA's display thread), `tools/g2/profround.sh` (a uiround with a profile). Readout is slow: ~20 KB/s
+(3.2 s per 64 KiB reply), 17.5 MB took 14 min; keep windows short or sample at 2 ms.
+
+Round j57p (`logs/netlog-j57p-ui.txt`, `logs/prof-j57p-{report,report-others,split}.txt`; samples and meta stay
+local, `logs/prof-j57p.{bin,meta}` in the main checkout): 4 Gold cores at 1747 MHz, GPU 266 MHz, libsweetca "kick"
+(Mesa CI `39832781792`), `sweetfb_sync=1 sweetfps=1`, uibench gestures, 20 s at 1 ms on CPU + 2 ms census of
+backboardd and SpringBoard: 133339 samples, 0 dropped, no panic or hang. The profiler costs nothing visible
+(100-flush blocks 112.8 / 153.8 ms during it, 124.5 ms in the same gestures before).
+
+- **The frame thread is `com.apple.coreanimation.display.primary`** (CA::WindowServer::IOMFBServer, driven by
+  `display_timer_callback`; render-server is nearly idle, 8.6 ms/s). While the UI moves it is on a CPU 85-90 %
+  of the time, waiting ~10 %, runnable only 2-8 %: **one CPU-bound thread**, so a frame is that thread's time.
+- In the 7 s of motion (28 x 250 ms with the thread busy) it showed **142 frames (presents), 49.3 ms each**
+  (as the user's trial: 40-55 ms). Per frame:
+
+| part | ms / frame | % |
+|---|---|---|
+| GL, Mesa user code (libsweetca 11.7: draw validation, state emit, batches; malloc/free under it 2.8) | 14.6 | 30 |
+| GL, SweetGPU ioctls on CPU (buffer create/map/free 3.0, other syscalls 2.2, wait path 0.9, other 0.8) | 6.8 | 14 |
+| GL, waiting for the GPU (`_mesa_ClientWaitSync` -> `fd_pipe_fence_finish` -> `darwin_pipe_wait`: blocked 4.9, runnable 2.6) | 7.5 | 15 |
+| **display copy at the swap** (`AppleCLCD::composeFit` 8.2, rest of present/swap 0.6, latch wait 0.1) | **8.8** | **18** |
+| CoreAnimation's own code (QuartzCore 5.4, libc/objc/CF 0.7) | 6.1 | 12 |
+| waiting in `kern_SwapEnd` (1.7) and CA's run loop between updates (1.1) | 2.8 | 6 |
+| other kernel (mach_msg 0.6, rest 0.3) and other short waits (1.9) | 2.7 | 5 |
+
+- So **outside GL: 20.4 ms (41 %)**: display copy 8.8, CA's code 6.1, swap/run-loop waits 2.8, the rest 2.7.
+  Waiting for SpringBoard's commits is not part of it (CA's thread is busy, not idle, while things move).
+  **GL including the GPU wait: 28.9 ms (59 %)**. The earlier "GL ~50 %" came from libsweetca's 100-flush blocks,
+  which include idle stretches and count flushes (~0.45 per present), not frames.
+- Hot paths (ms per frame): `AppleCLCD::composeFit` 8.2 (CPU nearest-sample scale 1125x2436 -> 997x2160 from
+  the 11 MB surface); the GPU fence wait 7.5; Mesa's draw path under `w_DrawElements` 12.4 inclusive
+  (`fd_draw_vbo` 7.1, `fd5_emit_state` 2.3, `fd5_program_emit` 0.8 self); a new batch per render target,
+  `fd_batch_create` 3.2 -> `fd_submit_new_ringbuffer` 2.3 -> `bo_new`/`darwin_bo_new` 2.4 plus in the kernel
+  `SweetGPUBuffer::create`/`mapGPU`/`free` (page tables, cache clean) 3.0; malloc/free under Mesa 2.8; CA's
+  backdrop blur (`capture_backdrop` 7.9 inclusive, `filter_backdrop` 5.3, `GaussianBlurFilter` 3.1, mostly GL
+  calls inside); CA's render tree (`CA::Render::Updater::prepare_layer`/`prepare_layer0` 0.7 self).
+- Not the UI's: launchd 901 ms/s (workqueue threads in xpc/kevent, launchd+0x439fb), vmd 561 (a
+  `-[CoreTelephonyClient synchronousProxyWithErrorHandler:]` loop), mediaserverd 423 (an xpc connection
+  cancel loop), logd 123: ~2 of 4 Gold cores (the "IN thread" the scheduler session saw; sent to it). With
+  `cpus=4` they cost the frame little (CA's thread runnable 2-8 %); for 8 cores and power they matter.
+- Caveats: a sample taken when interrupts come back on is charged to `ml_set_interrupts_enabled` (time with
+  interrupts off); the census skips threads idle for 500 ms; frames are counted from `present()` runs, so
+  only with `sweetfb_sync=1`.
+
+**Recommendation, by ms per frame:**
+1. **Display scale off the CPU, -8.8 ms (18 %)**: let the MDP scan CA's surface with the VIG pipe's scaler
+   (the direct path already exists for one GPU-pool surface; it needs the 1125x2436 -> 997x2160 scale), or draw
+   the fit with the GPU into a panel-size surface. Also frees CA's thread at every swap.
+2. **The GPU wait, up to -7.5 ms (15 %)**: GPU clock (266 MHz now; the Adreno 512 runs to ~650 MHz with its
+   DDR vote), and once (1) is in, no CPU wait at frame end (the display already waits for the GPU, j0055).
+3. **Mesa buffer churn, ~-5 ms (10 %), cheapest**: reuse ring/batch buffers (freedreno's BO cache in the darwin
+   backend) instead of create + GPU map + free every batch; Mesa only, no kernel build.
+4. CPU clock (1747 -> 2208 MHz, OSM + CPRh): the CPU part is 37 ms of the 49.
+Together 1-3 would bring a moving frame from ~49 to ~28-30 ms.

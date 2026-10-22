@@ -1,0 +1,108 @@
+tid 586: 28 active 250-ms buckets (7.00 s), 5265 on-CPU samples (752 ms/s), 142 presents -> 49.3 ms per frame
+   11.73 ms/frame   31.6%  GL user: Mesa/libsweetca
+    8.19 ms/frame   22.1%  display copy: composeFit (CPU scale 1125x2436 -> 997x2160)
+    5.36 ms/frame   14.5%  CA user: QuartzCore
+    2.96 ms/frame    8.0%  GL kernel: GPU buffer create/map/free
+    2.83 ms/frame    7.6%  GL user: libc/malloc under Mesa
+    2.15 ms/frame    5.8%  GL kernel: other syscall from Mesa
+    0.92 ms/frame    2.5%  GL kernel: GPU wait (spin/sleep path)
+    0.72 ms/frame    1.9%  CA user: libc/malloc/objc/CF under CA
+    0.58 ms/frame    1.6%  kernel: mach_msg (CA IPC)
+    0.55 ms/frame    1.5%  display: present/swap other (cache upkeep, locks)
+    0.40 ms/frame    1.1%  GL kernel: other SweetGPU ioctl
+    0.36 ms/frame    1.0%  GL kernel: cache upkeep
+    0.23 ms/frame    0.6%  kernel: other
+    0.08 ms/frame    0.2%  display: wait for the previous flip to latch
+    0.03 ms/frame    0.1%  kernel: page faults / VM
+off CPU in active buckets: 12.21 ms/frame
+    4.85 ms/frame  wait  _darwin_pipe_wait < _fd_pipe_fence_finish
+    2.63 ms/frame  runnable  _darwin_pipe_wait < _fd_pipe_fence_finish
+    1.30 ms/frame  wait  _kern_SwapEnd < CA::WindowServer::IOMFBDisplay::finish_upd...
+    1.10 ms/frame  wait  ___CFRunLoopServiceMachPort < ___CFRunLoopRun
+    0.42 ms/frame  runnable  _kern_SwapEnd < CA::WindowServer::IOMFBDisplay::finish_upd...
+    0.13 ms/frame  runnable  _darwin_bo_new < _bo_new
+    0.13 ms/frame  wait  _darwin_bo_new < _bo_new
+    0.08 ms/frame  wait  _fd5_program_emit < _fd5_emit_state
+user self top:
+   1.15 ms/f  libsystem_malloc.dylib: non-external (was a private external)
+   0.77 ms/f  libsweetca.dylib: _fd5_program_emit
+   0.37 ms/f  libsweetca.dylib: _fd5_emit_state
+   0.37 ms/f  libsystem_pthread.dylib: non-external (was a private external)
+   0.36 ms/f  QuartzCore: CA::Render::Updater::prepare_layer0(CA::Render::Updater::GlobalState&, CA::Render::LayerNode*, CA...
+   0.35 ms/f  QuartzCore: CA::Render::Updater::prepare_layer(CA::Render::Updater::GlobalState&, CA::Render::Updater::LocalS...
+   0.30 ms/f  libsweetca.dylib: _fd_submit_append_bo
+   0.26 ms/f  libsweetca.dylib: _slab_destroy_child
+   0.25 ms/f  QuartzCore: CA::OGL::Shape::FillRenderer::render_lines(CA::OGL::Shape::Lines&, CA::Bounds const&) const
+   0.22 ms/f  libsweetca.dylib: __mesa_hash_table_search_pre_hashed
+   0.21 ms/f  libsweetca.dylib: _u_vbuf_draw_vbo
+   0.20 ms/f  QuartzCore: CA::OGL::GLContext::update_shader()
+   0.20 ms/f  libsystem_platform.dylib: __platform_memmove
+   0.20 ms/f  QuartzCore: CA::Render::Updater::layer_node(CA::Render::Layer const*, CA::Render::Updater::GlobalState const&...
+   0.20 ms/f  libsweetca.dylib: _emit_common_consts
+   0.19 ms/f  libsweetca.dylib: _st_update_rasterizer
+   0.18 ms/f  libsystem_malloc.dylib: _tiny_free_list_add_ptr
+   0.17 ms/f  libsweetca.dylib: __mesa_update_state_locked
+   0.17 ms/f  libsystem_platform.dylib: __platform_memcmp
+   0.16 ms/f  libsweetca.dylib: __mesa_update_texture_state
+   0.15 ms/f  libsweetca.dylib: __mesa_update_valid_to_render_state
+   0.14 ms/f  libsweetca.dylib: _fd5_emit_vertex_bufs
+   0.13 ms/f  QuartzCore: CA::OGL::capture_backdrop(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   0.13 ms/f  libsweetca.dylib: _st_upload_constants
+   0.13 ms/f  QuartzCore: CA::Render::HitTestTree::append_layer_node(CA::Render::LayerNode const*, unsigned int, unsigned i...
+user inclusive top (QuartzCore):
+  22.77 ms/f  CA::OGL::ImagingNode::render(CA::OGL::ImagingNode::RenderClosure*, unsigned int)
+  21.61 ms/f  CA::OGL::LayerNode::apply(float, CA::OGL::Surface**, float*)
+  21.04 ms/f  CA::OGL::render_layers(CA::OGL::Renderer&, CA::OGL::Layer*)
+  14.95 ms/f  CA::OGL::GLContext::draw_elements(CA::OGL::PrimitiveMode, unsigned int, unsigned short const*, CA::OGL::Ver...
+  14.49 ms/f  CA::WindowServer::Server::render_for_time(double, CVTimeStamp const*, unsigned long long, CATimingReference...
+  14.30 ms/f  CA::WindowServer::IOMFBServer::vsync_callback(__IOMobileFramebuffer*, unsigned long long, unsigned long lon...
+  14.01 ms/f  display_timer_callback(__CFMachPort*, void*, long, void*)
+  13.23 ms/f  CA::WindowServer::IOMFBServer::thread_body(void*)
+  13.11 ms/f  thread_fun(void*)
+  10.77 ms/f  CA::WindowServer::IOMFBDisplay::finish_update(CA::Render::Update*, unsigned int)
+  10.21 ms/f  CA::OGL::Context::ClippedArray::next_rect(CA::Bounds&)
+   7.96 ms/f  CA::OGL::render_contents_background(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   7.89 ms/f  CA::OGL::capture_backdrop(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   7.47 ms/f  CA::OGL::ImagingNode::retain_surface(float&, unsigned int)
+   5.27 ms/f  CA::OGL::(anonymous namespace)::filter_backdrop(CA::OGL::Renderer&, CA::OGL::Layer const*, CA::Render::Back...
+   5.06 ms/f  CA::OGL::emit_one_part_rect(CA::OGL::Context&, CA::OGL::RectState const&, float const*, float const*, unsig...
+   4.82 ms/f  CA::OGL::emit_filter(CA::OGL::Renderer&, CA::OGL::Filter const&, CA::OGL::Layer const&, float, CA::OGL::Sur...
+   4.30 ms/f  CA::OGL::render_background(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   3.99 ms/f  CA::OGL::fill_rect_tex(CA::OGL::Context&, CA::OGL::RectState const&, float const*)
+   3.36 ms/f  CA::OGL::emit_quad_indices(CA::OGL::Context&, CA::OGL::RectState const&, unsigned short const*, unsigned lo...
+   3.13 ms/f  CA::OGL::GaussianBlurFilter::render(CA::Render::Filter const*, CA::OGL::Layer const*, CA::OGL::Context&, fl...
+   3.11 ms/f  CA::OGL::Context::blur_surface(float, CA::OGL::Surface*, float, CA::OGL::Context::BlurParams const&, float*)
+   3.06 ms/f  CA::OGL::render_prepared_layers(CA::OGL::Renderer&, CA::OGL::Layer&, CA::OGL::Layer*, CA::OGL::Gstate const&)
+   2.99 ms/f  CA::OGL::ContentsGeometry::fill_and_unbind(CA::OGL::Context&, CA::OGL::Image*) const
+   2.80 ms/f  CA::OGL::emit_filter_quads_color(CA::OGL::Context&, CA::OGL::Surface*, float, CA::OGL::ExtendedColor)
+   2.77 ms/f  CA::OGL::Renderer::render(CA::Render::Update const*, unsigned long)
+   2.65 ms/f  CA::OGL::render_subclass(CA::OGL::Renderer&, CA::OGL::Layer const*)::visitor::visit_subclass(CA::Render::Ba...
+   2.65 ms/f  CA::OGL::fill_round_rect_tex(CA::OGL::Context&, CA::OGL::RectState const&, CA::Vec2<double>, float const*, ...
+   2.65 ms/f  CA::OGL::render_subclass(CA::OGL::Renderer&, CA::OGL::Layer const*)::visitor::visit_subclass(CA::Render::Sh...
+   2.63 ms/f  CA::OGL::render_shape(CA::OGL::Renderer&, CA::OGL::Layer const*, CA::Render::Path*, CA::ScanConverter::Fill...
+libsweetca inclusive top:
+  12.42 ms/f  _w_DrawElements
+   8.80 ms/f  __mesa_DrawElementsBaseVertex
+   8.25 ms/f  __mesa_validated_drawrangeelements
+   7.13 ms/f  _fd_draw_vbo
+   7.04 ms/f  _u_vbuf_draw_vbo
+   3.72 ms/f  _fd_pipe_fence_finish
+   3.56 ms/f  _fd_context_batch_draw
+   3.40 ms/f  _fd_batch_from_fb
+   3.23 ms/f  _alloc_batch_locked
+   3.20 ms/f  _fd_batch_create
+   2.91 ms/f  _fd5_draw_vbos
+   2.65 ms/f  _draw_impl
+   2.60 ms/f  _fence_flush
+   2.55 ms/f  _flush_deferred_submits
+   2.42 ms/f  _bo_new
+   2.34 ms/f  _fd_submit_new_ringbuffer
+   2.31 ms/f  _fd_pipe_sp_flush
+   2.31 ms/f  _fd_fence_flush
+   2.29 ms/f  _fd_submit_sp_new_ringbuffer
+   2.27 ms/f  _fd5_emit_state
+   2.19 ms/f  ___client_wait_sync
+   2.19 ms/f  __mesa_ClientWaitSync
+   2.07 ms/f  _darwin_bo_new
+   1.99 ms/f  _flush_submit_list
+   1.97 ms/f  _fd_batch_flush
