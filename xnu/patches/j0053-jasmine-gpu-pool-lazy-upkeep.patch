@@ -1,0 +1,370 @@
+From 6e07c5933aea6adb2e68f6bdf09e4b7da3041574 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 19:22:51 +0200
+Subject: [PATCH] jasmine-j0053: GPU buffers from a write-combined pool
+ (0xc0000000-0xf5ffffff), IOSurface cache upkeep at the CPU's use
+
+Mesa's buffers come from RAM the kernel does not manage, write-combined in
+the kernel and the client (topaz's pool code, placed beside the shim), so
+they need no cache maintenance. Imported IOSurfaces are cleaned before a
+job only if the CPU wrote them (IOSurfaceUnlock without read-only, or new)
+and invalidated when the CPU next reads them (IOSurfaceLock, the display's
+copy), not around every job. sweetgpu_pool=0 / sweetgpu_lazy=0: as before.
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp |   1 +
+ iokit/Kernel/arm/SweetGPU.cpp         | 128 ++++++++++++++++++++++++++
+ iokit/Kernel/arm/SweetSurface.cpp     |  32 ++++++-
+ iokit/Kernel/arm/SweetSurface.h       |  12 ++-
+ iokit/Kernel/arm/TopazAdreno.cpp      |  29 +++++-
+ 5 files changed, 196 insertions(+), 6 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 1f4f233..243049b 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1623,6 +1623,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 			continue;
+ 		}
+ 		(void)topaz_surface_drawn(s, 100);
++		sweet_surface_cpu_access(s);
+ 		if (fFitW != 0 && dst != (uint8_t *)fPixels) {
+ 			if (w <= 0 || h <= 0) {
+ 				w = (int32_t)s->width;
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 136b550..f7539c9 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -42,6 +42,16 @@
+  * changes the cache attributes of its physical pages for every mapping)
+  * froze the phone in their first creation (2026-10-21, j0028/j0029).
+  *
++ * jasmine (j0053): buffers come from a GPU pool of RAM the kernel does not
++ * manage (0xc0000000-0xf5ffffff, System RAM under Linux, below every other
++ * use; topaz's pool code), write-combined in the kernel and in the client, so
++ * they need no cache maintenance at all, as msm's write-combined BOs. Imported
++ * IOSurfaces stay cacheable: they are cleaned before a job only if the CPU
++ * wrote them since (IOSurfaceUnlock without read-only, or new), and
++ * invalidated when the CPU next reads them (IOSurfaceLock, the display's
++ * copy), instead of twice around every job (~110 whole-cache flushes a frame
++ * in backboardd). Boot-args sweetgpu_pool=0 / sweetgpu_lazy=0: as before.
++ *
+  * Buffers are pageable-free kernel memory (IOBufferMemoryDescriptor), mapped
+  * into the one GPU address space with 4K pages; a client's buffers are
+  * unmapped and freed when it closes or dies. The GPU address space is shared
+@@ -69,6 +79,11 @@ int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
+ uint32_t sweet_gpu_completed(void);
+ uint64_t sweet_gpu_bulk_bytes(void);
+ void sweet_gpu_flush_all(void);
++int sweet_board_is(const char *compat);
++uint64_t topaz_gpu_pool_alloc(uint64_t size, void **va);
++void topaz_gpu_pool_free(uint64_t pa, uint64_t size);
++bool topaz_gpu_pool_place(uint64_t base, uint64_t size);
++IOMemoryDescriptor *topaz_gpu_pool_md(uint64_t pa, uint64_t size);
+ uint64_t sweet_gpu_param(uint32_t which);
+ int sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms);
+ void sweet_gpu_debug_state(const char *when);
+@@ -77,6 +92,13 @@ void sweet_gpu_publish(void);
+ 
+ static uint32_t sweet_gpu_debug;
+ static uint32_t sweet_gpu_wc;
++static uint32_t sweet_gpu_lazy = 1;     /* surface upkeep at the CPU's and GPU's use (j0053) */
++static bool sweet_gpu_pool;             /* jasmine: buffers from the write-combined GPU pool */
++static IOLock *sweet_gpu_pool_lock;
++
++/* jasmine's GPU pool: RAM no one else uses (jasmine/HARDWARE.md), minus where the shim stays resident */
++#define SWEET_GPU_POOL_LO       0xc0000000ull
++#define SWEET_GPU_POOL_HI       0xf6000000ull
+ 
+ /* debug log line, then a pause so the USB log carries it out before the GPU runs anything */
+ #define GPULOG(fmt, ...) do {                                           \
+@@ -115,8 +137,10 @@ public:
+ 	SweetSurface *surface;          /* imported IOSurface, or NULL */
+ 	uintptr_t kva;                  /* kernel address, for cache maintenance and the IB log */
+ 	bool flush;                     /* cacheable: clean/invalidate around GPU work */
++	bool readonly;                  /* the GPU only reads it */
+ 	IOOptionBits mapCache;          /* cache mode of the client's mapping */
+ 	uint64_t iova, size;
++	uint64_t poolPA;                /* from the GPU pool (write-combined), or 0 */
+ 
+ 	static SweetGPUBuffer *create(uint64_t size, bool readonly);
+ 	static SweetGPUBuffer *import(SweetSurface *surface, bool readonly);
+@@ -166,6 +190,39 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ 		return NULL;
+ 	}
+ 	b->size = size;
++	b->readonly = readonly;
++	if (sweet_gpu_pool) {
++		void *va = NULL;
++		IOLockLock(sweet_gpu_pool_lock);
++		uint64_t pa = topaz_gpu_pool_alloc(size, &va);
++		IOLockUnlock(sweet_gpu_pool_lock);
++		/* the descriptor carries the cache mode: the client's mapping is write-combined too */
++		IOMemoryDescriptor *pm = pa != 0 ? topaz_gpu_pool_md(pa, size) : NULL;
++		if (pm != NULL && pm->prepare() == kIOReturnSuccess) {
++			b->md = pm;
++			b->poolPA = pa;
++			b->kva = (uintptr_t)va;
++			b->flush = false;
++			b->mapCache = kIOMapDefaultCache;
++			for (uint64_t i = 0; i < size; i += 8) {
++				*(volatile uint64_t *)(b->kva + i) = 0;
++			}
++			if (!b->mapGPU(readonly)) {
++				OSSafeReleaseNULL(b);
++			}
++			return b;
++		}
++		OSSafeReleaseNULL(pm);
++		if (pa != 0) {
++			IOLockLock(sweet_gpu_pool_lock);
++			topaz_gpu_pool_free(pa, size);
++			IOLockUnlock(sweet_gpu_pool_lock);
++		}
++		static uint32_t told;
++		if (told++ < 4) {
++			IOLog("SWEET GPU: pool has no %llu bytes left, cacheable memory instead\n", size);
++		}
++	}
+ 	b->flush = !sweet_gpu_wc;
+ 	b->mapCache = sweet_gpu_wc ? kIOMapWriteCombineCache : kIOMapDefaultCache;
+ 	GPULOG("buffer of %llu bytes: memory%s next", size, sweet_gpu_wc ? " (write-combined)" : "");
+@@ -215,6 +272,7 @@ SweetGPUBuffer::import(SweetSurface *surface, bool readonly)
+ 		OSSafeReleaseNULL(b);
+ 		return NULL;
+ 	}
++	b->readonly = readonly;
+ 	b->size = (smd->getLength() + 0xfff) & ~0xfffull;
+ 	b->flush = OSDynamicCast(IOBufferMemoryDescriptor, smd) != NULL || surface->wrapped;
+ 	b->mapCache = surface->mapCache;
+@@ -251,6 +309,12 @@ SweetGPUBuffer::free()
+ 		}
+ 		md->complete();
+ 		OSSafeReleaseNULL(md);
++		if (poolPA != 0) {
++			IOLockLock(sweet_gpu_pool_lock);
++			topaz_gpu_pool_free(poolPA, size);
++			IOLockUnlock(sweet_gpu_pool_lock);
++			poolPA = 0;
++		}
+ 	}
+ 	OSSafeReleaseNULL(surface);
+ 	OSObject::free();
+@@ -435,6 +499,36 @@ sweet_gpu_flush_one(SweetGPUBuffer *b)
+ 	return b->size;
+ }
+ 
++/*
++ * Whether b needs cache maintenance now: fresh = b is in the job about to run
++ * (clean what the CPU may have written), else in a job just done (invalidate
++ * what the CPU may read). Imported surfaces of kernel memory are kept up
++ * lazily (j0053): cleaned only when the CPU wrote them, invalidated at the
++ * CPU's next read (sweet_surface_cpu_access).
++ */
++static bool
++sweet_gpu_upkeep(SweetGPUBuffer *b, bool fresh)
++{
++	SweetSurface *s = b->surface;
++	if (!b->flush) {
++		return false;
++	}
++	if (s == NULL || s->wrapped || !sweet_gpu_lazy) {
++		return true;
++	}
++	if (!fresh) {
++		return false;
++	}
++	if (!b->readonly) {
++		s->gpuDirty = true;
++	}
++	if (s->cpuDirty) {
++		s->cpuDirty = false;
++		return true;
++	}
++	return false;
++}
++
+ static void
+ sweet_gpu_job_free(SweetGPUJob *j)
+ {
+@@ -483,6 +577,9 @@ SweetGPUUserClient::retireJobs(uint32_t completed, bool everything, SweetGPUJob
+ 		for (SweetGPUJob *j = also != NULL ? also : done; j != NULL; j = j->next) {
+ 			all = all || j->all;
+ 			for (uint32_t i = 0; uniq != NULL && i < j->n; i++) {
++				if (!sweet_gpu_upkeep(j->bufs[i], j == also)) {
++					continue;
++				}
+ 				uint32_t k = 0;
+ 				while (k < nu && uniq[k] != j->bufs[i]) {
+ 					k++;
+@@ -800,6 +897,37 @@ sweet_gpu_publish(void)
+ 	}
+ 	(void)PE_parse_boot_argn("sweetgpu_debug", &sweet_gpu_debug, sizeof(sweet_gpu_debug));
+ 	(void)PE_parse_boot_argn("sweetgpu_wc", &sweet_gpu_wc, sizeof(sweet_gpu_wc));
++	(void)PE_parse_boot_argn("sweetgpu_lazy", &sweet_gpu_lazy, sizeof(sweet_gpu_lazy));
++	uint32_t pool = 1;
++	(void)PE_parse_boot_argn("sweetgpu_pool", &pool, sizeof(pool));
++	if (pool != 0 && !sweet_gpu_wc && sweet_board_is("xiaomi,jasmine") && sweet_gpu_pool_lock == NULL) {
++		/* the larger part of the range beside the shim (its loader passes where it is) */
++		uint64_t lo = SWEET_GPU_POOL_LO, hi = SWEET_GPU_POOL_HI, shim = 0, shimsz = 0;
++		(void)PE_parse_boot_argn("sweetshim", &shim, sizeof(shim));
++		(void)PE_parse_boot_argn("sweetshimsz", &shimsz, sizeof(shimsz));
++		if (shimsz == 0 || shimsz > (1ull << 30)) {
++			shimsz = 64ull << 20;   /* unknown: assume 64 MB */
++		}
++		if (shim < hi && shim + shimsz > lo) {
++			uint64_t end = (shim + shimsz + 0xffffull) & ~0xffffull;
++			uint64_t below = shim > lo ? shim - lo : 0, above = end < hi ? hi - end : 0;
++			if (below >= above) {
++				hi = shim & ~0xffffull;
++			} else {
++				lo = end;
++			}
++		}
++		sweet_gpu_pool_lock = IOLockAlloc();
++		void *va = NULL;
++		uint64_t pa = sweet_gpu_pool_lock != NULL && topaz_gpu_pool_place(lo, hi > lo ? hi - lo : 0) ?
++		    topaz_gpu_pool_alloc(0x10000, &va) : 0;
++		sweet_gpu_pool = pa != 0;
++		if (pa != 0) {
++			topaz_gpu_pool_free(pa, 0x10000);
++		}
++		IOLog("SWEET GPU: pool %#llx-%#llx (shim at %#llx, %#llx bytes): %s\n", lo, hi, shim, shimsz,
++		    sweet_gpu_pool ? "buffers write-combined from it" : "NOT usable, cacheable buffers");
++	}
+ 	gpu->setName("SweetGPU");
+ 	gpu->setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
+ 	gpu->setProperty("chip-id", (unsigned long long)sweet_gpu_param(1), 32);
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index e2334cd..b87977d 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -1612,6 +1612,30 @@ sweet_surface_held(IOLock *lock, OSArray *refs, uint32_t id)
+ 	return s;
+ }
+ 
++extern "C" uint64_t sweet_gpu_bulk_bytes(void);  /* bsd/dev/sweet_gpu.c */
++extern "C" void sweet_gpu_flush_all(void);
++
++/*
++ * jasmine (j0053): a surface the GPU may have written since the CPU last read it
++ * is cleaned and invalidated now, before the CPU reads it (IOSurfaceLock, the
++ * display's copy), not after every GPU job. Only kernel buffers: wrapped client
++ * memory is kept up around each job as before, the GPU pool is write-combined.
++ */
++void
++sweet_surface_cpu_access(SweetSurface *s)
++{
++	if (!s->gpuDirty || OSDynamicCast(IOBufferMemoryDescriptor, s->memory) == NULL) {
++		return;
++	}
++	s->gpuDirty = false;
++	uint64_t len = s->memory->getLength(), bulk = sweet_gpu_bulk_bytes();
++	if (bulk != 0 && len >= bulk) {
++		sweet_gpu_flush_all();
++	} else {
++		IOFlushProcessorCache(kernel_task, (IOVirtualAddress)s->kernelAddress(), len);
++	}
++}
++
+ IOReturn
+ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOut,
+     void *, void *, void *)
+@@ -1620,6 +1644,7 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
+ 	if (s == NULL) {
+ 		return kIOReturnNotFound;
+ 	}
++	sweet_surface_cpu_access(s);
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
+ 	s->release();
+ 	return ret;
+@@ -1633,8 +1658,11 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+ 	if (s == NULL) {
+ 		return kIOReturnNotFound;
+ 	}
+-	IOReturn ret = sweet_surface_seed_out(s, seedOut,
+-	    !((uintptr_t)options & kIOSurfaceLockReadOnly));
++	bool wrote = !((uintptr_t)options & kIOSurfaceLockReadOnly);
++	if (wrote) {
++		s->cpuDirty = true;     /* cleaned before the GPU's next use (j0053) */
++	}
++	IOReturn ret = sweet_surface_seed_out(s, seedOut, wrote);
+ 	s->release();
+ 	return ret;
+ }
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index 13e937a..f7e5a4d 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -49,14 +49,24 @@ public:
+ 	uint64_t                  poolSize;     /* bytes taken from the GPU pool (allocSize and a guard) */
+ 	uint32_t                  drawn;        /* topaz GPU: last submission naming this surface (RedwoodGPU.cpp) */
+ 	bool                      readOnly;     /* wrapped memory the task can only read: every mapping is read-only */
++	/*
++	 * jasmine GPU (not coherent with the CPU caches, j0053): the CPU may hold dirty
++	 * lines of it (written under a lock, or new), or stale ones (the GPU may have
++	 * written it since the CPU last read it). Kept up at the GPU's and the CPU's
++	 * next use instead of around every GPU job.
++	 */
++	volatile bool             cpuDirty, gpuDirty;
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; cpuDirty = true; gpuDirty = false; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+ 
+ 	/* Kernel address of the pixels (mapped on first use), or 0. */
+ 	uintptr_t kernelAddress();
+ };
+ 
++/* The CPU is about to read s: drop cache lines the GPU's writes made stale (j0053). */
++void sweet_surface_cpu_access(SweetSurface *s);
++
+ /* Retained surface for an id, or NULL. */
+ SweetSurface *sweet_surface_copy(uint32_t id);
+ 
+diff --git a/iokit/Kernel/arm/TopazAdreno.cpp b/iokit/Kernel/arm/TopazAdreno.cpp
+index 16da336..faf346a 100644
+--- a/iokit/Kernel/arm/TopazAdreno.cpp
++++ b/iokit/Kernel/arm/TopazAdreno.cpp
+@@ -159,13 +159,36 @@ kbuf_pa(struct kbuf *b, uint64_t off)
+  * reserved regions in the stock DT, not given to the kernel): a pool of it is
+  * the GPU's, mapped write-combined (Normal non-cacheable: no cache upkeep).
+  */
+-#define GPU_POOL_BASE       0x90000000ull
+-#define GPU_POOL_SIZE       0x40000000ull       /* 1 GB */
++static uint64_t gpu_pool_base = 0x90000000ull;
++static uint64_t gpu_pool_size = 0x40000000ull;  /* 1 GB */
++#define GPU_POOL_BASE       gpu_pool_base
++#define GPU_POOL_SIZE       gpu_pool_size
+ #define GPU_POOL_UNIT       0x10000ull          /* 64 KB */
+ #define GPU_POOL_CHUNK      0x4000000ull        /* 64 MB: mapped on first use (1 GB at once is more IO space than there is) */
++#define GPU_POOL_MAX_CHUNKS 16
+ #define GPU_POOL_CHUNKS     (GPU_POOL_SIZE / GPU_POOL_CHUNK)
+-static uint8_t *gpu_chunk_va[GPU_POOL_CHUNKS];
++static uint8_t *gpu_chunk_va[GPU_POOL_MAX_CHUNKS];
+ static bool gpu_pool_ready;
++
++/*
++ * jasmine (j0053): the pool in its own unused RAM, set before the first
++ * allocation; whole chunks only, at most GPU_POOL_MAX_CHUNKS of them.
++ * The pool functions take no lock: their callers serialise them.
++ */
++extern "C" bool topaz_gpu_pool_place(uint64_t base, uint64_t size);
++bool
++topaz_gpu_pool_place(uint64_t base, uint64_t size)
++{
++	if (size > GPU_POOL_MAX_CHUNKS * GPU_POOL_CHUNK) {
++		size = GPU_POOL_MAX_CHUNKS * GPU_POOL_CHUNK;
++	}
++	if (gpu_pool_ready || size < GPU_POOL_CHUNK) {
++		return false;   /* (topaz's own place stays: callers must not allocate then) */
++	}
++	gpu_pool_base = base;
++	gpu_pool_size = size & ~(GPU_POOL_CHUNK - 1);
++	return true;
++}
+ static struct { uint64_t start, size; } pool_free[2048];
+ static unsigned pool_free_count;
+ 
+-- 
+2.47.3
+

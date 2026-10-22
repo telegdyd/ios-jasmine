@@ -77,7 +77,38 @@ static int magic_ok(const char *m)
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 /* build.sh appends the payload to the Image at the first 4K boundary after _end */
-extern char _end[];
+extern char _head[], _end[];
+
+/*
+ * Append " name=0xVALUE" to the command line if it fits: XNU learns where the
+ * shim stays resident (the parked Silver boot core runs in it with cpus=4), so
+ * that memory nothing else claims (the GPU pool, j0053) leaves it alone.
+ */
+static void cmdline_add_hex(volatile char *cl, const char *name, uint64_t v)
+{
+	int n = 0, k = 0;
+	char tmp[48];
+
+	while (n < BOOT_LINE_LENGTH && cl[n])
+		n++;
+	tmp[k++] = ' ';
+	while (*name)
+		tmp[k++] = *name++;
+	tmp[k++] = '=';
+	tmp[k++] = '0';
+	tmp[k++] = 'x';
+	for (int sh = 60, started = 0; sh >= 0; sh -= 4) {
+		unsigned d = (v >> sh) & 0xf;
+		started |= d != 0 || sh == 0;
+		if (started)
+			tmp[k++] = d < 10 ? '0' + d : 'a' + d - 10;
+	}
+	if (n + k >= BOOT_LINE_LENGTH)
+		return;
+	for (int i = 0; i < k; i++)
+		cl[n + i] = tmp[i];
+	cl[n + k] = 0;
+}
 
 const char *loader_boot(uintptr_t dtb)
 {
@@ -172,6 +203,8 @@ const char *loader_boot(uintptr_t dtb)
 	ba->deviceTreeLength = (uint32_t)p->adt_size;
 	for (int i = 0; i < BOOT_LINE_LENGTH; i++)
 		ba->CommandLine[i] = p->cmdline[i];
+	cmdline_add_hex(ba->CommandLine, "sweetshim", (uintptr_t)_head);
+	cmdline_add_hex(ba->CommandLine, "sweetshimsz", (uintptr_t)_end - (uintptr_t)_head);
 	ba->memSizeActual = p->mem_size;
 	con_hex2("BOOTARG", "pa=", ba_pa, "top=", top);
 
