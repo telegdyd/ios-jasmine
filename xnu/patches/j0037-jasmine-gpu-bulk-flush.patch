@@ -1,0 +1,276 @@
+From 125e10c46a0d968fb14c12e1ad6131f29bd9cf2b Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 04:38:39 +0200
+Subject: [PATCH] jasmine-j0037: SweetGPU flushes whole caches (set/way, every
+ CPU) when a job would maintain more than 2x L2
+
+j0035 limited cache maintenance to a job's buffers, but those are ~10
+buffers of up to 11 MB, cleaned and invalidated by address at about
+2 GB/s: in G2 step 3 round f backboardd spent up to 9.9 of 10 s on it.
+Above twice the L2 size every online CPU now cleans and invalidates its
+data caches by set/way (cpu_broadcast_xcall_simple + FlushPoC_Dcache), a
+fixed cost, as XNU's flush_dcache_syscall does past c_bulksize_op. Jobs
+retired together are maintained once. The first flushes log their time;
+boot-arg sweetgpu_bulk=0 keeps maintenance by address.
+---
+ bsd/dev/sweet_gpu.c           |  52 ++++++++++++++++
+ iokit/Kernel/arm/SweetGPU.cpp | 112 ++++++++++++++++++++++++++--------
+ 2 files changed, 138 insertions(+), 26 deletions(-)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index ff63e10..a2aec9e 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -48,6 +48,7 @@
+ #include <kern/sched_prim.h>
+ #include <machine/machine_routines.h>
+ #include <arm/caches_internal.h>
++#include <arm/cpuid.h>
+ #include <vm/pmap.h>
+ #include <vm/vm_kern.h>
+ #include <pexpert/pexpert.h>
+@@ -1006,6 +1007,57 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+ }
+ 
+ /* The last seqno the GPU has completed. */
++/*
++ * Whole-cache maintenance for SweetGPU (j0037). By address, cleaning and
++ * invalidating runs at about 2 GB/s here (dc civac per line): backboardd's
++ * jobs list ~10 buffers of up to 11 MB, and in G2 step 3 it spent up to 99%
++ * of its time in that. Above sweet_gpu_bulk_bytes() every online CPU cleans
++ * and invalidates all of its data caches by set/way instead (L1 each, the
++ * cluster's L2), a fixed cost, as XNU's own flush_dcache_syscall does past
++ * c_bulksize_op (there on the calling CPU only; L1s are per CPU, so here on
++ * every one). Boot-arg sweetgpu_bulk=0 keeps maintenance by address.
++ */
++uint64_t sweet_gpu_bulk_bytes(void);
++void sweet_gpu_flush_all(void);
++
++static void
++sweet_gpu_flush_all_cb(__unused void *arg)
++{
++	FlushPoC_Dcache();
++}
++
++uint64_t
++sweet_gpu_bulk_bytes(void)
++{
++	static int64_t bulk = -1;
++	if (bulk < 0) {
++		int on = 1;
++		PE_parse_boot_argn("sweetgpu_bulk", &on, sizeof(on));
++		cache_info_t *ci = cache_info();
++		uint64_t l2 = ci->c_l2size != 0 ? ci->c_l2size : (1u << 20);
++		bulk = on ? (int64_t)(2 * l2) : 0;
++		printf("SWEET GPU: L1 %u, L2 %u bytes: whole-cache flushes above %lld bytes\n", ci->c_dsize,
++		    ci->c_l2size, bulk);
++	}
++	return (uint64_t)bulk;
++}
++
++void
++sweet_gpu_flush_all(void)
++{
++	static uint32_t told;
++	uint64_t t0 = mach_absolute_time(), ns = 0;
++	if (told < 3) {
++		printf("SWEET GPU: whole-cache flush on every CPU next\n");
++	}
++	(void)cpu_broadcast_xcall_simple(TRUE, sweet_gpu_flush_all_cb, NULL);
++	if (told < 3) {
++		told++;
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		printf("SWEET GPU: whole-cache flush took %llu us\n", ns / 1000);
++	}
++}
++
+ uint32_t sweet_gpu_completed(void);
+ uint32_t
+ sweet_gpu_completed(void)
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 87d75f7..d1e430a 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -67,6 +67,8 @@ void sweet_gpu_vm_unmap(uint64_t iova, uint32_t npages);
+ int sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno);
+ int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
+ uint32_t sweet_gpu_completed(void);
++uint64_t sweet_gpu_bulk_bytes(void);
++void sweet_gpu_flush_all(void);
+ uint64_t sweet_gpu_param(uint32_t which);
+ int sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms);
+ void sweet_gpu_debug_state(const char *when);
+@@ -268,7 +270,7 @@ class SweetGPUUserClient : public IOUserClient {
+ 	SweetGPUJob *fJobs, *fJobsTail; /* submitted, not yet retired, in seqno order (fLock) */
+ 	char     fName[32];
+ 	uint64_t fStatT0, fStatNs, fStatBytes;
+-	uint32_t fStatSubmits, fStatBufs;
++	uint32_t fStatSubmits, fStatBufs, fStatBulk;
+ 
+ 	SweetGPUBuffer *buffer(uint64_t handle);
+ 	uint32_t addBuffer(SweetGPUBuffer *b);
+@@ -276,6 +278,7 @@ class SweetGPUUserClient : public IOUserClient {
+ 	uint64_t flushBuffers(void);
+ 	SweetGPUBuffer *bufferAt(uint64_t iova, uint64_t len);
+ 	void retireJobs(uint32_t completed, bool everything);
++	uint64_t maintain(SweetGPUBuffer *const *bufs, uint32_t n, bool all);
+ 	void account(uint64_t t0, uint64_t bytes, bool submit, uint32_t nbufs);
+ 
+ public:
+@@ -299,7 +302,7 @@ SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ 	GPULOG("opened by %s", fName);
+ 	fJobs = fJobsTail = NULL;
+ 	fStatT0 = fStatNs = fStatBytes = 0;
+-	fStatSubmits = fStatBufs = 0;
++	fStatSubmits = fStatBufs = fStatBulk = 0;
+ 	fLock = IOLockAlloc();
+ 	fBuffers = OSArray::withCapacity(64);
+ 	return fLock != NULL && fBuffers != NULL;
+@@ -442,32 +445,90 @@ sweet_gpu_job_free(SweetGPUJob *j)
+ void
+ SweetGPUUserClient::retireJobs(uint32_t completed, bool everything)
+ {
+-	for (;;) {
+-		IOLockLock(fLock);
++	SweetGPUJob *done = NULL, **tail = &done;
++	IOLockLock(fLock);
++	while (fJobs != NULL && (everything || (int32_t)(completed - fJobs->seqno) >= 0)) {
+ 		SweetGPUJob *j = fJobs;
+-		if (j != NULL && (everything || (int32_t)(completed - j->seqno) >= 0)) {
+-			fJobs = j->next;
+-			if (fJobs == NULL) {
+-				fJobsTail = NULL;
++		fJobs = j->next;
++		j->next = NULL;
++		*tail = j;
++		tail = &j->next;
++	}
++	if (fJobs == NULL) {
++		fJobsTail = NULL;
++	}
++	IOLockUnlock(fLock);
++	if (done == NULL) {
++		return;
++	}
++	if (!everything) {
++		/* the jobs done now share most buffers (one frame's draws): maintain each buffer once */
++		uint64_t t0 = mach_absolute_time();
++		SweetGPUBuffer **uniq = IONew(SweetGPUBuffer *, SWEET_GPU_MAX_JOB_BUFS);
++		uint32_t nu = 0;
++		bool all = uniq == NULL;        /* no memory for the list: every buffer */
++		for (SweetGPUJob *j = done; j != NULL; j = j->next) {
++			all = all || j->all;
++			for (uint32_t i = 0; uniq != NULL && i < j->n; i++) {
++				uint32_t k = 0;
++				while (k < nu && uniq[k] != j->bufs[i]) {
++					k++;
++				}
++				if (k == nu) {
++					if (nu == SWEET_GPU_MAX_JOB_BUFS) {
++						all = true;
++						break;
++					}
++					uniq[nu++] = j->bufs[i];
++				}
+ 			}
+-		} else {
+-			j = NULL;
+-		}
+-		IOLockUnlock(fLock);
+-		if (j == NULL) {
+-			return;
+ 		}
+-		if (!everything) {
+-			uint64_t t0 = mach_absolute_time(), bytes = j->all ? flushBuffers() : 0;
+-			for (uint32_t i = 0; i < j->n; i++) {
+-				bytes += sweet_gpu_flush_one(j->bufs[i]);
+-			}
+-			account(t0, bytes, false, 0);
++		account(t0, maintain(uniq, nu, all), false, 0);
++		if (uniq != NULL) {
++			IODelete(uniq, SweetGPUBuffer *, SWEET_GPU_MAX_JOB_BUFS);
+ 		}
++	}
++	while (done != NULL) {
++		SweetGPUJob *j = done;
++		done = j->next;
+ 		sweet_gpu_job_free(j);
+ 	}
+ }
+ 
++/*
++ * Clean and invalidate bufs (every buffer of the client if all): by address,
++ * or the whole of every CPU's caches when that is more than
++ * sweet_gpu_bulk_bytes(). Returns the bytes covered.
++ */
++uint64_t
++SweetGPUUserClient::maintain(SweetGPUBuffer *const *bufs, uint32_t n, bool all)
++{
++	uint64_t bytes = 0, bulk = sweet_gpu_bulk_bytes();
++	if (all) {
++		IOLockLock(fLock);
++		for (unsigned int i = 0; i < fBuffers->getCount(); i++) {
++			SweetGPUBuffer *b = OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i));
++			bytes += b != NULL && b->flush ? b->size : 0;
++		}
++		IOLockUnlock(fLock);
++	}
++	for (uint32_t i = 0; i < n; i++) {
++		bytes += bufs[i]->flush ? bufs[i]->size : 0;
++	}
++	if (bulk != 0 && bytes >= bulk) {
++		sweet_gpu_flush_all();
++		fStatBulk++;
++		return bytes;
++	}
++	if (all) {
++		flushBuffers();
++	}
++	for (uint32_t i = 0; i < n; i++) {
++		sweet_gpu_flush_one(bufs[i]);
++	}
++	return bytes;
++}
++
+ /* time spent on cache maintenance, logged every 10 s per client */
+ void
+ SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t nbufs)
+@@ -486,12 +547,12 @@ SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t n
+ 	}
+ 	absolutetime_to_nanoseconds(now - fStatT0, &since);
+ 	if (since >= 10ull * NSEC_PER_SEC) {
+-		IOLog("SWEET GPU: %s: %u submits in %llu ms (%u buffers each), caches of %llu MB maintained in %llu ms\n",
++		IOLog("SWEET GPU: %s: %u submits in %llu ms (%u buffers each), caches of %llu MB maintained in %llu ms (%u whole-cache flushes)\n",
+ 		    fName, fStatSubmits, since / NSEC_PER_MSEC, fStatSubmits ? fStatBufs / fStatSubmits : 0,
+-		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC);
++		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC, fStatBulk);
+ 		fStatT0 = now;
+ 		fStatNs = fStatBytes = 0;
+-		fStatSubmits = fStatBufs = 0;
++		fStatSubmits = fStatBufs = fStatBulk = 0;
+ 	}
+ }
+ 
+@@ -610,17 +671,16 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			IODelete(job, SweetGPUJob, 1);
+ 			return kIOReturnNoMemory;
+ 		}
+-		uint64_t t0 = mach_absolute_time(), bytes = job->all ? flushBuffers() : 0;
++		uint64_t t0 = mach_absolute_time();
+ 		for (uint32_t i = 0; i < nbo; i++) {
+ 			uint32_t h;
+ 			memcpy(&h, s + 8 + n * sizeof(struct ib) + 4 * i, sizeof(h));
+ 			SweetGPUBuffer *b = buffer(h);
+ 			if (b != NULL) {
+-				bytes += sweet_gpu_flush_one(b);
+ 				job->bufs[job->n++] = b;
+ 			}
+ 		}
+-		account(t0, bytes, true, job->n);
++		account(t0, maintain(job->bufs, job->n, job->all), true, job->n);
+ 		uint32_t seqno = 0;
+ 		int err = sweet_gpu_submit(iova, dw, n, &seqno);
+ 		args->scalarOutput[0] = seqno;
+-- 
+2.47.3
+
