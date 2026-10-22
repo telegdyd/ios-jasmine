@@ -41,6 +41,30 @@ Licence of ios-sailfish's code: open (no licence file); until noted here, write 
 4. Wi-Fi (WCN3990 on the modem DSP; topaz 0113-0130 as the model).
 5. GPU (moved ahead of 8 cores and Wi-Fi: the lag is CoreAnimation's CPU renderer), plan in [GPU.md](GPU.md); G1 under way, the CP runs commands since 2026-10-21 13:40. Background: topaz runs CoreAnimation on its Adreno 610 with HackiOS's private patches (kernel driver + Mesa freedreno as the GL ES renderer), to be published in topaz once HackiOS publishes. `git fetch topaz` and check after each step; if still unpublished after 1-4, consider our own Adreno 512 (a5xx) work: firmware (a530_pm4/pfp, zap shader via TZ), GPU clocks/GX power, GPU SMMU, freedreno.
 
+## CPU clock (OSM + CPRh, brief [HANDOFF-CPUCLK.md](HANDOFF-CPUCLK.md))
+
+- **Licence (user, 2026-10-22 ~05:25): close adaptation of the Linux msm-4.4 drivers into the XNU patches is OK**, with The Linux Foundation copyright notice and credit in the file.
+- Sources: LineageOS `android_kernel_xiaomi_sdm660` lineage-19.1 in WSL `~/cpuclk-src` (clk-cpu-osm.c, cprh-kbss-regulator.c, cpr3-*.c, msm-spm.c, gcc-sdm660.c). Stock DT `~/jasmine-dtb/stock/dtb0.dts`. On stock TZ owns the OSM sequencer setup (no `qcom,osm-no-tz`: Linux writes SEQ_REGs with `scm_io_write`).
+- **Phase 0 (05:20):** `tools/cpuclk/cpuclk_model.py DTS FUSES` computes speed bin, fuse combo, CPRh corners (floor / open loop / ceiling / target quotient / `CPRH_REG_CORNER` words) and the OSM LUT, every step with its source line.
+- **Phase 1, j0039 (`sweetosm=1`, read only), rounds:**
+  - 05:27 `j39` (CI `39716392018`): probe inside the platform expert, read fuse rows 36..72: **the read of row 36 (0x784120) never completed**, boot stopped there (no watchdog yet, user needed). Read only rows Linux reads.
+  - 05:37 / 05:51 `j39b` (CI `39717275885`): probe in its own thread at 8 s: panicked before USB was up (no log). Probe moved to 60 s.
+  - 06:00 `j39c` (CI `39719520608`, `logs/netlog-j39c-osm.txt`): fuses read, table computed, OSM LUTs of both clusters all zero (OSM never programmed), GCC HMSS: RBCPR CBCR 0x48008 = 1 (on, XO), hmss_gpll0 RCG cfg 0x100 (GPLL0 undivided). Then **SError ("Unhandled implementation specific error") on CPRh offset 0x0**, which Linux never reads: dump only the registers the drivers use.
+  - **Kernel table = model table exactly** (model run on the j39c fuse lines). This chip: speed bin 1, CPR fusing rev 2, fuse combo 10, all ROs 7. Fuse rows: 38 `0x886142303040008c`, 65 `0x0700084210020000`, 66 `0x0416c5455c41f150`, 67 `0x2463338e8af07777`, 68 `0xeee0a28c2f150184`, 69 `0x4085e07513cb454e`, 70 `0xf3f5b82c89e484b4`, 71 `0x0000010021c39550`.
+
+    | Corner | MHz | Floor mV | Open loop = ceiling mV (DT ceiling) | Quot | CPRH_REG_CORNER |
+    | --- | --- | --- | --- | --- | --- |
+    | 0 | 300 | 652 | 692 (724) | 468 | 0x0e003f49 |
+    | 1 | 1113.6 | 652 | 692 (724) | 468 | 0x0e003f49 |
+    | 2 | 1401.6 | 708 | 748 (788) | 583 | 0x0e1d4d57 |
+    | 3 | 1747.2 | 788 | 828 (868) | 737 | 0x0e44616b |
+    | 4 | 1958.4 | 852 | 880 (988) | 840 | 0x0e5d7178 |
+    | 5 | 2150.4 | 864 | 928 (988) | 932 | 0x0e747484 |
+    | 6 | 2208 | 908 | 948 (1068) | 1037 | 0x0e8f7f89 |
+    | 7 (APM crossover) | - | 872 | 872 | - | 0x20007676 |
+
+    OSM: APM threshold vc 4 (pre 3), crossover vc 7; MEM-ACC threshold vcs 1 2 5 6, SEQ_REG(32) L 0x73.
+
 ## Kernel patches (ours, on top of topaz's)
 
 Ours are `xnu/patches/j0001-*` onward so they sort after every upstream topaz number (topaz kept going at 0136; merged 2026-10-21 with topaz 0136-0139). The WSL tree `~/xnu-8796` is `6d393c1 topaz-series` (0001-0135) + topaz 0136-0139 + ours, one commit each; `git format-patch` a new commit into the next j number.

@@ -1,0 +1,386 @@
+Darwin Kernel Version 22.6.0: Mon Aug 14 05:06:07 UTC 2023; runner:xnu-8796.141.3
+pmap_startup() init/release time: 72162 microsec
+pmap_startup() delayed init/release of 0 pages
+vm_page_bootstrap: 126392 free pages, 2936 wired pages, (up to 0 of which are delayed free)
+VM boostrap: 97 maps, 204 entries and 512 holes available
+Maximum number of VM swap files: 100
+zones                   : 0xfffffe1000438000 - 0xfffffe3000438000 (128G)
+gIOKitPageableFixed0    : 0xfffffe3000438000 - 0xfffffe3006438000 (96M)
+mb                      : 0xfffffe3006438000 - 0xfffffe300a438000 (64M)
+zone_meta               : 0xfffffe300a438000 - 0xfffffe3012a28000 (133M)
+io_submap               : 0xfffffe3012a28000 - 0xfffffe3013228000 (8M)
+bufferhdr               : 0xfffffe3013228000 - 0xfffffe3013398000 (1472K)
+compressor              : 0xfffffe3013398000 - 0xfffffe37f82c8000 (31G)
+ipc_kernel_map          : 0xfffffe37f82c8000 - 0xfffffe37fc2c8000 (64M)
+bsd_pageable            : 0xfffffe37fc2c8000 - 0xfffffe37fe4d0000 (34M)
+ipc_kernel_copy_map     : 0xfffffe37fe4d0000 - 0xfffffe37fecd0000 (8M)
+kmem_data_range         : 0xfffffe37fecd0000 - 0xfffffe79b424c000 (262G)
+gIOKitPageableFixed3    : 0xfffffe79b424c000 - 0xfffffe79ba24c000 (96M)
+kmem_ptr_range          : 0xfffffe79ba24c000 - 0xfffffe8fb564c000 (87G)
+kmem_ptr_range_meta     : 0xfffffe8fb564c000 - 0xfffffe8fb5e8c000 (8M)
+gIOKitPageableFixed2    : 0xfffffe8fb5e8c000 - 0xfffffe8fbbe8c000 (96M)
+kmem_sprayqtn_range     : 0xfffffe8fbbe8c000 - 0xfffffe8ff9dfc000 (991M)
+gIOKitPageableFixed1    : 0xfffffe8ff9dfc000 - 0xfffffe8fffdfc000 (96M)
+kmem_large_ranges[1]    : 0 - 0 (0B)
+kmem_large_ranges[2]    : 0 - 0 (0B)
+kmem_large_ranges[3]    : 0 - 0 (0B)
+kmem_large_ranges[4]    : 0xfffffe8fc3a7a000 - 0xfffffe8ff9dfc000 (867M)
+kmem_large_ranges[5]    : 0xfffffe403577f800 - 0xfffffe79b424c000 (229G)
+"vm_compressor_mode" is 4
+zone_init: pgzalloc  0xfffffe1000438000:0xfffffe10013b4000 (15M) [495 slots]
+zone_init: map VM    0xfffffe10013b4000:0xfffffe14cde2c000 (19G)
+zone_init: map RO    0xfffffe14cde2c000:0xfffffe16676fc000 (6G)
+zone_init: map GEN0  0xfffffe16676fc000:0xfffffe1b34174000 (19G)
+zone_init: map GEN1  0xfffffe1b34174000:0xfffffe2000bf0000 (19G)
+zone_init: map GEN2  0xfffffe2000bf0000:0xfffffe24cd66c000 (19G)
+zone_init: map GEN3  0xfffffe24cd66c000:0xfffffe299a0e8000 (19G)
+zone_init: map DATA  0xfffffe299a0e8000:0xfffffe3000438000 (25G)
+zone_init: metadata  0xfffffe300a448000:0xfffffe3012448000 (128M)
+zone_init: metabits  0xfffffe3012448000:0xfffffe3012a18000 (5M)
+zone_init: extra     0:0 (0B)
+VM bootstrap done: 85 maps, 165 entries and 501 holes left
+Long logs support configured: size: 16384
+Log queues configured: slot count: 32, per-slot size: 32768, total size: 1048576
+Firehose configured: 16 chunks, 8 io pages
+OSLog stream configured: stream: 8192 bytes, cache: 2112 bytes
+OSLog stream verification: 0
+standard timeslicing quantum is 10000 us
+standard background quantum is 2500 us
+mig_table_max_displ = 54 mach_kobj_count = 374
+debug_log_init: Error!! gPanicBase is still not initialized
+debug_log_init: Error!! gPanicBase is still not initialized
+kdp_core zlib memory 0x8000
+Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+iBoot version: jasmine-shim
+"name" not a kext
+"AAPL,phandle" not a kext
+SWEET AMFI: built-in interface registered (XML entitlements)
+calling mpo_policy_init for vnguard
+Security policy loaded: Guarded vnode policy (vnguard)
+SWEET: trust caches unavailable (Image4/AMFI not installed)
+keepsyms boot arg specified; keeping linkedit segment for symbols.
+No POST boot-arg set.
+SWEET: starting device-tree platform expert
+SWEET: reset via PS_HOLD 0x10ac000, restart reason 0x146bf65c
+SWEET: PON reboot mode via SPMI apid 4: reg 0x88f = 0 (read 0)
+SWEET CPU: requested=4 selected=4 (limit=8)
+SWEET CPU: cpu=0 mpidr=0x100 came alive; SGI1 OK
+SWEET CPU: cpu=1 CPU_ON target=0x101 entry_pa=0x1014be000 context=1
+SWEET CPU: cpu=1 PSCI CPU_ON rc=0
+SWEET CPU: cpu=1 mpidr=0x101 came alive; SGI1 OK
+SWEET CPU: cpu=2 CPU_ON target=0x102 entry_pa=0x1014be000 context=2
+SWEET CPU: cpu=2 PSCI CPU_ON rc=0
+SWEET OSM: sweetosm=1
+SWEET CPU: cpu=2 mpidr=0x102 came alive; SGI1 OK
+SWEET CPU: cpu=3 CPU_ON target=0x103 entry_pa=0x1014be000 context=3
+SWEET CPU: cpu=3 PSCI CPU_ON rc=0
+SWEET CPU: cpu=3 mpidr=0x103 came alive; SGI1 OK
+SWEET AKS: AppleKeyStore registered (no passcode, unlocked)
+Copyright (c) 1982, 1986, 1989, 1991, 1993
+	The Regents of the University of California. All rights reserved.
+
+SWEET CPU: 4/4 CPUs initialized, SGI1 verified
+MAC Framework successfully initialized
+SWEET MDP: VIG0 src 0x9d400000 ystride 0x10e0 size 0x8700438 out 0 format 0x237ff op 0x80000000
+SWEET MDP: VIG1 src 0 ystride 0 size 0 out 0 format 0 op 0x80000000
+SWEET MDP: DMA0 src 0 ystride 0 size 0 out 0 format 0 op 0x80000000
+SWEET MDP: DMA1 src 0 ystride 0 size 0 out 0 format 0 op 0x80000000
+SWEET MDP: DMA2 src 0 ystride 0 size 0 out 0 format 0 op 0x80000000
+SWEET MDP: CTL_0 layer 0x1000005 0 0 ext 0 top 0x20 flush 0x20000000
+SWEET MDP: CTL_1 layer 0 0 0 ext 0 top 0x1f00 flush 0
+SWEET MDP: CTL_2 layer 0 0 0 ext 0 top 0x1f00 flush 0
+SWEET MDP: CTL_3 layer 0 0 0 ext 0 top 0x1f00 flush 0
+SWEET MDP: CTL_4 layer 0 0 0 ext 0 top 0x1f00 flush 0
+SWEET MDP: boot framebuffer on VIG0 (1 match), CTL_0 (1 match), double buffered
+using 2538 buffer headers and 2538 cluster IO buffer headers
+SWEET WDT: IOWatchdog registered (accepts check-ins, never fires)
+SWEET SURF: IOCoreSurfaceRoot registered
+SWEET MDP: 1125x2436 fitted into 996x2160 at x 40
+SWEET FB: empty IOAcceleratorES published (no 30 s wait in CAMetalContextCreate)
+SWEET FB: MDP VIG0 src 0x9d400000 stride 4320 (boot), direct scanout ready
+SWEET HID: buttons registered (test every 0 s)
+SWEET HID: touch registered
+SWEET FB: AppleCLCD 1080x2160 stride 4320 at 0x9d400000, default surface 1, presented as 1125x2436
+SWEET BATTERY: static fallback, 100% 4200mV external=1 charging=0
+ktriage_register_subsystem_strings: set subsystem 8 strings
+calling mpo_policy_init for AMFI
+Security policy loaded: SWEET built-in Mobile File Integrity (AMFI)
+SWEET AMFI: platform binary policy registered (0)
+calling mpo_policy_init for Sandbox
+Security policy loaded: SWEET permissive sandbox stand-in (Sandbox)
+SWEET Sandbox: permissive policy registered (0)
+SWEET HFS: hfs-627.100.6 registered
+mcache: 4 CPU(s), 64 bytes CPU cache line size
+mbinit: done [64 MB total pool size, (42/21) split]
+dlil_init: Waiting for all the create dlil kernel threads to get scheduled at least once.
+dlil_init: All the created dlil kernel threads have been scheduled at least once. Proceeding.
+ifnet_attach: All kernel threads created for interface lo0 have been scheduled at least once. Proceeding.
+ifnet_attach: All kernel threads created for interface gif0 have been scheduled at least once. Proceeding.
+skip attaching fsw to lo0 using legacy TX modelifnet_attach: All kernel threads created for interface stf0 have been scheduled at least once. Proceeding.
+SWEET EMMC: host present 0x1f800f0 hostctl 0xb38 hostctl2 0x3 xfer/cmd 0xd020003, int en 0x7ff003f sig 0
+SWEET EMMC: EXT_CSD rev 8, 29820 MiB, part_config 0, cmdq 0, cache 0 (1024 KiB), hs_timing 0x2, bus 0x2
+SWEET UFS: GPT LUN0 hcrc 0x58fd5f91 ecrc 0x3b5f0bbf backup@0x3a3dfff hcrc 0xe4d20f99
+SWEET EMMC: userdata +0x200: , +0x438: 0100 (ext magic ef53, HFS+ 'H+' at +0x400: HX)
+SWEET EMMC: write test 1 block(s) at 0x3a3bfde: write 0 read 0 data OK
+SWEET EMMC: write test 8 block(s) at 0x3a3bfde: write 0 read 0 data OK
+SWEET UFS: "userdata" on LUN 0: first block 0x16c0000, 18171 MiB, read-write, DMA at 0x1043a0000
+SWEET LOG: console log to the last 4096 KiB of the partition (block 0x3a3bfde)
+SWEET UFS: topaz touch/keys skipped (not a topaz ADT)
+SWEET USB: GDSC usb30_prim 0xa0222000 (on)
+SWEET USB: clk master       CBCR 0x2000c221 (on)
+SWEET USB: clk sleep        CBCR 0x00000001 (on)
+SWEET USB: clk utmi         CBCR 0x00000001 (on)
+SWEET USB: clk cfg-noc-axi  CBCR 0x00000001 (on)
+SWEET USB: clk aggre-axi    CBCR 0x00000001 (on)
+SWEET USB: clk ahb2phy      CBCR 0x20008001 (on)
+SWEET USB: clk clkref       CBCR 0x00000003 (on)
+SWEET USB: DWC3 GSNPSID 0x5533300a GCTL 0x00112000 GSTS 0x7e800000 GUSB2PHYCFG 0x00002400
+SWEET USB: DWC3 DCFG 0x0048097c DCTL 0x10f00000 DEVTEN 0x00000277 DSTS 0x00d31564 DALEPENA 0x0000000f
+SWEET USB: DWC3 GEVNTADR 0x000000009ad32000 GEVNTSIZ 0x80001000 GEVNTCOUNT 0x00000000 GHWPARAMS0 0x4020400a
+SWEET USB: QUSB2 PLL_STATUS 0x30202030 PLL_TEST 0x00 POWERDOWN 0x22222222, QSCRATCH GENERAL_CFG 0x00000004
+SWEET USB: supply vdd L1B (sid 2 0x4000): UNREADABLE STATUS1 0x00 VSET 0x0000 EN_CTL 0x00
+SWEET USB: supply vdda-pll L10A (sid 0 0x4900): UNREADABLE STATUS1 0x00 VSET 0x0000 EN_CTL 0x00
+SWEET USB: supply vdda-phy-dpdm L7B (sid 2 0x4600): UNREADABLE STATUS1 0x00 VSET 0x0000 EN_CTL 0x00
+ifnet_attach: All kernel threads created for interface ue0 have been scheduled at least once. Proceeding.
+skip attaching fsw to ue0 using legacy TX modelSWEET USB: ue0 192.168.7.2/24 + 169.254.7.2/16 up (err 0)
+SWEET USB: soft reset done after 1 ms, GCTL 0x00112000 DCFG 0x0048097c
+SWEET USB: QSCRATCH HS_PHY_CTRL 0x00000000 SS_PHY_CTRL 0x00000000 GENERAL_CFG 0x00000004
+SWEET USB: VBUS override on: HS_PHY_CTRL 0x10100000 SS_PHY_CTRL 0x01000000
+SWEET USB: running (DSTS 0x00820001 after 0 ms), DMA at 0x1044e4000
+BSD root: ufsroot0, major 1, minor 0
+hfs: mounted iOSRoot on device b(1, 0)
+SWEET USB: event 0x00000101
+SWEET USB: bus reset
+SWEET USB: event 0x00000201
+SWEET USB: connected, speed 0
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0100 0000 len 64
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 00 05 0030 0000 len 0
+SWEET USB: address 48
+SWEET USB: event 0x000020c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0100 0000 len 18
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0200 0000 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0303 0409 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0300 0000 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0302 0409 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0100 0000 len 18
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0200 0000 len 9
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0200 0000 len 94
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 00 09 0001 0000 len 0
+SWEET USB: NCM endpoints configured
+SWEET USB: configured (1)
+SWEET USB: event 0x000020c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x0000c040
+SWEET USB: setup 01 0b 0000 0001 len 0
+SWEET USB: event 0x000020c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0302 0409 len 4
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0300 0000 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0302 0409 len 50
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0301 0409 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0302 0409 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 00 0000 0000 len 2
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0300 0000 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0301 0000 len 2
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0301 0409 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0302 0000 len 2
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0302 0409 len 255
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0301 0000 len 20
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0302 0000 len 50
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 80 06 0304 0409 len 26
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup a1 80 0000 0000 len 28
+SWEET USB: event 0x000010c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x000020c0
+SWEET USB: event 0x0000c040
+SWEET USB: event 0x0000c040
+SWEET USB: setup 01 0b 0001 0001 len 0
+SWEET USB: event 0x000020c2
+SWEET USB: event 0x0000c042
+SWEET USB: event 0x0000c04a
+SWEET USB: event 0x0000c04a
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+SWEET USB: event 0x0000e044
+IOKitBSDInit.cpp:1042 Assertion failed: pe
+=== SWEET PANIC: XNU panic buffer follows ===
