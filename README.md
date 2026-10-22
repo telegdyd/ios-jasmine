@@ -4,6 +4,11 @@
 
 This is a port of [MakrSas/ios-topaz](https://github.com/MakrSas/ios-topaz) (itself a port of [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet): Apple's open-source XNU kernel, xnu-8796, on a Qualcomm phone) to the Xiaomi **Mi A2** (`jasmine`, Qualcomm **SDM660** / Snapdragon 660, 4 GB). On top of it runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone X**: launchd, the system daemons, backboardd and SpringBoard.
 
+> **Thanks to HackiOS.** The GPU (Adreno through Mesa), display presentation, audio, Wi-Fi glue,
+> sandbox and tweak-injection work in topaz (and its kernel patches carried here) started from [HackiOS](https://github.com/oosexgang/hackios-xnu-kernel)
+> by OOSEX GANG (kernel: APSL 2.0, [user space](https://github.com/oosexgang/hackios-xnu-userland): MIT).
+> What comes from it and under which licence: [CREDITS.md](CREDITS.md).
+
 As of **2026-10-21** the phone **boots iOS by itself** (power on, reboot or charger plug-in) to the lock screen and the **home screen**, with **touch, power and volume keys**, the right **date and time**, **charging and a battery percentage**, the backlight switching off with the display, and the CPU at 1.75 GHz. Settings, the App Library and the keyboard work. In the kernel, the **Adreno 512 GPU** is powered up and executes our command streams, and a **USB Ethernet** link streams the kernel log to the PC live. CoreAnimation still renders in software, so the UI is slow: getting it onto the GPU is the current work (see the roadmap).
 
 > Experimental bring-up, not a usable phone OS. Many things are missing or stubbed, and Apple's security model is mostly switched off. iOS installs into the `userdata` partition and so **erases Android's user data**, and the standalone boot replaces `boot_b` / `vbmeta_b`. Keep a backup of every partition before you start.
