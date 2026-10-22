@@ -1,0 +1,46 @@
+From 806a008173d0ec4f19185c72b1c05467e3f0d21e Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 04:20:56 +0200
+Subject: [PATCH] jasmine-j0036: boot-arg gpupause=0 skips the pauses between
+ GPU bring-up stages
+
+They add up to 35 s and only served to show which stage hung during
+bring-up. Without them SweetGPU is published before backboardd asks for
+its first GL context (G2 step 3: it came 25-35 s after).
+---
+ bsd/dev/sweet_gpu.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index eab50fd..ff63e10 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -220,11 +220,24 @@ static int sweet_gpu_chan;
+ static void gpu_power_off(void);
+ static int smmu_identity(uint64_t hi);
+ 
++/*
++ * The pauses between bring-up stages (35 s in all) let a hang or panic show
++ * which stage it was. The bring-up is proven: boot-arg gpupause=0 skips them,
++ * so SweetGPU is published before backboardd asks for its first GL context
++ * (G2 step 3: it came 25-35 s after).
++ */
+ static void
+ gpu_pause(uint32_t secs, const char *what)
+ {
++	static int pause = -1;
++	if (pause < 0) {
++		pause = 1;
++		PE_parse_boot_argn("gpupause", &pause, sizeof(pause));
++	}
+ 	printf("SWEET GPU: %s\n", what);
+-	(void)tsleep(&sweet_gpu_chan, PZERO, "sweetgpu", hz * (int)secs);
++	if (pause) {
++		(void)tsleep(&sweet_gpu_chan, PZERO, "sweetgpu", hz * (int)secs);
++	}
+ }
+ 
+ static inline uint32_t
+-- 
+2.47.3
+
