@@ -1,4 +1,4 @@
-From 2a362970b39fbe4df44a88a239714a84c35ae7b7 Mon Sep 17 00:00:00 2001
+From e86b48ec097e22d0ff447b0b4ef6d68620d3f1b1 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 07:59:07 +0200
 Subject: [PATCH] jasmine-j0046: osmctl "ramoops": read the stock-kernel
@@ -15,23 +15,23 @@ over the warm reboot. "ramoops [SKIP]" returns those lines.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- osfmk/arm64/sweet_osm.c | 42 ++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 41 insertions(+), 1 deletion(-)
+ osfmk/arm64/sweet_osm.c | 54 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 53 insertions(+), 1 deletion(-)
 
 diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
-index 507862c..ec63670 100755
+index 507862c..546c611 100755
 --- a/osfmk/arm64/sweet_osm.c
 +++ b/osfmk/arm64/sweet_osm.c
 @@ -1202,6 +1202,8 @@ osm_phase2(void)
   *   tsens          temperatures                   state         PLL / RCG / OSM / CPRh / SAW line
   *   table          this chip's CPRh corners and OSM LUT (computed from the fuses)
   *   prog           CPRh open loop + Gold SAW AVS + OSM LUT / policy / TZ corners, not enabled
-+ *   ramoops [SKIP] "SWEETREF" lines left in the ramoops region (0xa0000000) by the stock-kernel
-+ *                  reference (tools/cpuclk/refinit.c), after skipping SKIP of them
++ *   ramoops [KEY] [SKIP]  lines containing KEY ('_' = space; default "SWEETREF", the stock-
++ *                  kernel reference's, tools/cpuclk/refinit.c) in the ramoops region at 0xa0000000
   * Direct accesses only inside the blocks this work touches (osm_ok()); a read of
   * an unimplemented offset can still SError (the panic then goes out on the live
   * log and the phone resets into fastboot). Every write goes through a register
-@@ -1382,7 +1384,45 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+@@ -1382,7 +1384,57 @@ osm_cmd_one(char *cmd, char *out, size_t len)
  		int rc = osm_program(osm_ptr(OSM_GOLD));
  		return snprintf(out, len, "prog: CPRh open loop, SAW AVS, OSM programmed: rc %d (not enabled)\n", rc);
  	}
@@ -46,18 +46,30 @@ index 507862c..ec63670 100755
 +		if (ro == NULL) {
 +			ro = (volatile uint8_t *)ml_io_map(0xa0000000, 0x400000);
 +		}
-+		uint32_t skip = (uint32_t)a, seen = 0;
++		/* ramoops KEY [SKIP]: KEY is one word ('_' stands for a space), default SWEETREF */
++		char key[32] = "SWEETREF";
++		uint32_t skip = 0, seen = 0, kl;
++		if (argc > 1 && (argv[1][0] < '0' || argv[1][0] > '9')) {
++			strlcpy(key, argv[1], sizeof(key));
++			skip = argc > 2 ? (uint32_t)b : 0;
++		} else if (argc > 1) {
++			skip = (uint32_t)a;
++		}
++		for (kl = 0; key[kl]; kl++) {
++			if (key[kl] == '_') {
++				key[kl] = ' ';
++			}
++		}
 +		int k = 0;
-+		static const char key[] = "SWEETREF";
-+		for (uint32_t i = 0; i + 8 < 0x400000 && k < (int)len - 200; i++) {
-+			if (ro[i] != 'S') {
++		for (uint32_t i = 0; i + kl < 0x400000 && k < (int)len - 200; i++) {
++			if (ro[i] != (uint8_t)key[0]) {
 +				continue;
 +			}
 +			uint32_t j = 0;
-+			while (j < 8 && ro[i + j] == (uint8_t)key[j]) {
++			while (j < kl && ro[i + j] == (uint8_t)key[j]) {
 +				j++;
 +			}
-+			if (j < 8) {
++			if (j < kl) {
 +				continue;
 +			}
 +			if (seen++ < skip) {
