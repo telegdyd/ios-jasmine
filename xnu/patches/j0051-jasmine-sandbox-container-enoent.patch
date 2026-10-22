@@ -1,0 +1,66 @@
+From b59e102b23952bc46f6b97d7915713429bde94bf Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 17:44:28 +0200
+Subject: [PATCH] jasmine-j0051: Sandbox op 4 answers ENOENT for a process
+ without a container (syncdefaultsd abort loop)
+
+topaz 0936 returned 0 and left the caller's buffer alone when the process had no
+CFFIXED_USER_HOME. libsystem_sandbox passes the result through, so syncdefaultsd's
+com.apple.kvsd listener used uninitialised bytes as the client's container path:
+NSInvalidArgumentException (-[NSURL initFileURLWithPath:isDirectory:]: nil string),
+SIGABRT on every connection. ENOENT is what jasmine answered before the merge.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/kern/topaz_sandbox_container.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/bsd/kern/topaz_sandbox_container.c b/bsd/kern/topaz_sandbox_container.c
+index 4533ffd..ae4dd88 100644
+--- a/bsd/kern/topaz_sandbox_container.c
++++ b/bsd/kern/topaz_sandbox_container.c
+@@ -3,6 +3,11 @@
+  * "container path of a process", answered from the CFFIXED_USER_HOME its launcher put into
+  * its environment (RunningBoard for an application, pkd for an extension). PlugInKit does not
+  * run an extension without it ("plugin has invalid sandbox or container"): no poster, no widget.
++ *
++ * jasmine: a process with no such variable (every daemon) has no container: ENOENT, as Sandbox
++ * answers. libsystem_sandbox passes the result through and callers read the buffer only on
++ * success; with 0 and the buffer untouched syncdefaultsd took its uninitialised bytes as the
++ * client's container (nil NSURL path, abort on every com.apple.kvsd connection).
+  */
+ #include <sys/param.h>
+ #include <sys/systm.h>
+@@ -59,7 +64,7 @@ sweet_sandbox_container_path(user_addr_t arg)
+ 	task = proc_task(p);
+ 	if (user_stack == 0 || argslen == 0 || task == TASK_NULL) {
+ 		proc_rele(p);
+-		return 0;
++		return ENOENT;
+ 	}
+ 	/* the same way as sysctl_procargsx(): the task keeps the map alive once the process is let go */
+ 	task_reference(task);
+@@ -67,7 +72,7 @@ sweet_sandbox_container_path(user_addr_t arg)
+ 	map = get_task_map_reference(task);
+ 	task_deallocate(task);
+ 	if (map == VM_MAP_NULL) {
+-		return 0;
++		return ENOENT;
+ 	}
+ 	strings_size = vm_map_round_page(argslen, vm_map_page_mask(map));
+ 	if (kmem_alloc(kernel_map, &strings, strings_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_BSD) != KERN_SUCCESS) {
+@@ -83,9 +88,10 @@ sweet_sandbox_container_path(user_addr_t arg)
+ 			vm_map_copy_discard(copy);
+ 		}
+ 		kmem_free(kernel_map, strings, strings_size);
+-		return 0;                       /* the process is on its way out, or has unmapped its own stack */
++		return ENOENT;                  /* the process is on its way out, or has unmapped its own stack */
+ 	}
+ 
++	error = ENOENT;
+ 	end = (const char *)(strings + strings_size);
+ 	for (s = end - argslen; s < end; s += len + 1) {
+ 		len = strnlen(s, end - s);
+-- 
+2.47.3
+
