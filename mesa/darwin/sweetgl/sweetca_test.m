@@ -351,6 +351,22 @@ main(void)
             row[W / 16] = 0;
             printf("  %s\n", row);
          }
+         /* the rounded layer, sampled every 4 pixels: B black, O orange, R red, b background, ? other; GPU left, CPU right */
+         printf(" rounded layer, GPU | CPU:\n");
+         for (int y = 16; y < 112; y += 4) {
+            char a[25], b[25];
+            for (int x = 144; x < 240; x += 4) {
+               for (int w = 0; w < 2; w++) {
+                  const uint8_t *q = (w ? ref + (size_t)y * ref_pitch : out + (size_t)y * pitch) + (size_t)x * 4;
+                  int bl = q[0], gr = q[1], rd = q[2];
+                  char ch = rd < 20 && gr < 20 && bl < 20 ? 'B' : (rd > 200 && gr > 120 && bl < 80) ? 'O'
+                            : (rd > 180 && gr < 90 && bl < 90) ? 'R' : (rd < 60 && bl > 90 && bl < 150) ? 'b' : '?';
+                  (w ? b : a)[(x - 144) / 4] = ch;
+               }
+            }
+            a[24] = b[24] = 0;
+            printf("  %s | %s\n", a, b);
+         }
          if (r.diff < best.diff) {
             best = r;
             best_mode = mode;
