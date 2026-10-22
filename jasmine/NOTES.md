@@ -74,6 +74,13 @@ Licence of ios-sailfish's code: open (no licence file); until noted here, write 
   - 07:07 `j42` (CI `39725646937`, osm watch, `osmdelay=15`): the word at OSM+0 is no version register (flips 0 / 0x70000 / 0x1 every few hundred ms); enabling at 15 s changes nothing either.
   - 07:31 `j44` (CI `39727833856`): D, the zero-core override (CC_ZERO_BEHAV_CTRL bit 0 + index), no change. Cycle counter control reads back 0x113 but the counter (0x1f04) and the sequencer PC (0x1c74) stay 0: **the OSM core does not execute at all**.
   - Every j40..j44 step passed the 4-core check: nothing broke, the cluster simply stays on GPLL0 (~590 MHz while sweetgold is skipped).
+- **Live tool, j0045 (2026-10-22 ~07:50):** with `sweetosm=` set the USB command port takes `r/w ADDR` (whitelisted clock / OSM / CPRh / SAW / APCS / GCC / TSENS blocks), `tr/tw` (TZ IO), `check`, `tsens`, `state`, `table`, `prog`; host `tools/cpuclk/osmctl.py 'cmd; cmd'`. `sweetosm=8` = table + commands only. Image `shim/out/shim-boot-j45-osm.img` (CI `39729734795`), log `logs/netlog-j45-osm.txt`.
+- **Live session 07:52-08:05 (j45):**
+  - OSM cycle counter enabled (0x113 reads back) on both clusters: stays 0. APCS LMH (OSM clock) RCG re-latched (0x179d112c 0x3 -> 0x2, cfg 0x105): no change.
+  - **Silver OSM is dead too**: Silver LUT (stock pwrcl rows) written and read back, enable 1, desired 0 -> 3 with the Silver cores off: Silver PLL L 0x48 / RCG 0x501 unchanged, PC 0, counter 0. So neither OSM core executes; it is not about Gold or CPRh.
+  - APCS common 0x179d1050 and 0x179d1058 read 0x80000002 (CBCR-like: CLK_OFF, HW_CTL, enable 0); 0x179d104c = 1, 0x179d1070 = 0xb. 0x1050 ignores writes (secure); 0x1058 takes the enable bit but stays CLK_OFF; TZ IO writes to both are dropped. Restored.
+  - Gold SAW4: version 0x40010001, ID 0x2020016f (PMIC arbiter present), CFG 0x14, PMIC_DATA_0 0x03030080, DATA_1 0x30000, VCTL / AVS / PMIC_STS 0: the SAW voltage interface has never been used on this boot. Silver SAW identical.
+  - Conclusion so far: OSM bring-up (sequencer program, its clocks) belongs to TZ and does not happen on this boot path; the apps side can neither load it (TZ drops the writes) nor clock it (secure branches). Open: whether stock Android gets OSM running with the same firmware (stock-kernel reference), else software DVFS through the SAW (needs the PMIC level code for a known voltage).
 
 ## Kernel patches (ours, on top of topaz's)
 
