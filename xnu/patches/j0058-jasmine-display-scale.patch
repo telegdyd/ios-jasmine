@@ -1,0 +1,591 @@
+From 582b3dd622a82c5f9b6c61c6f5ef7246340f5acf Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 23 Oct 2026 01:06:52 +0200
+Subject: [PATCH] jasmine-j0058: the MDP scales the fitted frame (VIG0 QSEED3)
+ from the GPU pool, no CPU composeFit; honest IOMobileFramebufferSwapWait (a
+ swap is done once its flip latched)
+
+composeFit (CPU nearest-sample scale 1125x2436 -> 996x2160) cost 8.2 ms of a 49 ms
+moving frame on CoreAnimation's display thread (j0057 profile). Now:
+
+- VIG0's QSEED3 scaler (stock DT qcom,mdss-vig-scaler-off 0xa00) is programmed as
+  msm-4.4 mdss_mdp_qseed3_setup does for RGB without a LUT: bilinear, 21-bit phase
+  steps src/dst, preload 4x3, pixel extension = the source size; SSPP source
+  1125x2436, output 996x2160 at x 40 (sweet_fit_x/w unchanged, so touch maps as
+  before). ABL's register values are kept and restored whenever VIG0 scans a
+  panel-size buffer again (flip buffers, console, panic). sweetfb_scale=0: off.
+- With the scaler on, backboardd's screen-sized IOSurfaces come from the GPU pool
+  (below 4 GiB, contiguous, write-combined) as topaz's gpu=1 did, so a one-layer
+  frame is scanned in place (sync path, no latch wait in SwapEnd); other frames
+  still go through composeFit. gpu_fbpool=0 turns the pool frames off. SweetSurface
+  takes the pool under SweetGPU's pool lock (sweet_gpu_pool_take/give).
+- kSweetFBSwapWait (IOMobileFramebufferSwapWait: swap ID, timeout with bit 31 for
+  CoreAnimation's polls) returned "done" at once. CoreAnimation's
+  IOMFBDisplay::can_update_ frees a queued swap's surface only when SwapWait says
+  done, so it drew into the frame still on the panel (j0056's held draws). A swap
+  is now done once the MDP latched its flip (CTL_FLUSH clear, or after 50 ms); a
+  frame scanned in place stays held until the one after it latched. sweetfb_swapwait=0:
+  the old behaviour (topaz default).
+- Counters every 600 synced frames: scaled by the MDP / copied, SwapWait calls,
+  polls that found the swap not done, time in them.
+- sweet_osm command port: the MDP block (0x0c901000-0x0c90a000) readable and
+  writable for live display register work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 267 ++++++++++++++++++++++++--
+ iokit/Kernel/arm/SweetGPU.cpp         |  34 ++++
+ iokit/Kernel/arm/SweetSurface.cpp     |  21 +-
+ osfmk/arm64/sweet_osm.c               |   1 +
+ 4 files changed, 306 insertions(+), 17 deletions(-)
+ mode change 100755 => 100644 osfmk/arm64/sweet_osm.c
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 63147d8..638e105 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -146,6 +146,10 @@ sweet_fb_sync(void)
+ 	return on;
+ }
+ 
++/* j0058: SwapWait calls, those that found the swap not done yet, time spent in them */
++static uint32_t sweet_fb_wait_calls, sweet_fb_wait_busy;
++static uint64_t sweet_fb_wait_us;
++
+ static void
+ sweet_hold_set(SweetSurface **set, bool on)
+ {
+@@ -161,6 +165,8 @@ class AppleCLCD;
+ static AppleCLCD *sweet_cons_fb;
+ /* jasmine fit geometry for SweetHIDTouch (0 = no fit) */
+ extern "C" { uint32_t sweet_fit_x, sweet_fit_w; }
++/* j0058: jasmine's MDP scales the fitted frame itself (SweetSurface then gives backboardd's frames from the GPU pool) */
++extern "C" { uint32_t sweet_fb_scaled; }
+ static void sweet_cons_show(void);
+ class OSDictionary;
+ static void sweet_bl_log(const char *who, OSDictionary *d);
+@@ -299,6 +305,21 @@ public:
+ 	uint32_t      fFitX, fFitW;
+ 	uint16_t     *fFitXMap, *fFitYMap;  /* panel column / row -> logical x / y */
+ 	bool          jasmineMdp(void);
++	/* j0058: VIG0's QSEED3 scaler fits a 1125x2436 GPU-pool frame into the panel window itself */
++	bool          fScaler;        /* usable (sweetfb_scale=0: off) */
++	bool          fScaled;        /* VIG0 is programmed for it now */
++	uint32_t      fPlain[24], fFit[24];   /* sweet_vig_layout: ABL's values, the scaled layout */
++	bool          scalerInit(void);
++	void          pipeLayout(bool scaled);
++	void          scanScaled(uint64_t pa, uint32_t stride);
++	/* j0058: swap completion (IOMobileFramebufferSwapWait): a swap is done once the MDP latched it */
++	bool          fSwapWait;      /* honest SwapWait (sweetfb_swapwait=, default on but topaz) */
++	uint32_t      fDoneID;        /* the last swap done */
++	uint32_t      fLatchID;       /* the swap flipped to, not latched yet (0: none) */
++	uint64_t      fLatchAt;
++	void          noteShown(uint32_t id);
++	void          retireLatched(void);
++	IOReturn      swapWait(uint32_t id, uint32_t timeout);
+ 	bool          fWled;          /* jasmine: backlight is the PM660L WLED */
+ 	uint32_t      fWledOn;        /* WLED level to restore when the display turns on */
+ 	void          composeFit(uint8_t *dst, SweetSurface *s, int32_t sx, int32_t sy,
+@@ -335,7 +356,7 @@ public:
+ 	void addClient(IOMobileFramebufferUserClient *client);
+ 	void removeClient(IOMobileFramebufferUserClient *client);
+ 	void swap(const uint8_t *rec);
+-	void present(const uint8_t *rec);
++	bool present(const uint8_t *rec);
+ };
+ 
+ /*
+@@ -583,6 +604,9 @@ AppleCLCD::start(IOService *provider)
+ 	fPanelUS = 8333;
+ 	IOLog("SWEET FB: vsync %s the panel (%u lines a frame)\n", fVLock ? "follows" : "does not follow", fVTotal);
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
++	uint32_t swapwait = topaz ? 0 : 1;
++	(void)PE_parse_boot_argn("sweetfb_swapwait", &swapwait, sizeof(swapwait));
++	fSwapWait = swapwait != 0;
+ 	uint32_t sync = 0;
+ 	if (!(PE_parse_boot_argn("sweetfb_sync", &sync, sizeof(sync)) && sync != 0) && (fQLock = IOLockAlloc()) != NULL) {
+ 		thread_t thread;
+@@ -712,11 +736,81 @@ AppleCLCD::jasmineMdp(void)
+ 			sweet_fit_x = fFitX;
+ 			sweet_fit_w = fFitW;
+ 			IOLog("SWEET MDP: %ux%u fitted into %ux%u at x %u\n", fLogicalW, fLogicalH, fFitW, fHeight, fFitX);
++			sweet_fb_scaled = scalerInit();
+ 		}
+ 	}
+ 	return true;
+ }
+ 
++/* MMIO store through a register: never "str wzr" (the hypervisor's emulation hangs on it, j0018) */
++static inline void
++sweet_mmio_wr(volatile uint32_t *base, uint32_t off, uint32_t v)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"((volatile uint8_t *)base + off) : "memory");
++}
++
++/*
++ * j0058: VIG0's registers the scaled layout changes (msm-4.4 mdss_mdp_hwio.h): the SSPP's
++ * source and output rectangles, its software pixel extension per plane (C0, C1/C2, C3) and
++ * the QSEED3 scaler at +0xa00 (stock DT qcom,mdss-vig-scaler-off). All double buffered:
++ * they take effect together at the latch after the pipe's CTL_FLUSH bit.
++ */
++static const uint16_t sweet_vig_layout[] = {
++	0x000, 0x004, 0x008, 0x00c, 0x010,              /* SRC_SIZE, SRC_IMG_SIZE, SRC_XY, OUT_SIZE, OUT_XY */
++	0x100, 0x104, 0x108, 0x110, 0x114, 0x118, 0x120, 0x124, 0x128,  /* PIX_EXT LR, TB, REQ_PIXELS */
++	0xa0c, 0xa10, 0xa14, 0xa18, 0xa1c, 0xa20,       /* QSEED3 PHASE_INIT, PHASE_STEP Y_H/Y_V/UV_H/UV_V, PRELOAD */
++	0xa40, 0xa44, 0xa48, 0xa04,                     /* SRC_SIZE_Y_RGB_A, SRC_SIZE_UV, DST_SIZE, OP_MODE */
++};
++
++/*
++ * The scaled layout as msm-4.4 programs a VIG pipe that scales RGB with QSEED3 and no
++ * user LUT (mdss_mdp_overlay_setup_scaling -> mdss_mdp_pipe_calc_qseed3_cfg ->
++ * mdss_mdp_qseed3_setup, bilinear): phase steps src/dst in 21-bit fixed point, preload
++ * 4 x 3, pixel extension only the requested size, no fetch or repeat.
++ */
++bool
++AppleCLCD::scalerInit(void)
++{
++	static_assert(sizeof(sweet_vig_layout) / sizeof(sweet_vig_layout[0]) <= sizeof(fPlain) / sizeof(fPlain[0]), "layout");
++	const uint32_t n = sizeof(sweet_vig_layout) / sizeof(sweet_vig_layout[0]);
++	uint32_t on = 1;
++	(void)PE_parse_boot_argn("sweetfb_scale", &on, sizeof(on));
++	uint32_t version = fVig0[0xa00 / 4];
++	for (uint32_t i = 0; i < n; i++) {
++		fPlain[i] = fVig0[sweet_vig_layout[i] / 4];
++	}
++	uint32_t sw = fLogicalW, sh = fLogicalH, dw = fFitW, dh = fHeight;
++	uint32_t req = (sh << 16) | sw;
++	uint32_t op = (1u << 0) | (1u << 14) | (3u << 16) | (1u << 31);   /* EN, 8-bit, Y/RGB bilinear, blend cfg 1 */
++	if (fVig0[0x30 / 4] & (1u << 8)) {
++		op |= (1u << 10) | (1u << 30);          /* the format has alpha (SRCC3_EN): alpha bilinear */
++	}
++	const uint32_t fit[] = {
++		req, req, 0, (dh << 16) | dw, fFitX,
++		0, 0, req, 0, 0, req, 0, 0, req,
++		0, (uint32_t)(((uint64_t)sw << 21) / dw), (uint32_t)(((uint64_t)sh << 21) / dh), 0, 0, 0x03040304,
++		sw | (sh << 16), sw | (sh << 16), dw | (dh << 16), op,
++	};
++	static_assert(sizeof(fit) == sizeof(sweet_vig_layout) * 2, "fit");
++	memcpy(fFit, fit, sizeof(fit));
++	fScaler = on && version != 0 && dw != 0 && dh != 0;
++	IOLog("SWEET MDP: VIG0 QSEED3 version %#x, ABL: src %#x out %#x at %#x, req %#x, scaler op %#x; steps %#x %#x: %s\n",
++	    version, fPlain[0], fPlain[3], fPlain[4], fPlain[7], fPlain[n - 1], fit[15], fit[16],
++	    fScaler ? "the MDP scales pool frames" : on ? "no scaler, CPU fit" : "CPU fit (sweetfb_scale=0)");
++	return fScaler;
++}
++
++/* VIG0 laid out for the scaled frame or for panel-size buffers (ABL's values); the caller flushes */
++void
++AppleCLCD::pipeLayout(bool scaled)
++{
++	const uint32_t *v = scaled ? fFit : fPlain;
++	for (uint32_t i = 0; i < sizeof(sweet_vig_layout) / sizeof(sweet_vig_layout[0]); i++) {
++		sweet_mmio_wr(fVig0, sweet_vig_layout[i], v[i]);
++	}
++	fScaled = scaled;
++}
++
+ /*
+  * One layer in logical coordinates (source sx,sy; destination dx,dy, w x h)
+  * scaled into the fitted panel area, nearest sample.
+@@ -864,17 +958,21 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 			bzero(fb->fPendHold, sizeof(fb->fPendHold));
+ 		}
+ 	}
+-	/* frames replaced at the previous vsync have been latched by now */
+-	SweetSurface *retire[4];
+-	memcpy(retire, fb->fRetireHold, sizeof(retire));
+-	bzero(fb->fRetireHold, sizeof(fb->fRetireHold));
++	/* frames replaced at the previous vsync have been latched by now (sync: retireLatched checks) */
++	SweetSurface *retire[4] = {};
++	if (!sweet_fb_sync()) {
++		memcpy(retire, fb->fRetireHold, sizeof(retire));
++		bzero(fb->fRetireHold, sizeof(fb->fRetireHold));
++	}
+ 	IOLockUnlock(fb->fLock);
+ 	sweet_hold_set(retire, false);
++	fb->retireLatched();
+ 	if (fb->fConsShown && sweet_console_copy_dirty(fb->backBuffer())) {
+ 		fb->flipBack();
+ 	}
+ 	if (rec != NULL) {
+ 		fb->present(rec);
++		fb->noteShown(get32(rec, 0x50));
+ 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
+ 		IOLockLock(fb->fLock);
+ 		memcpy(fb->fRetireHold, fb->fShowHold, sizeof(taken));
+@@ -1102,11 +1200,12 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	 * vsync, 8 ms at most). Held two ticks, the two surfaces CoreAnimation draws into paced it
+ 	 * to 20 frames a second.
+ 	 */
+-	if (sweet_fb_sync() && fFlipVA[0] != NULL && !directEligible(rec, held)) {
++	if (sweet_fb_sync() && fFlipVA[0] != NULL && (fScaler || !directEligible(rec, held))) {
+ 		/* the previous flip latched first: the back buffer is not about to be scanned */
+ 		for (int t = 0; t < 250 && (fCtl0[0x18 / 4] & 0x20001) != 0; t++) {
+ 			IODelay(100);
+ 		}
++		retireLatched();
+ 		IOLockLock(fLock);
+ 		SweetSurface *dropped[4];
+ 		memcpy(dropped, fPendHold, sizeof(dropped));
+@@ -1115,10 +1214,37 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		IOLockUnlock(fLock);
+ 		sweet_hold_set(dropped, false);
+ 		uint64_t t0 = mach_absolute_time(), ns = 0;
+-		present(rec);
++		bool inPlace = present(rec);
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+ 		sweet_fps_wait_ns += ns;
+-		sweet_hold_set(held, false);    /* copied: CoreAnimation may draw into them again */
++		/*
++		 * j0058: a frame the MDP scans in place stays held until a later one replaced it on the
++		 * panel; a copied one is let go at once. The frame shown before stays held until this
++		 * flip latched, and this swap is done (SwapWait) only then. No wait for the latch here.
++		 */
++		SweetSurface *gone[4];
++		IOLockLock(fLock);
++		memcpy(gone, fRetireHold, sizeof(gone));
++		memcpy(fRetireHold, fShowHold, sizeof(fRetireHold));
++		if (inPlace) {
++			memcpy(fShowHold, held, sizeof(fShowHold));
++		} else {
++			bzero(fShowHold, sizeof(fShowHold));
++		}
++		IOLockUnlock(fLock);
++		sweet_hold_set(gone, false);
++		if (!inPlace) {
++			sweet_hold_set(held, false);    /* copied: CoreAnimation may draw into them again */
++		}
++		noteShown(get32(rec, 0x50));
++		static uint32_t frames, scaled;
++		scaled += inPlace;
++		if (++frames == 600) {
++			IOLog("SWEET FB: 600 frames: %u scaled by the MDP, %u copied; SwapWait %u calls, %u not done yet, %llu us in it\n",
++			    scaled, frames - scaled, sweet_fb_wait_calls, sweet_fb_wait_busy, sweet_fb_wait_us);
++			frames = scaled = sweet_fb_wait_calls = sweet_fb_wait_busy = 0;
++			sweet_fb_wait_us = 0;
++		}
+ 		return;
+ 	}
+ 	if (directEligible(rec, held) && fQLock != NULL) {
+@@ -1213,6 +1339,7 @@ AppleCLCD::showDirect(const uint8_t *rec, SweetSurface **heldIn)
+ 		}
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - waited, &wns);
+ 		sweet_fps_wait_ns += wns;
++		noteShown(get32(rec, 0x50));
+ 		IOLockLock(fLock);
+ 		memcpy(shown, fShowHold, sizeof(shown));
+ 		memcpy(retired, fRetireHold, sizeof(retired));
+@@ -1248,6 +1375,9 @@ AppleCLCD::showPending(const uint8_t *rec, SweetSurface **heldIn)
+ void
+ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+ {
++	if (fScaled) {
++		pipeLayout(false);      /* a panel-size buffer again (flip buffers, console, panic) */
++	}
+ 	fVig0[0x14 / 4] = (uint32_t)pa;
+ 	fVig0[0x24 / 4] = stride;
+ 	__asm__ volatile("dsb sy" ::: "memory");
+@@ -1257,6 +1387,92 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+ 	fScanStride = stride;
+ }
+ 
++/* j0058: VIG0 scans a whole 1125x2436 frame and its scaler fits it into the panel window */
++void
++AppleCLCD::scanScaled(uint64_t pa, uint32_t stride)
++{
++	if (!fScaled) {
++		pipeLayout(true);
++	}
++	fVig0[0x14 / 4] = (uint32_t)pa;
++	fVig0[0x24 / 4] = stride;
++	__asm__ volatile("dsb sy" ::: "memory");
++	fCtl0[0x18 / 4] = fFlushMask;
++	__asm__ volatile("dsb sy" ::: "memory");
++	fScanPhys = pa;
++	fScanStride = stride;
++}
++
++/*
++ * j0058: swap completion. CoreAnimation renders into a swap surface again once
++ * IOMobileFramebufferSwapWait says the swap that replaced it is done (IOMFBDisplay::can_update_
++ * polls it for each queued swap); ours said "done" at once, so CoreAnimation drew into the
++ * surface still on the panel (j0056's held draws, the dock flicker). A swap is done once the
++ * MDP latched its flip; one with no flip pending (CPU copy into the scanned buffer) at once.
++ */
++void
++AppleCLCD::noteShown(uint32_t id)
++{
++	IOLockLock(fLock);
++	if (fCtl0 != NULL && (fCtl0[0x18 / 4] & fFlushMask) != 0) {
++		fLatchID = id;
++		fLatchAt = mach_absolute_time();
++	} else {
++		fDoneID = id;
++		fLatchID = 0;
++	}
++	IOLockUnlock(fLock);
++}
++
++/* The flip latched (its CTL_FLUSH bits clear, or 50 ms passed): its swap is done, what it replaced is free */
++void
++AppleCLCD::retireLatched(void)
++{
++	SweetSurface *gone[4];
++	uint64_t ns = 0;
++	IOLockLock(fLock);
++	if (fLatchID != 0) {
++		absolutetime_to_nanoseconds(mach_absolute_time() - fLatchAt, &ns);
++	}
++	if (fLatchID == 0 || ((fCtl0[0x18 / 4] & fFlushMask) != 0 && ns < 50 * NSEC_PER_MSEC)) {
++		IOLockUnlock(fLock);
++		return;
++	}
++	fDoneID = fLatchID;
++	fLatchID = 0;
++	memcpy(gone, fRetireHold, sizeof(gone));
++	bzero(fRetireHold, sizeof(fRetireHold));
++	IOLockUnlock(fLock);
++	sweet_hold_set(gone, false);
++}
++
++/* timeout: the top bit set for CoreAnimation's polls, the rest ms (0x80000001: up to 1 ms) */
++IOReturn
++AppleCLCD::swapWait(uint32_t id, uint32_t timeout)
++{
++	uint64_t start = mach_absolute_time(), ns = 0;
++	uint32_t ms = timeout & 0x7fffffff;
++	if (ms > 100) {
++		ms = 100;
++	}
++	sweet_fb_wait_calls++;
++	for (;;) {
++		retireLatched();
++		IOLockLock(fLock);
++		/* (a swap never shown -- lost, cancelled -- is done once nothing waits to reach the panel) */
++		bool done = !fSwapWait || (int32_t)(fDoneID - id) >= 0 || (int32_t)(id - fSwapID) > 0 ||
++		    (fLatchID == 0 && !fDirty);
++		IOLockUnlock(fLock);
++		absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++		if (done || ns >= (uint64_t)ms * NSEC_PER_MSEC) {
++			sweet_fb_wait_us += ns / 1000;
++			sweet_fb_wait_busy += !done;
++			return done ? kIOReturnSuccess : kIOReturnTimeout;
++		}
++		IODelay(100);
++	}
++}
++
+ /*
+  * DCS long write through the DSI command DMA path (topaz-woa: the TPG FIFO
+  * path is a no-op on this DSI 2.4.1). The packet lives in a contiguous
+@@ -1577,6 +1793,28 @@ AppleCLCD::directPresent(const uint8_t *rec)
+ 	}
+ 	bool ok = false;
+ 	(void)topaz_surface_drawn(s, 100);
++	if (fFitW != 0) {
++		/*
++		 * jasmine (j0058): the frame is fitted, not cropped. A whole GPU-pool frame at the logical
++		 * size goes to VIG0's scaler as it is (no CPU copy); anything else is composed by the
++		 * CPU (composeFit).
++		 */
++		const uint8_t *a = rec + 0x64 + 16 * layer, *b = rec + 0xc4 + 16 * layer;
++		bool whole = get32(a, 0) == 0 && get32(a, 4) == 0 && get32(b, 0) == 0 && get32(b, 4) == 0 &&
++		    (get32(a, 8) == 0 || get32(a, 8) == fLogicalW) && (get32(a, 12) == 0 || get32(a, 12) == fLogicalH) &&
++		    ((int32_t)get32(b, 8) <= 0 || get32(b, 8) == fLogicalW) &&
++		    ((int32_t)get32(b, 12) <= 0 || get32(b, 12) == fLogicalH);
++		uint64_t pa = s->scanoutPhys + s->offset;
++		if (fScaler && s->gpuPool && whole && s->bytesPerElement == 4 && s->width == fLogicalW &&
++		    s->height == fLogicalH && (pa & 0xf) == 0 && (s->bytesPerRow & 0xf) == 0 &&
++		    pa + (uint64_t)fLogicalH * s->bytesPerRow < (1ull << 32)) {
++			sweet_surface_cpu_access(s);    /* the GPU's last job on it is done (j0055) */
++			scanScaled(pa, s->bytesPerRow);
++			ok = true;
++		}
++		s->release();
++		return ok;
++	}
+ 	if (s->scanoutPhys != 0 && s->bytesPerElement == 4 &&
+ 	    s->width >= fWidth && s->height >= fHeight) {
+ 		/* full-screen surface: panel window at the logical offset */
+@@ -1623,7 +1861,8 @@ AppleCLCD::directPresent(const uint8_t *rec)
+ 	return ok;
+ }
+ 
+-void
++/* Shows a swap's frame; true when the MDP scans one of its surfaces in place (not a copy) */
++bool
+ AppleCLCD::present(const uint8_t *rec)
+ {
+ 	uint32_t mask = get32(rec, 0x104);
+@@ -1636,7 +1875,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 	}
+ 	if (console_only > 0 && fConsShown) {
+ 		(void)mask;
+-		return;
++		return false;
+ 	}
+ 	fConsShown = false;
+ 	if (directPresent(rec)) {
+@@ -1647,7 +1886,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 				sweet_console_muted = 1;
+ 			}
+ 		}
+-		return;
++		return fScanPhys != fFlipPhys[0] && fScanPhys != fFlipPhys[1];
+ 	}
+ 	IOLockLock(fLock);
+ 	fLastVA = NULL;
+@@ -1778,6 +2017,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 	if (fFlipVA[0] != NULL) {
+ 		flipBack();
+ 	}
++	return false;
+ }
+ 
+ bool
+@@ -1959,6 +2199,11 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		}
+ 		break;
+ 	case kSweetFBSwapWait:
++		/* IOMobileFramebufferSwapWait (kern_SwapWait): swap ID, timeout, 0 */
++		if (args->scalarInputCount >= 2) {
++			ret = fFB->swapWait((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1]);
++		}
++		break;
+ 	default:
+ 		break;
+ 	}
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 69e4a13..e35e7f5 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -101,6 +101,40 @@ static uint32_t sweet_gpu_lazy = 1;     /* surface upkeep at the CPU's and GPU's
+ static bool sweet_gpu_pool;             /* jasmine: buffers from the write-combined GPU pool */
+ static IOLock *sweet_gpu_pool_lock;
+ 
++/*
++ * j0058: SweetSurface takes jasmine's window-server frames from the pool too (the MDP scans
++ * them), under the lock of Mesa's buffers. topaz has no lock here, as before.
++ */
++extern "C" bool
++sweet_gpu_pool_ready(void)
++{
++	return sweet_gpu_pool;
++}
++
++extern "C" uint64_t
++sweet_gpu_pool_take(uint64_t size, void **va)
++{
++	if (sweet_gpu_pool_lock == NULL) {
++		return topaz_gpu_pool_alloc(size, va);
++	}
++	IOLockLock(sweet_gpu_pool_lock);
++	uint64_t pa = topaz_gpu_pool_alloc(size, va);
++	IOLockUnlock(sweet_gpu_pool_lock);
++	return pa;
++}
++
++extern "C" void
++sweet_gpu_pool_give(uint64_t pa, uint64_t size)
++{
++	if (sweet_gpu_pool_lock == NULL) {
++		topaz_gpu_pool_free(pa, size);
++		return;
++	}
++	IOLockLock(sweet_gpu_pool_lock);
++	topaz_gpu_pool_free(pa, size);
++	IOLockUnlock(sweet_gpu_pool_lock);
++}
++
+ /* jasmine's GPU pool: RAM no one else uses (jasmine/HARDWARE.md), minus where the shim stays resident */
+ #define SWEET_GPU_POOL_LO       0xc0000000ull
+ #define SWEET_GPU_POOL_HI       0xf6000000ull
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 8a0b023..7be0214 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -51,6 +51,12 @@
+ extern "C" uint64_t topaz_gpu_pool_alloc(uint64_t size, void **va);
+ extern "C" void topaz_gpu_pool_free(uint64_t pa, uint64_t size);
+ extern "C" IOMemoryDescriptor *topaz_gpu_pool_md(uint64_t pa, uint64_t size);
++/* SweetGPU.cpp (j0058): the same pool under the lock of Mesa's buffers (jasmine) */
++extern "C" bool sweet_gpu_pool_ready(void);
++extern "C" uint64_t sweet_gpu_pool_take(uint64_t size, void **va);
++extern "C" void sweet_gpu_pool_give(uint64_t pa, uint64_t size);
++/* SweetFramebuffer.cpp (j0058): jasmine's MDP scales the fitted frame itself */
++extern "C" { extern uint32_t sweet_fb_scaled; }
+ 
+ enum {
+ 	kSweetSurfaceCreate             = 0,
+@@ -294,7 +300,7 @@ SweetSurface::free()
+ 	OSSafeReleaseNULL(values);
+ 	if (gpuPool && memory != NULL) {
+ 		OSSafeReleaseNULL(memory);
+-		topaz_gpu_pool_free(scanoutPhys, poolSize);
++		sweet_gpu_pool_give(scanoutPhys, poolSize);
+ 	}
+ 	if (wrapped && memory != NULL) {
+ 		memory->complete();
+@@ -491,21 +497,24 @@ static IOReturn sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint
+ /*
+  * With gpu=1 the screen-sized surfaces come from the GPU pool: contiguous, below 4 GiB,
+  * write-combined. The GPU draws into them in place (no frame copied out by the CPU) and the
+- * MDP scans them directly.
++ * MDP scans them directly. jasmine (j0058): the same once its MDP scales the fitted frame
++ * itself (sweet_fb_scaled) and SweetGPU placed the pool; gpu_fbpool=0 turns both off.
+  */
+ static bool
+ sweet_gpu_pool_eligible(const SweetSurface *s)
+ {
+-	static int gpu = -1;
++	static int gpu = -1, fbpool = 1;
+ 	if (gpu < 0) {
+ 		uint32_t on = 0;
+ 		gpu = PE_parse_boot_argn("gpu", &on, sizeof(on)) && on != 0;
+ 		uint32_t pool = 1;
+ 		if (PE_parse_boot_argn("gpu_fbpool", &pool, sizeof(pool)) && pool == 0) {
+ 			gpu = 0;
++			fbpool = 0;
+ 		}
+ 	}
+-	if (!(gpu && s->bytesPerElement == 4 && s->planeCount <= 1 && s->elementWidth == 1 && s->elementHeight == 1 &&
++	bool on = gpu || (fbpool && sweet_fb_scaled && sweet_gpu_pool_ready());
++	if (!(on && s->bytesPerElement == 4 && s->planeCount <= 1 && s->elementWidth == 1 && s->elementHeight == 1 &&
+ 	    s->width >= 1000 && s->height >= 2000 && s->allocSize <= (48u << 20))) {
+ 		return false;
+ 	}
+@@ -1015,7 +1024,7 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		 * a command buffer, read back as addresses (SMMU FAR 0x0001ff497b7b11c0: a grey pixel).
+ 		 */
+ 		uint64_t take = s->allocSize + 64ull * s->bytesPerRow;
+-		uint64_t pa = topaz_gpu_pool_alloc(take, &va);
++		uint64_t pa = sweet_gpu_pool_take(take, &va);
+ 		IOMemoryDescriptor *md = pa != 0 ? topaz_gpu_pool_md(pa, s->allocSize) : NULL;
+ 		if (md != NULL) {
+ 			s->poolSize = take;
+@@ -1030,7 +1039,7 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 				ret = kIOReturnNoResources;
+ 			}
+ 		} else if (pa != 0) {
+-			topaz_gpu_pool_free(pa, take);
++			sweet_gpu_pool_give(pa, take);
+ 		}
+ 	}
+ 	if (ret == kIOReturnSuccess && s->memory == NULL && sweet_scanout_eligible(s)) {
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+old mode 100755
+new mode 100644
+index fbc6028..2b94fa8
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1244,6 +1244,7 @@ osm_phase2(void)
+ static const struct { uint64_t lo, hi; } osm_ranges[] = {
+ 	{ 0x00100000, 0x001b0000 },     /* GCC */
+ 	{ 0x010ac000, 0x010b0000 },     /* TSENS */
++	{ 0x0c901000, 0x0c90a000 },     /* MDP (j0058): top, CTL_0-4, VIG0/VIG1 with the QSEED3 scaler */
+ 	{ 0x17810000, 0x17817000 },     /* Gold: RCG, SAW4 (0x17812000), PLL */
+ 	{ 0x17910000, 0x17917000 },     /* Silver: RCG, SAW4, PLL */
+ 	{ 0x179c0000, 0x179c8000 },     /* OSM both clusters, CPRh apc1 */
+-- 
+2.47.3
+
