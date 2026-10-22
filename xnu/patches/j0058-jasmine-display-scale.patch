@@ -1,4 +1,4 @@
-From 582b3dd622a82c5f9b6c61c6f5ef7246340f5acf Mon Sep 17 00:00:00 2001
+From 5ad1011d5adba69b846c1758e2fda78ec4cd912b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Fri, 23 Oct 2026 01:06:52 +0200
 Subject: [PATCH] jasmine-j0058: the MDP scales the fitted frame (VIG0 QSEED3)
@@ -33,29 +33,30 @@ moving frame on CoreAnimation's display thread (j0057 profile). Now:
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- iokit/Kernel/arm/SweetFramebuffer.cpp | 267 ++++++++++++++++++++++++--
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 268 ++++++++++++++++++++++++--
  iokit/Kernel/arm/SweetGPU.cpp         |  34 ++++
  iokit/Kernel/arm/SweetSurface.cpp     |  21 +-
  osfmk/arm64/sweet_osm.c               |   1 +
- 4 files changed, 306 insertions(+), 17 deletions(-)
+ 4 files changed, 307 insertions(+), 17 deletions(-)
  mode change 100755 => 100644 osfmk/arm64/sweet_osm.c
 
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 63147d8..638e105 100644
+index 63147d8..44adae0 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -146,6 +146,10 @@ sweet_fb_sync(void)
+@@ -146,6 +146,11 @@ sweet_fb_sync(void)
  	return on;
  }
  
 +/* j0058: SwapWait calls, those that found the swap not done yet, time spent in them */
 +static uint32_t sweet_fb_wait_calls, sweet_fb_wait_busy;
 +static uint64_t sweet_fb_wait_us;
++static uint32_t get32(const uint8_t *p, uint32_t off);
 +
  static void
  sweet_hold_set(SweetSurface **set, bool on)
  {
-@@ -161,6 +165,8 @@ class AppleCLCD;
+@@ -161,6 +166,8 @@ class AppleCLCD;
  static AppleCLCD *sweet_cons_fb;
  /* jasmine fit geometry for SweetHIDTouch (0 = no fit) */
  extern "C" { uint32_t sweet_fit_x, sweet_fit_w; }
@@ -64,7 +65,7 @@ index 63147d8..638e105 100644
  static void sweet_cons_show(void);
  class OSDictionary;
  static void sweet_bl_log(const char *who, OSDictionary *d);
-@@ -299,6 +305,21 @@ public:
+@@ -299,6 +306,21 @@ public:
  	uint32_t      fFitX, fFitW;
  	uint16_t     *fFitXMap, *fFitYMap;  /* panel column / row -> logical x / y */
  	bool          jasmineMdp(void);
@@ -86,7 +87,7 @@ index 63147d8..638e105 100644
  	bool          fWled;          /* jasmine: backlight is the PM660L WLED */
  	uint32_t      fWledOn;        /* WLED level to restore when the display turns on */
  	void          composeFit(uint8_t *dst, SweetSurface *s, int32_t sx, int32_t sy,
-@@ -335,7 +356,7 @@ public:
+@@ -335,7 +357,7 @@ public:
  	void addClient(IOMobileFramebufferUserClient *client);
  	void removeClient(IOMobileFramebufferUserClient *client);
  	void swap(const uint8_t *rec);
@@ -95,7 +96,7 @@ index 63147d8..638e105 100644
  };
  
  /*
-@@ -583,6 +604,9 @@ AppleCLCD::start(IOService *provider)
+@@ -583,6 +605,9 @@ AppleCLCD::start(IOService *provider)
  	fPanelUS = 8333;
  	IOLog("SWEET FB: vsync %s the panel (%u lines a frame)\n", fVLock ? "follows" : "does not follow", fVTotal);
  	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
@@ -105,7 +106,7 @@ index 63147d8..638e105 100644
  	uint32_t sync = 0;
  	if (!(PE_parse_boot_argn("sweetfb_sync", &sync, sizeof(sync)) && sync != 0) && (fQLock = IOLockAlloc()) != NULL) {
  		thread_t thread;
-@@ -712,11 +736,81 @@ AppleCLCD::jasmineMdp(void)
+@@ -712,11 +737,81 @@ AppleCLCD::jasmineMdp(void)
  			sweet_fit_x = fFitX;
  			sweet_fit_w = fFitW;
  			IOLog("SWEET MDP: %ux%u fitted into %ux%u at x %u\n", fLogicalW, fLogicalH, fFitW, fHeight, fFitX);
@@ -187,7 +188,7 @@ index 63147d8..638e105 100644
  /*
   * One layer in logical coordinates (source sx,sy; destination dx,dy, w x h)
   * scaled into the fitted panel area, nearest sample.
-@@ -864,17 +958,21 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -864,17 +959,21 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  			bzero(fb->fPendHold, sizeof(fb->fPendHold));
  		}
  	}
@@ -213,7 +214,7 @@ index 63147d8..638e105 100644
  		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
  		IOLockLock(fb->fLock);
  		memcpy(fb->fRetireHold, fb->fShowHold, sizeof(taken));
-@@ -1102,11 +1200,12 @@ AppleCLCD::swap(const uint8_t *rec)
+@@ -1102,11 +1201,12 @@ AppleCLCD::swap(const uint8_t *rec)
  	 * vsync, 8 ms at most). Held two ticks, the two surfaces CoreAnimation draws into paced it
  	 * to 20 frames a second.
  	 */
@@ -227,7 +228,7 @@ index 63147d8..638e105 100644
  		IOLockLock(fLock);
  		SweetSurface *dropped[4];
  		memcpy(dropped, fPendHold, sizeof(dropped));
-@@ -1115,10 +1214,37 @@ AppleCLCD::swap(const uint8_t *rec)
+@@ -1115,10 +1215,37 @@ AppleCLCD::swap(const uint8_t *rec)
  		IOLockUnlock(fLock);
  		sweet_hold_set(dropped, false);
  		uint64_t t0 = mach_absolute_time(), ns = 0;
@@ -267,7 +268,7 @@ index 63147d8..638e105 100644
  		return;
  	}
  	if (directEligible(rec, held) && fQLock != NULL) {
-@@ -1213,6 +1339,7 @@ AppleCLCD::showDirect(const uint8_t *rec, SweetSurface **heldIn)
+@@ -1213,6 +1340,7 @@ AppleCLCD::showDirect(const uint8_t *rec, SweetSurface **heldIn)
  		}
  		absolutetime_to_nanoseconds(mach_absolute_time() - waited, &wns);
  		sweet_fps_wait_ns += wns;
@@ -275,7 +276,7 @@ index 63147d8..638e105 100644
  		IOLockLock(fLock);
  		memcpy(shown, fShowHold, sizeof(shown));
  		memcpy(retired, fRetireHold, sizeof(retired));
-@@ -1248,6 +1375,9 @@ AppleCLCD::showPending(const uint8_t *rec, SweetSurface **heldIn)
+@@ -1248,6 +1376,9 @@ AppleCLCD::showPending(const uint8_t *rec, SweetSurface **heldIn)
  void
  AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
  {
@@ -285,7 +286,7 @@ index 63147d8..638e105 100644
  	fVig0[0x14 / 4] = (uint32_t)pa;
  	fVig0[0x24 / 4] = stride;
  	__asm__ volatile("dsb sy" ::: "memory");
-@@ -1257,6 +1387,92 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+@@ -1257,6 +1388,92 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
  	fScanStride = stride;
  }
  
@@ -378,7 +379,7 @@ index 63147d8..638e105 100644
  /*
   * DCS long write through the DSI command DMA path (topaz-woa: the TPG FIFO
   * path is a no-op on this DSI 2.4.1). The packet lives in a contiguous
-@@ -1577,6 +1793,28 @@ AppleCLCD::directPresent(const uint8_t *rec)
+@@ -1577,6 +1794,28 @@ AppleCLCD::directPresent(const uint8_t *rec)
  	}
  	bool ok = false;
  	(void)topaz_surface_drawn(s, 100);
@@ -407,7 +408,7 @@ index 63147d8..638e105 100644
  	if (s->scanoutPhys != 0 && s->bytesPerElement == 4 &&
  	    s->width >= fWidth && s->height >= fHeight) {
  		/* full-screen surface: panel window at the logical offset */
-@@ -1623,7 +1861,8 @@ AppleCLCD::directPresent(const uint8_t *rec)
+@@ -1623,7 +1862,8 @@ AppleCLCD::directPresent(const uint8_t *rec)
  	return ok;
  }
  
@@ -417,7 +418,7 @@ index 63147d8..638e105 100644
  AppleCLCD::present(const uint8_t *rec)
  {
  	uint32_t mask = get32(rec, 0x104);
-@@ -1636,7 +1875,7 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1636,7 +1876,7 @@ AppleCLCD::present(const uint8_t *rec)
  	}
  	if (console_only > 0 && fConsShown) {
  		(void)mask;
@@ -426,7 +427,7 @@ index 63147d8..638e105 100644
  	}
  	fConsShown = false;
  	if (directPresent(rec)) {
-@@ -1647,7 +1886,7 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1647,7 +1887,7 @@ AppleCLCD::present(const uint8_t *rec)
  				sweet_console_muted = 1;
  			}
  		}
@@ -435,7 +436,7 @@ index 63147d8..638e105 100644
  	}
  	IOLockLock(fLock);
  	fLastVA = NULL;
-@@ -1778,6 +2017,7 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1778,6 +2018,7 @@ AppleCLCD::present(const uint8_t *rec)
  	if (fFlipVA[0] != NULL) {
  		flipBack();
  	}
@@ -443,7 +444,7 @@ index 63147d8..638e105 100644
  }
  
  bool
-@@ -1959,6 +2199,11 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -1959,6 +2200,11 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
  		}
  		break;
  	case kSweetFBSwapWait:
