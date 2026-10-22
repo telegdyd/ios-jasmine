@@ -510,3 +510,25 @@ Boot-args of these images: `sweetgpu=4 gpumhz=266 sweetwdt=20 sweetgpu_debug=0 g
 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib`; `sweetgpu_bulk=0` turns j0037 off.
 Open: why ~57 submits per frame (Mesa batches per render target, libsweetca's readbacks); GPU clock 266 MHz and the
 DDR vote (sailfish 0144/0146/0147/0164 did these on MSM8996; SDM660 needs its own values).
+
+#### Speed with 8 cores (2026-10-22 18:18 to 18:28): the Silver cores slow the UI down
+
+Same kernel (j51, 4K pages + AMP, CI `39807738178`, Gold 1747 MHz, GPU 266 MHz, libsweetca), same boot-args, the
+user swiping home pages and scrolling Settings for ~2 min each; only `cpus=` differs.
+
+| round | cores | frame interval while moving (100-flush averages) | glFinish | submits / 10 s | one whole-cache flush |
+|---|---|---|---|---|---|
+| s3 h (05:00, 16K kernel) | 4 Gold | 60-113 ms | 1-5 ms | ~6500 | 0.42 ms |
+| `j51-swipe` 18:18 (`logs/netlog-j51-swipe.txt`) | 8 (4 Gold + 4 Silver) | **131-239 ms** | 1.7-4 ms | 1650-4200 | 0.61-0.73 ms |
+| `j51c4` 18:22 (`logs/netlog-j51c4-swipe.txt`, image `shim-boot-j51c4-osm.img`) | 4 Gold (`cpus=4`) | **54-100 ms** (bursts 17-30 ms) | 0.5-3.7 ms | 3000-7700 | 0.42 ms |
+
+- The 4K-page kernel itself costs nothing: with 4 Gold cores it matches the 16K round h.
+- With 8 cores frames take ~2x as long. Cause (XNU `sched_clutch.c`): without CLPC every thread group prefers
+  pset0 (Gold) for all QoS buckets, and `sched_edge_cpu_init_completed` lets P->E migrate and steal (weight 64),
+  so whenever Gold is busy (SpringBoard + backboardd + Mesa) runnable UI threads, backboardd's render thread
+  included, run on an idle Silver A53 (in-order, 1382 MHz), which is several times slower per thread; nothing
+  pulls them back quickly. The whole-cache flush also reaches 8 CPUs (0.42 -> ~0.7 ms, ~55 per frame).
+- Fix (next): a CLPC stand-in in the kernel: UI buckets (FIXPRI, FG, IN) prefer Gold and are not stolen by Silver,
+  DF/UT/BG prefer Silver (logd, mds, etc. off the Gold cores), Silver only takes UI work when Gold is overloaded.
+  Then GPU buffers write-combined (no cache maintenance at all, as msm/freedreno) and fewer submits per frame.
+  Until then `cpus=4` is the faster setting for the UI.
