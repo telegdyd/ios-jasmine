@@ -1,6 +1,6 @@
-From 1b10309be228e8ce0a0a41f18cc325ab200d8b5b Mon Sep 17 00:00:00 2001
+From 54db9ffe5efe0e3d5d49b848d268b889f9f1efd6 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 03:48:51 +0200
+Date: Thu, 22 Oct 2026 03:51:18 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1946 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1954 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  451 ++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   97 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5676 insertions(+), 1 deletion(-)
+ 20 files changed, 5684 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1277,10 +1277,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..9c963e6
+index 0000000..b85b5c8
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1946 @@
+@@ -0,0 +1,1954 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2762,6 +2762,14 @@ index 0000000..9c963e6
 +   } else {
 +      copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
 +   }
++   /* An IOSurface texture has one level. With GL's default MIN_FILTER (a mipmap
++    * filter) it is incomplete and samples as (0,0,0,1) unless CA sets a filter,
++    * which it does not always do (Apple's are complete as they are; the same cause
++    * as step 2's black corners). CA's own TexParameter calls come later and win. */
++   GLint minf = 0;
++   glGetTexParameteriv(t, GL_TEXTURE_MIN_FILTER, &minf);
++   if (minf != GL_NEAREST && minf != GL_LINEAR)
++      glTexParameteri(t, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 +   if (trace_on && logged++ < 80)
 +      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, flip %d)", why,
 +              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, flip);

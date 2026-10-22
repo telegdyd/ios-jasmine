@@ -1479,6 +1479,14 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    } else {
       copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
    }
+   /* An IOSurface texture has one level. With GL's default MIN_FILTER (a mipmap
+    * filter) it is incomplete and samples as (0,0,0,1) unless CA sets a filter,
+    * which it does not always do (Apple's are complete as they are; the same cause
+    * as step 2's black corners). CA's own TexParameter calls come later and win. */
+   GLint minf = 0;
+   glGetTexParameteriv(t, GL_TEXTURE_MIN_FILTER, &minf);
+   if (minf != GL_NEAREST && minf != GL_LINEAR)
+      glTexParameteri(t, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
    if (trace_on && logged++ < 80)
       sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, flip %d)", why,
               IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, flip);
