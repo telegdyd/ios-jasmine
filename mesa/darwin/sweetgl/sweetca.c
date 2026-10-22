@@ -109,6 +109,8 @@ struct sca_ctx {
    GLuint bind2d[UNITS], bindrect[UNITS], held[UNITS];
    int fbfetch_unit;
    GLuint fb_sampler;                  /* on fbfetch_unit: nearest, level 0 only */
+   GLuint readback_fbo;                /* ours, for writing shadow targets back */
+   GLuint shadows[64];                 /* textures standing in for render-target surfaces */
    GLuint program, fbo;
    GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
    uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
@@ -120,6 +122,8 @@ struct sca_ctx {
 static void copy_forget(struct sca_ctx *c, GLuint tex);
 static void copy_refresh(struct sca_ctx *c, int u, GLuint tex);
 static void copy_mipped(struct sca_ctx *c, GLuint tex);
+static void shadow_drawn(struct sca_ctx *c);
+static void shadow_write_back(struct sca_ctx *c);
 
 static struct sca_ctx *ctxs[MAX_CTX];
 static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -233,6 +237,18 @@ WV(598, AttachShader, (GLuint p, GLuint s), (p, s))
 WV(602, Uniform1f, (GLint l, GLfloat a), (l, a))
 WV(605, Uniform4f, (GLint l, GLfloat a, GLfloat b, GLfloat cc, GLfloat d), (l, a, b, cc, d))
 WV(606, Uniform1i, (GLint l, GLint a), (l, a))
+WV(603, Uniform2f, (GLint l, GLfloat a, GLfloat b), (l, a, b))
+WV(604, Uniform3f, (GLint l, GLfloat a, GLfloat b, GLfloat cc), (l, a, b, cc))
+WV(607, Uniform2i, (GLint l, GLint a, GLint b), (l, a, b))
+WV(608, Uniform3i, (GLint l, GLint a, GLint b, GLint cc), (l, a, b, cc))
+WV(609, Uniform4i, (GLint l, GLint a, GLint b, GLint cc, GLint d), (l, a, b, cc, d))
+WV(610, Uniform1fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
+WV(611, Uniform2fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
+WV(614, Uniform1iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+WV(615, Uniform2iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+WV(616, Uniform3iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+WV(617, Uniform4iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+WV(618, UniformMatrix2fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v), (l, n, t, v))
 WV(612, Uniform3fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
 WV(613, Uniform4fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
 WV(619, UniformMatrix3fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v), (l, n, t, v))
@@ -366,6 +382,7 @@ w_Flush(void *rctx)
    CUR(rctx);
    (void)c;
    double t = now_ms();
+   shadow_write_back(c);
    glFinish();
    flush_stats(now_ms() - t);
    if (trace_on && traced++ < 20)
@@ -377,7 +394,7 @@ static void
 w_Finish(void *rctx)
 {
    CUR(rctx);
-   (void)c;
+   shadow_write_back(c);
    glFinish();
    POST(89);
 }
@@ -1077,6 +1094,7 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    n_draws++;
    trace_draw(c, mode, count);
    glDrawArrays(mode, first, count);
+   shadow_drawn(c);
    POST(65);
 }
 
@@ -1088,6 +1106,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    n_draws++;
    trace_draw(c, mode, count);
    glDrawElements(mode, count, type, indices);
+   shadow_drawn(c);
    POST(67);
 }
 
@@ -1098,6 +1117,7 @@ w_Clear(void *rctx, GLbitfield mask)
    (void)c;
    n_clears++;
    glClear(mask);
+   shadow_drawn(c);
    POST(10);
 }
 
@@ -1254,6 +1274,7 @@ struct sca_copy {
    struct surf_fmt f;
    size_t w, h, pitch, bpe;
    bool flip, mipped;
+   bool target, dirty; /* a shadow render target: written back to the surface after draws */
 };
 
 static unsigned n_refreshes;
@@ -1277,7 +1298,7 @@ copy_note(struct sca_ctx *c, GLuint tex, IOSurfaceRef s, uint32_t seed, const st
    if (!k)
       return;
    CFRetain(s);
-   *k = (struct sca_copy){s, seed, *f, w, h, pitch, bpe, flip, false};
+   *k = (struct sca_copy){s, seed, *f, w, h, pitch, bpe, flip, false, false, false};
    c->copies[tex] = k;
 }
 
@@ -1293,7 +1314,7 @@ copy_refresh(struct sca_ctx *c, int u, GLuint tex)
 {
    struct sca_copy *k = c->copies[tex];
    uint32_t seed = IOSurfaceGetSeed(k->s);
-   if (seed == k->seed)
+   if (seed == k->seed || k->dirty)
       return;
    k->seed = seed;
    int active = c->active;
@@ -1307,6 +1328,100 @@ copy_refresh(struct sca_ctx *c, int u, GLuint tex)
    if (n_refreshes++ < 20 || n_refreshes % 1000 == 0)
       sca_log("sweetca: surface %u changed (seed %u): copied again, %u refreshes so far", IOSurfaceGetID(k->s),
               seed, n_refreshes);
+}
+
+/*
+ * Render targets the GPU cannot use in place (CA's offscreen surfaces come with rows
+ * of 92 or 4512 bytes, the a5xx wants multiples of 64): a texture of the same size
+ * stands in for the surface, filled from it, and the draws are written back into the
+ * surface before CA flushes or finishes, so other processes and the display see them.
+ */
+static void
+shadow_drawn(struct sca_ctx *c)
+{
+   GLuint t = c->fbo && c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
+   if (t && t < TEXMAX && c->copies[t] && c->copies[t]->target)
+      c->copies[t]->dirty = true;
+}
+
+static void
+shadow_write_back(struct sca_ctx *c)
+{
+   static unsigned told;
+   GLint prev = -1;
+   for (int i = 0; i < 64; i++) {
+      GLuint tex = c->shadows[i];
+      struct sca_copy *k = tex ? c->copies[tex] : NULL;
+      if (tex && (!k || !k->target)) {
+         c->shadows[i] = 0; /* forgotten meanwhile */
+         continue;
+      }
+      if (!k || !k->dirty)
+         continue;
+      k->dirty = false;
+      if (k->bpe != 4 || k->pitch % 4 != 0 || IOSurfaceLock(k->s, 0, NULL) != 0)
+         continue;
+      if (prev < 0)
+         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev);
+      if (!c->readback_fbo)
+         glGenFramebuffers(1, &c->readback_fbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, c->readback_fbo);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+      GLint row = 0, align = 4;
+      glGetIntegerv(GL_PACK_ROW_LENGTH, &row);
+      glGetIntegerv(GL_PACK_ALIGNMENT, &align);
+      glPixelStorei(GL_PACK_ROW_LENGTH, (GLint)(k->pitch / 4));
+      glPixelStorei(GL_PACK_ALIGNMENT, 1);
+      glReadPixels(0, 0, (GLsizei)k->w, (GLsizei)k->h, k->f.gl_format, k->f.gl_type, IOSurfaceGetBaseAddress(k->s));
+      GLenum e = glGetError();
+      glPixelStorei(GL_PACK_ROW_LENGTH, row);
+      glPixelStorei(GL_PACK_ALIGNMENT, align);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+      IOSurfaceUnlock(k->s, 0, NULL);
+      k->seed = IOSurfaceGetSeed(k->s);
+      if (told++ < 20 || e != GL_NO_ERROR)
+         sca_log("sweetca: shadow target tex %u written back to surface %u (%zux%zu pitch %zu): GL error %#x", tex,
+                 IOSurfaceGetID(k->s), k->w, k->h, k->pitch, e);
+   }
+   if (prev >= 0)
+      glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prev);
+}
+
+static bool
+shadow_target(struct sca_ctx *c, IOSurfaceRef s, GLenum target)
+{
+   size_t w = IOSurfaceGetWidth(s), h = IOSurfaceGetHeight(s), pitch = IOSurfaceGetBytesPerRow(s),
+          bpe = IOSurfaceGetBytesPerElement(s);
+   struct surf_fmt f;
+   if (IOSurfaceGetPlaneCount(s) > 1 || bpe != 4 || !fmt_from_surface(IOSurfaceGetPixelFormat(s), bpe, &f))
+      return false;
+   GLenum t = tgt(c, target);
+   set_swizzle(c, t, f.swz, f.swizzled);
+   uint32_t seed = IOSurfaceGetSeed(s);
+   if (!copy_surface(c, s, t, &f, w, h, pitch, bpe, false))
+      return false;
+   GLuint tex = c->held[c->active];
+   copy_note(c, tex, s, seed, &f, w, h, pitch, bpe, false);
+   if (!tex || tex >= TEXMAX || !c->copies[tex])
+      return false;
+   c->copies[tex]->target = true;
+   int slot = -1;
+   for (int i = 0; i < 64; i++) {
+      if (c->shadows[i] == tex) {
+         slot = i;
+         break;
+      }
+      if (slot < 0 && c->shadows[i] == 0)
+         slot = i;
+   }
+   if (slot < 0) {
+      sca_log("sweetca: too many shadow targets, surface %u not written back", IOSurfaceGetID(s));
+      return true;
+   }
+   c->shadows[slot] = tex;
+   sca_log("sweetca: attachImage: surface %u %zux%zu pitch %zu: shadow target tex %u", IOSurfaceGetID(s), w, h,
+           pitch, tex);
+   return true;
 }
 
 /* the surface's memory as the storage of the texture bound to target */
@@ -1474,9 +1589,21 @@ fill_dispatch(void **d)
    S(600, w_UseProgram);
    S(602, w_Uniform1f);
    S(605, w_Uniform4f);
+   S(603, w_Uniform2f);
+   S(604, w_Uniform3f);
    S(606, w_Uniform1i);
+   S(607, w_Uniform2i);
+   S(608, w_Uniform3i);
+   S(609, w_Uniform4i);
+   S(610, w_Uniform1fv);
+   S(611, w_Uniform2fv);
    S(612, w_Uniform3fv);
    S(613, w_Uniform4fv);
+   S(614, w_Uniform1iv);
+   S(615, w_Uniform2iv);
+   S(616, w_Uniform3iv);
+   S(617, w_Uniform4iv);
+   S(618, w_UniformMatrix2fv);
    S(619, w_UniformMatrix3fv);
    S(620, w_UniformMatrix4fv);
    S(625, w_GetUniformLocation);
@@ -1657,7 +1784,8 @@ m_attach(id self, SEL cmd, NSUInteger target, IOSurfaceRef s, BOOL inverted)
    static int told;
    if (told++ < 4)
       sca_log("sweetca: attachImage surface %u invertedRender %d", IOSurfaceGetID(s), inverted);
-   return bind_surface(c, s, (GLenum)target, 0, 0, 0, false, "attachImage");
+   return bind_surface(c, s, (GLenum)target, 0, 0, 0, false, "attachImage") ||
+          shadow_target(c, s, (GLenum)target);
 }
 
 static BOOL
