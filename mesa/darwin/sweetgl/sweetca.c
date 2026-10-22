@@ -875,6 +875,17 @@ w_ShaderSource(void *rctx, GLuint shader, GLsizei count, const GLchar *const *st
       free(src);
       src = out;
    }
+   if (flip_mode >= 5 && strstr(src, "mix(s1, d0, s0.a)")) {
+      static const char *const alt[] = {"vec4(s0.a, s0.a, s0.a, 1.0)", "d0", "s1", "vec4(s0.r, s0.r, s0.r, 1.0)"};
+      const char *hit = strstr(src, "mix(s1, d0, s0.a)");
+      const char *rep = alt[(flip_mode - 5) % 4];
+      char *out = malloc(strlen(src) + strlen(rep) + 1);
+      memcpy(out, src, hit - src);
+      strcpy(out + (hit - src), rep);
+      strcat(out, hit + strlen("mix(s1, d0, s0.a)"));
+      free(src);
+      src = out;
+   }
    if (shader < OBJMAX) {
       c->obj[shader].flags = flags;
       snprintf(c->obj[shader].rect_sampler, sizeof(c->obj[shader].rect_sampler), "%s", rect_sampler);
@@ -1006,7 +1017,7 @@ draw_prep(struct sca_ctx *c)
       texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
 
    GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
-   if (p && (p->flags & OBJ_FBFETCH) && fbtex && (getenv("SWEETCA_DIAG") || flip_mode == 4)) {
+   if (p && (p->flags & OBJ_FBFETCH) && fbtex && flip_mode == 4) {
       /* character map of the 68x68 texture on unit 1: b background, 0 black, ? other */
       GLuint t1 = c->held[1], tmp = 0;
       static int done;
@@ -1079,14 +1090,20 @@ static void
 diag_dump(struct sca_ctx *c, const char *what)
 {
    static unsigned shown;
-   if (!getenv("SWEETCA_DIAG") && flip_mode != 4)
+   static int mode_seen = -1;
+   if (mode_seen != flip_mode) {
+      mode_seen = flip_mode;
+      shown = 0;
+   }
+   if (!getenv("SWEETCA_DIAG") && flip_mode < 4)
       return;
-   if (shown >= 16 || c->fbo != 1)
+   if (shown >= 11 || c->fbo != 1)
       return;
-   shown++;
-   char buf[400];
+   if (++shown < 9)
+      return;
+   char buf[800];
    size_t l = 0;
-   for (int k = 0; k < 40; k += 4) {
+   for (int k = 0; k < 40; k += 2) {
       uint8_t p[4] = {0}, q[4] = {0};
       glReadPixels(144 + k, 16 + k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p);
       glReadPixels(239 - k, 111 - k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, q);

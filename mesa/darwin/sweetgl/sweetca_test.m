@@ -280,7 +280,7 @@ main(void)
       CHECK(CAR != Nil, "CARenderer class");
       /* modes of libsweetca's handling of IOSurface textures (sweetca_set_flip); a fresh layer tree each,
        * so CA uploads its images again */
-      for (int mode = 4; mode < 5; mode++) {
+      for (int mode = 5; mode < 9; mode++) {
          sweetca_set_flip(mode);
          /* the layer tree, drawn by CA on the CPU as the reference */
          CALayer *root = make_tree();

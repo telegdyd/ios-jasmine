@@ -1,6 +1,6 @@
-From f7371fc4f168ee6807ba7512941f51269c7ad4a9 Mon Sep 17 00:00:00 2001
+From 7267928da264d13eec8b0a4f5673c9f4a474ce1b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 02:35:21 +0200
+Date: Thu, 22 Oct 2026 02:42:23 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1719 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1736 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 ++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5452 insertions(+), 1 deletion(-)
+ 20 files changed, 5469 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..765736d
+index 0000000..00bce09
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1719 @@
+@@ -0,0 +1,1736 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2164,6 +2164,17 @@ index 0000000..765736d
 +      free(src);
 +      src = out;
 +   }
++   if (flip_mode >= 5 && strstr(src, "mix(s1, d0, s0.a)")) {
++      static const char *const alt[] = {"vec4(s0.a, s0.a, s0.a, 1.0)", "d0", "s1", "vec4(s0.r, s0.r, s0.r, 1.0)"};
++      const char *hit = strstr(src, "mix(s1, d0, s0.a)");
++      const char *rep = alt[(flip_mode - 5) % 4];
++      char *out = malloc(strlen(src) + strlen(rep) + 1);
++      memcpy(out, src, hit - src);
++      strcpy(out + (hit - src), rep);
++      strcat(out, hit + strlen("mix(s1, d0, s0.a)"));
++      free(src);
++      src = out;
++   }
 +   if (shader < OBJMAX) {
 +      c->obj[shader].flags = flags;
 +      snprintf(c->obj[shader].rect_sampler, sizeof(c->obj[shader].rect_sampler), "%s", rect_sampler);
@@ -2295,7 +2306,7 @@ index 0000000..765736d
 +      texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
 +
 +   GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
-+   if (p && (p->flags & OBJ_FBFETCH) && fbtex && (getenv("SWEETCA_DIAG") || flip_mode == 4)) {
++   if (p && (p->flags & OBJ_FBFETCH) && fbtex && flip_mode == 4) {
 +      /* character map of the 68x68 texture on unit 1: b background, 0 black, ? other */
 +      GLuint t1 = c->held[1], tmp = 0;
 +      static int done;
@@ -2368,14 +2379,20 @@ index 0000000..765736d
 +diag_dump(struct sca_ctx *c, const char *what)
 +{
 +   static unsigned shown;
-+   if (!getenv("SWEETCA_DIAG") && flip_mode != 4)
++   static int mode_seen = -1;
++   if (mode_seen != flip_mode) {
++      mode_seen = flip_mode;
++      shown = 0;
++   }
++   if (!getenv("SWEETCA_DIAG") && flip_mode < 4)
 +      return;
-+   if (shown >= 16 || c->fbo != 1)
++   if (shown >= 11 || c->fbo != 1)
 +      return;
-+   shown++;
-+   char buf[400];
++   if (++shown < 9)
++      return;
++   char buf[800];
 +   size_t l = 0;
-+   for (int k = 0; k < 40; k += 4) {
++   for (int k = 0; k < 40; k += 2) {
 +      uint8_t p[4] = {0}, q[4] = {0};
 +      glReadPixels(144 + k, 16 + k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p);
 +      glReadPixels(239 - k, 111 - k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, q);
