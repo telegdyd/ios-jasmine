@@ -1,0 +1,224 @@
+From a8360bef28fc965ef1a7c153435523272d795c2c Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 05:21:16 +0200
+Subject: [PATCH] jasmine-j0039: OSM/CPRh read-only probe (sweetosm=1)
+
+First step of the Gold clock done properly (jasmine/HANDOFF-CPUCLK.md
+phase 1). With sweetosm=1 the platform expert logs, before sweetgold=
+changes anything: the CPR fuse rows 36..72 (QFPROM 0x784000, the rows
+the downstream SDM660 CPRh tables name; input for
+tools/cpuclk/cpuclk_model.py), the OSM block of both clusters (control,
+LUT, LMh request, counters), the Gold CPRh controller (apc1), APM, APCS
+common, the Gold L2 SAW4, the LMh blocks and the GCC HMSS clocks,
+all-zero lines left out. The OSM sequencer registers and program memory
+are TrustZone's on stock, so they are read through TZ's IO read call
+(SCM svc 5 cmd 1). Nothing is written.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
+ osfmk/arm64/sweet_osm.c                  | 158 +++++++++++++++++++++++
+ osfmk/conf/files.arm64                   |   1 +
+ 3 files changed, 162 insertions(+)
+ create mode 100755 osfmk/arm64/sweet_osm.c
+
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index f38c815..3974e2f 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -26,6 +26,8 @@ extern "C" void sweet_gpu_start(void);
+ extern "C" void sweet_wdt_start(void);
+ extern "C" int sweet_pon_bootloader(void);
+ extern "C" uint32_t sweet_gold_clock(void);
++/* osfmk/arm64/sweet_osm.c: Gold clock via OSM + CPRh (sweetosm=) */
++extern "C" void sweet_osm_init(void);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -248,6 +250,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	 * PMIC (RTC, charger, gauge, backlight) and touch before registerService
+ 	 * lets the other drivers start: SweetBattery and AppleCLCD look for them.
+ 	 */
++	sweet_osm_init();               /* sweetosm=: OSM/CPRh probe, before sweetgold changes anything */
+ 	(void)sweet_gold_clock();       /* sweetgold=: Gold cluster off GPLL0, before any disk write */
+ 	bool rtc = sweet_pmic_init() != 0;
+ 	sweet_nvt_init();
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+new file mode 100755
+index 0000000..de49af8
+--- /dev/null
++++ b/osfmk/arm64/sweet_osm.c
+@@ -0,0 +1,158 @@
++/*
++ * Gold cluster clock done properly (jasmine, SDM660): Qualcomm's OSM clock
++ * sequencer with CPRh voltages from this chip's fuses. Plan and rounds:
++ * jasmine/HANDOFF-CPUCLK.md, jasmine/NOTES.md "CPU clock".
++ *
++ * sweetosm=1 (j0039): read-only probe, before sweet_gold_clock() touches
++ * anything. Logs the CPR fuse rows (QFPROM 0x784000 + 8 * row, the rows the
++ * downstream cprh-kbss-regulator.c reads for SDM660), the OSM block (both
++ * clusters), the Gold CPRh controller (apc1), APM, the APCS common block,
++ * the Gold L2 SAW4, the LMh blocks and the GCC CPR/OSM clocks, all-zero
++ * lines left out. The OSM sequencer registers and program memory are
++ * written by TrustZone on stock (msm-4.4 clk-cpu-osm.c uses scm_io_write for
++ * them), so they are read through TrustZone's IO read call (SCM svc 5 cmd 1)
++ * instead of directly. Nothing is written. The fuse lines feed
++ * tools/cpuclk/cpuclk_model.py.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <stdint.h>
++#include <kern/misc_protos.h>
++#include <kern/clock.h>
++#include <arm/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++void sweet_osm_init(void);
++
++#define OSM_BASE        0x179c0000ull   /* pwrcl at +0, perfcl (Gold) at +0x2000 */
++#define CPRH_GOLD       0x179c4000ull   /* cprh-ctrl apc1 */
++#define APCS_APM        0x179d0000ull   /* APM mode ctl +0x4/+0x10, status +0xc/+0x18 */
++#define APCS_COMMON     0x179d1000ull
++#define GOLD_SAW        0x17812000ull   /* APCLUS1_L2_SAW4, PMIC_STS at +0xc18 */
++#define LMH_BLOCK       0x179cc000ull   /* LMh: 0x179cc800 (Gold), 0x179ce800 (Silver) */
++#define GCC_HMSS        0x00148000ull   /* GCC: HMSS RBCPR / GPLL0 clocks */
++#define QFPROM_CORR     0x00784000ull
++
++/* SMCCC fast SMC64 to TrustZone: SCM_SIP_FNID(svc, cmd) | atomic | SMC64, as msm-4.4 scm_call2_atomic */
++#define SCM_FAST_FN(svc, cmd)   (0xc2000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
++#define SCM_SVC_IO              0x05
++#define SCM_IO_READ             0x01
++
++static uint64_t
++osm_scm1(uint32_t fn, uint64_t a, uint64_t *res1)
++{
++	register uint64_t x0 __asm__("x0") = fn, x1 __asm__("x1") = 1 /* arginfo: 1 value arg */,
++	    x2 __asm__("x2") = a, x3 __asm__("x3") = 0, x4 __asm__("x4") = 0, x5 __asm__("x5") = 0,
++	    x6 __asm__("x6") = 0, x7 __asm__("x7") = 0;
++	__asm__ volatile ("smc #0"
++            : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
++            :
++            : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
++	*res1 = x1;
++	return x0;
++}
++
++static volatile uint32_t *
++osm_map(uint64_t pa, uint32_t size)
++{
++	return (volatile uint32_t *)ml_io_map((vm_offset_t)pa, size);
++}
++
++/* Words [from, to) of a mapped block, 8 per line, all-zero lines left out */
++static void
++osm_dump(const char *name, uint64_t pa, volatile uint32_t *v, uint32_t from, uint32_t to)
++{
++	uint32_t shown = 0;
++	for (uint32_t off = from; off < to; off += 32) {
++		uint32_t w[8], any = 0;
++		for (int i = 0; i < 8; i++) {
++			w[i] = (off + 4 * i < to) ? v[(off + 4 * i) / 4] : 0;
++			any |= w[i];
++		}
++		if (any) {
++			printf("SWEET OSM: %s %#llx: %08x %08x %08x %08x %08x %08x %08x %08x\n", name, pa + off,
++			    w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++			shown++;
++		}
++	}
++	printf("SWEET OSM: %s %#llx..%#llx: %u non-zero lines\n", name, pa + from, pa + to, shown);
++}
++
++/* Through TrustZone: [from, to) of the OSM block, 8 per line; the first failed read stops it */
++static void
++osm_dump_tz(const char *name, uint64_t pa, uint32_t from, uint32_t to)
++{
++	uint32_t shown = 0;
++	for (uint32_t off = from; off < to; off += 32) {
++		uint32_t w[8], any = 0;
++		for (int i = 0; i < 8; i++) {
++			uint64_t r = 0, st = osm_scm1(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_READ), pa + off + 4 * i, &r);
++			if (st != 0) {
++				printf("SWEET OSM: %s: TZ IO read of %#llx refused (%#llx); %u lines before\n", name,
++				    pa + off + 4 * i, st, shown);
++				return;
++			}
++			w[i] = (uint32_t)r;
++			any |= w[i];
++		}
++		if (any) {
++			printf("SWEET OSM: %s %#llx: %08x %08x %08x %08x %08x %08x %08x %08x\n", name, pa + off,
++			    w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++			shown++;
++		}
++	}
++	printf("SWEET OSM: %s %#llx..%#llx (via TZ): %u non-zero lines\n", name, pa + from, pa + to, shown);
++}
++
++static void
++osm_probe(void)
++{
++	volatile uint32_t *q = osm_map(QFPROM_CORR, 0x1000);
++	/* rows 36..72: speed bin (38) and every CPR row the SDM660 tables name (65..71) */
++	for (uint32_t row = 36; row <= 72; row++) {
++		uint64_t v = (uint64_t)q[row * 2 + 1] << 32 | q[row * 2];
++		printf("SWEET OSM: fuse %u 0x%016llx\n", row, v);
++	}
++
++	volatile uint32_t *osm = osm_map(OSM_BASE, 0x4000);
++	for (int cl = 0; cl < 2; cl++) {
++		uint32_t b = cl * 0x2000;
++		const char *n = cl ? "osm-gold" : "osm-silver";
++		printf("SWEET OSM: %s: version %#x enable %#x desired %#x pstate %#x wdog pc %#x cc %#x\n", n,
++		    osm[b / 4], osm[(b + 0x1004) / 4], osm[(b + 0x1f10) / 4], osm[(b + 0x1c00) / 4],
++		    osm[(b + 0x1c74) / 4], osm[(b + 0x1f04) / 4]);
++		osm_dump(n, OSM_BASE, osm, b + 0x1000, b + 0x1150);     /* control, FSMs, LLM, SPM */
++		osm_dump(n, OSM_BASE, osm, b + 0x1150, b + 0x1650);     /* LUT: 40 x 32 bytes */
++		osm_dump(n, OSM_BASE, osm, b + 0x1650, b + 0x2000);     /* LMh request 0x1b04, wdog, counters */
++	}
++
++	volatile uint32_t *cpr = osm_map(CPRH_GOLD, 0x4000);
++	osm_dump("cprh-gold", CPRH_GOLD, cpr, 0, 0x1000);              /* CPR3/4 controller, thread 0 */
++	osm_dump("cprh-gold", CPRH_GOLD, cpr, 0x3000, 0x3c00);         /* closed loop, CPRh corners/ctl/status */
++	osm_dump("apm", APCS_APM, osm_map(APCS_APM, 0x1000), 0, 0x40);
++	osm_dump("apcs-common", APCS_COMMON, osm_map(APCS_COMMON, 0x1000), 0, 0x1000);
++	osm_dump("saw-gold", GOLD_SAW, osm_map(GOLD_SAW, 0x1000), 0, 0x1000);
++	volatile uint32_t *lmh = osm_map(LMH_BLOCK, 0x4000);
++	osm_dump("lmh-gold", LMH_BLOCK, lmh, 0x800, 0x900);
++	osm_dump("lmh-silver", LMH_BLOCK, lmh, 0x2800, 0x2900);
++	osm_dump("gcc-hmss", GCC_HMSS, osm_map(GCC_HMSS, 0x1000), 0, 0x100);
++
++	/* last: sequencer registers SEQ_REG(0..127) and program memory, through TrustZone */
++	delay(200000);
++	osm_dump_tz("osm-gold-seq", OSM_BASE, 0x2300, 0x2500);
++	osm_dump_tz("osm-gold-prog", OSM_BASE, 0x2500, 0x2900);
++	osm_dump_tz("osm-silver-seq", OSM_BASE, 0x0300, 0x0500);
++}
++
++void
++sweet_osm_init(void)
++{
++	uint32_t mode = 0;
++	if (!PE_parse_boot_argn("sweetosm", &mode, sizeof(mode)) || mode == 0) {
++		return;
++	}
++	printf("SWEET OSM: sweetosm=%u\n", mode);
++	osm_probe();
++}
++#endif /* SWEET */
+diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
+index e0832af..bc9ea96 100644
+--- a/osfmk/conf/files.arm64
++++ b/osfmk/conf/files.arm64
+@@ -42,6 +42,7 @@ osfmk/arm/arm_init.c	optional config_pmap_ppl
+ osfmk/arm64/arm_vm_init.c	optional config_pmap_ppl
+ osfmk/arm64/sweet_early.c	standard
+ osfmk/arm64/sweet_cpuclk.c	standard
++osfmk/arm64/sweet_osm.c	standard
+ osfmk/arm64/arm64_hypercall.c	standard
+ osfmk/arm/io_map.c		standard
+ osfmk/arm64/loose_ends.c	standard
+-- 
+2.47.3
+
