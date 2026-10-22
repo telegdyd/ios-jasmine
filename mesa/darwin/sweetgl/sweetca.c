@@ -110,6 +110,7 @@ struct sca_ctx {
    int fbfetch_unit;
    GLuint fb_sampler;                  /* on fbfetch_unit: nearest, level 0 only */
    GLuint readback_fbo;                /* ours, for writing shadow targets back */
+   unsigned frame;                     /* glFlush count: CA flushes once per frame */
    GLuint shadows[64];                 /* textures standing in for render-target surfaces */
    GLuint program, fbo;
    GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
@@ -383,6 +384,7 @@ w_Flush(void *rctx)
    (void)c;
    double t = now_ms();
    shadow_write_back(c);
+   c->frame++;
    glFinish();
    flush_stats(now_ms() - t);
    if (trace_on && traced++ < 20)
@@ -1264,9 +1266,10 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
 
 /*
  * A copied surface is a snapshot, but its owner keeps drawing into it (SpringBoard's
- * text and widgets arrive empty and are filled later; CA binds each surface once):
- * keep what is needed to copy it again, and do so before a draw that samples it
- * once the surface's seed (bumped by every write lock) has moved.
+ * text and widgets arrive empty and are filled later; CA binds each surface once).
+ * Its owners write without IOSurfaceLock, so the seed does not move (round s3-c):
+ * copy it again before the first draw of each frame that samples it. Shadow render
+ * targets are ours and only taken again when someone else locked them for writing.
  */
 struct sca_copy {
    IOSurfaceRef s;
@@ -1275,6 +1278,7 @@ struct sca_copy {
    size_t w, h, pitch, bpe;
    bool flip, mipped;
    bool target, dirty; /* a shadow render target: written back to the surface after draws */
+   unsigned frame;     /* c->frame when last copied */
 };
 
 static unsigned n_refreshes;
@@ -1298,7 +1302,7 @@ copy_note(struct sca_ctx *c, GLuint tex, IOSurfaceRef s, uint32_t seed, const st
    if (!k)
       return;
    CFRetain(s);
-   *k = (struct sca_copy){s, seed, *f, w, h, pitch, bpe, flip, false, false, false};
+   *k = (struct sca_copy){s, seed, *f, w, h, pitch, bpe, flip, false, false, false, c->frame};
    c->copies[tex] = k;
 }
 
@@ -1314,9 +1318,10 @@ copy_refresh(struct sca_ctx *c, int u, GLuint tex)
 {
    struct sca_copy *k = c->copies[tex];
    uint32_t seed = IOSurfaceGetSeed(k->s);
-   if (seed == k->seed || k->dirty)
+   if (k->dirty || (k->target ? seed == k->seed : k->frame == c->frame))
       return;
    k->seed = seed;
+   k->frame = c->frame;
    int active = c->active;
    glActiveTexture(GL_TEXTURE0 + u);
    c->active = u;
@@ -1325,9 +1330,9 @@ copy_refresh(struct sca_ctx *c, int u, GLuint tex)
       glGenerateMipmap(GL_TEXTURE_2D);
    c->active = active;
    glActiveTexture(GL_TEXTURE0 + active);
-   if (n_refreshes++ < 20 || n_refreshes % 1000 == 0)
-      sca_log("sweetca: surface %u changed (seed %u): copied again, %u refreshes so far", IOSurfaceGetID(k->s),
-              seed, n_refreshes);
+   if (n_refreshes++ < 5 || n_refreshes % 1000 == 0)
+      sca_log("sweetca: surface %u (%zux%zu) copied again in frame %u, %u copies so far", IOSurfaceGetID(k->s),
+              k->w, k->h, c->frame, n_refreshes);
 }
 
 /*
@@ -1452,8 +1457,12 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    uint32_t seed = IOSurfaceGetSeed(s);
    bool done = false;
    const char *how = "in place";
-   if (pitch % 64 == 0 && !flip)
-      done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, f.f);
+   /* client memory may start inside its page (64, 4096... bytes in, round s3-c): the
+    * GPU takes it in place there when the start is 64-byte aligned (texture bases
+    * need 32, render targets more); our mapping of it begins at the page */
+   size_t offset = (uintptr_t)IOSurfaceGetBaseAddress(s) & vm_page_mask;
+   if (pitch % 64 == 0 && offset % 64 == 0 && !flip)
+      done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, (unsigned)offset, f.f);
    if (!done && format) {
       how = "copied";
       done = copy_surface(c, s, t, &f, w, h, pitch, bpe, flip);

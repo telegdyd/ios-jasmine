@@ -125,15 +125,9 @@ darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id)
       ERROR_MSG("IOSurface %d not imported: 0x%x", iosurface_id, ret);
       return NULL;
    }
-   if (out[3]) {
-      /* wrapped client memory that starts inside its first page */
-      ERROR_MSG("IOSurface %d starts %u bytes into its buffer: not supported yet",
-                iosurface_id, (unsigned)out[3]);
-      uint64_t handle = out[0];
-      IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_BUFFER_FREE, &handle, 1,
-                                NULL, NULL);
-      return NULL;
-   }
+   /* out[3]: wrapped client memory that starts inside its first page. The buffer
+    * covers the whole pages; the importer puts the resource at that offset
+    * (winsys_handle.offset, which freedreno's layout takes as slice 0's offset). */
    /* one handle per surface: the device's handle table finds a second import */
    return fd_bo_from_handle(dev, (uint32_t)out[0], (uint32_t)out[2]);
 }

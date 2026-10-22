@@ -76,11 +76,13 @@ enum sgl_format {
  * resource is kept per (surface, size, pitch, format) and shared by every
  * texture and render target made from it, so work that renders into a surface
  * and work that samples it are ordered by Mesa (two resources over the same
- * memory would not be). Fails if the GPU cannot use the surface in place.
+ * memory would not be). offset: where the pixels start in the surface's GPU
+ * buffer (client memory that begins inside its first page). Fails if the GPU
+ * cannot use the surface in place.
  */
 bool sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
                                  unsigned width, unsigned height, unsigned bytes_per_row,
-                                 enum sgl_format format);
+                                 unsigned offset, enum sgl_format format);
 
 /* GL_NV_texture_barrier on the current context: later draws see earlier draws' pixels */
 void sgl_texture_barrier(void);

@@ -260,8 +260,8 @@ sgl_iosurface_format(uint32_t pixel_format)
 /* a texture around an IOSurface: on Darwin an FD handle carries the IOSurface id */
 static struct pipe_resource *
 sgl_import_iosurface(struct sgl_display *dpy, uint32_t iosurface_id, unsigned width,
-                     unsigned height, unsigned bytes_per_row, enum pipe_format format,
-                     unsigned bind)
+                     unsigned height, unsigned bytes_per_row, unsigned offset,
+                     enum pipe_format format, unsigned bind)
 {
    struct pipe_screen *screen = dpy->fscreen.screen;
    struct pipe_resource templ = {
@@ -277,6 +277,7 @@ sgl_import_iosurface(struct sgl_display *dpy, uint32_t iosurface_id, unsigned wi
       .type = WINSYS_HANDLE_TYPE_FD,
       .handle = iosurface_id,
       .stride = bytes_per_row,
+      .offset = offset,
       .modifier = DRM_FORMAT_MOD_LINEAR,
    };
    struct pipe_resource *res =
@@ -297,7 +298,7 @@ sgl_surface_create_iosurface(struct sgl_display *dpy, uint32_t iosurface_id, uns
       fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
       return NULL;
    }
-   struct pipe_resource *color = sgl_import_iosurface(dpy, iosurface_id, width, height,
+   struct pipe_resource *color = sgl_import_iosurface(dpy, iosurface_id, width, height, 0,
                                                       bytes_per_row, format,
                                                       PIPE_BIND_RENDER_TARGET |
                                                       PIPE_BIND_SAMPLER_VIEW);
@@ -349,7 +350,7 @@ static simple_mtx_t sgl_import_lock = SIMPLE_MTX_INITIALIZER;
 /* a new reference to the shared resource of the surface, imported if needed */
 static struct pipe_resource *
 sgl_import_cached(struct sgl_display *dpy, uint32_t id, unsigned width, unsigned height,
-                  unsigned pitch, enum pipe_format format)
+                  unsigned pitch, unsigned offset, enum pipe_format format)
 {
    struct pipe_resource *res = NULL;
    simple_mtx_lock(&sgl_import_lock);
@@ -365,7 +366,7 @@ sgl_import_cached(struct sgl_display *dpy, uint32_t id, unsigned width, unsigned
    if (res)
       return res;
 
-   res = sgl_import_iosurface(dpy, id, width, height, pitch, format,
+   res = sgl_import_iosurface(dpy, id, width, height, pitch, offset, format,
                               PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW);
    if (!res)
       return NULL;
@@ -393,13 +394,13 @@ sgl_import_cached(struct sgl_display *dpy, uint32_t id, unsigned width, unsigned
 bool
 sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
                             unsigned width, unsigned height, unsigned bytes_per_row,
-                            enum sgl_format format)
+                            unsigned offset, enum sgl_format format)
 {
    enum pipe_format pf = sgl_pipe_format(format);
    if (pf == PIPE_FORMAT_NONE)
       return false;
    struct pipe_resource *tex =
-      sgl_import_cached(ctx->dpy, iosurface_id, width, height, bytes_per_row, pf);
+      sgl_import_cached(ctx->dpy, iosurface_id, width, height, bytes_per_row, offset, pf);
    if (!tex)
       return false;
    st_context_teximage(ctx->st, target, 0, pf, tex, false);
@@ -419,7 +420,7 @@ sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t iosur
       fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
       return false;
    }
-   return sgl_tex_image_iosurface_fmt(ctx, target, iosurface_id, width, height, bytes_per_row,
+   return sgl_tex_image_iosurface_fmt(ctx, target, iosurface_id, width, height, bytes_per_row, 0,
                                       format);
 }
 
