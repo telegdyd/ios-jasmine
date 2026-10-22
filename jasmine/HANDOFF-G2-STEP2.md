@@ -134,3 +134,147 @@ and pushed. Partial results (some layer types wrong) are worth recording too: sa
 - When done, or blocked on something only the user can decide, stop and report: what passed, what did not, run IDs,
   log files, and the exact next step (step 3: libsweetca into backboardd via
   `sweetenv=backboardd:DYLD_INSERT_LIBRARIES=...`, which needs the user's OK because the library goes onto the root).
+
+---
+
+# Result of step 2 (2026-10-22 00:18 to 02:16): CA's GLES renderer draws on the Adreno 512, one defect left
+
+Written 2026-10-22 ~02:20 by the agent that did the work. **Not done to the letter**: `sweetca_test` still prints
+`FAIL` (2290 of 65536 pixels differ, 3.5%; the test wants at most 2%). Everything else in §2 works on the phone.
+The user stopped the work at this point so that the next agent (Opus) can take the last defect.
+
+## What exists (all committed and pushed on `jasmine`, last code commit `f39c2f4`, CI Mesa run `39698050816`)
+
+| What | Where |
+| --- | --- |
+| `libsweetca.dylib`: EAGL layer + dispatch + emulations (about 1500 lines of C) | [mesa/darwin/sweetgl/sweetca.c](../mesa/darwin/sweetgl/sweetca.c) |
+| 1036-slot name table and trap generator (names from our iPhone X cache) | `sweetca_slots.inc`, made by [tools/g2/dsc/genslots.py](../tools/g2/dsc/genslots.py); `glislots.py` reads GLEngine's `gliInitDispatchTable` |
+| sweetgl additions: ES 3.1 contexts, `sgl_tex_image_iosurface_fmt` with one cached Mesa resource per IOSurface, `sgl_texture_barrier` | `mesa/darwin/sweetgl/sweetgl.{c,h}` |
+| a5xx 64-byte pitch import (`fd_layout_resource_for_handle`, `__APPLE__` only) | `mesa/darwin/apply.py` |
+| `sweetca_test.m` (ObjC; CI builds it with plain `clang`, Mesa's meson has no ObjC), meson `libsweetca` target | `mesa/darwin/sweetgl/` |
+| One round: CI build + phone run | `bash tools/g2/s2round.sh NAME "message"` (commits, builds, runs on the j33 image, prints the test output) |
+
+Output of each round: `logs/netlog-s2-NAME.txt` (kernel, only k and o kept) and `.tests` (test output). Letters a..o
+are in time order (i3 is the third try of i). **No SMMU fault, hang or panic in any of the 15 rounds.** Debug mode
+(150 ms per kernel log line) makes a render take 7 to 25 s; that is not GPU time.
+
+### How it works (the design is final unless noted)
+
+- A constructor replaces `initWithAPI:properties:`, `initWithAPI:`, `initWithAPI:sharegroup:`, `dealloc`, `API`,
+  `setParameter:to:`, `getMacroContextPrivate`, `texImageIOSurface:...`, `attachImage:...`, `+setCurrentContext:`,
+  `+currentContext` for our contexts (looked up by the EAGL object pointer); all other contexts go to Apple's code.
+- `getMacroContextPrivate` returns `{rctx; disp[1036]}` (our struct). **Slot index = byte offset / 8 in GLEngine's
+  table = (offset - 8) / 8 in the macro struct.** All 60 entries CA calls were checked against GLEngine's own
+  `gliInitDispatchTable` in our cache (they agree); every other slot is a trap that logs its name once and returns 0.
+  No unsupported slot was hit during the test.
+- Environment set before the screen: `FD_MESA_DEBUG=sysmem,nofp16`, `IR3_SHADER_DEBUG=nofp16`.
+- Emulated: rectangle textures (2D + rect bindings per unit, `sampler2DRect` rewrite with a per-draw scale),
+  `gl_LastFragData` (reads the render target's texture on the last unit, texture barrier before the draw),
+  `GL_EXT_shader_framebuffer_fetch` added to the extension string, the undeclared `coord_arg`, Apple ARB handles.
+- QuartzCore texture-function fixes (functions 0x14, 0x26, 0x27, 0x2d): **our iPhone X cache has the same code as
+  sailfish's iPhone 8 cache, 0x4000 higher** (create_shader's first four instructions are identical). Addresses:
+  `tex_fragment_shaders` at `0x1d5b48a10`, create_shader's byte table at `0x18855e1e4` (entry of function 0x11).
+  The library checks both tables and writes nothing otherwise. They install on the phone (log lines
+  `texture function 0x.. = ...: installed`). **The new GLSL for them has not been exercised**: the test layer tree
+  uses none of those functions. Env `SWEETCA_NO_TEXFNS=1` turns the patching off.
+- Exported: `sweetca_installed()`, `sweetca_set_trace(n)` (1: first call of each slot + GL errors; 2: also shader
+  sources, the first 60 draws, texture uploads, copies), `sweetca_set_flip(n)` (now unused).
+
+## What passes on the phone (round o, `logs/netlog-s2-o.txt.tests`)
+
+`[[EAGLContext alloc] initWithAPI:3]` gives our context (`OpenGL ES 3.1 Mesa 26.2.5, FD512`), `-API` is 3,
+`getMacroContextPrivate`, `+setCurrentContext:`/`currentContext` work, a BGRA IOSurface binds as a texture in place
+(no copy) and is the colour attachment of an FBO, `+rendererWithEAGLContext:options:` returns CA's renderer, and
+rendering a 6-layer tree (background, CGImage, rounded masked layer with a child, 50% opacity, rotated sublayer,
+CATextLayer) gives, against `renderInContext:` on the CPU (tolerance 8 per channel):
+
+| Region | Differing pixels |
+| --- | --- |
+| background, opacity layer | 0 |
+| text | 0 |
+| rotated square (edge anti-aliasing) | 144 |
+| image | 826 (quadrant edges and the diagonal, i.e. filtering) |
+| rounded masked layer | **1320, the defect** |
+| total | 2290 of 65536 |
+
+Orientation is right without any flip: memory is top row first, which is what the display wants.
+The test renders into the FBO the test binds itself (CA draws into whatever framebuffer is bound, like an app's);
+`-[CARenderer setDestination:]` is not needed (see the table of tries).
+
+## The remaining defect: black wedge at the four corners of the cornerRadius + masksToBounds layer
+
+Character map of the layer from round o (sampled every 4 px; B black, O orange, R the red child, b background;
+GPU left, CPU right, first rows):
+
+```
+bbbbbbb?RRRRRROOB?bbbbbb | bbbbbbbRRRRRRROOO?bbbbbb
+bbbbBBBRRRRRRROOOBBB?bbb | bbbbRRRRRRRRRROOOOOO?bbb
+bbbBBBRRRRRRRROOOOBBBBbb | bbbRRRRRRRRRRRROOOOOOOObb
+```
+
+The straight edges and the interior are right; between the background and the shape, in the corners, a band about
+12 px wide is opaque black (a=ff) instead of the layer colour (the CPU reference has the layer colour nearly to the arc).
+
+What CA does for this layer (`logs/netlog-s2-l.txt.tests` has the draw trace, `-m` the texture calls):
+
+1. Draws 1, 2: background and image into the framebuffer (fbo 1, texture 1, 256x256).
+2. `glTexImage2D(tex 3, RGBA 68x68, no data)`, then four `glCopyTexSubImage2D` of 34x34 from the framebuffer at the
+   layer's four corners into the quadrants of tex 3 (the backdrop under the corners). **Read back in round n: the
+   copies hold the right colour (214579ff = the background). The copies are fine.**
+3. `glTexImage2D` of tex 4: **LUMINANCE_ALPHA** 256x256 with 9 mip levels, data from the client (the corner/edge
+   coverage mask).
+4. Draws 3 to 8: shader `color * texture2D(texture0, texcoord0_0)` with tex 4 and scissors over the layer's three
+   bands, first with blend off, then on, 48 vertices each.
+5. Draw 10: `mix(s1, d0, s0.a)` with s0 = tex 4, s1 = tex 3 (corner patches), d0 = `gl_LastFragData[0]` (our
+   rewrite reads the framebuffer's own texture), scissor over the whole layer.
+6. Draws 11 to 13: the child layer and the text.
+
+### Hypotheses, in the order I would test them
+
+1. **LUMINANCE_ALPHA upload.** Black is `(0,0,0,1)`: it comes out of `color * s0` if tex 4 samples as `(0,0,0,a)`, or
+   out of draw 10 if s0.a is wrong. Mesa's ES3 context keeps LA as RG with a swizzle; try uploading LA (and
+   LUMINANCE, ALPHA) as RGBA8 with `(L,L,L,A)` converted on the CPU in `w_TexImage2D` / `w_TexSubImage2D`, or read tex 4
+   back through a temporary FBO, as round n did for tex 3.
+2. **Feedback in draw 10**: it samples the framebuffer's texture (`sca_fb`) while rendering into it. The barrier is a
+   `_mesa_TextureBarrierNV` before the draw; freedreno in sysmem may need more (check what `fd_texture_barrier` does on
+   a5xx, or put a `glFinish` before such draws to see whether the black goes away).
+3. **Texture completeness**: tex 4 has mips and CA sets `TEXTURE_MIN_FILTER` through `TexParameteri`. An incomplete
+   texture samples as `(0,0,0,1)` too. Check base/max level and that every level is uploaded in the same format (the
+   trace says all 9 are, 256 down to 1).
+4. Precision or derivative problems in the shaders (unlikely, they are trivial).
+
+A cheap decisive experiment for 1 and 3: before draw 10, read tex 4 (levels 0 and 1) through a temporary FBO and log a
+few texels.
+
+## Things tried (so you do not repeat them)
+
+| Round | Test | Result |
+| --- | --- | --- |
+| a | first run | everything loads and the context works; the render touched nothing: CA drew into the default framebuffer, which does not exist |
+| b, c | tracing on; `[CATransaction flush]` after `setLayer:` | CA now draws, with error `0x506` (incomplete framebuffer) |
+| d | FBO with the surface's texture, made by the test | draws, no errors, but viewport 0x0 |
+| e, f | read back the FBO; `glViewport` in the test | **first correct pixels** (background `214579ff`) |
+| g | honour `invert` in the copy path | no change: CA passes `invert 0` for its images |
+| h | `set_destination_texture` through the vtable (flip false/true) | no effect at all; not needed |
+| i3 | flip rows of IOSurface textures when `invert` is NO | **image and text become right** (11159 to 2290 differing); this is the rule now |
+| j, k | in-place import only when no flip is needed; the test binds its own target with `invert YES` | same numbers as i3 (j was a test mistake: target bound without `invert YES` was copied, nothing drawn) |
+| l, m, n | per-draw state, texture calls, corner copy read-back | the trace above |
+| o | character map of the rounded layer | the picture above |
+
+Rules kept: IOSurface textures from `texImageIOSurface:` are flipped (so copied) unless `invert` is YES; surfaces bound
+by `attachImage:` and the test's target are used in place. A surface whose pitch is not a multiple of 64 bytes, or an
+import the kernel refuses (`darwin_bo_from_iosurface: IOSurface 11 not imported: 0xe00002bd`, seen for the 64x64 image
+surface CA makes over the creator's own pages), is uploaded as a snapshot with `glTexImage2D`.
+
+## Not done / open
+
+- `sweetca_test` PASS (the defect above). `sweetca_set_flip` and the "mode" loop in the test are leftovers to remove.
+- The test sets trace level 2 by default (shader dumps in the log); lower it when the defect is fixed.
+- The IOSurface row-bytes question (§2.2 last bullet): CA's own surfaces here were 64x64 BGRA pitch 256 (refused by
+  selector 6 with `0xe00002bd`, reason not looked into) and 150x24 pitch 608 (not 64-aligned, never usable in place).
+  The kernel was not changed. Real display surfaces need a look in step 3.
+- CA asks `glGetString(0x8a1e)` (NULL, error 0x500): harmless so far.
+- GPU speed not measured (debug mode on); `glFlush` is `glFinish`.
+- Nothing on the phone's root was changed; only `sweetca_test` and `libsweetca.dylib` went to `/usr/local/bin`.
+- Step 3 (backboardd) is untouched and needs the user's OK.
+- Commit trailers say `Claude Sonnet 5.5`, the model that did the work (the brief says Opus 5.5).

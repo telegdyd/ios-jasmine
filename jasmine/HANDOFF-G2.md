@@ -134,6 +134,7 @@ script file; Python on Windows needs `newline='\n'`; `wsl bash /mnt/c/...` paths
 > take `EXTRA_ARGS` (boot-args), `IOS_RUN` (ios-tools) and `PUSH`, and keep test output in `LOG.tests`;
 > `tools/g2/ci-wait.sh` re-runs CI jobs no macOS runner picked up. Phone state: running the j0033 test image.
 > **Step 2 brief for the next agent: [HANDOFF-G2-STEP2.md](HANDOFF-G2-STEP2.md).**
+> **Step 2 result 2026-10-22 02:20: CA draws on the GPU in `sweetca_test`; one defect (black corners of a masked rounded layer) is left, see the Result section of that file.**
 
 ### Step A: decide how CoreAnimation reaches our GL (research only, nothing on the phone)
 

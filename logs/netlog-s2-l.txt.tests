@@ -1,0 +1,196 @@
+sweetca: texture function 0x2d = sca_vcm(s0): installed
+sweetca: texture function 0x14 = sca_cm4(s0): installed
+sweetca: texture function 0x26 = sca_nop(): installed
+sweetca: texture function 0x27 = sca_vblur(s1): installed
+sweetca: EAGL methods replaced
+ok: libsweetca replaced the EAGLContext methods
+sweetca: EAGLContext 0x15bf04080 API 3 on Mesa: OpenGL ES 3.1 Mesa 26.2.5 (git-ddaf85e353), FD512 (GLI 0x15da60000)
+ok: [[EAGLContext alloc] initWithAPI:3] gives a context
+ok: -API is 3
+ok: getMacroContextPrivate gives {rctx, dispatch}
+ok: +setCurrentContext:
+ok: +currentContext
+ok: IOSurface 256x256 BGRA created (id 10, pitch 1024)
+sweetca: first call of slot 98 glGenTextures
+sweetca: first call of slot 5 glBindTexture
+sweetca: texImageIOSurface: surface 10 'BGRA' 256x256 pitch 1024 bound in place (gl 0x80e1/0x1401, flip 0)
+ok: texImageIOSurface: binds the surface to texture 1
+sweetca: first call of slot 674 glGenFramebuffers/glGenFramebuffersOES
+sweetca: first call of slot 672 glBindFramebuffer/glBindFramebufferOES
+sweetca: first call of slot 677 glFramebufferTexture2D/glFramebufferTexture2DOES
+sweetca: first call of slot 335 glViewport
+ok: CARenderer class
+ CPU reference:
+  background (4,4): b=79 g=45 r=21 a=ff
+  image, red quadrant (40,36): b=00 g=00 r=ff a=ff
+  image, blue quadrant (40,92): b=ff g=33 r=33 a=ff
+  rounded, orange (200,70): b=1f g=a9 r=ff a=ff
+  rounded, red child (156,28): b=20 g=32 r=ed a=ff
+  opacity (40,168): b=bc g=a2 r=90 a=ff
+  rotated, green (192,192): b=42 g=d1 r=00 a=ff
+  text area (100,128): b=c3 g=ac r=9c a=ff
+sweetca: glGetString(0x8a1e) = NULL (error 0x500)
+sweetca: first call of slot 104 glGetIntegerv
+ok: +rendererWithEAGLContext:options: gives a renderer (CA's GLES renderer)
+sweetca: first call of slot 63 glDisable
+sweetca: first call of slot 12 glClearColor
+sweetca: first call of slot 342 glActiveTexture
+sweetca: first call of slot 195 glPixelStorei
+sweetca: first call of slot 594 glCreateShader
+sweetca: shader 1 source (891 bytes):
+sweetca: | #define NOISE_SIZE 32
+
+uniform highp mat4 vertex_matrix;
+uniform highp vec4 texmat0, texmat1, texmat2;
+uniform highp vec4 texmatD;
+uniform highp vec4 texmatW;
+attribute highp vec4 vertex_position;
+attribute lowp vec4 vertex_color;
+attribute highp vec2 vertex_texcoord0, vertex_texcoord1;
+attribute mediump vec3 vertex_normal;
+varying lowp vec4 color;
+varying highp vec2 texcoord0_0;
+varying highp vec2 texcoord1_0;
+varying highp vec3 texcoordD;
+varying highp vec3 texcoordN;
+
+void main() {
+  gl_Position = vertex_matrix * vertex_position;
+  color = vertex_color;
+  texcoord0_0 = vertex_texcoord0 * texmat0.xy + texmat0.zw;
+  texcoord1_0 = vertex_texcoord1 * texmat1.xy + texmat1.zw;
+  texcoordD = vec
+sweetca: | 3(gl_Position.xy * texmatD.xy + texmatD.zw * gl_Position.w, gl_Position.w);
+  texcoordN = vec3(gl_Position.xy * texmatW.xy + texmatW.zw * gl_Position.w, gl_Position.w * float(NOISE_SIZE));
+}
+
+sweetca: first call of slot 595 glShaderSource
+sweetca: first call of slot 596 glCompileShader
+sweetca: shader 2 source (141 bytes):
+sweetca: | #define NOISE_SIZE 32
+
+uniform highp vec4 texmat0, texmat1, texmat2;
+varying lowp vec4 color;
+
+void main(void) {
+  gl_FragData[0] = color;
+}
+
+sweetca: first call of slot 597 glCreateProgram
+sweetca: first call of slot 598 glAttachShader
+sweetca: first call of slot 630 glBindAttribLocation
+sweetca: first call of slot 599 glLinkProgram
+sweetca: first call of slot 591 glDeleteProgram/glDeleteShader
+sweetca: first call of slot 600 glUseProgram
+sweetca: first call of slot 625 glGetUniformLocation
+sweetca: first call of slot 620 glUniformMatrix4fv
+sweetca: first call of slot 511 glVertexAttribPointer
+sweetca: first call of slot 512 glEnableVertexAttribArray
+sweetca: first call of slot 513 glDisableVertexAttribArray
+sweetca: draw 1: prog 3 mode 0x4 n 24 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 0 0,0 0x0 blend 0 u0=1(256x256)
+sweetca: first call of slot 67 glDrawElements
+sweetca: first call of slot 304 glTexParameteri
+sweetca: texImageIOSurface: surface 11 'BGRA' 64x64 pitch 256 bound copied (gl 0x80e1/0x1401, flip 1)
+sweetca: shader 4 source (229 bytes):
+sweetca: | #define NOISE_SIZE 32
+
+uniform highp vec4 texmat0, texmat1, texmat2;
+uniform lowp sampler2D texture0;
+varying highp vec2 texcoord0_0;
+
+void main(void) {
+  lowp vec4 s0 = texture2D(texture0, texcoord0_0);
+  gl_FragData[0] = s0;
+}
+
+sweetca: first call of slot 606 glUniform1i
+sweetca: first call of slot 613 glUniform4fv
+sweetca: first call of slot 7 glBlendFunc
+sweetca: first call of slot 72 glEnable
+sweetca: draw 2: prog 5 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 0 0,0 0x0 blend 1 u0=2(64x64)
+sweetca: first call of slot 301 glTexImage2D
+sweetca: first call of slot 56 glCopyTexSubImage2D
+sweetca: first call of slot 302 glTexParameterf
+sweetca: shader 6 source (262 bytes):
+sweetca: | #define NOISE_SIZE 32
+
+uniform highp vec4 texmat0, texmat1, texmat2;
+uniform lowp sampler2D texture0;
+varying lowp vec4 color;
+varying highp vec2 texcoord0_0;
+
+void main(void) {
+  lowp vec4 s0 = texture2D(texture0, texcoord0_0);
+  gl_FragData[0] = color * s0;
+}
+
+sweetca: first call of slot 251 glScissor
+sweetca: draw 3: prog 7 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 144,16 96x32 blend 0 u0=4(256x256)
+sweetca: draw 4: prog 7 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 200,48 40x24 blend 0 u0=4(256x256)
+sweetca: draw 5: prog 7 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 144,72 96x40 blend 0 u0=4(256x256)
+sweetca: draw 6: prog 7 mode 0x4 n 48 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 144,16 96x32 blend 1 u0=4(256x256)
+sweetca: draw 7: prog 7 mode 0x4 n 48 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 200,48 40x24 blend 1 u0=4(256x256)
+sweetca: draw 8: prog 7 mode 0x4 n 48 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 144,72 96x40 blend 1 u0=4(256x256)
+sweetca: draw 9: prog 3 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 0 144,72 96x40 blend 0 u0=4(256x256)
+sweetca: shader 8 source (546 bytes):
+sweetca: | #define NOISE_SIZE 32
+
+                                                    
+
+uniform lowp sampler2D sca_fb;
+uniform highp vec2 sca_fb_scale;
+uniform highp vec4 texmat0, texmat1, texmat2;
+uniform lowp sampler2D texture0;
+uniform lowp sampler2D texture1;
+varying highp vec2 texcoord0_0;
+varying highp vec2 texcoord1_0;
+
+void main(void) {
+  lowp vec4 d0 = texture2D(sca_fb, gl_FragCoord.xy * sca_fb_scale);
+  lowp vec4 s0 = texture2D(texture0, texcoord0_0);
+  lowp vec4 s1 = texture2D(texture1, texcoord1_0);
+  gl_FragData[0] = mix(s1, d0, s0.a);
+}
+
+sweetca: draw 10: prog 9 mode 0x4 n 24 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 144,16 96x96 blend 0 u0=4(256x256) u1=3(68x68) u15=1(256x256,fb)
+sweetca: draw 11: prog 3 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 0 144,16 96x96 blend 1 u0=4(256x256) u1=3(68x68) u15=1(256x256,fb)
+sweetca: draw 12: prog 3 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 1 164,164 56x56 blend 0 u0=4(256x256) u1=3(68x68) u15=1(256x256,fb)
+sweetca: texImageIOSurface: surface 12 'BGRA' 150x24 pitch 608 bound copied (gl 0x80e1/0x1401, flip 1)
+sweetca: draw 13: prog 5 mode 0x4 n 6 fbo 1 (tex 1 256x256) vp 0,0 256x256 scissor 0 164,164 56x56 blend 1 u0=5(150x24) u1=3(68x68) u15=1(256x256,fb)
+sweetca: flush: fbo 1 viewport 0,0 256x256, draws 13 clears 0, GL reads rgba (4,4)=214579ff center=214579ff
+sweetca: first call of slot 90 glFlush
+sweetca: first call of slot 89 glFinish
+render, mode 0 took 24692 ms
+ GPU, mode 0:
+  background (4,4): b=79 g=45 r=21 a=ff
+  image, red quadrant (40,36): b=00 g=00 r=ff a=ff
+  image, blue quadrant (40,92): b=ff g=41 r=41 a=ff
+  rounded, orange (200,70): b=1f g=a9 r=ff a=ff
+  rounded, red child (156,28): b=00 g=00 r=00 a=ff
+  opacity (40,168): b=bc g=a2 r=90 a=ff
+  rotated, green (192,192): b=42 g=d1 r=00 a=ff
+  text area (100,128): b=c3 g=ac r=9c a=ff
+ mode 0: 2290 of 65536 pixels differ by more than 8 (image 826, rounded 1320, opacity 0, rotated 144, text 0)
+ difference map:
+  ................
+  ...1116..89.098.
+  ...1261..9....9.
+  .113821.......1.
+  .128311..0....1.
+  .1621....9....9.
+  .6111....891198.
+  ................
+  ................
+  ................
+  ...........21...
+  ..........1002..
+  ..........2001..
+  ...........12...
+  ................
+  ................
+sweetca: first call of slot 59 glDeleteTextures
+best: mode 0, 2290 pixels differ
+FAIL: GPU render matches the CPU reference (at most 2% of pixels differ)
+FAIL: 1 checks failed
+
+# sweetca_test exit 1 at 01:57:31
