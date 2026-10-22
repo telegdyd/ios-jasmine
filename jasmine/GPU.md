@@ -556,3 +556,17 @@ reads them (lock, the display's copy). All rounds: 4 Gold cores (`cpus=4`), user
   submits per draw** (submit call ~0.13 ms each, 6-12 ms a frame). Cause: Mesa does not merge submits that name
   shared buffers (`has_shared` in `freedreno_ringbuffer_sp.c`) unless the pipe has `no_implicit_sync`; every
   imported IOSurface is shared. SweetGPU has no implicit sync, so the darwin pipe now sets it (Mesa CI `39824777796`).
+
+#### Next, from ios-flame (NWylynko/ios-flame, Pixel 4 / Adreno 640, MIT; read 2026-10-22 20:15)
+
+- **Write-combine panic, root cause** (their METAL-NEXT.md section 4): `osfmk/arm/pmap/pmap.c:6884`
+  `pmap_sync_page_attributes_phys` does `flush_dcache((vm_offset_t)(pp << PAGE_SHIFT), ...)` on a 32-bit
+  `ppnum_t`, so pages above 4 GiB lose bit 32: our j0029/j0030 panic `phystokv_range: illegal PA 0x7c994000`
+  is 0x1_7c994000. Fix `ptoa(pp)` and look for other `<< PAGE_SHIFT` on `ppnum_t` (pmap.c, caches.c). Keep the
+  GPU pool anyway (832 MB of GPU memory beyond XNU's 2 GB).
+- **Fit on the GPU**: they scale the 1125x2436 frame onto the panel with the GPU; our presenter does it on the
+  CPU (`composeFit`) every frame. Alternative: the MDP VIG pipe's own scaler.
+- **Submit wrapper as msm's a5xx_submit**: compare our ring (IBs + `CP_EVENT_WRITE CACHE_FLUSH_TS`) with
+  msm's a5xx (cache invalidates at start, preemption/yield packets) once the frame rate exposes GPU-side issues.
+- Metal itself: their stack is metal2vulkan (Rust) on Mesa Turnip (Vulkan, a6xx/a7xx only). No open Vulkan
+  driver exists for the a5xx, so not for jasmine short of writing one; CA's GLES path covers the UI.
