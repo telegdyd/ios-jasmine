@@ -1,15 +1,39 @@
-From a9a744aab3b27be09ca78a54df46fbde7640d988 Mon Sep 17 00:00:00 2001
+From 26f2b67474f04bc23941eae30dae06d93a4749f6 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 16:24:39 +0200
 Subject: [PATCH] jasmine-j0050: 4K pages + AMP on jasmine: 16 KiB user pages
  for SweetGPU buffers, per-core osmctl check, cluster in the CPU log
 
 ---
+ bsd/dev/sweet_gpu.c           |  5 +++--
  iokit/Kernel/arm/SweetCPU.cpp |  4 ++--
  iokit/Kernel/arm/SweetGPU.cpp | 14 ++++++++++++--
  osfmk/arm64/sweet_osm.c       | 35 +++++++++++++++++++++++++++++++----
- 3 files changed, 45 insertions(+), 8 deletions(-)
+ 4 files changed, 48 insertions(+), 10 deletions(-)
 
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index a2aec9e..7c6d1d3 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -732,7 +732,8 @@ static unsigned gpu_va_nfree;
+ static uint64_t gpu_scratch_pa;
+ static uint8_t *pt_chunk;               /* current kernel page carved into 4K tables */
+ static uint64_t pt_chunk_pa;
+-static unsigned pt_chunk_used = PAGE_SIZE;
++/* full: the first table takes a new page (PAGE_SIZE is not a constant in a 4 KiB-page kernel) */
++static unsigned pt_chunk_used = PAGE_MAX_SIZE;
+ #define PT_CHUNKS               256
+ static struct { uint64_t pa; uint8_t *va; } pt_chunks[PT_CHUNKS];       /* for table PA -> kernel VA */
+ static unsigned pt_nchunks;
+@@ -1171,7 +1172,7 @@ static int
+ gpu_vm_selftest(void)
+ {
+ 	vm_offset_t ib = 0, dst = 0;
+-	uint64_t ib_iova, dst_iova, pa[PAGE_SIZE / 0x1000];
++	uint64_t ib_iova, dst_iova, pa[PAGE_MAX_SIZE / 0x1000];
+ 	if (kmem_alloc(kernel_map, &ib, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
+ 	    kmem_alloc(kernel_map, &dst, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
+ 	    sweet_gpu_vm_alloc(PAGE_SIZE, &ib_iova) || sweet_gpu_vm_alloc(PAGE_SIZE, &dst_iova)) {
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 index 96c557b..55bfa29 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
