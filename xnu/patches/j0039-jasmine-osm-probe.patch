@@ -1,4 +1,4 @@
-From 223e3bcf85600cb0437c364b8a3b8e5c58f6a8bf Mon Sep 17 00:00:00 2001
+From 0b352865da2bcaec7c2ace0c68162c44307ac2b5 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 05:21:16 +0200
 Subject: [PATCH] jasmine-j0039: OSM/CPRh read-only probe and per-chip table
@@ -22,9 +22,9 @@ The first version ran inside the platform expert and read fuse rows
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
- osfmk/arm64/sweet_osm.c                  | 620 +++++++++++++++++++++++
+ osfmk/arm64/sweet_osm.c                  | 661 +++++++++++++++++++++++
  osfmk/conf/files.arm64                   |   1 +
- 3 files changed, 624 insertions(+)
+ 3 files changed, 665 insertions(+)
  create mode 100755 osfmk/arm64/sweet_osm.c
 
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
@@ -50,10 +50,10 @@ index f38c815..3974e2f 100644
  	sweet_nvt_init();
 diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
 new file mode 100755
-index 0000000..45d63e8
+index 0000000..8abbcd7
 --- /dev/null
 +++ b/osfmk/arm64/sweet_osm.c
-@@ -0,0 +1,620 @@
+@@ -0,0 +1,661 @@
 +/*
 + * Gold cluster clock done properly (jasmine, SDM660): Qualcomm's OSM clock
 + * sequencer with CPRh voltages from this chip's fuses. Plan and rounds:
@@ -70,7 +70,9 @@ index 0000000..45d63e8
 + * Gold CPRh controller (apc1), APM, the APCS OSM clock and the Gold L2 SAW4,
 + * plus the OSM LUTs and the GCC HMSS clocks. The OSM sequencer registers
 + * and program memory are written by TrustZone on stock (msm-4.4 clk-cpu-osm.c uses scm_io_write for them), so they are read
-+ * through TrustZone's IO read call (SCM svc 5 cmd 1). Nothing is written.
++ * through TrustZone's IO read call (SCM svc 5 cmd 1). Nothing is changed: the
++ * only writes store a sequencer register's own value back through TZ, to see
++ * whether TZ lets us write the sequencer at all (it left it empty).
 + * The fuse lines feed tools/cpuclk/cpuclk_model.py.
 + */
 +#include <pexpert/arm64/board_config.h>
@@ -100,6 +102,7 @@ index 0000000..45d63e8
 +#define SCM_FAST_FN(svc, cmd)   (0xc2000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
 +#define SCM_SVC_IO              0x05
 +#define SCM_IO_READ             0x01
++#define SCM_IO_WRITE            0x02
 +
 +static uint64_t
 +osm_scm1(uint32_t fn, uint64_t a, uint64_t *res1)
@@ -112,6 +115,20 @@ index 0000000..45d63e8
 +            :
 +            : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
 +	*res1 = x1;
++	return x0;
++}
++
++/* scm_io_write: x2 = address, x3 = value (msm-4.4 scm_io_write, SCM_ARGS(2)) */
++static uint64_t
++osm_scm2(uint32_t fn, uint64_t a, uint64_t b)
++{
++	register uint64_t x0 __asm__("x0") = fn, x1 __asm__("x1") = 2 /* arginfo: 2 value args */,
++	    x2 __asm__("x2") = a, x3 __asm__("x3") = b, x4 __asm__("x4") = 0, x5 __asm__("x5") = 0,
++	    x6 __asm__("x6") = 0, x7 __asm__("x7") = 0;
++	__asm__ volatile ("smc #0"
++            : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
++            :
++            : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
 +	return x0;
 +}
 +
@@ -643,6 +660,30 @@ index 0000000..45d63e8
 +	delay(100000);
 +	osm_regs("cprh-gold", CPRH_GOLD, cprh_regs);
 +	osm_regs("saw-gold", GOLD_SAW, saw_regs);                       /* last: the SAW may be secured */
++
++	/*
++	 * Access paths to the Gold sequencer (TZ left the program memory empty, round
++	 * j39e): TZ IO writes that store the value just read (no change), then direct
++	 * reads, each announced first (a secure register may SError).
++	 */
++	static const uint32_t tz_try[] = { 0x2420 /* SEQ_REG(72) */, 0x2300 /* SEQ_REG(0) */, 0x2500 /* program word 0 */ };
++	for (uint32_t k = 0; k < sizeof(tz_try) / sizeof(tz_try[0]); k++) {
++		uint64_t pa = OSM_BASE + tz_try[k], v = 0, r = 0;
++		uint64_t st = osm_scm1(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_READ), pa, &v);
++		printf("SWEET OSM: TZ write test %#llx: read st %#llx val %#llx\n", pa, st, v);
++		delay(50000);
++		uint64_t wst = osm_scm2(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_WRITE), pa, (uint32_t)v);
++		uint64_t st2 = osm_scm1(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_READ), pa, &r);
++		printf("SWEET OSM: TZ write test %#llx: write st %#llx, read back st %#llx val %#llx\n", pa, wst, st2, r);
++	}
++	for (uint32_t k = 0; k < sizeof(tz_try) / sizeof(tz_try[0]); k++) {
++		if (tz_try[k] == 0x2300) {
++			continue;
++		}
++		printf("SWEET OSM: direct read %#llx\n", OSM_BASE + tz_try[k]);
++		delay(50000);
++		printf("SWEET OSM: direct read %#llx = %#x\n", OSM_BASE + tz_try[k], osm[tz_try[k] / 4]);
++	}
 +}
 +
 +static int sweet_osm_chan;
