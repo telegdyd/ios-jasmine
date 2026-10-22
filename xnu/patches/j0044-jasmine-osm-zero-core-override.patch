@@ -1,0 +1,75 @@
+From 6e8a01918da16bcf1453f938d9c8bcb21145e656 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 07:24:15 +0200
+Subject: [PATCH] jasmine-j0044: OSM zero-core index override (phase 2 step D)
+
+Round j43: the sequencer registers are not readable from the apps side at
+all (direct reads give the previous bus value, then 0); TZ's IO read shows
+its own defaults for a 25-row LUT (SEQ 55-58 7/8/11/12, crossover 25, APM
+threshold 22) and the cross-cluster pointers SEQ 4/7, so TZ did run an OSM
+init. Suspect now: OSM counts active cores from the per-core SPMs, which
+only Linux's lpm/spm drivers set up, sees none and with CC_ZERO_BEHAV_CTRL
+0 does nothing. Step D (after A and B) forces the index through the
+zero-core override (bit 0 + index in 6:1) for each step up to osmmax and
+checks each with the workload; the cycle counter control is read back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/arm64/sweet_osm.c | 39 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 2d7edaf..6cd37bf 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1097,9 +1097,46 @@ osm_phase2_steps(volatile uint32_t *o, uint32_t maxkhz, uint64_t ns_boot)
+ 	osm_wr(o, 0x1020, 1);
+ 	osm_state("B: LLM votes and CC DCVS off", o);
+ 	moved = osm_steps(o, maxkhz, ns_boot, "B");
++	if (moved != 0) {
++		return;
++	}
++	/*
++	 * D: OSM may see no active core (the per-core SPMs Linux sets up are not
++	 * configured here) and then do nothing (CC_ZERO_BEHAV_CTRL 0). Its "zero
++	 * cores" override forces an index: bit 0 enable, index in bits 6:1.
++	 */
++	printf("SWEET OSM: D: cycle counter ctl %#x, CC_ZERO_BEHAV %#x, SPM_CC_CTRL %#x, CORE_RET_MAP %#x\n",
++	    osm_rd(o, 0x1f00), osm_rd(o, 0x100c), osm_rd(o, 0x1028), osm_rd(o, 0x1024));
++	for (uint32_t i = 0; i < cpr.lut_rows && cpr.lut[i].freq / 1000 <= maxkhz; i++) {
++		osm_wr(o, 0x1f10, i);
++		osm_wr(o, 0x100c, i << 1 | 1u);
++		delay(2000);
++		char what[64];
++		snprintf(what, sizeof(what), "D: zero-core override index %u", i);
++		osm_state(what, o);
++		if (osm_gpll[1] != 0x20 || osm_grcg[1] != 0x401) {
++			moved = 1;
++			uint64_t ns, t0 = mach_absolute_time();
++			uint64_t r = osm_workload(OSM_WORK);
++			absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++			uint32_t errs = r == osm_ref ? osm_load_all() : 1;
++			printf("SWEET OSM: D index %u: workload %s, %llu us (~%llu MHz); 4 cores x 20: %u errors\n", i,
++			    r == osm_ref ? "OK" : "WRONG", ns / 1000, 1747ull * OSM_WORK_1747_US * 1000 / (ns ? ns : 1), errs);
++			if (r != osm_ref || errs) {
++				osm_wr(o, 0x100c, 0u << 1 | 1u);
++				delay(2000);
++				osm_state("D: errors, override index 0", o);
++				return;
++			}
++		}
++	}
++	if (moved) {
++		return;
++	}
++	osm_wr(o, 0x100c, 0);
+ 	uint32_t seq = 0;
+ 	(void)PE_parse_boot_argn("osmseq", &seq, sizeof(seq));
+-	if (moved != 0 || !seq) {
++	if (!seq) {
+ 		return;
+ 	}
+ 	/* C: load the sequencer as Linux does without TZ, with OSM off, then enable again at index 0 */
+-- 
+2.47.3
+
