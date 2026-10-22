@@ -220,7 +220,7 @@ main(void)
       if (getenv("SWEETCA_TRACE"))
          sweetca_set_trace(atoi(getenv("SWEETCA_TRACE")));
       else
-         sweetca_set_trace(2);
+         sweetca_set_trace(1);
       CHECK(sweetca_installed(), "libsweetca replaced the EAGLContext methods");
 
       EAGLContext *ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
@@ -280,7 +280,7 @@ main(void)
       CHECK(CAR != Nil, "CARenderer class");
       /* modes of libsweetca's handling of IOSurface textures (sweetca_set_flip); a fresh layer tree each,
        * so CA uploads its images again */
-      for (int mode = 0; mode < 1; mode++) {
+      for (int mode = 0; mode < 4; mode++) {
          sweetca_set_flip(mode);
          /* the layer tree, drawn by CA on the CPU as the reference */
          CALayer *root = make_tree();

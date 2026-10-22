@@ -489,6 +489,8 @@ static void
 w_TexParameteri(void *rctx, GLenum target, GLenum pname, GLint param)
 {
    CUR(rctx);
+   if (flip_mode == 3 && pname == GL_TEXTURE_MIN_FILTER)
+      param = GL_LINEAR;
    glTexParameteri(tgt(c, target), pname, param);
    POST(304);
 }
@@ -529,6 +531,36 @@ w_TexImage2D(void *rctx, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsi
    set_swizzle(c, t, NULL, false);
    if (format == GL_BGRA_EXT_ && (ifmt == GL_RGBA || ifmt == GL_RGBA8))
       ifmt = GL_BGRA_EXT_;
+   if (flip_mode == 3 && level > 0 && format == GL_LUMINANCE_ALPHA)
+      return;
+   if (flip_mode == 2 && format == GL_LUMINANCE_ALPHA && type == GL_UNSIGNED_BYTE && pixels) {
+      GLint al = 4, rl = 0;
+      glGetIntegerv(GL_UNPACK_ALIGNMENT, &al);
+      glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rl);
+      size_t pitch = ((size_t)(rl ? rl : w) * 2 + al - 1) / al * al;
+      uint8_t *rgba = malloc((size_t)w * h * 4);
+      for (GLsizei y = 0; rgba && y < h; y++)
+         for (GLsizei x = 0; x < w; x++) {
+            const uint8_t *s = (const uint8_t *)pixels + y * pitch + x * 2;
+            uint8_t *d = rgba + ((size_t)y * w + x) * 4;
+            d[0] = d[1] = d[2] = s[0];
+            d[3] = s[1];
+         }
+      if (rgba) {
+         GLint row = 0;
+         glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row);
+         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+         glTexImage2D(t, level, GL_RGBA8, w, h, border, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+         glPixelStorei(GL_UNPACK_ROW_LENGTH, row);
+         glPixelStorei(GL_UNPACK_ALIGNMENT, al);
+         free(rgba);
+         POST(301);
+         if (level == 0)
+            note_size(c, c->held[c->active], w, h);
+         return;
+      }
+   }
    glTexImage2D(t, level, ifmt, w, h, border, format, type, pixels);
    POST(301);
    if (level == 0)
@@ -984,6 +1016,8 @@ draw_prep(struct sca_ctx *c)
    if (fbtex) {
       for (int u = 0; u < UNITS; u++) {
          if (c->held[u] == fbtex) {
+            if (flip_mode == 1)
+               glFinish();
             sgl_texture_barrier();
             break;
          }
