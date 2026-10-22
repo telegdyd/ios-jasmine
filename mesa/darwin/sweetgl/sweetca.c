@@ -1265,11 +1265,12 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
 }
 
 /*
- * A copied surface is a snapshot, but its owner keeps drawing into it (SpringBoard's
- * text and widgets arrive empty and are filled later; CA binds each surface once).
- * Its owners write without IOSurfaceLock, so the seed does not move (round s3-c):
- * copy it again before the first draw of each frame that samples it. Shadow render
- * targets are ours and only taken again when someone else locked them for writing.
+ * A copied surface is a snapshot, but its owner may draw into it again later (CA
+ * binds each surface once).
+ * Copy it again before a draw that samples it once the surface's seed (moved by
+ * every write unlock) has changed. (Round s3-d copied every sampled copy once per
+ * frame instead, on the guess that writers skip the lock; the missing labels were
+ * the swizzle in bind_surface, so that is undone.)
  */
 struct sca_copy {
    IOSurfaceRef s;
@@ -1318,7 +1319,7 @@ copy_refresh(struct sca_ctx *c, int u, GLuint tex)
 {
    struct sca_copy *k = c->copies[tex];
    uint32_t seed = IOSurfaceGetSeed(k->s);
-   if (k->dirty || (k->target ? seed == k->seed : k->frame == c->frame))
+   if (k->dirty || seed == k->seed)
       return;
    k->seed = seed;
    k->frame = c->frame;
@@ -1464,7 +1465,11 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    if (pitch % 64 == 0 && offset % 64 == 0 && !flip)
       done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, (unsigned)offset, f.f);
    if (!done && format) {
+      /* the copy is uploaded as GL_ALPHA / GL_LUMINANCE(_ALPHA) itself: the swizzle
+       * above is for R8/RG8 storage in place, and on an ALPHA texture (0,0,0,R)
+       * samples as fully transparent (round s3-d: every copied label invisible) */
       how = "copied";
+      set_swizzle(c, t, NULL, false);
       done = copy_surface(c, s, t, &f, w, h, pitch, bpe, flip);
    }
    if (!done) {

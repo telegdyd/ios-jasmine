@@ -1,6 +1,6 @@
-From 54db9ffe5efe0e3d5d49b848d268b889f9f1efd6 Mon Sep 17 00:00:00 2001
+From 6d81390c9f1d579a4eca4144477924ae804bf77c Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 03:51:18 +0200
+Date: Thu, 22 Oct 2026 04:02:20 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1954 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1959 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  451 ++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   97 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5684 insertions(+), 1 deletion(-)
+ 20 files changed, 5689 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1277,10 +1277,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..b85b5c8
+index 0000000..3df4cc5
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1954 @@
+@@ -0,0 +1,1959 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2548,11 +2548,12 @@ index 0000000..b85b5c8
 +}
 +
 +/*
-+ * A copied surface is a snapshot, but its owner keeps drawing into it (SpringBoard's
-+ * text and widgets arrive empty and are filled later; CA binds each surface once).
-+ * Its owners write without IOSurfaceLock, so the seed does not move (round s3-c):
-+ * copy it again before the first draw of each frame that samples it. Shadow render
-+ * targets are ours and only taken again when someone else locked them for writing.
++ * A copied surface is a snapshot, but its owner may draw into it again later (CA
++ * binds each surface once).
++ * Copy it again before a draw that samples it once the surface's seed (moved by
++ * every write unlock) has changed. (Round s3-d copied every sampled copy once per
++ * frame instead, on the guess that writers skip the lock; the missing labels were
++ * the swizzle in bind_surface, so that is undone.)
 + */
 +struct sca_copy {
 +   IOSurfaceRef s;
@@ -2601,7 +2602,7 @@ index 0000000..b85b5c8
 +{
 +   struct sca_copy *k = c->copies[tex];
 +   uint32_t seed = IOSurfaceGetSeed(k->s);
-+   if (k->dirty || (k->target ? seed == k->seed : k->frame == c->frame))
++   if (k->dirty || seed == k->seed)
 +      return;
 +   k->seed = seed;
 +   k->frame = c->frame;
@@ -2747,7 +2748,11 @@ index 0000000..b85b5c8
 +   if (pitch % 64 == 0 && offset % 64 == 0 && !flip)
 +      done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, (unsigned)offset, f.f);
 +   if (!done && format) {
++      /* the copy is uploaded as GL_ALPHA / GL_LUMINANCE(_ALPHA) itself: the swizzle
++       * above is for R8/RG8 storage in place, and on an ALPHA texture (0,0,0,R)
++       * samples as fully transparent (round s3-d: every copied label invisible) */
 +      how = "copied";
++      set_swizzle(c, t, NULL, false);
 +      done = copy_surface(c, s, t, &f, w, h, pitch, bpe, flip);
 +   }
 +   if (!done) {
