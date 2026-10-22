@@ -1,0 +1,319 @@
+From a82783e163542da1bded1d4fee4e7b05ed102530 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 07:44:16 +0200
+Subject: [PATCH] jasmine-j0045: live register access over the USB command port
+ (osmctl)
+
+A build and a boot per hypothesis is too slow for finding why OSM never
+runs (rounds j40..j44). With sweetosm= set, the command port (TCP 5141)
+hands every line other than "reboot" to sweet_osm_cmd(): r / w (direct,
+only inside the GCC, TSENS, Gold / Silver clock + SAW, OSM, CPRh, LMh and
+APCS blocks; writes through a register, never "str wzr"), tr / tw (TZ IO
+read / write), check (the j0015 workload on one core against the boot
+reference, then on all cores), tsens, state, table and prog (CPRh open
+loop + Gold SAW AVS + OSM programming, not enabled). Commands may be
+';'-separated; lines up to 511 bytes, replies up to 2 KiB.
+sweetosm=8 computes the table and offers the commands, nothing else.
+Host side: tools/cpuclk/osmctl.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/sweet_usb.c     |  16 ++-
+ osfmk/arm64/sweet_osm.c | 224 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 236 insertions(+), 4 deletions(-)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index c872bcc..3a431ef 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1451,8 +1451,13 @@ ud_panic_test_thread(void *arg, wait_result_t wr __unused)
+  *   reboot   clean reboot (filesystems synced); on jasmine every reboot ends
+  *            in fastboot (PON reboot mode, j0003), so the PC can boot the
+  *            next test image without anyone touching the phone
+- * Anything else is answered with "?". Boot-arg sweetusbcmd=0 disables it.
++ * With sweetosm= set, every other line goes to sweet_osm_cmd() (osfmk/arm64/
++ * sweet_osm.c: live register access for the CPU clock work, commands separated
++ * by ';', tools/cpuclk/osmctl.py). Anything else is answered with "?".
++ * Boot-arg sweetusbcmd=0 disables the port.
+  */
++extern int sweet_osm_cmd(char *line, char *out, size_t len);
++static char ud_cmd_line[512], ud_cmd_reply[2048];
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+@@ -1483,10 +1488,10 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 			ud_sleep_ms(500);
+ 			continue;
+ 		}
+-		char line[64];
++		char *line = ud_cmd_line;
+ 		size_t got = 0;
+-		while (got < sizeof(line) - 1) {
+-			struct iovec iov = { .iov_base = line + got, .iov_len = sizeof(line) - 1 - got };
++		while (got < sizeof(ud_cmd_line) - 1) {
++			struct iovec iov = { .iov_base = line + got, .iov_len = sizeof(ud_cmd_line) - 1 - got };
+ 			struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
+ 			size_t n = 0;
+ 			if (sock_receive(cs, &msg, 0, &n) != 0 || n == 0) {
+@@ -1511,6 +1516,9 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		}
+ 		bool reboot = strcmp(line, "reboot") == 0;
+ 		const char *reply = reboot ? "rebooting\n" : "?\n";
++		if (!reboot && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
++			reply = ud_cmd_reply;
++		}
+ 		struct iovec iov = { .iov_base = (void *)(uintptr_t)reply, .iov_len = strlen(reply) };
+ 		struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
+ 		size_t sent = 0;
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 6cd37bf..507862c 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1192,6 +1192,224 @@ osm_phase2(void)
+ 	osm_phase2_steps(o, maxkhz, ns_boot);
+ }
+ 
++/*
++ * Live register access over the USB command port (j0045, tools/cpuclk/osmctl.py):
++ * bsd/dev/sweet_usb.c hands every command line other than "reboot" to
++ * sweet_osm_cmd() (commands separated by ';'). With any sweetosm= set:
++ *   r ADDR [N]     read N (1..16) words           w ADDR VAL    write, then read back
++ *   tr ADDR        TZ IO read                     tw ADDR VAL   TZ IO write, TZ read back
++ *   check          j0015 workload: this core (time, ~MHz) + all cores x 20 (errors)
++ *   tsens          temperatures                   state         PLL / RCG / OSM / CPRh / SAW line
++ *   table          this chip's CPRh corners and OSM LUT (computed from the fuses)
++ *   prog           CPRh open loop + Gold SAW AVS + OSM LUT / policy / TZ corners, not enabled
++ * Direct accesses only inside the blocks this work touches (osm_ok()); a read of
++ * an unimplemented offset can still SError (the panic then goes out on the live
++ * log and the phone resets into fastboot). Every write goes through a register
++ * ("str wzr" hangs the hypervisor's emulation).
++ */
++static const struct { uint64_t lo, hi; } osm_ranges[] = {
++	{ 0x00100000, 0x001b0000 },     /* GCC */
++	{ 0x010ac000, 0x010b0000 },     /* TSENS */
++	{ 0x17810000, 0x17817000 },     /* Gold: RCG, SAW4 (0x17812000), PLL */
++	{ 0x17910000, 0x17917000 },     /* Silver: RCG, SAW4, PLL */
++	{ 0x179c0000, 0x179c8000 },     /* OSM both clusters, CPRh apc1 */
++	{ 0x179c8000, 0x179cc000 },     /* CPRh apc0 */
++	{ 0x179cc000, 0x179d0000 },     /* LMh */
++	{ 0x179d0000, 0x179d2000 },     /* APM, APCS common */
++};
++
++static int
++osm_ok(uint64_t pa)
++{
++	if (pa & 3) {
++		return 0;
++	}
++	for (uint32_t i = 0; i < sizeof(osm_ranges) / sizeof(osm_ranges[0]); i++) {
++		if (pa >= osm_ranges[i].lo && pa < osm_ranges[i].hi) {
++			return 1;
++		}
++	}
++	return 0;
++}
++
++/* one 16 KiB mapping per page, kept */
++static struct { uint64_t pa; volatile uint32_t *va; } osm_pages[32];
++
++static volatile uint32_t *
++osm_ptr(uint64_t pa)
++{
++	uint64_t page = pa & ~0x3fffull;
++	uint32_t i;
++	for (i = 0; i < sizeof(osm_pages) / sizeof(osm_pages[0]) && osm_pages[i].va; i++) {
++		if (osm_pages[i].pa == page) {
++			return osm_pages[i].va + (pa & 0x3fff) / 4;
++		}
++	}
++	volatile uint32_t *va = osm_map(page, 0x4000);
++	if (i < sizeof(osm_pages) / sizeof(osm_pages[0])) {
++		osm_pages[i].pa = page;
++		osm_pages[i].va = va;
++	}
++	return va + (pa & 0x3fff) / 4;
++}
++
++static uint64_t osm_ns_boot;
++
++static uint64_t
++osm_num(const char *s)                          /* 0x... hex or decimal */
++{
++	uint64_t v = 0;
++	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
++		for (s += 2; *s; s++) {
++			int d = *s >= '0' && *s <= '9' ? *s - '0' : *s >= 'a' && *s <= 'f' ? *s - 'a' + 10 :
++			    *s >= 'A' && *s <= 'F' ? *s - 'A' + 10 : -1;
++			if (d < 0) {
++				break;
++			}
++			v = v << 4 | (uint64_t)d;
++		}
++		return v;
++	}
++	for (; *s >= '0' && *s <= '9'; s++) {
++		v = v * 10 + (uint64_t)(*s - '0');
++	}
++	return v;
++}
++
++static int
++osm_cmd_one(char *cmd, char *out, size_t len)
++{
++	char *argv[4];
++	int argc = 0;
++	for (char *p = cmd; *p && argc < 4;) {
++		while (*p == ' ') {
++			p++;
++		}
++		if (!*p) {
++			break;
++		}
++		argv[argc++] = p;
++		while (*p && *p != ' ') {
++			p++;
++		}
++		if (*p) {
++			*p++ = 0;
++		}
++	}
++	if (argc == 0) {
++		return 0;
++	}
++	uint64_t a = argc > 1 ? osm_num(argv[1]) : 0, b = argc > 2 ? osm_num(argv[2]) : 0;
++	const char *c = argv[0];
++	if (!strcmp(c, "r") && argc >= 2) {
++		uint32_t n = argc > 2 ? (uint32_t)b : 1;
++		if (n < 1 || n > 16 || !osm_ok(a) || !osm_ok(a + 4 * (n - 1))) {
++			return snprintf(out, len, "r %#llx: refused\n", a);
++		}
++		int k = snprintf(out, len, "%#llx:", a);
++		for (uint32_t i = 0; i < n && k < (int)len - 12; i++) {
++			k += snprintf(out + k, len - k, " %08x", *osm_ptr(a + 4 * i));
++		}
++		return k + snprintf(out + k, len - k, "\n");
++	}
++	if (!strcmp(c, "w") && argc == 3) {
++		if (!osm_ok(a)) {
++			return snprintf(out, len, "w %#llx: refused\n", a);
++		}
++		volatile uint32_t *p = osm_ptr(a);
++		osm_wr(p, 0, (uint32_t)b);
++		__asm__ volatile ("dsb sy" ::: "memory");
++		printf("SWEET OSM: ctl w %#llx %#llx\n", a, b);
++		return snprintf(out, len, "%#llx <- %#llx, reads %08x\n", a, b, *p);
++	}
++	if (!strcmp(c, "tr") && argc == 2) {
++		uint64_t r = 0, st = osm_scm1(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_READ), a, &r);
++		return snprintf(out, len, "tz %#llx: st %#llx val %#llx\n", a, st, r);
++	}
++	if (!strcmp(c, "tw") && argc == 3) {
++		uint64_t st = osm_scm2(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_WRITE), a, (uint32_t)b), r = 0;
++		uint64_t st2 = osm_scm1(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_READ), a, &r);
++		printf("SWEET OSM: ctl tw %#llx %#llx st %#llx\n", a, b, st);
++		return snprintf(out, len, "tz %#llx <- %#llx: st %#llx, reads st %#llx val %#llx\n", a, b, st, st2, r);
++	}
++	if (!strcmp(c, "check")) {
++		uint64_t ns, t0 = mach_absolute_time();
++		uint64_t r = osm_workload(OSM_WORK);
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		uint32_t errs = r == osm_ref ? osm_load_all() : 1;
++		return snprintf(out, len, "check: %s %llu us (~%llu MHz, boot %llu us), all cores x 20: %u errors\n",
++		    r == osm_ref ? "OK" : "WRONG", ns / 1000, 1747ull * OSM_WORK_1747_US * 1000 / (ns ? ns : 1),
++		    osm_ns_boot / 1000, errs);
++	}
++	if (!strcmp(c, "tsens")) {
++		volatile uint32_t *tm = osm_ptr(0x10ae000);
++		int k = snprintf(out, len, "tsens:");
++		for (int i = 0; i < 14 && k < (int)len - 10; i++) {
++			uint32_t v = tm[(0xa0 + 4 * i) / 4];
++			int t = (int)(v & 0xfff);
++			if (t & 0x800) {
++				t -= 0x1000;
++			}
++			k += snprintf(out + k, len - k, (v & (1u << 21)) ? " %d.%d" : " -", t / 10, (t < 0 ? -t : t) % 10);
++		}
++		return k + snprintf(out + k, len - k, "\n");
++	}
++	if (!strcmp(c, "state")) {
++		volatile uint32_t *o = osm_ptr(OSM_GOLD);
++		uint32_t st = *osm_ptr(CPRH_GOLD + 0x3aa4);
++		return snprintf(out, len, "PLL mode %#x L %#x status %#x, RCG cmd %#x cfg %#x; OSM enable %#x desired %u pstate %#x "
++		    "pc %#x cc %#x; CPRh corner %u last %u; SAW PMIC_STS %#x\n", *osm_ptr(0x17816000), *osm_ptr(0x17816004),
++		    *osm_ptr(0x1781602c), *osm_ptr(0x17811050), *osm_ptr(0x17811054), osm_rd(o, 0x1004), osm_rd(o, 0x1f10),
++		    osm_rd(o, 0x1c00), osm_rd(o, 0x1c74), osm_rd(o, 0x1f04), st & 0x3f, (st >> 6) & 0xfff,
++		    *osm_ptr(GOLD_SAW + 0xc18));
++	}
++	if (!strcmp(c, "table")) {
++		int k = 0;
++		for (uint32_t i = 0; i < cpr.n && k < (int)len - 80; i++) {
++			k += snprintf(out + k, len - k, "corner %u: %u kHz floor %d ol %d ceil %d quot %d reg %#x\n", i,
++			    cpr.c[i].freq / 1000, cpr.c[i].floor, cpr.c[i].open_loop, cpr.c[i].ceiling, cpr.c[i].quot, cpr.corner_reg[i]);
++		}
++		return k;
++	}
++	if (!strcmp(c, "prog")) {
++		osm_cprh = osm_ptr(CPRH_GOLD);
++		osm_saw = osm_ptr(GOLD_SAW);
++		osm_gpll = osm_ptr(0x17816000);
++		osm_grcg = osm_ptr(0x17811050);
++		cprh_init(osm_cprh, 0);
++		osm_wr(osm_saw, 0x904, 0x1010031);
++		osm_wr(osm_saw, 0x908, 0x4580458);
++		int rc = osm_program(osm_ptr(OSM_GOLD));
++		return snprintf(out, len, "prog: CPRh open loop, SAW AVS, OSM programmed: rc %d (not enabled)\n", rc);
++	}
++	return snprintf(out, len, "%s: ? (r w tr tw check tsens state table prog)\n", c);
++}
++
++/* bsd/dev/sweet_usb.c command port: line in, reply out; 0 = not ours (no sweetosm) */
++int sweet_osm_cmd(char *line, char *out, size_t len);
++
++int
++sweet_osm_cmd(char *line, char *out, size_t len)
++{
++	if (osm_mode == 0) {
++		return 0;
++	}
++	size_t k = 0;
++	out[0] = 0;
++	for (char *cmd = line; cmd && k < len - 1;) {
++		char *next = strchr(cmd, ';');
++		if (next) {
++			*next++ = 0;
++		}
++		int n = osm_cmd_one(cmd, out + k, len - k);
++		if (n > 0) {
++			k += (size_t)n < len - k ? (size_t)n : len - k - 1;
++		}
++		cmd = next;
++	}
++	return 1;
++}
++
+ static int sweet_osm_chan;
+ 
+ /*
+@@ -1236,6 +1454,9 @@ osm_thread(void *arg, wait_result_t result)
+ 	if (osm_mode == 1) {
+ 		osm_probe();
+ 		printf("SWEET OSM: probe done\n");
++	} else if (osm_mode == 8) {
++		(void)osm_fuses();
++		printf("SWEET OSM: table ready; live commands on the USB command port (tools/cpuclk/osmctl.py)\n");
+ 	} else if (osm_fuses() == 0) {
+ 		osm_phase2();
+ 		printf("SWEET OSM: phase 2 done\n");
+@@ -1250,6 +1471,9 @@ sweet_osm_init(void)
+ 		return;
+ 	}
+ 	printf("SWEET OSM: sweetosm=%u\n", osm_mode);
++	uint64_t t0 = mach_absolute_time();
++	osm_ref = osm_workload(OSM_WORK);
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &osm_ns_boot);
+ 	if (kernel_thread_start(osm_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+-- 
+2.47.3
+
