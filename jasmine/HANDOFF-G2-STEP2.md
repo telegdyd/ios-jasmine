@@ -278,3 +278,41 @@ surface CA makes over the creator's own pages), is uploaded as a snapshot with `
 - Nothing on the phone's root was changed; only `sweetca_test` and `libsweetca.dylib` went to `/usr/local/bin`.
 - Step 3 (backboardd) is untouched and needs the user's OK.
 - Commit trailers say `Claude Sonnet 5.5`, the model that did the work (the brief says Opus 5.5).
+
+---
+
+# Update 2026-10-22 02:50 (rounds p to s): the cause is narrowed to the `d0` read (framebuffer feedback)
+
+`sweetca_test` still prints FAIL (2290 pixels differ). Work stopped at the user's request after round s. Logs:
+`logs/netlog-s2-{p,q,r,s}.txt.tests`. No SMMU fault or panic. Code: `sweetca.c` has experiment modes selected by
+`sweetca_set_flip(mode)`, and the test loops over them (`for (int mode ...)`); both are still in the tree and must be removed.
+
+| Round | Experiment | Result |
+| --- | --- | --- |
+| p, mode 1 | `glFinish` before every draw that samples the framebuffer's texture | no change (2290) |
+| p, mode 2 | LUMINANCE_ALPHA uploaded as RGBA8 `(L,L,L,A)` converted on the CPU | no change (2290). **Hypothesis 1 is out.** |
+| p, mode 3 | skip mip levels > 0 and force MIN_FILTER LINEAR | the phone run hit sweetd's 60 s timeout; not evaluated (hypothesis 3 still open, but see below) |
+| q | framebuffer along both diagonals of the layer (144,16 96x96) after each draw | the framebuffer holds the right colours before draw 10 (background outside, layer colour inside, child `ed3220` over it); after draw 10 a band at k=12 (12 px from the corner) is `000000ff` |
+| r | whole 68x68 corner texture (tex 3, `s1`) read back before draw 10 | all background colour, except one odd row at y=34 (`?`, not black). **`s1` is fine.** |
+| s, mode 5 | draw 10 outputs `vec4(s0.a)` | clean ramp, 0 up to k about 8, 1 from about k=10. **The mask is fine.** |
+| s, mode 6 | draw 10 outputs `d0` | **black over the whole corner band** (k up to about 14) although the framebuffer holds the right colour there |
+| s, mode 7 | draw 10 outputs `s1` | background colour, diff 2272 |
+
+**Conclusion:** `s0` (mask, LA upload and mips) and `s1` (corner patches) are right. `d0` is wrong: the texture read of
+`sca_fb` at `gl_FragCoord.xy * sca_fb_scale` returns zeros in the corner band while `glReadPixels` of the same
+framebuffer region shows the right colours. `mix(s1, d0, a)` with `d0 = 0` gives black where `a > 0`, which is the
+defect. So hypothesis 2 (feedback through the render target's own texture) is the cause. A `glFinish` before the
+draw does not cure it, so it is not a missing flush; a texture-cache or compression/layout effect of sampling a
+bound render target in sysmem mode is more likely. Not yet checked: why only the band (and not the interior) reads zero;
+mode 8 (output `s0.r`) never ran.
+
+**Next step (a real fix, not a workaround of the symptom):** stop sampling the texture that is being rendered into.
+Before a draw whose program has `OBJ_FBFETCH`, copy the scissor rectangle of the render target into a scratch texture
+(`glCopyTexSubImage2D` into a texture the size of the target, or blit) and bind that on the fbfetch unit instead of
+`fbtex`. The corner copies CA makes itself already work this way. Check afterwards that `d0` matches the framebuffer in
+the band, and that the other fbfetch draws (11 to 13) still pass. If a copy turns out to be too slow, look at
+`fd_texture_barrier`/`fd_flush` for a5xx instead.
+
+**Leftovers to remove when fixed:** `flip_mode` and its uses in `w_TexImage2D`, `w_TexParameteri`, `draw_prep`,
+`w_ShaderSource` (the `mix(...)` replacement), `diag_dump`, the 68x68 dump in `draw_prep`; `sweetca_set_flip`; the
+mode loop in `sweetca_test.m` (currently modes 5 to 8).
