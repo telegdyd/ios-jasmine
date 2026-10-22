@@ -1,6 +1,6 @@
-From 80a9ff3f719467c5b73e7bc5fcd4d363190758b9 Mon Sep 17 00:00:00 2001
+From 5389a4447bc1eaaf37d75b11f169bf56af93c7ce Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 03:40:26 +0200
+Date: Thu, 22 Oct 2026 03:41:05 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -1283,7 +1283,7 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..a9560db
+index 0000000..38e629a
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
 @@ -0,0 +1,1937 @@
@@ -2785,7 +2785,7 @@ index 0000000..a9560db
 + * self-test, which can be after backboardd asks for its first context (step 3
 + * round a: backboardd gave up on the GPU 25 s before it was there). Wait for
 + * it, as CA itself waits for an IOAcceleratorES service before trying Metal:
-+ * at most 30 s, once per process.
++ * at most 90 s (the GPU has taken over 30 s after backboardd started), once per process.
 + */
 +static void
 +wait_for_gpu(void)
@@ -2794,7 +2794,7 @@ index 0000000..a9560db
 +   if (waited)
 +      return;
 +   waited = true;
-+   for (int i = 0; i < 300; i++) {
++   for (int i = 0; i < 900; i++) {
 +      sca_io_object_t s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("SweetGPU"));
 +      if (s) {
 +         IOObjectRelease(s);
@@ -2804,7 +2804,7 @@ index 0000000..a9560db
 +      }
 +      usleep(100000);
 +   }
-+   sca_log("sweetca: no SweetGPU service after 30 s");
++   sca_log("sweetca: no SweetGPU service after 90 s");
 +}
 +
 +static struct sgl_display *

@@ -1496,7 +1496,7 @@ kern_return_t IOObjectRelease(sca_io_object_t object);
  * self-test, which can be after backboardd asks for its first context (step 3
  * round a: backboardd gave up on the GPU 25 s before it was there). Wait for
  * it, as CA itself waits for an IOAcceleratorES service before trying Metal:
- * at most 30 s, once per process.
+ * at most 90 s (the GPU has taken over 30 s after backboardd started), once per process.
  */
 static void
 wait_for_gpu(void)
@@ -1505,7 +1505,7 @@ wait_for_gpu(void)
    if (waited)
       return;
    waited = true;
-   for (int i = 0; i < 300; i++) {
+   for (int i = 0; i < 900; i++) {
       sca_io_object_t s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("SweetGPU"));
       if (s) {
          IOObjectRelease(s);
@@ -1515,7 +1515,7 @@ wait_for_gpu(void)
       }
       usleep(100000);
    }
-   sca_log("sweetca: no SweetGPU service after 30 s");
+   sca_log("sweetca: no SweetGPU service after 90 s");
 }
 
 static struct sgl_display *
