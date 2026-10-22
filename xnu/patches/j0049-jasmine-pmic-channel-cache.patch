@@ -1,0 +1,53 @@
+From 6c60ee1028189b9d98226a62584613e2e96feca3 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 16:07:21 +0200
+Subject: [PATCH] jasmine-j0049: map each PMIC observer channel once
+ (sweet_pmic_peek leaked)
+
+sweet_pmic_peek() called pmic_channel(), which did a fresh ml_io_map() on
+every read and never unmapped it. Live session 2026-10-22 16:05 (j48):
+after ~300 PMIC reads (osmctl "rails") kmem_alloc failed with
+KERN_NO_SPACE and the kernel panicked. pmic_channel() now keeps one
+mapping per APID; the init-time callers get the same pointer as before.
+---
+ bsd/dev/sweet_pmic.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index 5977358..96f3db7 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -89,7 +89,13 @@ pmic_find_apid(uint32_t sid, uint32_t addr)
+ 	return PMIC_NO_APID;
+ }
+ 
+-/* Observer channel of the peripheral holding (sid, addr), or NULL. */
++/*
++ * Observer channel of the peripheral holding (sid, addr), or NULL. Mapped once per
++ * APID: sweet_pmic_peek() comes here on every read, and a fresh ml_io_map() each
++ * time ran the kernel out of mapping space after ~300 reads (osmctl "rails", j0048).
++ */
++static volatile uint32_t *pmic_obs_va[512];
++
+ static volatile uint32_t *
+ pmic_channel(uint32_t sid, uint32_t addr, uint16_t *apid_out)
+ {
+@@ -100,7 +106,14 @@ pmic_channel(uint32_t sid, uint32_t addr, uint16_t *apid_out)
+ 	if (apid == PMIC_NO_APID || 0x8000ull * apid + 0x1000 > pmic_obs_size) {
+ 		return NULL;
+ 	}
+-	return (volatile uint32_t *)ml_io_map(pmic_obs_pa + 0x8000ull * apid, 0x1000);
++	if (apid >= sizeof(pmic_obs_va) / sizeof(pmic_obs_va[0])) {
++		return (volatile uint32_t *)ml_io_map(pmic_obs_pa + 0x8000ull * apid, 0x1000);
++	}
++	if (pmic_obs_va[apid] == NULL) {
++		/* a race maps twice and keeps one: harmless */
++		pmic_obs_va[apid] = (volatile uint32_t *)ml_io_map(pmic_obs_pa + 0x8000ull * apid, 0x1000);
++	}
++	return pmic_obs_va[apid];
+ }
+ 
+ /* Read n (1..4) bytes at addr, little endian. 0 or the arbiter status. */
+-- 
+2.47.3
+
