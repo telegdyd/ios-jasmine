@@ -1,0 +1,87 @@
+From 8cbabda1ce397658d18d0366baed3e71b5f6054c Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 07:01:24 +0200
+Subject: [PATCH] jasmine-j0042: watch the OSM block (osmwatch), phase start
+ time osmdelay=
+
+Rounds j39e..j41: the OSM version register (0x179c0000) reads 0x70000 at
+20 s and 0 from 60 s on, and the OSM cycle counter never ticks after it was
+set up: the block is cut off (clock or power) somewhere between 20 s and
+60 s, so every OSM write after that went nowhere. Also, TZ answers 0 to IO
+writes outside stock Linux's set (SEQ 15/31/32/55-58/72/76) but drops them
+(SEQ_REG(0), SEQ_REG(39) and the branch table read back 0): the no-TZ
+sequencer load cannot be done from the apps side.
+
+With sweetosm, a watch thread now samples the version register (and the
+Gold enable) every 500 ms from start and logs each change with the time
+since boot (osmwatch=0 turns it off); osmdelay= sets when the OSM thread
+starts (default 60 s), to run phase 2 while the block is still alive.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/arm64/sweet_osm.c | 37 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 523d263..a2f28ff 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1136,13 +1136,43 @@ osm_phase2(void)
+ 
+ static int sweet_osm_chan;
+ 
++/*
++ * osmwatch (default on with sweetosm): the OSM version register (Silver block,
++ * 0x179c0000, 0x70000 when alive) every 500 ms from start, each change logged
++ * with the time since boot. Rounds j39e..j41: 0x70000 at 20 s, 0 from 60 s on,
++ * so every OSM write after that went nowhere.
++ */
++static void
++osm_watch_thread(void *arg, wait_result_t result)
++{
++	(void)arg;
++	(void)result;
++	volatile uint32_t *v = osm_map(OSM_BASE, 0x4000);
++	uint32_t last = 0xffffffff;
++	for (int i = 0; i < 2 * 300; i++) {
++		uint32_t ver = v[0], en = v[(0x2000 + 0x1004) / 4];
++		if (ver != last) {
++			uint64_t ns;
++			absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++			printf("SWEET OSM: watch %llu ms: OSM version %#x (Gold enable %#x)\n", ns / 1000000, ver, en);
++			last = ver;
++		}
++		uint64_t deadline;
++		clock_interval_to_deadline(500, NSEC_PER_MSEC, &deadline);
++		(void)assert_wait_deadline(&last, THREAD_UNINT, deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
+ static void
+ osm_thread(void *arg, wait_result_t result)
+ {
+ 	(void)arg;
+ 	(void)result;
+ 	uint64_t deadline;
+-	clock_interval_to_deadline(60, NSEC_PER_SEC, &deadline);   /* live log up: a panic goes out over USB */
++	uint32_t secs = 60;                                         /* live log up: a panic goes out over USB */
++	(void)PE_parse_boot_argn("osmdelay", &secs, sizeof(secs));
++	clock_interval_to_deadline(secs, NSEC_PER_SEC, &deadline);
+ 	(void)assert_wait_deadline(&sweet_osm_chan, THREAD_UNINT, deadline);
+ 	thread_block(THREAD_CONTINUE_NULL);
+ 	if (osm_mode == 1) {
+@@ -1165,5 +1195,10 @@ sweet_osm_init(void)
+ 	if (kernel_thread_start(osm_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	uint32_t watch = 1;
++	(void)PE_parse_boot_argn("osmwatch", &watch, sizeof(watch));
++	if (watch && kernel_thread_start(osm_watch_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ }
+ #endif /* SWEET */
+-- 
+2.47.3
+
