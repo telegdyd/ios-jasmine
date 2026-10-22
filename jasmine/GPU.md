@@ -532,3 +532,27 @@ user swiping home pages and scrolling Settings for ~2 min each; only `cpus=` dif
   DF/UT/BG prefer Silver (logd, mds, etc. off the Gold cores), Silver only takes UI work when Gold is overloaded.
   Then GPU buffers write-combined (no cache maintenance at all, as msm/freedreno) and fewer submits per frame.
   Until then `cpus=4` is the faster setting for the UI.
+
+#### j0053: GPU pool + lazy IOSurface upkeep (2026-10-22 19:23 to 19:50): cache maintenance ~1 % instead of ~25 %
+
+Profile first (libsweetca since `d8d851e`, Mesa CI `39815893071`: every 100 flushes `sweetca: prof:` lines with the
+time and the kernel submits per GL wrapper, plus time in the submit and wait calls). j0053 (CI `39822208684`):
+Mesa's buffers from a write-combined pool of RAM XNU does not manage (0xc0000000-0xf3ffffff, 13 x 64 MB, topaz's
+pool code; the shim now passes its own place, `sweetshim=0x80080000 sweetshimsz=0x26000`), and imported IOSurfaces
+cleaned before a job only if the CPU wrote them (unlock without read-only, or new) and invalidated when the CPU next
+reads them (lock, the display's copy). All rounds: 4 Gold cores (`cpus=4`), user swiping/using the dock ~2.5 min.
+
+| round | boot-args | frame interval while moving | cache maintenance / 10 s | log |
+|---|---|---|---|---|
+| j51c4 (before) | - | 54-100 ms | 1.1-3.2 s (2000-7700 whole-cache flushes) | `netlog-j51c4-swipe.txt` |
+| **j53c4** | - | **38-68 ms** | **0.05-0.22 s (0-6)** | `netlog-j53c4-swipe.txt` |
+| j53nl | `sweetgpu_lazy=0` | 68-120 ms | 2-3.7 s | `netlog-j53nl-swipe.txt` |
+| j53np | `sweetgpu_pool=0` | 44-97 ms | 1-2.5 s | `netlog-j53np-swipe.txt` |
+
+- Both halves are needed: pool alone leaves the surfaces' whole-cache flushes, lazy alone leaves Mesa's buffers.
+- No panic, hang or corruption from the pool. The user sees an occasional flicker (the dock while interacting) in
+  every variant, also with `sweetgpu_lazy=0`, and thinks it was there before: an older bug, more visible now.
+- Profile (j53c4, moving): GL is 50-85 % of the frame; `glDrawElements` ~0.3 ms per call and **~0.65 kernel
+  submits per draw** (submit call ~0.13 ms each, 6-12 ms a frame). Cause: Mesa does not merge submits that name
+  shared buffers (`has_shared` in `freedreno_ringbuffer_sp.c`) unless the pipe has `no_implicit_sync`; every
+  imported IOSurface is shared. SweetGPU has no implicit sync, so the darwin pipe now sets it (Mesa CI `39824777796`).
