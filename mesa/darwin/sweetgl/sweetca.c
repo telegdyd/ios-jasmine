@@ -43,6 +43,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <mach/vm_page_size.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOSurface/IOSurfaceRef.h>
@@ -153,8 +154,49 @@ bind_ctx(struct sca_ctx *c)
    cur = c;
 }
 
+/*
+ * Where backboardd's frame time goes: every wrapper's time and the kernel
+ * submits made inside it (darwin_pipe.c counts them), summed per wrapper and
+ * logged with the 100-flush statistics. Outermost calls only add to the total.
+ */
+extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
+
+struct prof_mark {
+   const char *fn;
+   uint64_t t0, s0;
+};
+struct prof_slot {
+   const char *fn;
+   uint64_t calls, ticks, submits;
+};
+#define PROF_SLOTS 128
+static struct prof_slot prof[PROF_SLOTS];
+static uint64_t prof_gl_ticks;
+static __thread unsigned prof_depth;
+
+static void
+prof_end(struct prof_mark *m)
+{
+   uint64_t dt = mach_absolute_time() - m->t0, ds = darwin_submits - m->s0;
+   if (--prof_depth == 0)
+      prof_gl_ticks += dt;
+   unsigned h = (unsigned)(((uintptr_t)m->fn >> 3) % PROF_SLOTS);
+   for (unsigned i = 0; i < PROF_SLOTS; i++, h = (h + 1) % PROF_SLOTS) {
+      if (prof[h].fn == m->fn || (prof[h].fn == NULL && __sync_bool_compare_and_swap(&prof[h].fn, NULL, m->fn)) ||
+          prof[h].fn == m->fn) {
+         prof[h].calls++;
+         prof[h].ticks += dt;
+         prof[h].submits += ds;
+         return;
+      }
+   }
+}
+
 /* the wrappers' first lines: rctx is ours, and its Mesa context must be this thread's */
 #define CUR(r)                                                                   \
+   struct prof_mark __attribute__((cleanup(prof_end), unused)) sca_pm =          \
+      {__func__, mach_absolute_time(), darwin_submits};                           \
+   prof_depth++;                                                                  \
    struct sca_ctx *c = (struct sca_ctx *)(r);                                     \
    if (__builtin_expect(cur != c, 0))                                             \
       bind_ctx(c)
@@ -356,6 +398,45 @@ now_ms(void)
    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
 }
 
+/* the profile since the last report: GL time, the kernel's share, the wrappers by time and by submits */
+static void
+prof_report(double wall_ms)
+{
+   static double ms_per_tick;
+   static uint64_t sub0, subt0, waitt0, waits0;
+   if (ms_per_tick == 0) {
+      mach_timebase_info_data_t tb;
+      mach_timebase_info(&tb);
+      ms_per_tick = (double)tb.numer / tb.denom / 1e6;
+   }
+   uint64_t sub = darwin_submits, subt = darwin_submit_ticks, waitt = darwin_wait_ticks, waits = darwin_waits;
+   sca_log("sweetca: prof: GL %.0f of %.0f ms; %llu submits (%.0f ms in the call), %llu waits (%.0f ms)",
+           prof_gl_ticks * ms_per_tick, wall_ms, (unsigned long long)(sub - sub0), (subt - subt0) * ms_per_tick,
+           (unsigned long long)(waits - waits0), (waitt - waitt0) * ms_per_tick);
+   sub0 = sub;
+   subt0 = subt;
+   waitt0 = waitt;
+   waits0 = waits;
+   prof_gl_ticks = 0;
+   /* the 8 slowest wrappers, then every wrapper that submitted */
+   uint8_t shown[PROF_SLOTS] = {0};
+   for (int k = 0; k < 8; k++) {
+      int best = -1;
+      for (int i = 0; i < PROF_SLOTS; i++)
+         if (prof[i].fn && !shown[i] && prof[i].ticks && (best < 0 || prof[i].ticks > prof[best].ticks))
+            best = i;
+      if (best < 0)
+         break;
+      shown[best] = 1;
+   }
+   for (int i = 0; i < PROF_SLOTS; i++) {
+      if (prof[i].fn && (shown[i] || prof[i].submits))
+         sca_log("sweetca: prof:   %-28s %7llu calls %7.1f ms %5llu submits", prof[i].fn,
+                 (unsigned long long)prof[i].calls, prof[i].ticks * ms_per_tick, (unsigned long long)prof[i].submits);
+      prof[i].calls = prof[i].ticks = prof[i].submits = 0;
+   }
+}
+
 /* every 100 flushes (CA flushes once per frame): wall time, time in glFinish, draws */
 static void
 flush_stats(double wait_ms)
@@ -369,6 +450,7 @@ flush_stats(double wait_ms)
    if (++n == 101) {
       sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in glFinish), %u draws", t - t0,
               (t - t0) / 100, waited / 100, n_draws - draws0);
+      prof_report(t - t0);
       n = 1;
       t0 = t;
       waited = 0;

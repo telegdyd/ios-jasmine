@@ -1,6 +1,6 @@
-From c984a13b95621c858303035f39b27a9014c8e8f7 Mon Sep 17 00:00:00 2001
+From 882fc6ad03da565b1fe1c931304384843070ec28 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 04:19:05 +0200
+Date: Thu, 22 Oct 2026 18:40:08 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -9,8 +9,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  meson.build                                   |    5 +
  src/freedreno/drm/darwin/darwin_bo.c          |  154 ++
  src/freedreno/drm/darwin/darwin_device.c      |   82 +
- src/freedreno/drm/darwin/darwin_pipe.c        |  215 ++
- src/freedreno/drm/darwin/darwin_priv.h        |  113 +
+ src/freedreno/drm/darwin/darwin_pipe.c        |  226 ++
+ src/freedreno/drm/darwin/darwin_priv.h        |  116 +
  src/freedreno/drm/freedreno_device.c          |   15 +
  src/freedreno/drm/meson.build                 |   11 +
  src/freedreno/meson.build                     |    2 +-
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1959 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 2041 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  451 ++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   97 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5699 insertions(+), 1 deletion(-)
+ 20 files changed, 5795 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -406,14 +406,16 @@ index 0000000..81c0409
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
 new file mode 100644
-index 0000000..0dcafea
+index 0000000..d2f1845
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_pipe.c
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,226 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + */
++
++#include <mach/mach_time.h>
 +
 +#include "util/os_time.h"
 +
@@ -472,13 +474,19 @@ index 0000000..0dcafea
 +   return -1;
 +}
 +
++/* for libsweetca's profile: kernel submits and waits, and the ticks spent in those calls */
++uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
++
 +static int
 +darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
 +{
 +   uint64_t ms = timeout == OS_TIMEOUT_INFINITE ? 60000 : timeout / 1000000;
 +   uint64_t in[2] = { fence->kfence, ms };
++   uint64_t t0 = mach_absolute_time();
 +   IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_WAIT,
 +                                            in, 2, NULL, NULL);
++   __atomic_add_fetch(&darwin_wait_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
++   __atomic_add_fetch(&darwin_waits, 1, __ATOMIC_RELAXED);
 +   if (ret == DARWIN_kIOReturnTimeout)
 +      return -ETIMEDOUT;
 +   if (ret) {
@@ -550,8 +558,11 @@ index 0000000..0dcafea
 +
 +   uint64_t seqno = 0;
 +   uint32_t nout = 1;
++   uint64_t t0 = mach_absolute_time();
 +   IOReturn ret = IOConnectCallMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_SUBMIT, NULL, 0,
 +                                      req, len, &seqno, &nout, NULL, NULL);
++   __atomic_add_fetch(&darwin_submit_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
++   __atomic_add_fetch(&darwin_submits, 1, __ATOMIC_RELAXED);
 +   free(req);
 +   if (ret) {
 +      ERROR_MSG("submit of %u command buffers failed: 0x%x", nr_cmds, ret);
@@ -627,10 +638,10 @@ index 0000000..0dcafea
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_priv.h b/src/freedreno/drm/darwin/darwin_priv.h
 new file mode 100644
-index 0000000..80e2f53
+index 0000000..8078e09
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_priv.h
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,116 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -742,6 +753,9 @@ index 0000000..80e2f53
 +struct fd_bo *darwin_bo_from_handle(struct fd_device *dev, uint32_t size, uint32_t handle);
 +struct fd_bo *darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id);
 +int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value);
++
++/* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
++extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
 +
 +#endif /* DARWIN_PRIV_H_ */
 diff --git a/src/freedreno/drm/freedreno_device.c b/src/freedreno/drm/freedreno_device.c
@@ -1287,10 +1301,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..3df4cc5
+index 0000000..20212e7
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1959 @@
+@@ -0,0 +1,2041 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1336,6 +1350,7 @@ index 0000000..3df4cc5
 +#include <time.h>
 +#include <unistd.h>
 +#include <mach/mach.h>
++#include <mach/mach_time.h>
 +#include <mach/vm_page_size.h>
 +#include <CoreFoundation/CoreFoundation.h>
 +#include <IOSurface/IOSurfaceRef.h>
@@ -1446,8 +1461,49 @@ index 0000000..3df4cc5
 +   cur = c;
 +}
 +
++/*
++ * Where backboardd's frame time goes: every wrapper's time and the kernel
++ * submits made inside it (darwin_pipe.c counts them), summed per wrapper and
++ * logged with the 100-flush statistics. Outermost calls only add to the total.
++ */
++extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
++
++struct prof_mark {
++   const char *fn;
++   uint64_t t0, s0;
++};
++struct prof_slot {
++   const char *fn;
++   uint64_t calls, ticks, submits;
++};
++#define PROF_SLOTS 128
++static struct prof_slot prof[PROF_SLOTS];
++static uint64_t prof_gl_ticks;
++static __thread unsigned prof_depth;
++
++static void
++prof_end(struct prof_mark *m)
++{
++   uint64_t dt = mach_absolute_time() - m->t0, ds = darwin_submits - m->s0;
++   if (--prof_depth == 0)
++      prof_gl_ticks += dt;
++   unsigned h = (unsigned)(((uintptr_t)m->fn >> 3) % PROF_SLOTS);
++   for (unsigned i = 0; i < PROF_SLOTS; i++, h = (h + 1) % PROF_SLOTS) {
++      if (prof[h].fn == m->fn || (prof[h].fn == NULL && __sync_bool_compare_and_swap(&prof[h].fn, NULL, m->fn)) ||
++          prof[h].fn == m->fn) {
++         prof[h].calls++;
++         prof[h].ticks += dt;
++         prof[h].submits += ds;
++         return;
++      }
++   }
++}
++
 +/* the wrappers' first lines: rctx is ours, and its Mesa context must be this thread's */
 +#define CUR(r)                                                                   \
++   struct prof_mark __attribute__((cleanup(prof_end), unused)) sca_pm =          \
++      {__func__, mach_absolute_time(), darwin_submits};                           \
++   prof_depth++;                                                                  \
 +   struct sca_ctx *c = (struct sca_ctx *)(r);                                     \
 +   if (__builtin_expect(cur != c, 0))                                             \
 +      bind_ctx(c)
@@ -1649,6 +1705,45 @@ index 0000000..3df4cc5
 +   return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
 +}
 +
++/* the profile since the last report: GL time, the kernel's share, the wrappers by time and by submits */
++static void
++prof_report(double wall_ms)
++{
++   static double ms_per_tick;
++   static uint64_t sub0, subt0, waitt0, waits0;
++   if (ms_per_tick == 0) {
++      mach_timebase_info_data_t tb;
++      mach_timebase_info(&tb);
++      ms_per_tick = (double)tb.numer / tb.denom / 1e6;
++   }
++   uint64_t sub = darwin_submits, subt = darwin_submit_ticks, waitt = darwin_wait_ticks, waits = darwin_waits;
++   sca_log("sweetca: prof: GL %.0f of %.0f ms; %llu submits (%.0f ms in the call), %llu waits (%.0f ms)",
++           prof_gl_ticks * ms_per_tick, wall_ms, (unsigned long long)(sub - sub0), (subt - subt0) * ms_per_tick,
++           (unsigned long long)(waits - waits0), (waitt - waitt0) * ms_per_tick);
++   sub0 = sub;
++   subt0 = subt;
++   waitt0 = waitt;
++   waits0 = waits;
++   prof_gl_ticks = 0;
++   /* the 8 slowest wrappers, then every wrapper that submitted */
++   uint8_t shown[PROF_SLOTS] = {0};
++   for (int k = 0; k < 8; k++) {
++      int best = -1;
++      for (int i = 0; i < PROF_SLOTS; i++)
++         if (prof[i].fn && !shown[i] && prof[i].ticks && (best < 0 || prof[i].ticks > prof[best].ticks))
++            best = i;
++      if (best < 0)
++         break;
++      shown[best] = 1;
++   }
++   for (int i = 0; i < PROF_SLOTS; i++) {
++      if (prof[i].fn && (shown[i] || prof[i].submits))
++         sca_log("sweetca: prof:   %-28s %7llu calls %7.1f ms %5llu submits", prof[i].fn,
++                 (unsigned long long)prof[i].calls, prof[i].ticks * ms_per_tick, (unsigned long long)prof[i].submits);
++      prof[i].calls = prof[i].ticks = prof[i].submits = 0;
++   }
++}
++
 +/* every 100 flushes (CA flushes once per frame): wall time, time in glFinish, draws */
 +static void
 +flush_stats(double wait_ms)
@@ -1662,6 +1757,7 @@ index 0000000..3df4cc5
 +   if (++n == 101) {
 +      sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in glFinish), %u draws", t - t0,
 +              (t - t0) / 100, waited / 100, n_draws - draws0);
++      prof_report(t - t0);
 +      n = 1;
 +      t0 = t;
 +      waited = 0;

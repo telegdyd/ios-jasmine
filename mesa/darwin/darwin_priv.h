@@ -110,4 +110,7 @@ struct fd_bo *darwin_bo_from_handle(struct fd_device *dev, uint32_t size, uint32
 struct fd_bo *darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id);
 int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value);
 
+/* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
+extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
+
 #endif /* DARWIN_PRIV_H_ */

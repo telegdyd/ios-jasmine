@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <mach/mach_time.h>
+
 #include "util/os_time.h"
 
 #include "freedreno_ringbuffer_sp.h"
@@ -60,13 +62,19 @@ darwin_pipe_set_param(struct fd_pipe *pipe, enum fd_param_id param, uint64_t val
    return -1;
 }
 
+/* for libsweetca's profile: kernel submits and waits, and the ticks spent in those calls */
+uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
+
 static int
 darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
 {
    uint64_t ms = timeout == OS_TIMEOUT_INFINITE ? 60000 : timeout / 1000000;
    uint64_t in[2] = { fence->kfence, ms };
+   uint64_t t0 = mach_absolute_time();
    IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_WAIT,
                                             in, 2, NULL, NULL);
+   __atomic_add_fetch(&darwin_wait_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
+   __atomic_add_fetch(&darwin_waits, 1, __ATOMIC_RELAXED);
    if (ret == DARWIN_kIOReturnTimeout)
       return -ETIMEDOUT;
    if (ret) {
@@ -138,8 +146,11 @@ flush_submit_list(struct list_head *submit_list)
 
    uint64_t seqno = 0;
    uint32_t nout = 1;
+   uint64_t t0 = mach_absolute_time();
    IOReturn ret = IOConnectCallMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_SUBMIT, NULL, 0,
                                       req, len, &seqno, &nout, NULL, NULL);
+   __atomic_add_fetch(&darwin_submit_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
+   __atomic_add_fetch(&darwin_submits, 1, __ATOMIC_RELAXED);
    free(req);
    if (ret) {
       ERROR_MSG("submit of %u command buffers failed: 0x%x", nr_cmds, ret);
