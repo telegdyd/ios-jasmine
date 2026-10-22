@@ -1,25 +1,30 @@
-From a8360bef28fc965ef1a7c153435523272d795c2c Mon Sep 17 00:00:00 2001
+From af121709f811dd0408d80beb3a2a02b21e1e7537 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 05:21:16 +0200
-Subject: [PATCH] jasmine-j0039: OSM/CPRh read-only probe (sweetosm=1)
+Subject: [PATCH] jasmine-j0039: OSM/CPRh read-only probe and per-chip table
+ (sweetosm=1)
 
 First step of the Gold clock done properly (jasmine/HANDOFF-CPUCLK.md
-phase 1). With sweetosm=1 the platform expert logs, before sweetgold=
-changes anything: the CPR fuse rows 36..72 (QFPROM 0x784000, the rows
-the downstream SDM660 CPRh tables name; input for
-tools/cpuclk/cpuclk_model.py), the OSM block of both clusters (control,
-LUT, LMh request, counters), the Gold CPRh controller (apc1), APM, APCS
-common, the Gold L2 SAW4, the LMh blocks and the GCC HMSS clocks,
-all-zero lines left out. The OSM sequencer registers and program memory
-are TrustZone's on stock, so they are read through TZ's IO read call
-(SCM svc 5 cmd 1). Nothing is written.
+phase 1). sweetosm=1 starts a thread that, 8 s later, reads the CPR fuse
+rows the downstream SDM660 CPRh driver reads (38, 65..71), computes this
+chip's CPRh corners (open-loop, floor, ceiling, target quotient, corner
+register words) and the OSM LUT with the APM / MEM-ACC virtual corners,
+adapted from the Linux msm-4.4 cprh-kbss-regulator.c, cpr3-util.c,
+cpr3-regulator.c and clk-cpu-osm.c (The Linux Foundation, GPL-2.0; the
+user's OK of 2026-10-22), and logs it next to the OSM block of both
+clusters, the Gold CPRh controller (apc1), APM, LMh, the GCC HMSS clocks,
+the Gold L2 SAW4 and APCS common, all-zero lines left out. The OSM
+sequencer registers and program memory are TrustZone's on stock, so they
+are read through TZ's IO read call (SCM svc 5 cmd 1). Nothing is written.
+The first version ran inside the platform expert and read fuse rows
+36..72: the read of row 36 never completed and stopped the boot there.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
- osfmk/arm64/sweet_osm.c                  | 158 +++++++++++++++++++++++
+ osfmk/arm64/sweet_osm.c                  | 579 +++++++++++++++++++++++
  osfmk/conf/files.arm64                   |   1 +
- 3 files changed, 162 insertions(+)
+ 3 files changed, 583 insertions(+)
  create mode 100755 osfmk/arm64/sweet_osm.c
 
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
@@ -45,25 +50,27 @@ index f38c815..3974e2f 100644
  	sweet_nvt_init();
 diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
 new file mode 100755
-index 0000000..de49af8
+index 0000000..db17b60
 --- /dev/null
 +++ b/osfmk/arm64/sweet_osm.c
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,579 @@
 +/*
 + * Gold cluster clock done properly (jasmine, SDM660): Qualcomm's OSM clock
 + * sequencer with CPRh voltages from this chip's fuses. Plan and rounds:
 + * jasmine/HANDOFF-CPUCLK.md, jasmine/NOTES.md "CPU clock".
 + *
-+ * sweetosm=1 (j0039): read-only probe, before sweet_gold_clock() touches
-+ * anything. Logs the CPR fuse rows (QFPROM 0x784000 + 8 * row, the rows the
-+ * downstream cprh-kbss-regulator.c reads for SDM660), the OSM block (both
-+ * clusters), the Gold CPRh controller (apc1), APM, the APCS common block,
-+ * the Gold L2 SAW4, the LMh blocks and the GCC CPR/OSM clocks, all-zero
-+ * lines left out. The OSM sequencer registers and program memory are
-+ * written by TrustZone on stock (msm-4.4 clk-cpu-osm.c uses scm_io_write for
-+ * them), so they are read through TrustZone's IO read call (SCM svc 5 cmd 1)
-+ * instead of directly. Nothing is written. The fuse lines feed
-+ * tools/cpuclk/cpuclk_model.py.
++ * sweetosm=1 (j0039): read-only probe in its own thread, 8 s after the
++ * platform expert started it (a stuck read then blocks only this thread; the
++ * first version ran inside the platform expert and a protected fuse row,
++ * 36, stopped the boot there). Reads the CPR fuse rows the downstream SDM660
++ * CPRh driver reads (38, 65..71), computes this chip's CPRh corners and the
++ * OSM LUT from them (see below), then logs the OSM block (both clusters), the
++ * Gold CPRh controller (apc1), APM, the LMh blocks, the GCC CPR/OSM clocks,
++ * the Gold L2 SAW4 and the APCS common block, all-zero lines left out. The
++ * OSM sequencer registers and program memory are written by TrustZone on
++ * stock (msm-4.4 clk-cpu-osm.c uses scm_io_write for them), so they are read
++ * through TrustZone's IO read call (SCM svc 5 cmd 1). Nothing is written.
++ * The fuse lines feed tools/cpuclk/cpuclk_model.py.
 + */
 +#include <pexpert/arm64/board_config.h>
 +
@@ -73,6 +80,9 @@ index 0000000..de49af8
 +#include <kern/clock.h>
 +#include <arm/machine_routines.h>
 +#include <pexpert/pexpert.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <string.h>
 +
 +void sweet_osm_init(void);
 +
@@ -156,15 +166,404 @@ index 0000000..de49af8
 +	printf("SWEET OSM: %s %#llx..%#llx (via TZ): %u non-zero lines\n", name, pa + from, pa + to, shown);
 +}
 +
++/*
++ * Per-chip CPRh corners and the OSM LUT for the Gold cluster, adapted from the
++ * Linux msm-4.4 drivers for SDM660 (LineageOS android_kernel_xiaomi_sdm660,
++ * lineage-19.1): drivers/regulator/cprh-kbss-regulator.c, cpr3-util.c,
++ * cpr3-regulator.c and drivers/clk/qcom/clk-cpu-osm.c,
++ * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
++ * (GPL-2.0; adapted here with the user's OK, 2026-10-22.) Only the paths the
++ * jasmine device tree takes: no aging, no core-count/temperature bands, no
++ * mem-acc threshold. The DT values are the stock jasmine dtb0's
++ * (cprh-ctrl@179c4000 and qcom,clk-cpu-660@179c0000); the same computation in
++ * Python: tools/cpuclk/cpuclk_model.py.
++ */
++#define CPR_STEP                4000    /* qcom,voltage-step, uV */
++#define CPR_BASE_VOLT           400000  /* qcom,voltage-base */
++#define CPR_RO_COUNT            16
++#define CPR_FUSE_CORNERS        5
++#define CPR_CORNERS             7       /* every perfcl speed bin that exists has 7 */
++#define CPR_APM_THRESHOLD       872000
++#define CPR_APM_HYSTERESIS      20000
++#define CPR_APM_CROSSOVER       872000
++#define OSM_TABLE_SIZE          40
++
++struct fuse_seg { uint8_t row, lo, hi; };
++
++/* cprh-kbss-regulator.c: sdm660 tables, performance cluster (id 1) */
++static const struct fuse_seg fz_speed_bin[] = { { 38, 29, 31 }, { 0, 0, 0 } };
++static const struct fuse_seg fz_fusing_rev[] = { { 71, 28, 30 }, { 0, 0, 0 } };
++static const struct fuse_seg fz_ro_sel[CPR_FUSE_CORNERS][3] = {
++	{ { 68, 61, 63 }, { 69, 0, 0 } }, { { 69, 1, 4 } }, { { 68, 57, 60 } }, { { 68, 53, 56 } }, { { 66, 14, 17 } },
++};
++static const struct fuse_seg fz_init_volt[CPR_FUSE_CORNERS][2] = {
++	{ { 69, 17, 22 } }, { { 69, 23, 28 } }, { { 69, 11, 16 } }, { { 69, 5, 10 } }, { { 70, 42, 47 } },
++};
++static const struct fuse_seg fz_target_quot[CPR_FUSE_CORNERS][3] = {
++	{ { 69, 53, 63 }, { 70, 0, 0 } }, { { 70, 1, 12 } }, { { 69, 41, 52 } }, { { 69, 29, 40 } }, { { 70, 48, 59 } },
++};
++static const struct fuse_seg fz_quot_offset[CPR_FUSE_CORNERS][3] = {
++	{ { 0 } }, { { 70, 27, 33 } }, { { 70, 20, 26 } }, { { 70, 13, 19 } }, { { 70, 60, 63 }, { 71, 0, 2 } },
++};
++static const int cpr_ref_volt[CPR_FUSE_CORNERS] = { 724000, 788000, 868000, 988000, 1068000 };
++
++/* apc1 DT: per-corner (one list for every combo) */
++static const int dt_ceiling[CPR_CORNERS] = { 724000, 724000, 788000, 868000, 988000, 988000, 1068000 };
++static const int dt_floor[CPR_CORNERS] = { 588000, 596000, 652000, 712000, 744000, 784000, 844000 };
++static const int dt_floor_range[CPR_CORNERS] = { 40000, 40000, 40000, 40000, 66000, 66000, 40000 };
++static const int dt_ol_fuse_adj[CPR_FUSE_CORNERS] = { 16000, 27000, 39000, 39000, 20000 };
++static const int dt_cl_fuse_adj[CPR_FUSE_CORNERS] = { -22000, -9000, -7000, -2000, 11000 };
++/* qcom,cpr-ro-scaling-factor: 16 ROs per fuse corner */
++static const uint16_t dt_ro_scale[CPR_FUSE_CORNERS][CPR_RO_COUNT] = {
++	{ 0xfc8, 0x1086, 0, 0x8a2, 0xa00, 0x992, 0x8b6, 0x8ac, 0x96a, 0x8fc, 0xa00, 0x9a6, 0x640, 0xc30, 0xa3c, 0x8e8 },
++	{ 0xfc8, 0x1086, 0, 0x8a2, 0xa00, 0x992, 0x8b6, 0x8ac, 0x96a, 0x8fc, 0xa00, 0x9a6, 0x640, 0xc30, 0xa3c, 0x8e8 },
++	{ 0xfc8, 0x1086, 0, 0x8a2, 0xa00, 0x992, 0x8b6, 0x8ac, 0x96a, 0x8fc, 0xa00, 0x9a6, 0x640, 0xc30, 0xa3c, 0x8e8 },
++	{ 0xfc8, 0x1086, 0, 0x8a2, 0xa00, 0x992, 0x8b6, 0x8ac, 0x96a, 0x8fc, 0xa00, 0x9a6, 0x640, 0xc30, 0xa3c, 0x8e8 },
++	{ 0xfc8, 0x1086, 0, 0x8a2, 0xa00, 0x992, 0x8b6, 0x8ac, 0x96a, 0x8fc, 0xa00, 0x9a6, 0x640, 0xc30, 0xa3c, 0x8e8 },
++};
++/* per speed bin (0..4; bin 2 has no corners): corner frequencies (Hz) and fmax map (1-based corners) */
++static const uint32_t dt_corner_freq[5][CPR_CORNERS] = {
++	{ 300000000, 1113600000, 1401600000, 1747200000, 1958400000, 2150400000, 2457600000 },
++	{ 300000000, 1113600000, 1401600000, 1747200000, 1958400000, 2150400000, 2208000000 },
++	{ 0 },
++	{ 300000000, 1113600000, 1401600000, 1747200000, 1958400000, 2150400000, 2208000000 },
++	{ 300000000, 1113600000, 1401600000, 1747200000, 1958400000, 2150400000, 2208000000 },
++};
++static const uint8_t dt_fmax_map[CPR_FUSE_CORNERS] = { 2, 3, 4, 6, 7 };     /* the same in bins 0, 1, 3, 4 */
++
++/* OSM DT qcom,perfcl-speedbinN-v0: freq, freq_data, PLL override, spare (mem-acc level), corner (1-based) */
++struct osm_row { uint32_t freq, fdata, ovr, spare, vc; };
++static const struct osm_row dt_osm_bin0[] = {
++	{ 300000000, 0x4000f, 0x1200020, 1, 1 }, { 1113600000, 0x404003a, 0x52e002e, 1, 2 },
++	{ 1401600000, 0x4040049, 0x73a003a, 2, 3 }, { 1747200000, 0x404005b, 0x9480048, 2, 4 },
++	{ 1958400000, 0x4040066, 0xa510051, 2, 5 }, { 2150400000, 0x4040070, 0xb590059, 2, 6 },
++	{ 2457600000u, 0x4040080, 0xc660066, 3, 7 },
++};
++static const struct osm_row dt_osm_bin1[] = {                    /* also bin 3 */
++	{ 300000000, 0x4000f, 0x1200020, 1, 1 }, { 1113600000, 0x404003a, 0x52e002e, 1, 2 },
++	{ 1401600000, 0x4040049, 0x73a003a, 2, 3 }, { 1747200000, 0x404005b, 0x9480048, 2, 4 },
++	{ 1958400000, 0x4040066, 0xa510051, 2, 5 }, { 2150400000, 0x4040070, 0xb590059, 2, 6 },
++	{ 2208000000u, 0x4040073, 0xb5c005c, 3, 7 },
++};
++static const struct osm_row dt_osm_bin4[] = {
++	{ 300000000, 0x4000f, 0x1200020, 1, 1 }, { 1113600000, 0x404003a, 0x52e002e, 1, 2 },
++	{ 1401600000, 0x4040049, 0x73a003a, 2, 3 }, { 1747200000, 0x404005b, 0x9480048, 2, 4 },
++	{ 1958400000, 0x4040066, 0xa510051, 2, 5 },
++};
++
++struct cpr_corner {
++	uint32_t freq;
++	int fc, floor, open_loop, ceiling, ro, quot;
++	int use_open_loop;
++};
++
++static struct {
++	uint32_t speed_bin, rev, n;                     /* n: corners incl. the APM crossover corner */
++	struct cpr_corner c[CPR_CORNERS + 1];
++	uint32_t base_quot[CPR_RO_COUNT];
++	uint32_t corner_reg[CPR_CORNERS + 1];           /* CPRH_REG_CORNER(i) words */
++	const struct osm_row *lut;
++	uint32_t lut_rows;
++	uint32_t apm_threshold_vc, apm_pre_vc, apm_crossover_vc;
++	uint32_t mem_acc_vc[4], mem_acc_lval;
++} cpr;
++
++static uint64_t fuse_rows[80];
++
++static uint64_t
++fuse_param(const struct fuse_seg *s)                    /* cpr3_read_fuse_param */
++{
++	uint64_t v = 0;
++	int total = 0;
++	for (; s->row || s->lo || s->hi; s++) {
++		int bits = s->hi - s->lo + 1;
++		v |= ((fuse_rows[s->row] >> s->lo) & ((1ull << bits) - 1)) << total;
++		total += bits;
++	}
++	return v;
++}
++
++static int
++cround(int n, int d)                                    /* CPR3_ROUND for n >= 0 */
++{
++	return (n + d - 1) / d * d;
++}
++
++static uint64_t
++cpr_interpolate(uint64_t x1, uint64_t y1, uint64_t x2, uint64_t y2, uint64_t x)   /* cpr3_interpolate */
++{
++	if (x1 >= x2 || y1 > y2 || x1 > x || x > x2) {
++		return y2;
++	}
++	return y2 - (x2 - x) * (y2 - y1) / (x2 - x1);
++}
++
++static int
++quot_adjustment(int ro_scale, int volt_adjust)          /* cpr3_quot_adjustment */
++{
++	int sign = 1;
++	if (ro_scale < 0) {
++		sign = -sign;
++		ro_scale = -ro_scale;
++	}
++	if (volt_adjust < 0) {
++		sign = -sign;
++		volt_adjust = -volt_adjust;
++	}
++	return sign * (int)((uint64_t)ro_scale * (uint64_t)volt_adjust / 1000000);
++}
++
++/* 0 = table computed; fuse_rows[] must hold rows 36..72 */
++static int
++cpr_compute(void)
++{
++	uint32_t ro[CPR_FUSE_CORNERS], quot[CPR_FUSE_CORNERS], qoff[CPR_FUSE_CORNERS], init[CPR_FUSE_CORNERS];
++	int fv[CPR_FUSE_CORNERS], fmax_corner[CPR_FUSE_CORNERS];
++	struct cpr_corner *c = cpr.c;
++	int i, j, n = CPR_CORNERS;
++
++	cpr.speed_bin = (uint32_t)fuse_param(fz_speed_bin);
++	cpr.rev = (uint32_t)fuse_param(fz_fusing_rev);
++	if (cpr.speed_bin > 4 || cpr.speed_bin == 2) {
++		printf("SWEET OSM: speed bin %u has no table\n", cpr.speed_bin);
++		return -1;
++	}
++	for (i = 0; i < CPR_FUSE_CORNERS; i++) {
++		ro[i] = (uint32_t)fuse_param(fz_ro_sel[i]);
++		init[i] = (uint32_t)fuse_param(fz_init_volt[i]);
++		quot[i] = (uint32_t)fuse_param(fz_target_quot[i]);
++		qoff[i] = (uint32_t)fuse_param(fz_quot_offset[i]);
++		printf("SWEET OSM: fuse corner %d: init %#x quot %u ro %u quot_offset %u\n", i, init[i], quot[i], ro[i], qoff[i]);
++	}
++
++	/* cpr3_parse_common_corner_data */
++	memset(c, 0, sizeof(cpr.c));
++	for (i = 0; i < n; i++) {
++		c[i].ceiling = cround(dt_ceiling[i], CPR_STEP);
++		c[i].floor = cround(dt_floor[i], CPR_STEP);
++		c[i].freq = dt_corner_freq[cpr.speed_bin][i];
++		for (j = 0; j < CPR_FUSE_CORNERS && i + 1 > dt_fmax_map[j]; j++) {
++		}
++		c[i].fc = j < CPR_FUSE_CORNERS ? j : CPR_FUSE_CORNERS - 1;
++	}
++
++	/* cprh_kbss_calculate_open_loop_voltages: fuse (6 bits, MSB = sign, 10 mV steps) + DT adjustment */
++	for (i = 0; i < CPR_FUSE_CORNERS; i++) {
++		int steps = init[i] & 0x1f;
++		fv[i] = cpr_ref_volt[i] + ((init[i] & 0x20) ? -steps : steps) * 10000 + dt_ol_fuse_adj[i];
++		if (i > 0 && fv[i] < fv[i - 1]) {
++			fv[i] = fv[i - 1];
++		}
++	}
++	for (i = n - 1, j = CPR_FUSE_CORNERS - 1; i >= 0; i--) {
++		if (c[i].fc == j) {
++			fmax_corner[j--] = i;
++		}
++	}
++	if (j >= 0) {
++		printf("SWEET OSM: invalid fuse corner mapping\n");
++		return -1;
++	}
++	for (i = 0; i <= fmax_corner[0]; i++) {
++		c[i].open_loop = fv[0];
++	}
++	for (i = 1; i < CPR_FUSE_CORNERS; i++) {
++		for (j = fmax_corner[i - 1] + 1; j <= fmax_corner[i]; j++) {
++			c[j].open_loop = (int)cpr_interpolate(c[fmax_corner[i - 1]].freq, fv[i - 1],
++			    c[fmax_corner[i]].freq, fv[i], c[j].freq);
++		}
++	}
++	for (i = 0; i < n; i++) {                       /* cpr3_limit_open_loop_voltages */
++		int v = cround(c[i].open_loop, CPR_STEP);
++		c[i].open_loop = v < c[i].floor ? c[i].floor : v > c[i].ceiling ? c[i].ceiling : v;
++	}
++	for (i = 0; i < n; i++) {                       /* cprh_adjust_voltages_for_apm */
++		if (CPR_APM_THRESHOLD <= c[i].floor || CPR_APM_THRESHOLD > c[i].ceiling) {
++			continue;
++		}
++		if (c[i].open_loop >= CPR_APM_THRESHOLD) {
++			if (c[i].floor < CPR_APM_THRESHOLD - CPR_APM_HYSTERESIS) {
++				c[i].floor = CPR_APM_THRESHOLD - CPR_APM_HYSTERESIS;
++			}
++			if (c[i].open_loop < c[i].floor) {
++				c[i].open_loop = c[i].floor;
++			}
++		} else {
++			c[i].ceiling = CPR_APM_THRESHOLD - CPR_STEP;
++		}
++	}
++	for (i = 0; i < n; i++) {                       /* cpr3_open_loop_voltage_as_ceiling */
++		c[i].ceiling = c[i].open_loop;
++	}
++	for (i = 0; i < n; i++) {                       /* cpr3_limit_floor_voltages */
++		int f = cround(c[i].ceiling - dt_floor_range[i], CPR_STEP);
++		if (f > c[i].floor) {
++			c[i].floor = f;
++		}
++		if (c[i].open_loop < c[i].floor) {
++			c[i].open_loop = c[i].floor;
++		}
++	}
++	for (i = 1; i < n; i++) {
++		if (c[i].floor < c[i - 1].floor) {
++			c[i].floor = c[i - 1].floor;
++			if (c[i].open_loop < c[i].floor) {
++				c[i].open_loop = c[i].floor;
++			}
++			if (c[i].ceiling < c[i].floor) {
++				c[i].ceiling = c[i].floor;
++			}
++		}
++	}
++
++	/* cprh_kbss_calculate_target_quotients, with quotient interpolation */
++	int scale[CPR_FUSE_CORNERS];
++	uint64_t qlow[CPR_FUSE_CORNERS], qhigh[CPR_FUSE_CORNERS];
++	for (i = 0; i < CPR_FUSE_CORNERS; i++) {
++		scale[i] = dt_ro_scale[i][ro[i] & 0xf];
++	}
++	qhigh[0] = qlow[0] = (uint64_t)((int64_t)quot[0] + quot_adjustment(scale[0], dt_cl_fuse_adj[0]));
++	for (i = 0; i <= fmax_corner[0]; i++) {
++		c[i].quot = (int)qhigh[0];
++	}
++	for (i = 1; i < CPR_FUSE_CORNERS; i++) {
++		qhigh[i] = quot[i];
++		qlow[i] = ro[i] == ro[i - 1] ? qhigh[i - 1] : qhigh[i] - (uint64_t)qoff[i] * 5;
++		if (qhigh[i] < qlow[i]) {
++			qhigh[i] = qlow[i];
++		}
++	}
++	for (i = 1; i < CPR_FUSE_CORNERS; i++) {
++		qhigh[i] += quot_adjustment(scale[i], dt_cl_fuse_adj[i]);
++		if (ro[i] == ro[i - 1]) {
++			qlow[i] = qhigh[i - 1];
++		} else {
++			qlow[i] += quot_adjustment(scale[i], dt_cl_fuse_adj[i - 1]);
++		}
++		if (qhigh[i] < qlow[i]) {
++			qhigh[i] = qlow[i];
++		}
++	}
++	for (i = 1; i < CPR_FUSE_CORNERS; i++) {
++		for (j = fmax_corner[i - 1] + 1; j <= fmax_corner[i]; j++) {
++			c[j].quot = (int)cpr_interpolate(c[fmax_corner[i - 1]].freq, qlow[i],
++			    c[fmax_corner[i]].freq, qhigh[i], c[j].freq);
++		}
++	}
++	for (i = 0; i < n; i++) {
++		c[i].ro = ro[c[i].fc];
++	}
++	for (i = 1; i < n; i++) {
++		if (c[i].ro == c[i - 1].ro && c[i].quot < c[i - 1].quot) {
++			c[i].quot = c[i - 1].quot;
++		}
++	}
++
++	/* cprh_kbss_apm_crossover_as_corner */
++	c[n].freq = 0;
++	c[n].floor = c[n].ceiling = c[n].open_loop = CPR_APM_CROSSOVER;
++	c[n].use_open_loop = 1;
++	c[n].ro = 0;
++	c[n].quot = 0;
++	cpr.n = n + 1;
++
++	/* cpr3_regulator_set_base_target_quot + cpr3_regulator_init_cprh_corners */
++	for (i = 0; i < CPR_RO_COUNT; i++) {
++		uint32_t m = 0;
++		for (j = 0; j < n; j++) {
++			if (c[j].ro == i && c[j].quot > 0 && (m == 0 || (uint32_t)c[j].quot < m)) {
++				m = (uint32_t)c[j].quot;
++			}
++		}
++		cpr.base_quot[i] = m;
++	}
++	for (i = 0; i < (int)cpr.n; i++) {
++		int olv = (c[i].open_loop - CPR_BASE_VOLT + CPR_STEP - 1) / CPR_STEP;
++		int flv = (c[i].floor - CPR_BASE_VOLT + CPR_STEP - 1) / CPR_STEP;
++		int dq = c[i].freq ? (c[i].quot - (int)cpr.base_quot[c[i].ro] + 3) / 4 : 0;
++		if (olv < 0 || olv > 255 || flv < 0 || flv > 255 || dq < 0 || dq > 511 || (c[i].quot <= 0 && c[i].freq)) {
++			printf("SWEET OSM: corner %d out of range (olv %d flv %d dq %d quot %d)\n", i, olv, flv, dq, c[i].quot);
++			return -1;
++		}
++		cpr.corner_reg[i] = (uint32_t)olv | (uint32_t)flv << 8 | (uint32_t)dq << 16 | (uint32_t)c[i].ro << 25 |
++		    (c[i].use_open_loop ? 1u << 29 : 0);
++	}
++
++	/* clk-cpu-osm.c: LUT, APM and MEM-ACC virtual corners */
++	switch (cpr.speed_bin) {
++	case 0: cpr.lut = dt_osm_bin0; cpr.lut_rows = sizeof(dt_osm_bin0) / sizeof(dt_osm_bin0[0]); break;
++	case 4: cpr.lut = dt_osm_bin4; cpr.lut_rows = sizeof(dt_osm_bin4) / sizeof(dt_osm_bin4[0]); break;
++	default: cpr.lut = dt_osm_bin1; cpr.lut_rows = sizeof(dt_osm_bin1) / sizeof(dt_osm_bin1[0]); break;
++	}
++	cpr.apm_crossover_vc = cpr.n - 1;
++	cpr.apm_threshold_vc = 0;
++	cpr.apm_pre_vc = 0;
++	for (i = 0; i < OSM_TABLE_SIZE; i++) {
++		const struct osm_row *r = &cpr.lut[i < (int)cpr.lut_rows ? i : (int)cpr.lut_rows - 1];
++		if (c[r->vc - 1].ceiling >= CPR_APM_THRESHOLD) {
++			cpr.apm_threshold_vc = r->vc - 1;
++			cpr.apm_pre_vc = cpr.apm_threshold_vc ? cpr.apm_threshold_vc - 1 : 0xff;
++			break;
++		}
++	}
++	if (!cpr.apm_threshold_vc && cpr.apm_pre_vc != 0xff) {
++		cpr.apm_threshold_vc = OSM_TABLE_SIZE - 1;
++		cpr.apm_pre_vc = cpr.apm_threshold_vc - 1;
++	}
++	uint32_t map[3] = { 0, 0, 0 }, cur = cpr.lut[0].spare;
++	for (i = 0, j = 0; i < (int)cpr.lut_rows && cur != 3; i++) {
++		if (cpr.lut[i].spare != cur) {
++			map[j++] = cpr.lut[i].vc - 2;           /* virtual_corner (0-based) - 1 */
++			cur = cpr.lut[i].spare;
++		}
++	}
++	cpr.mem_acc_vc[0] = map[0];
++	cpr.mem_acc_vc[1] = map[0] + 1;
++	cpr.mem_acc_vc[2] = map[1];
++	cpr.mem_acc_vc[3] = map[1] + 1;
++	cpr.mem_acc_lval = 0;
++	for (i = 0; i < (int)cpr.lut_rows; i++) {
++		if (cpr.lut[i].vc - 1 == cpr.mem_acc_vc[3]) {
++			cpr.mem_acc_lval = cpr.lut[i].fdata & 0xff;
++		}
++	}
++	return 0;
++}
++
++static void
++cpr_log(void)
++{
++	printf("SWEET OSM: speed bin %u, CPR fusing rev %u, fuse combo %u\n", cpr.speed_bin, cpr.rev, cpr.rev + 8 * cpr.speed_bin);
++	for (uint32_t i = 0; i < cpr.n; i++) {
++		struct cpr_corner *x = &cpr.c[i];
++		printf("SWEET OSM: corner %u: %u kHz fc %d floor %d open-loop %d ceiling %d ro %d quot %d reg %#010x\n",
++		    i, x->freq / 1000, x->fc, x->floor, x->open_loop, x->ceiling, x->ro, x->quot, cpr.corner_reg[i]);
++	}
++	for (uint32_t i = 0; i < cpr.lut_rows; i++) {
++		const struct osm_row *r = &cpr.lut[i];
++		printf("SWEET OSM: lut %u: %u kHz freq %#010x volt %#010x override %#010x spare %u\n", i, r->freq / 1000,
++		    r->fdata, (r->vc - 1) << 16 | (uint32_t)(cpr.c[r->vc - 1].ceiling / 1000), r->ovr, r->spare);
++	}
++	printf("SWEET OSM: APM threshold vc %u (pre %u) crossover vc %u; MEM-ACC vcs %u %u %u %u, L %#x\n",
++	    cpr.apm_threshold_vc, cpr.apm_pre_vc, cpr.apm_crossover_vc, cpr.mem_acc_vc[0], cpr.mem_acc_vc[1],
++	    cpr.mem_acc_vc[2], cpr.mem_acc_vc[3], cpr.mem_acc_lval);
++}
++
 +static void
 +osm_probe(void)
 +{
 +	volatile uint32_t *q = osm_map(QFPROM_CORR, 0x1000);
-+	/* rows 36..72: speed bin (38) and every CPR row the SDM660 tables name (65..71) */
-+	for (uint32_t row = 36; row <= 72; row++) {
-+		uint64_t v = (uint64_t)q[row * 2 + 1] << 32 | q[row * 2];
-+		printf("SWEET OSM: fuse %u 0x%016llx\n", row, v);
++	/* only the rows Linux reads (speed bin 38, CPR 65..71): a read of row 36 never completed */
++	static const uint8_t rows[] = { 38, 65, 66, 67, 68, 69, 70, 71 };
++	for (uint32_t k = 0; k < sizeof(rows); k++) {
++		uint32_t row = rows[k];
++		fuse_rows[row] = (uint64_t)q[row * 2 + 1] << 32 | q[row * 2];
++		printf("SWEET OSM: fuse %u 0x%016llx\n", row, fuse_rows[row]);
 +	}
++	if (cpr_compute() == 0) {
++		cpr_log();
++	}
++	delay(100000);
 +
 +	volatile uint32_t *osm = osm_map(OSM_BASE, 0x4000);
 +	for (int cl = 0; cl < 2; cl++) {
@@ -173,38 +572,65 @@ index 0000000..de49af8
 +		printf("SWEET OSM: %s: version %#x enable %#x desired %#x pstate %#x wdog pc %#x cc %#x\n", n,
 +		    osm[b / 4], osm[(b + 0x1004) / 4], osm[(b + 0x1f10) / 4], osm[(b + 0x1c00) / 4],
 +		    osm[(b + 0x1c74) / 4], osm[(b + 0x1f04) / 4]);
-+		osm_dump(n, OSM_BASE, osm, b + 0x1000, b + 0x1150);     /* control, FSMs, LLM, SPM */
-+		osm_dump(n, OSM_BASE, osm, b + 0x1150, b + 0x1650);     /* LUT: 40 x 32 bytes */
-+		osm_dump(n, OSM_BASE, osm, b + 0x1650, b + 0x2000);     /* LMh request 0x1b04, wdog, counters */
++		osm_dump(n, OSM_BASE, osm, b + 0x1150, b + 0x1650);     /* LUT: 40 x 32 bytes (Linux writes it) */
 +	}
-+
-+	volatile uint32_t *cpr = osm_map(CPRH_GOLD, 0x4000);
-+	osm_dump("cprh-gold", CPRH_GOLD, cpr, 0, 0x1000);              /* CPR3/4 controller, thread 0 */
-+	osm_dump("cprh-gold", CPRH_GOLD, cpr, 0x3000, 0x3c00);         /* closed loop, CPRh corners/ctl/status */
-+	osm_dump("apm", APCS_APM, osm_map(APCS_APM, 0x1000), 0, 0x40);
-+	osm_dump("apcs-common", APCS_COMMON, osm_map(APCS_COMMON, 0x1000), 0, 0x1000);
-+	osm_dump("saw-gold", GOLD_SAW, osm_map(GOLD_SAW, 0x1000), 0, 0x1000);
++	delay(100000);
++	osm_dump("gcc-hmss", GCC_HMSS, osm_map(GCC_HMSS, 0x1000), 0, 0x100);
++	volatile uint32_t *cpr_regs = osm_map(CPRH_GOLD, 0x4000);
++	osm_dump("cprh-gold", CPRH_GOLD, cpr_regs, 0, 0x1000);         /* CPR3/4 controller, thread 0 */
++	osm_dump("cprh-gold", CPRH_GOLD, cpr_regs, 0x3000, 0x3c00);    /* closed loop, CPRh corners/ctl/status */
++	delay(100000);
++	osm_dump("apm", APCS_APM, osm_map(APCS_APM, 0x1000), 0, 0x20);
 +	volatile uint32_t *lmh = osm_map(LMH_BLOCK, 0x4000);
 +	osm_dump("lmh-gold", LMH_BLOCK, lmh, 0x800, 0x900);
 +	osm_dump("lmh-silver", LMH_BLOCK, lmh, 0x2800, 0x2900);
-+	osm_dump("gcc-hmss", GCC_HMSS, osm_map(GCC_HMSS, 0x1000), 0, 0x100);
++	delay(100000);
++	for (int cl = 0; cl < 2; cl++) {                                /* the rest of the OSM, not all of it Linux's */
++		uint32_t b = cl * 0x2000;
++		const char *n = cl ? "osm-gold" : "osm-silver";
++		osm_dump(n, OSM_BASE, osm, b + 0x1000, b + 0x1150);     /* control, FSMs, LLM, SPM */
++		delay(100000);
++		osm_dump(n, OSM_BASE, osm, b + 0x1650, b + 0x2000);     /* LMh request 0x1b04, wdog, counters */
++		delay(100000);
++	}
++	osm_dump("saw-gold", GOLD_SAW, osm_map(GOLD_SAW, 0x1000), 0, 0x1000);
++	delay(100000);
++	osm_dump("apcs-common", APCS_COMMON, osm_map(APCS_COMMON, 0x1000), 0, 0x1000);
 +
 +	/* last: sequencer registers SEQ_REG(0..127) and program memory, through TrustZone */
-+	delay(200000);
++	delay(100000);
 +	osm_dump_tz("osm-gold-seq", OSM_BASE, 0x2300, 0x2500);
 +	osm_dump_tz("osm-gold-prog", OSM_BASE, 0x2500, 0x2900);
 +	osm_dump_tz("osm-silver-seq", OSM_BASE, 0x0300, 0x0500);
 +}
 +
++static int sweet_osm_chan;
++static uint32_t osm_mode;
++
++static void
++osm_thread(void *arg, wait_result_t result)
++{
++	(void)arg;
++	(void)result;
++	uint64_t deadline;
++	clock_interval_to_deadline(8, NSEC_PER_SEC, &deadline);
++	(void)assert_wait_deadline(&sweet_osm_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++	osm_probe();
++	printf("SWEET OSM: probe done\n");
++}
++
 +void
 +sweet_osm_init(void)
 +{
-+	uint32_t mode = 0;
-+	if (!PE_parse_boot_argn("sweetosm", &mode, sizeof(mode)) || mode == 0) {
++	thread_t thread;
++	if (!PE_parse_boot_argn("sweetosm", &osm_mode, sizeof(osm_mode)) || osm_mode == 0) {
 +		return;
 +	}
-+	printf("SWEET OSM: sweetosm=%u\n", mode);
-+	osm_probe();
++	printf("SWEET OSM: sweetosm=%u\n", osm_mode);
++	if (kernel_thread_start(osm_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
 +}
 +#endif /* SWEET */
 diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
