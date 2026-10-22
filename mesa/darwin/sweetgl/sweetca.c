@@ -1051,6 +1051,27 @@ trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
            blend, tex);
 }
 
+/* after each of the first draws: the framebuffer along the diagonals of the layer at 144,16 96x96 */
+static void
+diag_dump(struct sca_ctx *c, const char *what)
+{
+   static unsigned shown;
+   if (!getenv("SWEETCA_DIAG") && flip_mode != 4)
+      return;
+   if (shown >= 16 || c->fbo != 1)
+      return;
+   shown++;
+   char buf[400];
+   size_t l = 0;
+   for (int k = 0; k < 40; k += 4) {
+      uint8_t p[4] = {0}, q[4] = {0};
+      glReadPixels(144 + k, 16 + k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p);
+      glReadPixels(239 - k, 111 - k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, q);
+      l += snprintf(buf + l, sizeof(buf) - l, " %02x%02x%02x%02x/%02x%02x%02x%02x", p[0], p[1], p[2], p[3], q[0], q[1], q[2], q[3]);
+   }
+   sca_log("sweetca: diag %u after %s:%s", shown, what, buf);
+}
+
 static void
 w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
@@ -1060,6 +1081,7 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    trace_draw(c, mode, count);
    glDrawArrays(mode, first, count);
    POST(65);
+   diag_dump(c, "DrawArrays");
 }
 
 static void
@@ -1071,6 +1093,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    trace_draw(c, mode, count);
    glDrawElements(mode, count, type, indices);
    POST(67);
+   diag_dump(c, "DrawElements");
 }
 
 static void
