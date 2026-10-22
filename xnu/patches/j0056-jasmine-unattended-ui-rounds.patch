@@ -1,0 +1,261 @@
+From 5902838c9cca134ee98e4391f24e6d12d234facf Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 21:12:41 +0200
+Subject: [PATCH] jasmine-j0056: unattended UI rounds: touch/swipe/key on the
+ command port (sweetcmd=1), flicker counter, GPU-draws-into-shown-surface
+ counter, sweetfb_sync=1
+
+Touch, swipe and key commands drive SweetHIDTouch/Buttons over the USB command
+port; sweetcmd=1 enables the live command set without OSM work. Every copied
+frame gets two sparse checksums (dock band, whole panel); A-B-A sequences
+count as flashes, logged every 300 frames with the surface ids shown. SweetGPU
+counts jobs drawing into a surface the display still holds. sweetfb_sync=1
+copies a frame at its swap instead of at the next timer tick.
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 89 +++++++++++++++++++++++++++
+ iokit/Kernel/arm/SweetGPU.cpp         | 20 ++++--
+ osfmk/arm64/sweet_osm.c               | 35 ++++++++++-
+ 3 files changed, 139 insertions(+), 5 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 243049b..63147d8 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -81,6 +81,71 @@ sweet_hold(SweetSurface *s, bool on)
+ 	OSAddAtomic64(on ? 1 : -1, (volatile SInt64 *)((uint8_t *)s->state->getBytesNoCopy() + 0x18));
+ }
+ 
++/*
++ * j0056: a flicker counter for unattended rounds. Each copied frame gets two sparse
++ * checksums (the bottom eighth, where the dock is, and the whole panel); a frame that
++ * differs from the one before but equals the one before that (A, B, A) is a flash.
++ * Logged every 300 frames with the surfaces those frames came from.
++ */
++static void
++sweet_fb_flicker_note(const uint8_t *dst, uint32_t rowBytes, uint32_t w, uint32_t h, const uint32_t *ids, uint32_t nids)
++{
++	static uint64_t prev[2][2];
++	static uint32_t frames, aba[2], changes[2], seen[8], nseen;
++	uint64_t sum[2] = { 0xcbf29ce484222325ull, 0xcbf29ce484222325ull };
++	for (uint32_t y = h - h / 8; y < h; y += 8) {
++		const volatile uint32_t *row = (const volatile uint32_t *)(dst + (uint64_t)y * rowBytes);
++		for (uint32_t x = 0; x < w; x += 16) {
++			sum[0] = (sum[0] ^ row[x]) * 0x100000001b3ull;
++		}
++	}
++	for (uint32_t y = 0; y < h; y += 32) {
++		const volatile uint32_t *row = (const volatile uint32_t *)(dst + (uint64_t)y * rowBytes);
++		for (uint32_t x = 0; x < w; x += 32) {
++			sum[1] = (sum[1] ^ row[x]) * 0x100000001b3ull;
++		}
++	}
++	for (int b = 0; b < 2; b++) {
++		if (frames >= 2 && sum[b] == prev[b][1] && sum[b] != prev[b][0]) {
++			aba[b]++;
++		}
++		changes[b] += frames >= 1 && sum[b] != prev[b][0];
++		prev[b][1] = prev[b][0];
++		prev[b][0] = sum[b];
++	}
++	for (uint32_t i = 0; i < nids; i++) {
++		uint32_t k = 0;
++		while (k < nseen && seen[k] != ids[i]) {
++			k++;
++		}
++		if (k == nseen && nseen < 8) {
++			seen[nseen++] = ids[i];
++		}
++	}
++	if (++frames % 300 == 0) {
++		IOLog("SWEET FB: flicker check: 300 frames, dock %u changes %u A-B-A, screen %u changes %u A-B-A; surfaces %u: %u %u %u %u\n",
++		    changes[0], aba[0], changes[1], aba[1], nseen, seen[0], seen[1], seen[2], seen[3]);
++		aba[0] = aba[1] = changes[0] = changes[1] = 0;
++		nseen = 0;
++	}
++}
++
++/*
++ * boot-arg sweetfb_sync=1 (j0056): copy a frame at its swap, on CoreAnimation's
++ * thread, instead of at the next tick of our timer. Copied at a tick, a surface
++ * CoreAnimation had already started to redraw showed half its next frame.
++ */
++static bool
++sweet_fb_sync(void)
++{
++	static int on = -1;
++	if (on < 0) {
++		uint32_t v = 0;
++		on = PE_parse_boot_argn("sweetfb_sync", &v, sizeof(v)) && v != 0;
++	}
++	return on;
++}
++
+ static void
+ sweet_hold_set(SweetSurface **set, bool on)
+ {
+@@ -1037,6 +1102,25 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	 * vsync, 8 ms at most). Held two ticks, the two surfaces CoreAnimation draws into paced it
+ 	 * to 20 frames a second.
+ 	 */
++	if (sweet_fb_sync() && fFlipVA[0] != NULL && !directEligible(rec, held)) {
++		/* the previous flip latched first: the back buffer is not about to be scanned */
++		for (int t = 0; t < 250 && (fCtl0[0x18 / 4] & 0x20001) != 0; t++) {
++			IODelay(100);
++		}
++		IOLockLock(fLock);
++		SweetSurface *dropped[4];
++		memcpy(dropped, fPendHold, sizeof(dropped));
++		bzero(fPendHold, sizeof(fPendHold));
++		fDirty = false;
++		IOLockUnlock(fLock);
++		sweet_hold_set(dropped, false);
++		uint64_t t0 = mach_absolute_time(), ns = 0;
++		present(rec);
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		sweet_fps_wait_ns += ns;
++		sweet_hold_set(held, false);    /* copied: CoreAnimation may draw into them again */
++		return;
++	}
+ 	if (directEligible(rec, held) && fQLock != NULL) {
+ 		AbsoluteTime deadline;
+ 		clock_interval_to_deadline(200, kMillisecondScale, &deadline);
+@@ -1589,8 +1673,12 @@ AppleCLCD::present(const uint8_t *rec)
+ 		}
+ 	}
+ 
++	uint32_t shown_ids[SWEET_FB_LAYERS], nshown = 0;
+ 	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
+ 		uint32_t id = get32(rec, 0x54 + 4 * layer);
++		if ((mask & (1u << layer)) && id != 0) {
++			shown_ids[nshown++] = id;
++		}
+ 		const uint8_t *a = rec + 0x64 + 16 * layer;
+ 		const uint8_t *b = rec + 0xc4 + 16 * layer;
+ 		int32_t sx = (int32_t)get32(a, 0), sy = (int32_t)get32(a, 4);
+@@ -1686,6 +1774,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 		s->release();
+ 	}
+ 	sweet_fb_last_mask = mask;
++	sweet_fb_flicker_note(dst, fRowBytes, fWidth, fHeight, shown_ids, nshown);
+ 	if (fFlipVA[0] != NULL) {
+ 		flipBack();
+ 	}
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 26c57c8..69e4a13 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -91,6 +91,11 @@ void sweet_gpu_publish(void);
+ }
+ 
+ static uint32_t sweet_gpu_debug;
++/*
++ * j0056: jobs that drew into a surface the display still held (in use since its
++ * swap, IOSurfaceClientIsInUse): CoreAnimation reusing a frame not yet copied.
++ */
++static uint32_t sweet_gpu_held_draws;
+ static uint32_t sweet_gpu_wc;
+ static uint32_t sweet_gpu_lazy = 1;     /* surface upkeep at the CPU's and GPU's use (j0053) */
+ static bool sweet_gpu_pool;             /* jasmine: buffers from the write-combined GPU pool */
+@@ -666,9 +671,11 @@ SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t n
+ 	}
+ 	absolutetime_to_nanoseconds(now - fStatT0, &since);
+ 	if (since >= 10ull * NSEC_PER_SEC) {
+-		IOLog("SWEET GPU: %s: %u submits in %llu ms (%u buffers each), caches of %llu MB maintained in %llu ms (%u whole-cache flushes)\n",
++		IOLog("SWEET GPU: %s: %u submits in %llu ms (%u buffers each), caches of %llu MB maintained in %llu ms (%u whole-cache flushes), "
++		    "%u drew into a surface the display holds\n",
+ 		    fName, fStatSubmits, since / NSEC_PER_MSEC, fStatSubmits ? fStatBufs / fStatSubmits : 0,
+-		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC, fStatBulk);
++		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC, fStatBulk, sweet_gpu_held_draws);
++		sweet_gpu_held_draws = 0;
+ 		fStatT0 = now;
+ 		fStatNs = fStatBytes = 0;
+ 		fStatSubmits = fStatBufs = fStatBulk = 0;
+@@ -814,11 +821,16 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		} else {
+ 			job->seqno = seqno;
+ 			/* the display and IOSurfaceLock wait for this job before reading what it draws (j0055) */
++			bool held = false;
+ 			for (uint32_t i = 0; i < job->n; i++) {
+-				if (job->bufs[i]->surface != NULL && !job->bufs[i]->readonly) {
+-					job->bufs[i]->surface->gpuSeqno = seqno;
++				SweetSurface *js = job->bufs[i]->surface;
++				if (js != NULL && !job->bufs[i]->readonly) {
++					js->gpuSeqno = seqno;
++					held = held || (js->state != NULL &&
++					    *(volatile uint64_t *)((uint8_t *)js->state->getBytesNoCopy() + 0x18) != 0);
+ 				}
+ 			}
++			sweet_gpu_held_draws += held;
+ 			IOLockLock(fLock);
+ 			if (fJobsTail != NULL) {
+ 				fJobsTail->next = job;
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 06f0062..fbc6028 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1223,6 +1223,11 @@ osm_phase2(void)
+  *                  kernel reference's, tools/cpuclk/refinit.c) in the ramoops region at 0xa0000000
+  *   spmi SID ADDR [N]  read N PMIC registers (SIDs 0-3, read-only)
+  *   rails          PM660 S1-S3 (the APC supplies): set point, valid voltage, mode, limit
++ *   touch F D X Y  finger F (0-9) down (D 1) or up (0) at panel pixel X,Y (j0056)
++ *   swipe X1 Y1 X2 Y2 MS   finger 0 down at X1,Y1, moved every 8 ms, up at X2,Y2 after MS (max 2 s)
++ *   key K D        button K (0 power, 1 volume up, 2 volume down, 3 home) down (1) or up (0)
++ * Boot-arg sweetcmd=1 takes these lines without sweetosm= (no OSM work, sweetgold= runs):
++ * tools/g2/uibench.py plays the same swipes every round.
+  * Sequences (j0048), so an experiment is a command line instead of a kernel build. One
+  * line runs back to back in the kernel, without network round trips in between:
+  *   m ADDR MASK VAL      read-modify-write: (old & ~MASK) | (VAL & MASK)
+@@ -1309,6 +1314,8 @@ extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *ou
+ 
+ static int osm_abort;                   /* a failed poll skips the rest of the line */
+ static int osm_quiet;                   /* inside "rep": no log line per write */
++extern void sweet_hid_touch(int finger, int down, int x, int y);        /* iokit/Kernel/arm/hid/SweetHID.cpp */
++extern void sweet_hid_key(int key, int down);
+ static uint64_t osm_line_t0;
+ 
+ static int
+@@ -1547,6 +1554,27 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		}
+ 		return k + snprintf(out + k, len - k, "\n");
+ 	}
++	if (!strcmp(c, "touch") && argc >= 5) {
++		sweet_hid_touch((int)a, (int)b, (int)osm_num(argv[3]), (int)osm_num(argv[4]));
++		return snprintf(out, len, "touch %d %d\n", (int)a, (int)b);
++	}
++	if (!strcmp(c, "key") && argc >= 3) {
++		sweet_hid_key((int)a, (int)b);
++		return snprintf(out, len, "key %d %d\n", (int)a, (int)b);
++	}
++	if (!strcmp(c, "swipe") && argc >= 6) {
++		int64_t x1 = (int64_t)a, y1 = (int64_t)b, x2 = (int64_t)osm_num(argv[3]), y2 = (int64_t)osm_num(argv[4]);
++		uint64_t ms = osm_num(argv[5]);
++		ms = ms < 16 ? 16 : (ms > 2000 ? 2000 : ms);
++		uint32_t steps = (uint32_t)(ms / 8);
++		sweet_hid_touch(0, 1, (int)x1, (int)y1);
++		for (uint32_t i = 1; i <= steps; i++) {
++			delay(8000);
++			sweet_hid_touch(0, 1, (int)(x1 + (x2 - x1) * (int64_t)i / steps), (int)(y1 + (y2 - y1) * (int64_t)i / steps));
++		}
++		sweet_hid_touch(0, 0, (int)x2, (int)y2);
++		return snprintf(out, len, "swipe %u steps\n", steps);
++	}
+ 	if (!strcmp(c, "rails")) {
+ 		/* S1-S3 set point / valid voltage / upper limit, mV */
+ 		int k = 0;
+@@ -1588,7 +1616,12 @@ int sweet_osm_cmd(char *line, char *out, size_t len);
+ int
+ sweet_osm_cmd(char *line, char *out, size_t len)
+ {
+-	if (osm_mode == 0) {
++	static int cmd_on = -1;
++	if (cmd_on < 0) {
++		uint32_t v = 0;
++		cmd_on = PE_parse_boot_argn("sweetcmd", &v, sizeof(v)) && v != 0;
++	}
++	if (osm_mode == 0 && !cmd_on) {
+ 		return 0;
+ 	}
+ 	size_t k = 0;
+-- 
+2.47.3
+
