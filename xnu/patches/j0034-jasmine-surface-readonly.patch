@@ -1,0 +1,114 @@
+From 8e49f4100f5e0e06a2d02afbebd75e305218f20e Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 03:27:46 +0200
+Subject: [PATCH] jasmine-j0034: read-only client IOSurfaces map read-only
+ (kernel, users, GPU); refused GPU imports say why
+
+A picture surface over client memory the task can only read (topaz 0135
+falls back to a kIODirectionOut range) was mapped writable for the kernel
+and for every looking-up task. Those maps fail, so SweetGPU refused the
+import with kIOReturnNoMemory (0xe00002bd, seen in G2 step 2) and other
+processes could not map the surface at all. Map such surfaces read-only
+everywhere and import them GPU read-only; log which step refused an
+import.
+---
+ iokit/Kernel/arm/SweetGPU.cpp     | 12 ++++++++++++
+ iokit/Kernel/arm/SweetSurface.cpp | 10 +++++++---
+ iokit/Kernel/arm/SweetSurface.h   |  3 ++-
+ 3 files changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 1f5fcce..9bfa6d7 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -185,10 +185,17 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ SweetGPUBuffer *
+ SweetGPUBuffer::import(SweetSurface *surface, bool readonly)
+ {
++	static uint32_t told;
+ 	IOMemoryDescriptor *smd = surface->memory;
+ 	if (smd == NULL || smd->getLength() == 0 || smd->getLength() > SWEET_GPU_MAX_BUFFER) {
++		if (told++ < 20) {
++			IOLog("SWEET GPU: IOSurface %u: no memory to import (%llu bytes)\n", surface->id,
++			    smd != NULL ? (uint64_t)smd->getLength() : 0);
++		}
+ 		return NULL;
+ 	}
++	/* memory the creating task can only read is only read by the GPU too */
++	readonly = readonly || surface->readOnly;
+ 	SweetGPUBuffer *b = OSTypeAlloc(SweetGPUBuffer);
+ 	if (b == NULL || !b->init()) {
+ 		OSSafeReleaseNULL(b);
+@@ -207,6 +214,11 @@ SweetGPUBuffer::import(SweetSurface *surface, bool readonly)
+ 	b->surface = surface;
+ 	b->kva = surface->kernelAddress();
+ 	if (b->kva == 0 || !b->mapGPU(readonly)) {
++		if (told++ < 20) {
++			IOLog("SWEET GPU: IOSurface %u (%llu bytes%s%s) not imported: %s\n", surface->id, b->size,
++			    surface->wrapped ? ", client memory" : "", surface->readOnly ? ", read-only" : "",
++			    b->kva == 0 ? "no kernel mapping" : "GPU mapping failed");
++		}
+ 		OSSafeReleaseNULL(b);
+ 		return NULL;
+ 	}
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 19ef8ab..8730079 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -188,7 +188,9 @@ SweetSurface::kernelAddress()
+ 	}
+ 	IOLockLock(sweet_surface_lock);
+ 	if (kernelMap == NULL && memory != NULL) {
+-		kernelMap = memory->map(scanoutPhys || wrapped ? kIOMapDefaultCache : kIOMapWriteCombineCache);
++		/* a read-only range cannot be mapped writable (the map fails, and with it every GPU import) */
++		kernelMap = memory->map((scanoutPhys || wrapped ? kIOMapDefaultCache : kIOMapWriteCombineCache) |
++		    (readOnly ? kIOMapReadOnly : 0));
+ 	}
+ 	IOLockUnlock(sweet_surface_lock);
+ 	return kernelMap != NULL ? (uintptr_t)kernelMap->getVirtualAddress() : 0;
+@@ -633,7 +635,7 @@ IOSurfaceRootUserClient::addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool
+ 	s->retain();
+ 	ref->surface = s;
+ 	ref->count = 1;
+-	ref->data = s->memory->createMappingInTask(fTask, 0, kIOMapAnywhere | s->mapCache);
++	ref->data = s->memory->createMappingInTask(fTask, 0, kIOMapAnywhere | s->mapCache | (s->readOnly ? kIOMapReadOnly : 0));
+ 	ref->state = s->state->createMappingInTask(fTask, 0, kIOMapAnywhere | kIOMapReadOnly);
+ 	if (ref->data == NULL || ref->state == NULL) {
+ 		ref->release();
+@@ -912,8 +914,9 @@ sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, ui
+ 	uint64_t length = round_page_64(address + size) - first;
+ 	IOMemoryDescriptor *md = NULL;
+ 	IOReturn held = kIOReturnNoMemory;
++	int attempt;
+ 	/* writable if it can be; a picture that is only shown may be read-only memory */
+-	for (int attempt = 0; attempt < 2 && held != kIOReturnSuccess; attempt++) {
++	for (attempt = 0; attempt < 2 && held != kIOReturnSuccess; attempt++) {
+ 		OSSafeReleaseNULL(md);
+ 		md = IOMemoryDescriptor::withAddressRange(first, length, attempt == 0 ? kIODirectionInOut : kIODirectionOut, task);
+ 		held = md != NULL ? md->prepare() : kIOReturnNoMemory;
+@@ -924,6 +927,7 @@ sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, ui
+ 	}
+ 	s->memory = md;
+ 	s->wrapped = true;
++	s->readOnly = attempt == 2;
+ 	s->wrapDelta = (uint32_t)(address - first);
+ 	s->mapCache = kIOMapDefaultCache;
+ 	return kIOReturnSuccess;
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index a2f7201..dce1670 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -45,8 +45,9 @@ public:
+ 	uint32_t                  purgeable;    /* IOSurfaceSetPurgeable state */
+ 	uint32_t                  wrapDelta;    /* wrapped client memory: where it starts in its first page */
+ 	bool                      wrapped;      /* memory is a prepared range of a task (IOSurfaceWrapClient*) */
++	bool                      readOnly;     /* wrapped memory the task can only read: every mapping is read-only */
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; readOnly = false; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+ 
+ 	/* Kernel address of the pixels (mapped on first use), or 0. */
+-- 
+2.47.3
+
