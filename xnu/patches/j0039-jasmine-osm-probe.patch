@@ -1,4 +1,4 @@
-From 2c1ef0400f72cd2c74b54d0411d20025d726da6d Mon Sep 17 00:00:00 2001
+From 223e3bcf85600cb0437c364b8a3b8e5c58f6a8bf Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 05:21:16 +0200
 Subject: [PATCH] jasmine-j0039: OSM/CPRh read-only probe and per-chip table
@@ -22,9 +22,9 @@ The first version ran inside the platform expert and read fuse rows
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   3 +
- osfmk/arm64/sweet_osm.c                  | 629 +++++++++++++++++++++++
+ osfmk/arm64/sweet_osm.c                  | 620 +++++++++++++++++++++++
  osfmk/conf/files.arm64                   |   1 +
- 3 files changed, 633 insertions(+)
+ 3 files changed, 624 insertions(+)
  create mode 100755 osfmk/arm64/sweet_osm.c
 
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
@@ -50,10 +50,10 @@ index f38c815..3974e2f 100644
  	sweet_nvt_init();
 diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
 new file mode 100755
-index 0000000..6f9df5a
+index 0000000..45d63e8
 --- /dev/null
 +++ b/osfmk/arm64/sweet_osm.c
-@@ -0,0 +1,629 @@
+@@ -0,0 +1,620 @@
 +/*
 + * Gold cluster clock done properly (jasmine, SDM660): Qualcomm's OSM clock
 + * sequencer with CPRh voltages from this chip's fuses. Plan and rounds:
@@ -178,22 +178,14 @@ index 0000000..6f9df5a
 +	0x10a0, 0x10a4, 0x10a8, 0x10ac, 0x10b0, 0x10b4, 0x10b8, 0x10bc, 0x10c0, 0x1b04, 0x1c00, 0x1c74,
 +	0x1f00, 0x1f04, 0x1f10, 0x1f14, 0x1f18, 0x1f20, 0x1f24, 0x1f2c, 0x1f30, 0x1f38, 0x1f3c, -1,
 +};
-+/* cpr3-regulator.c registers of a CPRh controller (thread 0) */
-+static const int16_t cprh_regs[] = {
-+	0x004, 0x008, 0x00c, 0x010, 0x014, 0x0a0, 0x0a4, 0x0a8, 0x0ac, 0x0b0, 0x0b4, 0x0b8,
-+	0x0bc, 0x0c0, 0x0c4, 0x0c8, 0x0cc, 0x0d0, 0x0d4, 0x0d8, 0x0dc, 0x0e0, 0x120, 0x140,
-+	0x200, 0x204, 0x208, 0x20c, 0x210, 0x214, 0x218, 0x21c, 0x220, 0x700, 0x7a4, 0x7a8,
-+	0x7ac, 0x7b0, 0x7b4, 0x7b8, 0x7bc, 0x7f0, 0x7f4, 0x7f8, 0x808, 0x80c, 0x810, 0x814,
-+	0x818, 0x81c, 0x824, 0x840, 0x844, 0x848, 0x84c, 0x850, 0x854, 0x858, 0x85c, 0x860,
-+	0x864, 0x868, 0x86c, 0x870, 0x874, 0x878, 0x87c,
-+	0x3a00, 0x3a04, 0x3a08, 0x3a0c, 0x3a10, 0x3a14, 0x3a18, 0x3a1c, 0x3a20, 0x3a24,
-+	0x3aa0, 0x3aa4, 0x3aa8, -1,
-+};
-+/* msm-spm.c SAW2 v4.1 layout (the Gold L2 SAW4) */
-+static const int16_t saw_regs[] = {
-+	0x000, 0x004, 0x00c, 0x040, 0x044, 0x048, 0x04c, 0x050, 0x054, 0x900, 0x904, 0x908,
-+	0x90c, 0xc00, 0xc04, 0xc0c, 0xc10, 0xc14, 0xc18, 0xc1c, 0xfd0, -1,
-+};
++/*
++ * CPRh and SAW: only what the stock DT lists as readable for a panic dump
++ * (PERF_CPRH_STATUS 0x179c7aa4, APCLUS1_L2_SAW4_PMIC_STS 0x17812c18) and CPR_CTL /
++ * CPR_STATUS / CPRH_CTL. Reading the GCNT / sensor registers (0x0d4..0x140,
++ * which Linux only writes) took an SError in round j39d.
++ */
++static const int16_t cprh_regs[] = { 0x004, 0x008, 0x3aa0, 0x3aa4, -1 };
++static const int16_t saw_regs[] = { 0xc18, -1 };
 +static const int16_t apm_regs[] = { 0x004, 0x00c, 0x010, 0x018, -1 };
 +static const int16_t apcs_regs[] = { 0x12c, 0x130, 0x43c, -1 };     /* LMH (OSM clock) RCG, ITM_PRESENT */
 +
@@ -643,14 +635,13 @@ index 0000000..6f9df5a
 +	osm_regs("osm-gold", OSM_BASE + 0x2000, osm_ctl_regs);
 +	osm_regs("apm", APCS_APM, apm_regs);
 +	osm_regs("apcs-common", APCS_COMMON, apcs_regs);
-+	osm_regs("cprh-gold", CPRH_GOLD, cprh_regs);
-+
-+	/* last: sequencer registers SEQ_REG(0..127) and program memory, through TrustZone */
++	/* sequencer registers SEQ_REG(0..127) and program memory, through TrustZone */
 +	delay(100000);
 +	osm_dump_tz("osm-gold-seq", OSM_BASE, 0x2300, 0x2500);
 +	osm_dump_tz("osm-gold-prog", OSM_BASE, 0x2500, 0x2900);
 +	osm_dump_tz("osm-silver-seq", OSM_BASE, 0x0300, 0x0500);
 +	delay(100000);
++	osm_regs("cprh-gold", CPRH_GOLD, cprh_regs);
 +	osm_regs("saw-gold", GOLD_SAW, saw_regs);                       /* last: the SAW may be secured */
 +}
 +
