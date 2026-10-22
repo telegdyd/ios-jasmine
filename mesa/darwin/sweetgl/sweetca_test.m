@@ -28,7 +28,6 @@
 
 extern int sweetca_installed(void);
 extern void sweetca_set_trace(int level);
-extern void sweetca_set_flip(int mode);
 
 #define W 256
 #define H 256
@@ -272,111 +271,94 @@ main(void)
                                                                                   tex, 0); /* glFramebufferTexture2D */
       ((void (*)(void *, int, int, int, int))disp[335])(rctx, 0, 0, W, H); /* glViewport: an app sets it, EAGL has no drawable here */
 
-      result best = {~0u};
-      unsigned best_mode = 0;
-      bool any = false;
       uint8_t *out = malloc((size_t)H * pitch);
       Class CAR = NSClassFromString(@"CARenderer");
       CHECK(CAR != Nil, "CARenderer class");
-      /* modes of libsweetca's handling of IOSurface textures (sweetca_set_flip); a fresh layer tree each,
-       * so CA uploads its images again */
-      for (int mode = 5; mode < 9; mode++) {
-         sweetca_set_flip(mode);
-         /* the layer tree, drawn by CA on the CPU as the reference */
-         CALayer *root = make_tree();
-         [CATransaction flush];
-         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-         CGContextRef g = CGBitmapContextCreate(NULL, W, H, 8, W * 4, cs,
-                                                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-         CGColorSpaceRelease(cs);
-         CGContextTranslateCTM(g, 0, H);
-         CGContextScaleCTM(g, 1, -1);
-         [root renderInContext:g];
-         const uint8_t *ref = CGBitmapContextGetData(g);
-         size_t ref_pitch = CGBitmapContextGetBytesPerRow(g);
-         if (mode == 0)
-            samples("CPU reference", ref, ref_pitch);
+      /* the layer tree, drawn by CA on the CPU as the reference */
+      CALayer *root = make_tree();
+      [CATransaction flush];
+      CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+      CGContextRef g = CGBitmapContextCreate(NULL, W, H, 8, W * 4, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+      CGColorSpaceRelease(cs);
+      CGContextTranslateCTM(g, 0, H);
+      CGContextScaleCTM(g, 1, -1);
+      [root renderInContext:g];
+      const uint8_t *ref = CGBitmapContextGetData(g);
+      size_t ref_pitch = CGBitmapContextGetBytesPerRow(g);
+      samples("CPU reference", ref, ref_pitch);
 
-         id renderer = ((id(*)(id, SEL, id, id))objc_msgSend)((id)CAR, sel_registerName("rendererWithEAGLContext:options:"),
-                                                             ctx, nil);
-         CHECK(renderer != nil, "+rendererWithEAGLContext:options: gives a renderer (CA's GLES renderer)");
-         if (!renderer)
-            return 1;
-         ((void (*)(id, SEL, id))objc_msgSend)(renderer, sel_registerName("setLayer:"), root);
-         ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("setBounds:"), CGRectMake(0, 0, W, H));
-         [CATransaction flush];
+      id renderer = ((id(*)(id, SEL, id, id))objc_msgSend)((id)CAR, sel_registerName("rendererWithEAGLContext:options:"),
+                                                          ctx, nil);
+      CHECK(renderer != nil, "+rendererWithEAGLContext:options: gives a renderer (CA's GLES renderer)");
+      if (!renderer)
+         return 1;
+      ((void (*)(id, SEL, id))objc_msgSend)(renderer, sel_registerName("setLayer:"), root);
+      ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("setBounds:"), CGRectMake(0, 0, W, H));
+      [CATransaction flush];
 
-         /* junk first, so pixels the GPU did not write stand out */
-         IOSurfaceLock(surf, 0, NULL);
-         memset(IOSurfaceGetBaseAddress(surf), 0x5a, (size_t)H * pitch);
-         IOSurfaceUnlock(surf, 0, NULL);
+      /* junk first, so pixels the GPU did not write stand out */
+      IOSurfaceLock(surf, 0, NULL);
+      memset(IOSurfaceGetBaseAddress(surf), 0x5a, (size_t)H * pitch);
+      IOSurfaceUnlock(surf, 0, NULL);
 
-         double t0 = CACurrentMediaTime();
-         ((void (*)(id, SEL, CFTimeInterval, void *))objc_msgSend)(renderer, sel_registerName("beginFrameAtTime:timeStamp:"),
-                                                                   t0, NULL);
-         ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("addUpdateRect:"), CGRectMake(0, 0, W, H));
-         ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("render"));
-         ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("endFrame"));
-         double t1 = CACurrentMediaTime();
-         ((void (*)(void *))disp[89])(rctx); /* glFinish: the display waits for nobody */
+      double t0 = CACurrentMediaTime();
+      ((void (*)(id, SEL, CFTimeInterval, void *))objc_msgSend)(renderer, sel_registerName("beginFrameAtTime:timeStamp:"),
+                                                                t0, NULL);
+      ((void (*)(id, SEL, CGRect))objc_msgSend)(renderer, sel_registerName("addUpdateRect:"), CGRectMake(0, 0, W, H));
+      ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("render"));
+      ((void (*)(id, SEL))objc_msgSend)(renderer, sel_registerName("endFrame"));
+      double t1 = CACurrentMediaTime();
+      ((void (*)(void *))disp[89])(rctx); /* glFinish: the display waits for nobody */
 
-         IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
-         memcpy(out, IOSurfaceGetBaseAddress(surf), (size_t)H * pitch);
-         IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
-         printf("render, mode %d took %.0f ms\n", mode, (t1 - t0) * 1000);
-         char name[64];
-         snprintf(name, sizeof(name), "GPU, mode %d", mode);
-         samples(name, out, pitch);
-         result r = compare(out, pitch, ref, ref_pitch, false);
-         printf(" mode %d: %u of %d pixels differ by more than %d (image %u, rounded %u, opacity %u, "
-                "rotated %u, text %u)\n",
-                mode, r.diff, W * H, TOL, r.region[0], r.region[1], r.region[2], r.region[3], r.region[4]);
-         /* where they differ: 16x16 blocks, '.' none, else the count in tens (9 = 90 or more) */
-         printf(" difference map:\n");
-         for (int by = 0; by < H / 16; by++) {
-            char row[H / 16 + 1];
-            for (int bx = 0; bx < W / 16; bx++) {
-               int n = 0;
-               for (int y = 0; y < 16; y++)
-                  for (int x = 0; x < 16; x++) {
-                     const uint8_t *a = out + (size_t)(by * 16 + y) * pitch + (bx * 16 + x) * 4;
-                     const uint8_t *b = ref + (size_t)(by * 16 + y) * ref_pitch + (bx * 16 + x) * 4;
-                     int d = 0;
-                     for (int c = 0; c < 3; c++)
-                        d = abs(a[c] - b[c]) > d ? abs(a[c] - b[c]) : d;
-                     n += d > TOL;
-                  }
-               row[bx] = n == 0 ? '.' : (char)('0' + (n / 10 > 9 ? 9 : n / 10));
-            }
-            row[W / 16] = 0;
-            printf("  %s\n", row);
-         }
-         /* the rounded layer, sampled every 4 pixels: B black, O orange, R red, b background, ? other; GPU left, CPU right */
-         printf(" rounded layer, GPU | CPU:\n");
-         for (int y = 16; y < 112; y += 4) {
-            char a[25], b[25];
-            for (int x = 144; x < 240; x += 4) {
-               for (int w = 0; w < 2; w++) {
-                  const uint8_t *q = (w ? ref + (size_t)y * ref_pitch : out + (size_t)y * pitch) + (size_t)x * 4;
-                  int bl = q[0], gr = q[1], rd = q[2];
-                  char ch = rd < 20 && gr < 20 && bl < 20 ? 'B' : (rd > 200 && gr > 120 && bl < 80) ? 'O'
-                            : (rd > 180 && gr < 90 && bl < 90) ? 'R' : (rd < 60 && bl > 90 && bl < 150) ? 'b' : '?';
-                  (w ? b : a)[(x - 144) / 4] = ch;
+      IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
+      memcpy(out, IOSurfaceGetBaseAddress(surf), (size_t)H * pitch);
+      IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
+      printf("render took %.0f ms\n", (t1 - t0) * 1000);
+      samples("GPU", out, pitch);
+      result r = compare(out, pitch, ref, ref_pitch, false);
+      printf(" %u of %d pixels differ by more than %d (image %u, rounded %u, opacity %u, "
+             "rotated %u, text %u)\n",
+             r.diff, W * H, TOL, r.region[0], r.region[1], r.region[2], r.region[3], r.region[4]);
+      /* where they differ: 16x16 blocks, '.' none, else the count in tens (9 = 90 or more) */
+      printf(" difference map:\n");
+      for (int by = 0; by < H / 16; by++) {
+         char row[H / 16 + 1];
+         for (int bx = 0; bx < W / 16; bx++) {
+            int n = 0;
+            for (int y = 0; y < 16; y++)
+               for (int x = 0; x < 16; x++) {
+                  const uint8_t *a = out + (size_t)(by * 16 + y) * pitch + (bx * 16 + x) * 4;
+                  const uint8_t *b = ref + (size_t)(by * 16 + y) * ref_pitch + (bx * 16 + x) * 4;
+                  int d = 0;
+                  for (int c = 0; c < 3; c++)
+                     d = abs(a[c] - b[c]) > d ? abs(a[c] - b[c]) : d;
+                  n += d > TOL;
                }
-            }
-            a[24] = b[24] = 0;
-            printf("  %s | %s\n", a, b);
+            row[bx] = n == 0 ? '.' : (char)('0' + (n / 10 > 9 ? 9 : n / 10));
          }
-         if (r.diff < best.diff) {
-            best = r;
-            best_mode = mode;
-            any = true;
-         }
-         CGContextRelease(g);
+         row[W / 16] = 0;
+         printf("  %s\n", row);
       }
+      /* the rounded layer, sampled every 4 pixels: B black, O orange, R red, b background, ? other; GPU left, CPU right */
+      printf(" rounded layer, GPU | CPU:\n");
+      for (int y = 16; y < 112; y += 4) {
+         char a[25], b[25];
+         for (int x = 144; x < 240; x += 4) {
+            for (int w = 0; w < 2; w++) {
+               const uint8_t *q = (w ? ref + (size_t)y * ref_pitch : out + (size_t)y * pitch) + (size_t)x * 4;
+               int bl = q[0], gr = q[1], rd = q[2];
+               char ch = rd < 20 && gr < 20 && bl < 20 ? 'B' : (rd > 200 && gr > 120 && bl < 80) ? 'O'
+                         : (rd > 180 && gr < 90 && bl < 90) ? 'R' : (rd < 60 && bl > 90 && bl < 150) ? 'b' : '?';
+               (w ? b : a)[(x - 144) / 4] = ch;
+            }
+         }
+         a[24] = b[24] = 0;
+         printf("  %s | %s\n", a, b);
+      }
+      CGContextRelease(g);
       free(out);
-      printf("best: mode %u, %u pixels differ\n", best_mode, best.diff);
-      CHECK(any && best.diff <= (unsigned)(W * H) / 50, "GPU render matches the CPU reference (at most 2%% of pixels differ)");
+      CHECK(r.diff <=(unsigned)(W * H) / 50, "GPU render matches the CPU reference (at most 2%% of pixels differ)");
       CFRelease(surf);
    }
    if (failures) {

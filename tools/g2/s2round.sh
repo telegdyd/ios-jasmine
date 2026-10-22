@@ -9,7 +9,7 @@ N=${1:?name}
 wsl bash tools/g2/mkmesa.sh | tail -1
 git add -A mesa tools && git -c user.name=telegdyd -c user.email=telegdyd93@gmail.com commit -q -m "${2:-libsweetca round $N}
 
-Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -q origin jasmine
 "$G" workflow run xnu.yml -R telegdyd/ios-jasmine --ref jasmine -f build=mesa
 sleep 12

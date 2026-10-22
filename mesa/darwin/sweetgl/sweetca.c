@@ -21,7 +21,8 @@
  *    rectangle bindings per unit, and sampler2DRect shaders are rewritten to
  *    sample a 2D texture with texel coordinates scaled by 1/size;
  *  - GL_EXT_shader_framebuffer_fetch (gl_LastFragData) is a texture read of
- *    the render target's own texture, with a texture barrier before the draw;
+ *    the render target's own texture through a nearest-filtering sampler of
+ *    our own on a reserved unit, with a texture barrier before the draw;
  *  - IOSurfaces become texture storage with no copy, one Mesa resource per
  *    surface (sweetgl), or a copy when the GPU cannot use their rows in place.
  *
@@ -64,7 +65,6 @@
 #define MAX_CTX 32
 
 static int trace_on;
-static int flip_mode; /* 0: flip the rows of a surface when CA says invert; 1: when it does not */
 
 static void
 sca_log(const char *fmt, ...)
@@ -106,6 +106,7 @@ struct sca_ctx {
    int active;                         /* active texture unit as CA set it */
    GLuint bind2d[UNITS], bindrect[UNITS], held[UNITS];
    int fbfetch_unit;
+   GLuint fb_sampler;                  /* on fbfetch_unit: nearest, level 0 only */
    GLuint program, fbo;
    GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
    uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
@@ -489,8 +490,6 @@ static void
 w_TexParameteri(void *rctx, GLenum target, GLenum pname, GLint param)
 {
    CUR(rctx);
-   if (flip_mode == 3 && pname == GL_TEXTURE_MIN_FILTER)
-      param = GL_LINEAR;
    glTexParameteri(tgt(c, target), pname, param);
    POST(304);
 }
@@ -531,36 +530,6 @@ w_TexImage2D(void *rctx, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsi
    set_swizzle(c, t, NULL, false);
    if (format == GL_BGRA_EXT_ && (ifmt == GL_RGBA || ifmt == GL_RGBA8))
       ifmt = GL_BGRA_EXT_;
-   if (flip_mode == 3 && level > 0 && format == GL_LUMINANCE_ALPHA)
-      return;
-   if (flip_mode == 2 && format == GL_LUMINANCE_ALPHA && type == GL_UNSIGNED_BYTE && pixels) {
-      GLint al = 4, rl = 0;
-      glGetIntegerv(GL_UNPACK_ALIGNMENT, &al);
-      glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rl);
-      size_t pitch = ((size_t)(rl ? rl : w) * 2 + al - 1) / al * al;
-      uint8_t *rgba = malloc((size_t)w * h * 4);
-      for (GLsizei y = 0; rgba && y < h; y++)
-         for (GLsizei x = 0; x < w; x++) {
-            const uint8_t *s = (const uint8_t *)pixels + y * pitch + x * 2;
-            uint8_t *d = rgba + ((size_t)y * w + x) * 4;
-            d[0] = d[1] = d[2] = s[0];
-            d[3] = s[1];
-         }
-      if (rgba) {
-         GLint row = 0;
-         glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row);
-         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-         glTexImage2D(t, level, GL_RGBA8, w, h, border, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-         glPixelStorei(GL_UNPACK_ROW_LENGTH, row);
-         glPixelStorei(GL_UNPACK_ALIGNMENT, al);
-         free(rgba);
-         POST(301);
-         if (level == 0)
-            note_size(c, c->held[c->active], w, h);
-         return;
-      }
-   }
    glTexImage2D(t, level, ifmt, w, h, border, format, type, pixels);
    POST(301);
    if (level == 0)
@@ -875,17 +844,6 @@ w_ShaderSource(void *rctx, GLuint shader, GLsizei count, const GLchar *const *st
       free(src);
       src = out;
    }
-   if (flip_mode >= 5 && strstr(src, "mix(s1, d0, s0.a)")) {
-      static const char *const alt[] = {"vec4(s0.a, s0.a, s0.a, 1.0)", "d0", "s1", "vec4(s0.r, s0.r, s0.r, 1.0)"};
-      const char *hit = strstr(src, "mix(s1, d0, s0.a)");
-      const char *rep = alt[(flip_mode - 5) % 4];
-      char *out = malloc(strlen(src) + strlen(rep) + 1);
-      memcpy(out, src, hit - src);
-      strcpy(out + (hit - src), rep);
-      strcat(out, hit + strlen("mix(s1, d0, s0.a)"));
-      free(src);
-      src = out;
-   }
    if (shader < OBJMAX) {
       c->obj[shader].flags = flags;
       snprintf(c->obj[shader].rect_sampler, sizeof(c->obj[shader].rect_sampler), "%s", rect_sampler);
@@ -1017,31 +975,13 @@ draw_prep(struct sca_ctx *c)
       texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
 
    GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
-   if (p && (p->flags & OBJ_FBFETCH) && fbtex && flip_mode == 4) {
-      /* character map of the 68x68 texture on unit 1: b background, 0 black, ? other */
-      GLuint t1 = c->held[1], tmp = 0;
-      static int done;
-      if (t1 && !done++) {
-         static uint8_t px[68 * 68 * 4];
-         glGenFramebuffers(1, &tmp);
-         glBindFramebuffer(GL_READ_FRAMEBUFFER, tmp);
-         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t1, 0);
-         glReadPixels(0, 0, 68, 68, GL_RGBA, GL_UNSIGNED_BYTE, px);
-         glBindFramebuffer(GL_READ_FRAMEBUFFER, c->fbo);
-         glDeleteFramebuffers(1, &tmp);
-         for (int y = 0; y < 68; y += 2) {
-            char row[40];
-            for (int x = 0; x < 68; x += 2) {
-               const uint8_t *q = px + (y * 68 + x) * 4;
-               row[x / 2] = (q[0] == 0x21 && q[1] == 0x45 && q[2] == 0x79) ? 'b' : (q[0] | q[1] | q[2]) == 0 ? '0' : '?';
-            }
-            row[34] = 0;
-            sca_log("sweetca: tex%u y%02d %s", t1, y, row);
-         }
-      }
-   }
    if (p && (p->flags & OBJ_FBFETCH) && fbtex) {
       set_unit(c, c->fbfetch_unit, fbtex);
+      if (!c->fb_sampler) {
+         glActiveTexture(GL_TEXTURE0 + c->fbfetch_unit);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+         glActiveTexture(GL_TEXTURE0 + c->active);
+      }
       if (p->fb_sampler_loc >= 0)
          glUniform1i(p->fb_sampler_loc, c->fbfetch_unit);
       if (p->fb_scale_loc >= 0)
@@ -1050,8 +990,6 @@ draw_prep(struct sca_ctx *c)
    if (fbtex) {
       for (int u = 0; u < UNITS; u++) {
          if (c->held[u] == fbtex) {
-            if (flip_mode == 1)
-               glFinish();
             sgl_texture_barrier();
             break;
          }
@@ -1085,33 +1023,6 @@ trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
            blend, tex);
 }
 
-/* after each of the first draws: the framebuffer along the diagonals of the layer at 144,16 96x96 */
-static void
-diag_dump(struct sca_ctx *c, const char *what)
-{
-   static unsigned shown;
-   static int mode_seen = -1;
-   if (mode_seen != flip_mode) {
-      mode_seen = flip_mode;
-      shown = 0;
-   }
-   if (!getenv("SWEETCA_DIAG") && flip_mode < 4)
-      return;
-   if (shown >= 11 || c->fbo != 1)
-      return;
-   if (++shown < 9)
-      return;
-   char buf[800];
-   size_t l = 0;
-   for (int k = 0; k < 40; k += 2) {
-      uint8_t p[4] = {0}, q[4] = {0};
-      glReadPixels(144 + k, 16 + k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p);
-      glReadPixels(239 - k, 111 - k, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, q);
-      l += snprintf(buf + l, sizeof(buf) - l, " %02x%02x%02x%02x/%02x%02x%02x%02x", p[0], p[1], p[2], p[3], q[0], q[1], q[2], q[3]);
-   }
-   sca_log("sweetca: diag %u after %s:%s", shown, what, buf);
-}
-
 static void
 w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
@@ -1121,7 +1032,6 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    trace_draw(c, mode, count);
    glDrawArrays(mode, first, count);
    POST(65);
-   diag_dump(c, "DrawArrays");
 }
 
 static void
@@ -1133,7 +1043,6 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    trace_draw(c, mode, count);
    glDrawElements(mode, count, type, indices);
    POST(67);
-   diag_dump(c, "DrawElements");
 }
 
 static void
@@ -1475,6 +1384,19 @@ make_ctx(id self, NSUInteger api)
    GLint units = 16;
    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &units);
    c->fbfetch_unit = units - 1 < UNITS ? units - 1 : UNITS - 1;
+   /* The render target's texture is sampled with a sampler of our own: CA (and
+    * EAGL's callers) never set its filters, and the default MIN_FILTER
+    * NEAREST_MIPMAP_LINEAR on a texture with one level makes it incomplete, which
+    * samples as (0,0,0,1). That was the black band at rounded corners (round s).
+    * ES 2 has no sampler objects: draw_prep sets the texture's own filter there. */
+   if (api >= 3) {
+      glGenSamplers(1, &c->fb_sampler);
+      glSamplerParameteri(c->fb_sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glSamplerParameteri(c->fb_sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glSamplerParameteri(c->fb_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glSamplerParameteri(c->fb_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glBindSampler(c->fbfetch_unit, c->fb_sampler);
+   }
    sca_log("sweetca: EAGLContext %p API %lu on Mesa: %s, %s (GLI %p)", self, (unsigned long)api,
            glGetString(GL_VERSION), glGetString(GL_RENDERER), c);
    bind_ctx(NULL);
@@ -1685,13 +1607,6 @@ install_texfns(void)
 
 /* nonzero once the EAGL methods are replaced; the test calls it to make sure the library is linked in */
 int sweetca_installed(void);
-void sweetca_set_flip(int mode);
-
-__attribute__((visibility("default"))) void
-sweetca_set_flip(int mode)
-{
-   flip_mode = mode;
-}
 void sweetca_set_trace(int level);
 
 __attribute__((visibility("default"))) void
