@@ -432,3 +432,54 @@ Mesa CI `39702791445`, run on the phone already up on the j33 image (no reboot: 
 is identical to the CPU's. No SMMU fault, hang or panic. Left within tolerance: the image's quadrant edges and diagonal,
 and anti-aliased edges (CPU and GPU filter and cover edges differently; not looked into further). Render took 24.6 s
 with `sweetgpu_debug` on (150 ms per kernel log line), so it says nothing about GPU speed.
+
+#### G2 step 3 (2026-10-22 03:05 to 04:12): backboardd draws the UI on the Adreno 512
+
+**Result: the home screen and Settings are drawn by the GPU and look right** (all icon labels, status-bar clock,
+"Search", dock, badges, Settings rows). backboardd runs CA's own GLES renderer on Mesa through `libsweetca.dylib`,
+loaded with `sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib,SWEETCA_TRACE=1` on a
+`fastboot boot` image; nothing on the root changed except files in `/usr/local/bin`. Log line:
+`|backboardd| sweetca: EAGLContext ... API 3 on Mesa: OpenGL ES 3.1 Mesa 26.2.5 ..., FD512`. **No SMMU fault, GPU
+hang, refused import or panic in any of the five rounds.** Widgets show "Waiting..." (app extensions do not run on
+this port, known before G2). The lock screen was not captured by the dumps (the phone was unlocked by the time
+SpringBoard was up); `sweetgpu_debug` was off in every round, but speed is not measured yet (the per-100-flush
+timing line never printed: CA does not seem to call `glFlush` once per frame; to look at).
+
+How the screen was checked: `sweet_shot -s` (new, `mesa/darwin/sweetgl/sweet_shot.m`) looks up the 1125x2436
+IOSurfaces by id (CA's IOMFB swap surfaces, which the kernel copies to the panel) and dumps them;
+`tools/g2/shot2png.py` makes PNGs (kept out of git: they show device state). `CARenderServerRenderDisplay` returns
+black here and is not usable. Rounds: `tools/g2/s3round.sh IMAGE NAME DELAYS...`; images `shim/out/shim-boot-j33-bb{1,2}.img`,
+`shim-boot-j34-bb{3,4}.img` (`tools/g2/mkimg.sh` now takes `GPUDBG=0` and `VARIANT=`).
+
+| Round (log `logs/netlog-s3-X.txt`) | Image, Mesa CI | Seen | Cause, fix |
+| --- | --- | --- | --- |
+| a (03:13) | bb1, `39704013746` | library loads, texture-function patches install, every `initWithAPI:` falls back to Apple's EAGL | backboardd asks ~25 s before SweetGPU is published (bring-up starts after `gpudelay`, 25 s default). libsweetca now waits for the service (30 s, later 90 s) once per process. A later context in this boot did get Mesa (so its "CPU reference" dump was GPU-drawn, not CPU) |
+| b (03:27) | bb2 (+`gpudelay=1`), `39704983044` | **GPU renderer live**; icons upside down, no text at all | step 2's rule flipped `texImageIOSurface:` images on `invert:NO`; that rule matched only the test, whose target was bound `invert:YES` and whose layer tree is nearly symmetric. Now flip only on `invert:YES` (Apple's meaning; sailfish does not flip either) |
+| c (03:38) | bb3 (kernel j0034), `39706390879` | icons upright; only in-place labels ("Photos") show; Settings chevrons solid gray boxes | most picture surfaces are client memory starting 64/4096/8192/12288 bytes into a 16 KiB page; the darwin backend refused any offset, so they were copied. Offsets now go to freedreno as `winsys_handle.offset` (64-byte aligned only) |
+| d (03:55) | bb4, `39708078084` | clock, "Search", Wi-Fi/Sounds/General shown; copied labels and chevrons invisible | **the copy path kept the `(0,0,0,R)` swizzle meant for R8 storage on a `GL_ALPHA` upload**: every copied mask sampled transparent. Fixed; the per-frame re-copy added on a wrong guess (stale snapshots) was undone, copies refresh on seed changes (as sailfish does) |
+| e (04:07) | bb4, `39709137207` | **home screen correct** | |
+
+Also added on the way: kernel **j0034** (`xnu/patches/j0034-jasmine-surface-readonly.patch`, CI `39705841200`):
+read-only client surfaces (topaz 0135's `kIODirectionOut` fallback) get read-only kernel, user and GPU mappings
+(they used to fail to map, which is what `0xe00002bd` in step 2 was) and refused imports log why; none was refused
+in rounds c-e. libsweetca: shadow render targets for `attachImage:` surfaces the a5xx cannot render into in place
+(rows of 92, 112, 4512 bytes: a texture of their own, written back into the surface before CA flushes; 5 per boot),
+`MIN_FILTER LINEAR` on IOSurface textures that still have a mipmap filter, slots 603-618 (`glUniform2f` ...
+`glUniformMatrix2fv`; CA calls 610 and 611), `invertedRender` logged (CA passes 0 for display surfaces).
+
+`gpudelay=1` did not bring SweetGPU earlier (still ~25 s after backboardd's first request), so the bring-up itself
+takes that long; libsweetca's wait covers it.
+
+**`sweetca_test` is now FAIL** (round e boot, `logs/netlog-s3-e-test.txt`: 9958 of 65536 differ, the image quadrant
+upside down and 494 text pixels; background, opacity, rounded layer, rotated square match). With invert meaning
+what it says, the in-process CARenderer + CGImage path of the test and backboardd's display path disagree about
+image orientation; the display is the ground truth. Open: find which (CARenderer's own projection or the test's
+`renderInContext:` reference) and fix the test, comparing with sailfish's harness.
+
+Licence change during this step: the sailfish author consented to adapting his code (NOTES.md, 2026-10-22 ~04:10);
+`sweetca.c` was checked against sailfish's `eagl.c` for the flip rule, page offsets, mask formats, copy refresh and
+the feedback barrier (theirs is the same `TextureBarrierNV` we issue).
+
+Next: the lock screen, Control Center and notification centre (the texture-function patches 0x14/0x26/0x27/0x2d
+still need to be seen working), speed (frame timing, then GPU clock), `sweetca_test` orientation, and porting what
+else sailfish's `eagl.c` does that ours does not.
