@@ -1,77 +1,25 @@
-From 1a24d72929e19f25c6382d06be69ca91d411a8d5 Mon Sep 17 00:00:00 2001
+From c39c39d7199200d9851b5f7e82b412b71a582d6b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 14:49:14 +0200
 Subject: [PATCH] jasmine-j0047: osmctl "spmi" / "rails": read the PMIC (APC
  supplies)
 
 Software DVFS needs the Gold voltage to follow the clock. The SAW is the
-path the hardware uses (CPRh -> SAW -> PMIC), but msm-spm.c sends an 8-bit
-vlevel and the FTS426 that feeds the APC rails takes millivolts (16 bits),
+path the hardware uses (CPRh -> SAW -> PMIC); stock Linux runs it in mV
+units (qcom,cpr-saw-use-unit-mV) while msm-spm.c masks an 8-bit vlevel,
 so the encoding has to be checked on the PMIC itself before any request.
-This adds a read-only path to any PM660 / PM660L register (SPMI observer
-EXT_READL, as the battery code) and two live-tool commands:
-  spmi SID ADDR [N]   raw register read
+Two live-tool commands, read-only, through sweet_pmic_peek (the jasmine
+SPMI arbiter observer channels):
+  spmi SID ADDR [N]   raw register read (--(st) = arbiter status / no channel)
   rails               PM660 S1-S3: set point, valid voltage, mode, limit
+v2: v1 went through sweet_spmi.c, which is topaz-only (arbiter v5) and
+never initialised on jasmine, so every read failed.
 ---
- bsd/dev/sweet_spmi.c    | 21 +++++++++++++++++++++
- bsd/dev/sweet_spmi.h    |  2 ++
- osfmk/arm64/sweet_osm.c | 41 ++++++++++++++++++++++++++++++++++++++++-
- 3 files changed, 63 insertions(+), 1 deletion(-)
+ osfmk/arm64/sweet_osm.c | 42 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 41 insertions(+), 1 deletion(-)
 
-diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
-index 1981490..a4499be 100644
---- a/bsd/dev/sweet_spmi.c
-+++ b/bsd/dev/sweet_spmi.c
-@@ -83,6 +83,8 @@ sweet_spmi_init(void)
- 	return 0;
- }
- 
-+static int sp_read(unsigned sid, unsigned addr, uint8_t *out);
-+
- int
- sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
- {
-@@ -93,6 +95,25 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
- 	    peripheral != 0x13 && peripheral != 0x48)) {
- 		return -1;
- 	}
-+	return sp_read(sid, addr, out);
-+}
-+
-+int
-+sweet_spmi_read_any(unsigned sid, unsigned addr, uint8_t *out)
-+{
-+	/* The keys (PPIDs 008, 4c1) keep their own lanes. */
-+	unsigned peripheral = addr >> 8;
-+	if (!sp_ready || !out || sid > 3 || addr > 0xffffu ||
-+	    (sid == 0 && (peripheral == 0x08 || peripheral == 0xc1))) {
-+		return -1;
-+	}
-+	return sp_read(sid, addr, out);
-+}
-+
-+static int
-+sp_read(unsigned sid, unsigned addr, uint8_t *out)
-+{
-+	unsigned peripheral = addr >> 8;
- 	IOLockLock(sp_lock);
- 	uint16_t apid = sp_find_apid((sid << 8) | peripheral);
- 	if (apid == SP_NO_APID || sp_poisoned[apid]) {
-diff --git a/bsd/dev/sweet_spmi.h b/bsd/dev/sweet_spmi.h
-index 45565d1..bfdee29 100644
---- a/bsd/dev/sweet_spmi.h
-+++ b/bsd/dev/sweet_spmi.h
-@@ -8,6 +8,8 @@ extern "C" {
- int sweet_spmi_init(void);
- /* Thread context only; 0 success, -1 failure; *out unchanged on failure. */
- int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
-+/* Same, any register of SIDs 0-3 (PM660, PM660L); the osmctl "spmi" command. Still read-only. */
-+int sweet_spmi_read_any(unsigned sid, unsigned addr, uint8_t *out);
- #ifdef __cplusplus
- }
- #endif
 diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
-index 546c611..408b8c9 100755
+index 546c611..a4c6268 100755
 --- a/osfmk/arm64/sweet_osm.c
 +++ b/osfmk/arm64/sweet_osm.c
 @@ -1204,6 +1204,8 @@ osm_phase2(void)
@@ -87,12 +35,12 @@ index 546c611..408b8c9 100755
  	return v;
  }
  
-+extern int sweet_spmi_read_any(unsigned sid, unsigned addr, uint8_t *out);
++extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);   /* bsd/dev/sweet_pmic.c */
 +
  static int
  osm_cmd_one(char *cmd, char *out, size_t len)
  {
-@@ -1434,7 +1438,42 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+@@ -1434,7 +1438,43 @@ osm_cmd_one(char *cmd, char *out, size_t len)
  		}
  		return k + snprintf(out + k, len - k, "(%u matches seen)\n", seen);
  	}
@@ -106,9 +54,10 @@ index 546c611..408b8c9 100755
 +		}
 +		int k = snprintf(out, len, "spmi %llu %#llx:", a, b);
 +		for (uint32_t i = 0; i < n && k < (int)len - 8; i++) {
-+			uint8_t v = 0;
-+			if (sweet_spmi_read_any((unsigned)a, (unsigned)b + i, &v)) {
-+				k += snprintf(out + k, len - k, " --");
++			uint32_t v = 0;
++			int r = sweet_pmic_peek((uint32_t)a, (uint32_t)b + i, 1, &v);
++			if (r) {
++				k += snprintf(out + k, len - k, " --(%x)", r);
 +			} else {
 +				k += snprintf(out + k, len - k, " %02x", v);
 +			}
@@ -120,11 +69,11 @@ index 546c611..408b8c9 100755
 +		int k = 0;
 +		for (unsigned r = 0; r < 3; r++) {
 +			unsigned base = 0x1400 + 0x300 * r;
-+			uint8_t v[10] = { 0 };
++			uint32_t v[10] = { 0 };
 +			static const uint8_t off[10] = { 0x04, 0x05, 0x40, 0x41, 0x42, 0x43, 0x45, 0x46, 0x68, 0x69 };
 +			int bad = 0;
 +			for (int i = 0; i < 10; i++) {
-+				bad |= sweet_spmi_read_any(1, base + off[i], &v[i]);
++				bad |= sweet_pmic_peek(1, base + off[i], 1, &v[i]);
 +			}
 +			k += snprintf(out + k, len - k, "S%u%s: type %02x/%02x set %u mV valid %u mV mode %02x en %02x limit %u mV\n",
 +			    r + 1, bad ? " (read error)" : "", v[0], v[1], v[2] | (v[3] << 8), v[4] | (v[5] << 8), v[6], v[7],
