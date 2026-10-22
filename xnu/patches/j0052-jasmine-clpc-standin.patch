@@ -1,4 +1,4 @@
-From 4d57647063158298fd17ea5181b88203e511bea5 Mon Sep 17 00:00:00 2001
+From 52fddfa01f552f8f32399a25cc65172ed803cad8 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 18:42:27 +0200
 Subject: [PATCH] jasmine-j0052: CLPC stand-in for the Edge scheduler: UI QoS
@@ -7,14 +7,14 @@ Subject: [PATCH] jasmine-j0052: CLPC stand-in for the Edge scheduler: UI QoS
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- osfmk/kern/sched_clutch.c | 325 ++++++++++++++++++++++++++++++++++++++
+ osfmk/kern/sched_clutch.c | 329 ++++++++++++++++++++++++++++++++++++++
  osfmk/kern/sched_clutch.h |  15 ++
  osfmk/kern/sched_prim.c   |   3 +
  osfmk/kern/thread_group.c |  23 +++
- 4 files changed, 366 insertions(+)
+ 4 files changed, 370 insertions(+)
 
 diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
-index 3657d83..e7c7627 100644
+index 3657d83..8788077 100644
 --- a/osfmk/kern/sched_clutch.c
 +++ b/osfmk/kern/sched_clutch.c
 @@ -131,6 +131,22 @@ static int sched_edge_iterate_clusters_ordered(processor_set_t, uint64_t, int);
@@ -110,7 +110,7 @@ index 3657d83..e7c7627 100644
  		return selected_pset;
  	}
  	/* Looks like selected_pset is not available for scheduling; remove it from candidate_cluster_bitmap */
-@@ -4837,6 +4885,280 @@ sched_edge_pset_made_schedulable(__unused processor_t processor, processor_set_t
+@@ -4837,6 +4885,284 @@ sched_edge_pset_made_schedulable(__unused processor_t processor, processor_set_t
  	}
  }
  
@@ -190,7 +190,7 @@ index 3657d83..e7c7627 100644
 +}
 +
 +/*
-+ * Every 30 s the three threads that used the most CPU in that time (a thread
++ * Every 30 s the SWEET_TOP_N threads that used the most CPU in that time (a thread
 + * spinning at some QoS shows up in the per-bucket ms, this says which one).
 + */
 +extern queue_head_t threads;
@@ -198,6 +198,7 @@ index 3657d83..e7c7627 100644
 +struct proc;
 +extern int proc_pid(struct proc *p);
 +
++#define SWEET_TOP_N     5
 +#define SWEET_TOP_SLOTS 4096    /* last CPU time per thread, by thread_id; a collision only loses one delta */
 +static struct {
 +	uint64_t tid;
@@ -212,12 +213,15 @@ index 3657d83..e7c7627 100644
 +		int pid, pri, base_pri, bucket, cpu;
 +		char proc[17];          /* p_comm, MAXCOMLEN + 1 */
 +		char name[MAXTHREADNAMESIZE];
-+	} top[3];
++	} top[SWEET_TOP_N];
 +	thread_t thread;
 +
 +	bzero(top, sizeof(top));
 +	lck_mtx_lock(&tasks_threads_lock);
 +	queue_iterate(&threads, thread, thread_t, threads) {
++		if (thread->state & TH_IDLE) {
++			continue;       /* the idle threads would fill the list whenever a CPU idles */
++		}
 +		uint64_t now = recount_thread_time_mach(thread);
 +		uint64_t tid = thread->thread_id;
 +		__typeof__(&sched_edge_sweet_top_last[0]) slot = &sched_edge_sweet_top_last[tid % SWEET_TOP_SLOTS];
@@ -225,14 +229,14 @@ index 3657d83..e7c7627 100644
 +		slot->tid = tid;
 +		slot->cpu = now;
 +
-+		int i = 3;
++		int i = SWEET_TOP_N;
 +		while (i > 0 && delta > top[i - 1].delta) {
 +			i--;
 +		}
-+		if (i == 3) {
++		if (i == SWEET_TOP_N) {
 +			continue;
 +		}
-+		memmove(&top[i + 1], &top[i], (2 - i) * sizeof(top[0]));
++		memmove(&top[i + 1], &top[i], (SWEET_TOP_N - 1 - i) * sizeof(top[0]));
 +		void *bsd_info = get_bsdtask_info(get_threadtask(thread));
 +		processor_t last = thread->last_processor;
 +		top[i].delta = delta;
@@ -247,7 +251,7 @@ index 3657d83..e7c7627 100644
 +	}
 +	lck_mtx_unlock(&tasks_threads_lock);
 +
-+	for (int i = 0; i < 3 && top[i].delta; i++) {
++	for (int i = 0; i < SWEET_TOP_N && top[i].delta; i++) {
 +		uint64_t ns;
 +		absolutetime_to_nanoseconds(top[i].delta, &ns);
 +		printf("SWEET CLPC: top %d in 30 s: %s[%d] tid %llu '%s' %llu ms, pri %d base %d bucket %d, last cpu %d\n",
@@ -391,7 +395,7 @@ index 3657d83..e7c7627 100644
  /*
   * sched_edge_cpu_init_completed()
   *
-@@ -4886,6 +5208,9 @@ sched_edge_cpu_init_completed(void)
+@@ -4886,6 +5212,9 @@ sched_edge_cpu_init_completed(void)
  		pset_unlock(src_pset);
  	}
  	splx(s);
