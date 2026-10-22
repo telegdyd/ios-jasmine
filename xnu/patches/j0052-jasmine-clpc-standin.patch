@@ -1,0 +1,501 @@
+From 6c7db2b9524e85c778ec18f4b5bdd17796c30110 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 18:42:27 +0200
+Subject: [PATCH] jasmine-j0052: CLPC stand-in for the Edge scheduler: UI QoS
+ prefers Gold, DF/UT/BG Silver, Silver takes Gold work only when Gold is
+ overloaded (sweetclpc=)
+
+Without CLPC every bucket of every thread group prefers pset0 (Gold) and an
+idle Silver A53 takes Gold's runnable threads at any non-zero Gold load, so UI
+threads ran on the slow cores. Once both clusters run: FIXPRI/FG/IN prefer P,
+DF/UT/BG prefer E (sweetclpc=2: DF on P too) for every thread group; P->E spill
+and steal of P-preferred work only at a per-CPU runq depth >= sweetclpc_depth
+(default 2); E->P only onto idle P CPUs. sweetclpc=0: Apple's defaults.
+Statistics with two clusters: "SWEET CLPC: 10 s ms" (CPU ms per cluster and
+bucket, off-type ms, border decisions) and every 30 s the top 5 threads by CPU.
+jasmine ADT only; topaz unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/kern/sched_clutch.c | 329 ++++++++++++++++++++++++++++++++++++++
+ osfmk/kern/sched_clutch.h |  15 ++
+ osfmk/kern/sched_prim.c   |   3 +
+ osfmk/kern/thread_group.c |  23 +++
+ 4 files changed, 370 insertions(+)
+
+diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
+index 3657d83..8788077 100644
+--- a/osfmk/kern/sched_clutch.c
++++ b/osfmk/kern/sched_clutch.c
+@@ -131,6 +131,22 @@ static int sched_edge_iterate_clusters_ordered(processor_set_t, uint64_t, int);
+ 
+ /* Global indicating the maximum number of clusters on the current platform */
+ static int sched_edge_max_clusters = 0;
++
++#if SCHED_EDGE_SWEET_CLPC
++static bool sched_edge_sweet_spill_held(processor_set_t, processor_set_t, sched_bucket_t);
++/* Decisions across the P/E border, logged every 10 s with the run times (sched_edge_sweet_stats_log()) */
++__enum_decl(sched_edge_sweet_event_t, uint32_t, {
++	SWEET_HELD_MIGRATE,     /* P-preferred thread kept on P by the depth gate */
++	SWEET_HELD_STEAL,       /* idle E CPU not allowed to steal P-preferred work */
++	SWEET_PLACED_P_ON_E,    /* P-preferred thread placed on E */
++	SWEET_PLACED_E_ON_P,    /* E-preferred thread placed on P */
++	SWEET_STOLEN_BY_E,      /* idle E CPU stole from P */
++	SWEET_STOLEN_BY_P,      /* idle P CPU stole from E */
++	SWEET_EVENTS,
++});
++static uint32_t sched_edge_sweet_events[SWEET_EVENTS];
++#define SCHED_EDGE_SWEET_COUNT(e) os_atomic_inc(&sched_edge_sweet_events[(e)], relaxed)
++#endif /* SCHED_EDGE_SWEET_CLPC */
+ #endif /* CONFIG_SCHED_EDGE */
+ 
+ /* Helper debugging routines */
+@@ -3816,9 +3832,18 @@ sched_edge_steal_candidate(processor_set_t pset)
+ 			continue;
+ 		}
+ 		sched_clutch_edge *incoming_edge = &pset_array[cluster_id]->sched_edges[dst_cluster_id];
++#if SCHED_EDGE_SWEET_CLPC
++		/* Same answer as the steal itself (sched_edge_steal_possible()), so Silver does not yield for nothing */
++		int highest_runnable_bucket = bitmap_lsb_first(candidate_pset->pset_clutch_root.scr_unbound_runnable_bitmap, TH_BUCKET_SCHED_MAX);
++		if (incoming_edge->sce_steal_allowed && (highest_runnable_bucket != -1) &&
++		    !sched_edge_sweet_spill_held(candidate_pset, pset, (sched_bucket_t)highest_runnable_bucket)) {
++			return candidate_pset;
++		}
++#else /* SCHED_EDGE_SWEET_CLPC */
+ 		if (incoming_edge->sce_steal_allowed && (bitmap_lsb_first(candidate_pset->pset_clutch_root.scr_unbound_runnable_bitmap, TH_BUCKET_SCHED_MAX) != -1)) {
+ 			return candidate_pset;
+ 		}
++#endif /* SCHED_EDGE_SWEET_CLPC */
+ 	}
+ 	return NULL;
+ }
+@@ -3955,6 +3980,12 @@ sched_edge_steal_possible(processor_set_t idle_pset, processor_set_t candidate_p
+ 		/* Always allow stealing from homogeneous clusters */
+ 		return true;
+ 	} else {
++#if SCHED_EDGE_SWEET_CLPC
++		if (sched_edge_sweet_spill_held(candidate_pset, idle_pset, (sched_bucket_t)highest_runnable_bucket)) {
++			SCHED_EDGE_SWEET_COUNT(SWEET_HELD_STEAL);
++			return false;
++		}
++#endif /* SCHED_EDGE_SWEET_CLPC */
+ 		/* Use the load metrics for highest runnable bucket since that would be stolen next */
+ 		int32_t candidate_load = sched_edge_cluster_load_metric(candidate_pset, (sched_bucket_t)highest_runnable_bucket);
+ 		return candidate_load > 0;
+@@ -3990,6 +4021,11 @@ sched_edge_steal_thread(processor_set_t pset, uint64_t candidate_pset_bitmap)
+ 			thread = sched_clutch_thread_unbound_lookup(&steal_from_pset->pset_clutch_root, root_bucket);
+ 			sched_clutch_thread_remove(&steal_from_pset->pset_clutch_root, thread, current_timestamp, SCHED_CLUTCH_BUCKET_OPTIONS_SAMEPRI_RR);
+ 			KDBG(MACHDBG_CODE(DBG_MACH_SCHED_CLUTCH, MACH_SCHED_EDGE_STEAL) | DBG_FUNC_NONE, thread_tid(thread), pset->pset_cluster_id, steal_from_pset->pset_cluster_id, 0);
++#if SCHED_EDGE_SWEET_CLPC
++			if (pset->pset_type != steal_from_pset->pset_type) {
++				SCHED_EDGE_SWEET_COUNT((pset->pset_type == CLUSTER_TYPE_E) ? SWEET_STOLEN_BY_E : SWEET_STOLEN_BY_P);
++			}
++#endif /* SCHED_EDGE_SWEET_CLPC */
+ 			sched_update_pset_load_average(steal_from_pset, current_timestamp);
+ 		}
+ 		pset_unlock(steal_from_pset);
+@@ -4185,6 +4221,13 @@ sched_edge_migration_check(uint32_t cluster_id, processor_set_t preferred_pset,
+ 	if (edge[cluster_id].sce_migration_allowed == false) {
+ 		return false;
+ 	}
++#if SCHED_EDGE_SWEET_CLPC
++	/* Gold-preferred work stays on Gold, even with Silver idle, until Gold is overloaded */
++	if (!shared_rsrc_thread && sched_edge_sweet_spill_held(preferred_pset, dst_pset, thread->th_sched_bucket)) {
++		SCHED_EDGE_SWEET_COUNT(SWEET_HELD_MIGRATE);
++		return false;
++	}
++#endif /* SCHED_EDGE_SWEET_CLPC */
+ 	uint32_t dst_load = shared_rsrc_thread ? (uint32_t)sched_pset_cluster_shared_rsrc_load(dst_pset, shared_rsrc_type) : sched_edge_cluster_load_metric(dst_pset, thread->th_sched_bucket);
+ 	if (dst_load == 0) {
+ 		/* The candidate cluster is idle; select it immediately for execution */
+@@ -4510,6 +4553,11 @@ migrate_candidate_available_check:
+ 	locked_pset = sched_edge_switch_pset_lock(selected_pset, locked_pset, switch_pset_locks);
+ 	if (sched_edge_pset_available(selected_pset) == true) {
+ 		KDBG(MACHDBG_CODE(DBG_MACH_SCHED_CLUTCH, MACH_SCHED_EDGE_CLUSTER_OVERLOAD) | DBG_FUNC_NONE, thread_tid(thread), preferred_cluster_id, selected_pset->pset_cluster_id, preferred_cluster_load);
++#if SCHED_EDGE_SWEET_CLPC
++		if (preferred_pset->pset_type != selected_pset->pset_type) {
++			SCHED_EDGE_SWEET_COUNT((preferred_pset->pset_type == CLUSTER_TYPE_P) ? SWEET_PLACED_P_ON_E : SWEET_PLACED_E_ON_P);
++		}
++#endif /* SCHED_EDGE_SWEET_CLPC */
+ 		return selected_pset;
+ 	}
+ 	/* Looks like selected_pset is not available for scheduling; remove it from candidate_cluster_bitmap */
+@@ -4837,6 +4885,284 @@ sched_edge_pset_made_schedulable(__unused processor_t processor, processor_set_t
+ 	}
+ }
+ 
++#if SCHED_EDGE_SWEET_CLPC
++/*
++ * jasmine (Xiaomi Mi A2, SDM660), j0052: a CLPC stand-in for the Edge scheduler.
++ *
++ * On Apple silicon CLPC tells the Edge scheduler, per thread group and QoS
++ * bucket, which cluster to prefer (sched_perfcontrol_thread_group_preferred_clusters_set())
++ * and tunes the edges between clusters. There is no CLPC here, so every bucket
++ * of every thread group prefers pset0 (Gold A73, P) and the P->E edge lets an
++ * idle Silver A53 (in-order, 1382 MHz, 2-3x slower per thread) take Gold's
++ * runnable threads as soon as Gold's load is non-zero. While SpringBoard,
++ * backboardd and Mesa keep Gold busy, the UI threads (backboardd's render thread
++ * too) then run on Silver: with 8 cores a frame took twice as long as with the
++ * four Gold cores alone (jasmine/GPU.md, "Speed with 8 cores").
++ *
++ * Once both clusters run (sched_edge_cpu_init_completed()):
++ * - FIXPRI, FG and IN prefer the P cluster; DF, UT and BG prefer the E cluster,
++ *   for every thread group, the existing ones and each new one (the static shape
++ *   of CLPC's recommendations on a UI device). sweetclpc=2 keeps DF on P too.
++ * - P->E, spill or steal of P-preferred work: only while the P cluster's
++ *   runnable+running depth per CPU at that bucket (the EWMA behind the Edge load
++ *   metric) is at least sweetclpc_depth, default 2 (every Gold CPU busy and as
++ *   many threads waiting). A thread waiting that long on Gold finishes later
++ *   than on Silver; with fewer waiting it finishes sooner on Gold. Apple's
++ *   rule (an idle E cluster takes P work at any non-zero P load) applies above.
++ * - E->P: E-preferred work moves to the P cluster only onto an idle P CPU
++ *   (idle Gold CPUs still steal it); the Edge rebalance hands it back when a
++ *   Silver CPU goes idle, and a P-preferred thread preempts it.
++ * sweetclpc=0 keeps Apple's no-CLPC defaults. Other boards (topaz) are unchanged.
++ * Either way, with two clusters, a "SWEET CLPC: 10 s ms" line every 10 s gives
++ * the CPU ms per cluster (P, E) and bucket (FIXPRI/FG/IN/DF/UT/BG), the ms run
++ * on the cluster type the thread does not prefer, and the border decisions.
++ */
++#include <kern/thread_call.h>
++#include <kern/recount.h>
++#include <sys/bsdtask_info.h>   /* MAXTHREADNAMESIZE */
++#include <string.h>
++
++extern int sweet_board_is(const char *compat);          /* bsd/dev/sweet_board.c */
++
++static bool sched_edge_sweet_clpc = false;
++static uint32_t sched_edge_sweet_clpc_depth = 2;
++static uint32_t sched_edge_sweet_clpc_cluster[TH_BUCKET_SCHED_MAX];
++
++/*
++ * Statistics, also with sweetclpc=0 (for A/B rounds): CPU time per cluster type
++ * and bucket, the part of it spent on the other cluster type than the thread
++ * prefers, and the border decisions (sched_edge_sweet_events), every 10 s.
++ */
++static bool sched_edge_sweet_stats = false;
++static uint64_t sched_edge_sweet_run[2][TH_BUCKET_SCHED_MAX];   /* mach ticks; [0] P, [1] E */
++static uint64_t sched_edge_sweet_off_type[TH_BUCKET_SCHED_MAX];
++static thread_call_t sched_edge_sweet_stats_call;
++
++void
++sched_edge_sweet_clpc_account(processor_set_t pset, thread_t thread, uint64_t consumed)
++{
++	sched_bucket_t bucket = thread->th_sched_bucket;
++
++	if (!os_atomic_load(&sched_edge_sweet_stats, relaxed) || bucket >= TH_BUCKET_SCHED_MAX) {
++		return;
++	}
++	os_atomic_add(&sched_edge_sweet_run[pset->pset_type == CLUSTER_TYPE_P ? 0 : 1][bucket], consumed, relaxed);
++	if (pset_type_for_id(sched_edge_thread_preferred_cluster(thread)) != pset->pset_type) {
++		os_atomic_add(&sched_edge_sweet_off_type[bucket], consumed, relaxed);
++	}
++}
++
++static uint64_t
++sched_edge_sweet_take_ms(uint64_t *ticks)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(os_atomic_xchg(ticks, 0, relaxed), &ns);
++	return ns / NSEC_PER_MSEC;
++}
++
++/*
++ * Every 30 s the SWEET_TOP_N threads that used the most CPU in that time (a thread
++ * spinning at some QoS shows up in the per-bucket ms, this says which one).
++ */
++extern queue_head_t threads;
++extern char *proc_name_address(void *p);
++struct proc;
++extern int proc_pid(struct proc *p);
++
++#define SWEET_TOP_N     5
++#define SWEET_TOP_SLOTS 4096    /* last CPU time per thread, by thread_id; a collision only loses one delta */
++static struct {
++	uint64_t tid;
++	uint64_t cpu;
++} sched_edge_sweet_top_last[SWEET_TOP_SLOTS];
++
++static void
++sched_edge_sweet_top_log(void)
++{
++	struct {
++		uint64_t delta, tid;
++		int pid, pri, base_pri, bucket, cpu;
++		char proc[17];          /* p_comm, MAXCOMLEN + 1 */
++		char name[MAXTHREADNAMESIZE];
++	} top[SWEET_TOP_N];
++	thread_t thread;
++
++	bzero(top, sizeof(top));
++	lck_mtx_lock(&tasks_threads_lock);
++	queue_iterate(&threads, thread, thread_t, threads) {
++		if (thread->state & TH_IDLE) {
++			continue;       /* the idle threads would fill the list whenever a CPU idles */
++		}
++		uint64_t now = recount_thread_time_mach(thread);
++		uint64_t tid = thread->thread_id;
++		__typeof__(&sched_edge_sweet_top_last[0]) slot = &sched_edge_sweet_top_last[tid % SWEET_TOP_SLOTS];
++		uint64_t delta = (slot->tid == tid && now >= slot->cpu) ? now - slot->cpu : 0;
++		slot->tid = tid;
++		slot->cpu = now;
++
++		int i = SWEET_TOP_N;
++		while (i > 0 && delta > top[i - 1].delta) {
++			i--;
++		}
++		if (i == SWEET_TOP_N) {
++			continue;
++		}
++		memmove(&top[i + 1], &top[i], (SWEET_TOP_N - 1 - i) * sizeof(top[0]));
++		void *bsd_info = get_bsdtask_info(get_threadtask(thread));
++		processor_t last = thread->last_processor;
++		top[i].delta = delta;
++		top[i].tid = tid;
++		top[i].pid = bsd_info ? proc_pid((struct proc *)bsd_info) : -1;
++		top[i].pri = thread->sched_pri;
++		top[i].base_pri = thread->base_pri;
++		top[i].bucket = thread->th_sched_bucket;
++		top[i].cpu = last ? last->cpu_id : -1;
++		strlcpy(top[i].proc, bsd_info ? proc_name_address(bsd_info) : "?", sizeof(top[i].proc));
++		thread_get_thread_name(thread, top[i].name);
++	}
++	lck_mtx_unlock(&tasks_threads_lock);
++
++	for (int i = 0; i < SWEET_TOP_N && top[i].delta; i++) {
++		uint64_t ns;
++		absolutetime_to_nanoseconds(top[i].delta, &ns);
++		printf("SWEET CLPC: top %d in 30 s: %s[%d] tid %llu '%s' %llu ms, pri %d base %d bucket %d, last cpu %d\n",
++		    i + 1, top[i].proc, top[i].pid, top[i].tid, top[i].name, ns / NSEC_PER_MSEC,
++		    top[i].pri, top[i].base_pri, top[i].bucket, top[i].cpu);
++	}
++}
++
++static void
++sched_edge_sweet_stats_log(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	static uint32_t calls;
++	uint64_t ms[3][TH_BUCKET_SCHED_MAX];
++	uint32_t ev[SWEET_EVENTS];
++
++	if (++calls % 3 == 0) {
++		sched_edge_sweet_top_log();
++	}
++
++	for (sched_bucket_t b = TH_BUCKET_FIXPRI; b < TH_BUCKET_SCHED_MAX; b++) {
++		ms[0][b] = sched_edge_sweet_take_ms(&sched_edge_sweet_run[0][b]);
++		ms[1][b] = sched_edge_sweet_take_ms(&sched_edge_sweet_run[1][b]);
++		ms[2][b] = sched_edge_sweet_take_ms(&sched_edge_sweet_off_type[b]);
++	}
++	for (int e = 0; e < SWEET_EVENTS; e++) {
++		ev[e] = os_atomic_xchg(&sched_edge_sweet_events[e], 0, relaxed);
++	}
++	/* bucket order FIXPRI FG IN DF UT BG */
++	printf("SWEET CLPC: 10 s ms P %llu/%llu/%llu/%llu/%llu/%llu E %llu/%llu/%llu/%llu/%llu/%llu "
++	    "off-type %llu/%llu/%llu/%llu/%llu/%llu; P work on E %u, E work on P %u, stolen by E %u, by P %u, held %u+%u\n",
++	    ms[0][0], ms[0][1], ms[0][2], ms[0][3], ms[0][4], ms[0][5],
++	    ms[1][0], ms[1][1], ms[1][2], ms[1][3], ms[1][4], ms[1][5],
++	    ms[2][0], ms[2][1], ms[2][2], ms[2][3], ms[2][4], ms[2][5],
++	    ev[SWEET_PLACED_P_ON_E], ev[SWEET_PLACED_E_ON_P], ev[SWEET_STOLEN_BY_E], ev[SWEET_STOLEN_BY_P],
++	    ev[SWEET_HELD_MIGRATE], ev[SWEET_HELD_STEAL]);
++
++	uint64_t deadline;
++	clock_interval_to_deadline(10, NSEC_PER_SEC, &deadline);
++	thread_call_enter_delayed(sched_edge_sweet_stats_call, deadline);
++}
++
++/* True if P-preferred work at this bucket must stay on src_pset instead of going to dst_pset */
++static bool
++sched_edge_sweet_spill_held(processor_set_t src_pset, processor_set_t dst_pset, sched_bucket_t bucket)
++{
++	if (!os_atomic_load(&sched_edge_sweet_clpc, relaxed) ||
++	    src_pset->pset_type != CLUSTER_TYPE_P || dst_pset->pset_type != CLUSTER_TYPE_E) {
++		return false;
++	}
++	/* 24.8 fixed point, see sched_update_pset_load_average() */
++	uint64_t depth = os_atomic_load(&src_pset->pset_load_average[bucket], relaxed);
++	return depth < ((uint64_t)sched_edge_sweet_clpc_depth << SCHED_PSET_LOAD_EWMA_FRACTION_BITS);
++}
++
++/* Called with tg_lock held: thread groups created from now on take the table in sched_edge_sweet_clpc_tg_init() */
++void
++sched_edge_sweet_clpc_enable(void)
++{
++	os_atomic_store(&sched_edge_sweet_clpc, true, relaxed);
++}
++
++/* A new thread group, before it has threads (called with tg_lock held) */
++void
++sched_edge_sweet_clpc_tg_init(struct thread_group *tg)
++{
++	if (!os_atomic_load(&sched_edge_sweet_clpc, relaxed)) {
++		return;
++	}
++	sched_clutch_t clutch = sched_clutch_for_thread_group(tg);
++	for (sched_bucket_t bucket = TH_BUCKET_FIXPRI; bucket < TH_BUCKET_SCHED_MAX; bucket++) {
++		os_atomic_store(&clutch->sc_clutch_groups[bucket].scbg_preferred_cluster, sched_edge_sweet_clpc_cluster[bucket], relaxed);
++	}
++}
++
++/* A thread group created before the stand-in started: its runnable threads move as CLPC would move them */
++void
++sched_edge_sweet_clpc_tg_apply(struct thread_group *tg)
++{
++	sched_edge_tg_preferred_cluster_change(tg, sched_edge_sweet_clpc_cluster, SCHED_PERFCONTROL_PREFERRED_CLUSTER_MIGRATE_RUNNABLE);
++}
++
++static void
++sched_edge_sweet_clpc_start(void)
++{
++	uint32_t mode = 1;
++
++	if (!sweet_board_is("xiaomi,jasmine")) {
++		return;
++	}
++	(void)PE_parse_boot_argn("sweetclpc", &mode, sizeof(mode));
++	(void)PE_parse_boot_argn("sweetclpc_depth", &sched_edge_sweet_clpc_depth, sizeof(sched_edge_sweet_clpc_depth));
++
++	processor_set_t p_pset = NULL, e_pset = NULL;
++	for (int cluster_id = 0; cluster_id < sched_edge_max_clusters; cluster_id++) {
++		processor_set_t pset = pset_array[cluster_id];
++		if (pset == NULL || pset_available_cpu_count(pset) == 0) {
++			continue;
++		}
++		if (pset->pset_type == CLUSTER_TYPE_P && p_pset == NULL) {
++			p_pset = pset;
++		} else if (pset->pset_type == CLUSTER_TYPE_E && e_pset == NULL) {
++			e_pset = pset;
++		}
++	}
++	if (p_pset != NULL && e_pset != NULL) {
++		uint64_t deadline;
++		sched_edge_sweet_stats_call = thread_call_allocate_with_options(sched_edge_sweet_stats_log, NULL,
++		    THREAD_CALL_PRIORITY_KERNEL, 0);
++		os_atomic_store(&sched_edge_sweet_stats, true, relaxed);
++		clock_interval_to_deadline(10, NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(sched_edge_sweet_stats_call, deadline);
++	}
++	if (mode == 0 || p_pset == NULL || e_pset == NULL) {
++		printf("SWEET CLPC: off (sweetclpc=%u, P cluster %d, E cluster %d)\n", mode,
++		    p_pset ? (int)p_pset->pset_cluster_id : -1, e_pset ? (int)e_pset->pset_cluster_id : -1);
++		return;
++	}
++
++	uint32_t p_id = p_pset->pset_cluster_id, e_id = e_pset->pset_cluster_id;
++	sched_edge_sweet_clpc_cluster[TH_BUCKET_FIXPRI] = p_id;
++	sched_edge_sweet_clpc_cluster[TH_BUCKET_SHARE_FG] = p_id;
++	sched_edge_sweet_clpc_cluster[TH_BUCKET_SHARE_IN] = p_id;
++	sched_edge_sweet_clpc_cluster[TH_BUCKET_SHARE_DF] = (mode == 2) ? p_id : e_id;
++	sched_edge_sweet_clpc_cluster[TH_BUCKET_SHARE_UT] = e_id;
++	sched_edge_sweet_clpc_cluster[TH_BUCKET_SHARE_BG] = e_id;
++
++	/* E->P: only onto an idle P CPU (the idle short cut in sched_edge_migration_check() ignores the weight) */
++	spl_t s = splsched();
++	pset_lock(e_pset);
++	sched_edge_config_set(e_id, p_id, (sched_clutch_edge){.sce_migration_weight = UINT32_MAX, .sce_migration_allowed = 1, .sce_steal_allowed = 1});
++	pset_unlock(e_pset);
++	splx(s);
++
++	thread_group_sweet_clpc_start();
++	printf("SWEET CLPC: on: FIXPRI/FG/IN prefer cluster %u (P), DF %u, UT/BG %u (E); "
++	    "P->E only at runq depth >= %u per P CPU, E->P only onto idle P CPUs\n",
++	    p_id, sched_edge_sweet_clpc_cluster[TH_BUCKET_SHARE_DF], e_id, sched_edge_sweet_clpc_depth);
++}
++#endif /* SCHED_EDGE_SWEET_CLPC */
++
+ /*
+  * sched_edge_cpu_init_completed()
+  *
+@@ -4886,6 +5212,9 @@ sched_edge_cpu_init_completed(void)
+ 		pset_unlock(src_pset);
+ 	}
+ 	splx(s);
++#if SCHED_EDGE_SWEET_CLPC
++	sched_edge_sweet_clpc_start();
++#endif /* SCHED_EDGE_SWEET_CLPC */
+ }
+ 
+ static bool
+diff --git a/osfmk/kern/sched_clutch.h b/osfmk/kern/sched_clutch.h
+index 21bb2d0..334543d 100644
+--- a/osfmk/kern/sched_clutch.h
++++ b/osfmk/kern/sched_clutch.h
+@@ -374,6 +374,21 @@ void sched_edge_tg_preferred_cluster_change(struct thread_group *tg, uint32_t *t
+ uint16_t sched_edge_cluster_cumulative_count(sched_clutch_root_t root_clutch, sched_bucket_t bucket);
+ uint16_t sched_edge_shared_rsrc_runnable_load(sched_clutch_root_t root_clutch, cluster_shared_rsrc_type_t load_type);
+ 
++/*
++ * jasmine (j0052): CLPC stand-in for the Gold (P) + Silver (E) clusters of the
++ * SDM660, see sched_edge_sweet_clpc_start() in sched_clutch.c.
++ */
++#if __ARM_AMP__ && defined(ARM64_BOARD_CONFIG_SWEET)
++#define SCHED_EDGE_SWEET_CLPC 1
++void sched_edge_sweet_clpc_enable(void);
++void sched_edge_sweet_clpc_tg_init(struct thread_group *tg);
++void sched_edge_sweet_clpc_tg_apply(struct thread_group *tg);
++void thread_group_sweet_clpc_start(void);       /* thread_group.c */
++void sched_edge_sweet_clpc_account(processor_set_t pset, thread_t thread, uint64_t consumed);
++#else
++#define SCHED_EDGE_SWEET_CLPC 0
++#endif
++
+ #endif /* CONFIG_SCHED_EDGE */
+ 
+ #endif /* CONFIG_SCHED_CLUTCH */
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index 8e29586..e1b21a4 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -3464,6 +3464,9 @@ thread_dispatch(
+ 					 * <rdar://problem/57782596> thread_dispatch() thread CPU consumed calculation sometimes results in negative value
+ 					 */
+ 					sched_update_pset_avg_execution_time(current_processor()->processor_set, consumed, processor->last_dispatch, thread->th_sched_bucket);
++#if CONFIG_SCHED_EDGE && SCHED_EDGE_SWEET_CLPC
++					sched_edge_sweet_clpc_account(current_processor()->processor_set, thread, consumed);
++#endif /* CONFIG_SCHED_EDGE && SCHED_EDGE_SWEET_CLPC */
+ 				}
+ 			}
+ 
+diff --git a/osfmk/kern/thread_group.c b/osfmk/kern/thread_group.c
+index f04b813..b6ca743 100644
+--- a/osfmk/kern/thread_group.c
++++ b/osfmk/kern/thread_group.c
+@@ -250,6 +250,26 @@ thread_group_resync(boolean_t create)
+ 	thread_group_flags_update_unlock();
+ }
+ 
++#if CONFIG_SCHED_EDGE && SCHED_EDGE_SWEET_CLPC
++/*
++ * jasmine (j0052): the CLPC stand-in's per-QoS clusters for every thread group
++ * created so far; under tg_lock, so a group created meanwhile gets them in
++ * thread_group_create_and_retain() instead.
++ */
++void
++thread_group_sweet_clpc_start(void)
++{
++	struct thread_group *tg;
++
++	lck_mtx_lock(&tg_lock);
++	sched_edge_sweet_clpc_enable();
++	qe_foreach_element(tg, &tg_queue, tg_queue_chain) {
++		sched_edge_sweet_clpc_tg_apply(tg);
++	}
++	lck_mtx_unlock(&tg_lock);
++}
++#endif /* CONFIG_SCHED_EDGE && SCHED_EDGE_SWEET_CLPC */
++
+ /*
+  * Create new thread group and add new reference to it.
+  */
+@@ -280,6 +300,9 @@ thread_group_create_and_retain(uint32_t flags)
+ 	tg_count++;
+ 	enqueue_tail(&tg_queue, &tg->tg_queue_chain);
+ 
++#if CONFIG_SCHED_EDGE && SCHED_EDGE_SWEET_CLPC
++	sched_edge_sweet_clpc_tg_init(tg);
++#endif /* CONFIG_SCHED_EDGE && SCHED_EDGE_SWEET_CLPC */
+ 	// call machine layer init before this thread group becomes visible
+ 	machine_thread_group_init(tg);
+ 	lck_mtx_unlock(&tg_lock);
+-- 
+2.47.3
+

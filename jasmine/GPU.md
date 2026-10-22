@@ -533,6 +533,41 @@ user swiping home pages and scrolling Settings for ~2 min each; only `cpus=` dif
   Then GPU buffers write-combined (no cache maintenance at all, as msm/freedreno) and fewer submits per frame.
   Until then `cpus=4` is the faster setting for the UI.
 
+#### j0052: CLPC stand-in for the Edge scheduler (2026-10-22 18:40 to 22:15)
+
+What it does (`xnu/patches/j0052-jasmine-clpc-standin.patch`, jasmine ADT only, topaz unchanged): once both
+clusters run, every thread group (existing and new) prefers Gold for FIXPRI/FG/IN and Silver for DF/UT/BG;
+Gold-preferred work goes to Silver (spill or steal) only while Gold's per-CPU runqueue depth at that QoS is >= 2
+(`sweetclpc_depth=`); Silver-preferred work goes to Gold only onto an idle Gold CPU. `sweetclpc=0` = Apple's
+no-CLPC defaults, `sweetclpc=2` keeps DF on Gold. A `SWEET CLPC: 10 s ms` line gives CPU ms per cluster and QoS
+(order FIXPRI/FG/IN/DF/UT/BG), ms on the cluster type the thread does not prefer and the border decisions; every
+30 s `SWEET CLPC: top N` names the 5 threads with the most CPU.
+
+| round | kernel / libsweetca | frame interval while moving (100-flush averages) |
+|---|---|---|
+| `j51-swipe` 18:18 (reference) | j51, 8 cores, reference lib | 131-239 ms (median ~132) |
+| `j51c4` 18:22 (reference) | j51, 4 Gold, reference lib | 54-100 ms (median ~81) |
+| `j52-swipe` 19:22 (`logs/netlog-j52-swipe.txt`, user swiping) | j0052 (CI `39816247751`), 8 cores, reference lib | 40-226 ms (median ~96) |
+| `j52s-swipe` 20:50 (`logs/netlog-j52s-swipe.txt`, user swiping) | j0052 + stats, 8 cores, reference lib (swapped in for the round) | 89-237 ms (median ~128) |
+| `j52on2` 22:00 (`logs/netlog-j52on2-ui.txt`, uiround.sh) | j0053-56 + j0052 (CI `39843322577`), 8 cores, on | 158, 195, 92 ms |
+| `j52off2` 22:05 (`logs/netlog-j52off2-ui.txt`) | same, `sweetclpc=0` | 155, 153, 140 ms |
+| `j52c4b` 22:11 (`logs/netlog-j52c4b-ui.txt`) | same, `cpus=4` | 152, 152, 124, 199 ms |
+
+- With the reference library, 8 cores went from ~132 to ~96-128 ms against 4 Gold's ~81 ms; the cost of one
+  whole-cache flush fell from 0.61-0.74 ms to 0.44-0.63 ms (4 Gold: 0.35-0.63), i.e. backboardd's submitting
+  thread now runs on Gold. With j0053-56 (frames bound elsewhere) on, off and `cpus=4` are within noise of each
+  other (1-4 moving 100-frame blocks per unattended round; the summary in uibench.py needs finer frame data to
+  separate them). No panic in 8 boots, `8 cores x 100 runs at once: 0 errors` in every 8-core boot.
+- Placement (ms per 10 s during the gestures, j52off vs j52on, FIX/FG/IN/DF/UT/BG):
+  off: Gold 2077/223/9833/1686/3827/5199, Silver 41/68/815/455/847/2488;
+  on: Gold 1895/204/11398/44/71/454, Silver 2/9/1411/2580/3426/6467. The stand-in takes ~10 s of DF/UT/BG per
+  10 s off Gold; UI QoS on Silver stays small.
+- Found by the top list, independent of j0052: **mediaserverd** tid ~600 (pri 37, IN) uses ~12-13 s of CPU per
+  30 s on Gold all the time, UI idle or not; `vmd` (BG) ~20 s per 30 s on Silver. mediaserverd is probably
+  polling for audio hardware jasmine does not have: next to look at, it costs ~40 % of a Gold core.
+- One cpus=4 boot (`j52c4`, 21:42, stand-in off as there is no Silver cluster) never drew a frame: backboardd and
+  SpringBoard all in mach_msg (sampler lines in `logs/netlog-j52c4-ui.txt`, not in git); the rerun was fine.
+
 #### j0053: GPU pool + lazy IOSurface upkeep (2026-10-22 19:23 to 19:50): cache maintenance ~1 % instead of ~25 %
 
 Profile first (libsweetca since `d8d851e`, Mesa CI `39815893071`: every 100 flushes `sweetca: prof:` lines with the
