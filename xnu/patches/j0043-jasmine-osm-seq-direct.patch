@@ -1,0 +1,55 @@
+From 39fddc9bde70d4d13f46272382cbadf54690091c Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 07:12:39 +0200
+Subject: [PATCH] jasmine-j0043: probe reads the OSM sequencer registers
+ directly
+
+Round j42: the word at OSM offset 0 is no version register (it flips
+between 0, 0x70000 and 0x1 every few hundred ms), so the OSM block was
+never "cut off"; still, with OSM enabled at 15 s the clock did not follow
+and the sequencer PC and cycle counter stayed 0. TZ's IO read may answer 0
+outside its whitelist just as it drops IO writes there, so sweetosm=1 now
+also reads the Gold and Silver sequencer registers (SEQ_REG 0..127) and
+the Gold branch table directly, one announced line of 8 at a time: if
+SEQ_REG(0) holds the PLL L address, TZ did configure the sequencer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/arm64/sweet_osm.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index a2f28ff..2d7edaf 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -639,6 +639,27 @@ osm_probe(void)
+ 		delay(50000);
+ 		printf("SWEET OSM: direct read %#llx = %#x\n", OSM_BASE + tz_try[k], osm[tz_try[k] / 4]);
+ 	}
++
++	/*
++	 * TZ's IO read may answer 0 for registers outside its whitelist (it drops IO
++	 * writes there, round j41): the Gold sequencer registers and the branch table
++	 * read directly (SEQ_REG(72) did, j39f), 8 per announced line.
++	 */
++	static const struct { const char *name; uint32_t from, to; } direct[] = {
++		{ "gold-seq", 0x2300, 0x2500 }, { "gold-br", 0x2170, 0x2230 }, { "silver-seq", 0x0300, 0x0500 },
++	};
++	for (uint32_t d = 0; d < sizeof(direct) / sizeof(direct[0]); d++) {
++		for (uint32_t off = direct[d].from; off < direct[d].to; off += 32) {
++			printf("SWEET OSM: direct %s reading %#llx\n", direct[d].name, OSM_BASE + off);
++			delay(20000);
++			uint32_t w[8];
++			for (int i = 0; i < 8; i++) {
++				w[i] = off + 4 * i < direct[d].to ? osm[(off + 4 * i) / 4] : 0;
++			}
++			printf("SWEET OSM: direct %s %#llx: %08x %08x %08x %08x %08x %08x %08x %08x\n", direct[d].name,
++			    OSM_BASE + off, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++		}
++	}
+ }
+ 
+ /*
+-- 
+2.47.3
+
