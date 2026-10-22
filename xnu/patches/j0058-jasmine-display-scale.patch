@@ -1,9 +1,9 @@
-From 5ad1011d5adba69b846c1758e2fda78ec4cd912b Mon Sep 17 00:00:00 2001
+From 40c1120c193280b8c55da4a047c7a0b0aa217224 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Fri, 23 Oct 2026 01:06:52 +0200
 Subject: [PATCH] jasmine-j0058: the MDP scales the fitted frame (VIG0 QSEED3)
  from the GPU pool, no CPU composeFit; honest IOMobileFramebufferSwapWait (a
- swap is done once its flip latched)
+ swap is done once a later one latched)
 
 composeFit (CPU nearest-sample scale 1125x2436 -> 996x2160) cost 8.2 ms of a 49 ms
 moving frame on CoreAnimation's display thread (j0057 profile). Now:
@@ -23,9 +23,11 @@ moving frame on CoreAnimation's display thread (j0057 profile). Now:
   CoreAnimation's polls) returned "done" at once. CoreAnimation's
   IOMFBDisplay::can_update_ frees a queued swap's surface only when SwapWait says
   done, so it drew into the frame still on the panel (j0056's held draws). A swap
-  is now done once the MDP latched its flip (CTL_FLUSH clear, or after 50 ms); a
-  frame scanned in place stays held until the one after it latched. sweetfb_swapwait=0:
-  the old behaviour (topaz default).
+  is now done once a later swap's flip latched (CTL_FLUSH clear, or after 50 ms):
+  CoreAnimation asks for swap N before it draws into N's surface again, so "N is on
+  the panel" is not done (round j58a with that: ~900 draws into the shown frame,
+  heavy flicker). A frame scanned in place stays held until then.
+  sweetfb_swapwait=0: the old behaviour (topaz default).
 - Counters every 600 synced frames: scaled by the MDP / copied, SwapWait calls,
   polls that found the swap not done, time in them.
 - sweet_osm command port: the MDP block (0x0c901000-0x0c90a000) readable and
@@ -41,7 +43,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  mode change 100755 => 100644 osfmk/arm64/sweet_osm.c
 
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 63147d8..44adae0 100644
+index 63147d8..c9feeec 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -146,6 +146,11 @@ sweet_fb_sync(void)
@@ -76,9 +78,9 @@ index 63147d8..44adae0 100644
 +	bool          scalerInit(void);
 +	void          pipeLayout(bool scaled);
 +	void          scanScaled(uint64_t pa, uint32_t stride);
-+	/* j0058: swap completion (IOMobileFramebufferSwapWait): a swap is done once the MDP latched it */
++	/* j0058: swap completion (IOMobileFramebufferSwapWait): a swap is done once a later one replaced it on the panel */
 +	bool          fSwapWait;      /* honest SwapWait (sweetfb_swapwait=, default on but topaz) */
-+	uint32_t      fDoneID;        /* the last swap done */
++	uint32_t      fShownID;       /* the swap on the panel (latched) */
 +	uint32_t      fLatchID;       /* the swap flipped to, not latched yet (0: none) */
 +	uint64_t      fLatchAt;
 +	void          noteShown(uint32_t id);
@@ -310,8 +312,9 @@ index 63147d8..44adae0 100644
 + * j0058: swap completion. CoreAnimation renders into a swap surface again once
 + * IOMobileFramebufferSwapWait says the swap that replaced it is done (IOMFBDisplay::can_update_
 + * polls it for each queued swap); ours said "done" at once, so CoreAnimation drew into the
-+ * surface still on the panel (j0056's held draws, the dock flicker). A swap is done once the
-+ * MDP latched its flip; one with no flip pending (CPU copy into the scanned buffer) at once.
++ * surface still on the panel (j0056's held draws, the dock flicker). A swap is done once a
++ * later swap's flip latched: CoreAnimation asks for swap N before it draws into N's surface
++ * again, so "N is on the panel" is not done yet (round j58a: 900 draws into the shown frame).
 + */
 +void
 +AppleCLCD::noteShown(uint32_t id)
@@ -321,13 +324,13 @@ index 63147d8..44adae0 100644
 +		fLatchID = id;
 +		fLatchAt = mach_absolute_time();
 +	} else {
-+		fDoneID = id;
++		fShownID = id;          /* (no flip pending: CPU copy into the scanned buffer) */
 +		fLatchID = 0;
 +	}
 +	IOLockUnlock(fLock);
 +}
 +
-+/* The flip latched (its CTL_FLUSH bits clear, or 50 ms passed): its swap is done, what it replaced is free */
++/* The flip latched (its CTL_FLUSH bits clear, or 50 ms passed): its swap is on the panel, what it replaced is free */
 +void
 +AppleCLCD::retireLatched(void)
 +{
@@ -341,7 +344,7 @@ index 63147d8..44adae0 100644
 +		IOLockUnlock(fLock);
 +		return;
 +	}
-+	fDoneID = fLatchID;
++	fShownID = fLatchID;
 +	fLatchID = 0;
 +	memcpy(gone, fRetireHold, sizeof(gone));
 +	bzero(fRetireHold, sizeof(fRetireHold));
@@ -362,9 +365,8 @@ index 63147d8..44adae0 100644
 +	for (;;) {
 +		retireLatched();
 +		IOLockLock(fLock);
-+		/* (a swap never shown -- lost, cancelled -- is done once nothing waits to reach the panel) */
-+		bool done = !fSwapWait || (int32_t)(fDoneID - id) >= 0 || (int32_t)(id - fSwapID) > 0 ||
-+		    (fLatchID == 0 && !fDirty);
++		/* done: older than the swap on the panel, or never begun */
++		bool done = !fSwapWait || (int32_t)(fShownID - id) > 0 || (int32_t)(id - fSwapID) > 0;
 +		IOLockUnlock(fLock);
 +		absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
 +		if (done || ns >= (uint64_t)ms * NSEC_PER_MSEC) {
