@@ -11,6 +11,12 @@ Commands (osfmk/arm64/sweet_osm.c, osm_cmd_one):
   check        workload: this core (~MHz) + all cores x 20 (errors)
   tsens        temperatures                  state        PLL / RCG / OSM / CPRh / SAW
   table        this chip's CPRh corners      prog         CPRh + SAW + OSM programmed, not enabled
+  spmi SID ADDR [N]   PMIC register read     rails        PM660 S1-S3 (APC supplies) voltages
+Sequences (j0048): one line runs back to back in the kernel.
+  m ADDR MASK VAL     read-modify-write      d US         delay      t   us since line start
+  poll ADDR MASK VAL [US]   wait for a value; a timeout skips the rest of the line
+  rep N        run the rest of the line N times (stops at a failed poll)
+  e.g. 'w 0x17812c1c 1; w 0x17812900 0x3b4; poll 0x17812c18 0x300ff 0xb4 2000; t; rails'
 Direct accesses are limited to the clock / OSM / CPRh / SAW / APCS / GCC / TSENS blocks.
 Goes over the USB command port (TCP 5141, the same as tools/sweet-cmd.py).
 """
