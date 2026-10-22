@@ -23,7 +23,7 @@ fi
 # G2 state of 2026-10-22 05:04 (shim-boot-j38-bb8.img) + ARGS
 BASE="gpudelay=1 gpupause=0 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib"
 wsl env GPUDBG=0 VARIANT=osm EXTRA_ARGS="$BASE $ARGS" bash "/mnt/c/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/tools/g2/mkimg.sh" $T || exit 1
-for i in $(seq 1 60); do
+for i in $(seq 1 ${WAIT:-60}); do
 	[ -n "$(fastboot devices)" ] && break
 	python -c "import socket; socket.create_connection(('169.254.7.2', 5141), timeout=2)" 2>/dev/null && break
 	sleep 2
