@@ -570,3 +570,29 @@ reads them (lock, the display's copy). All rounds: 4 Gold cores (`cpus=4`), user
   msm's a5xx (cache invalidates at start, preemption/yield packets) once the frame rate exposes GPU-side issues.
 - Metal itself: their stack is metal2vulkan (Rust) on Mesa Turnip (Vulkan, a6xx/a7xx only). No open Vulkan
   driver exists for the a5xx, so not for jasmine short of writing one; CA's GLES path covers the UI.
+
+#### The flicker found (2026-10-22 20:42 to 21:30): CoreAnimation redraws a surface before our timer copies it
+
+- j54k (20:42, kick every 32 draws, `logs/netlog-j54k-swipe.txt`): GPU and CPU overlap again (`glFinish` 1-8 ms,
+  frames 29-55 ms), but the dock flicker is back. It tracks how early the GPU starts on a frame: there with ~80
+  submits a frame, almost gone with one merged submit at the frame's end, back with kicks.
+- j0055 (CI `39834825880`, round j55 21:01): the display's copy and IOSurfaceLock wait for the GPU's last job
+  on a surface. Not the cause: fewer than 100 waits in the round (no log line). Kept (correct, costs nothing).
+- **j0056** (CI `39838118045`): unattended rounds (`sweetcmd=1`: `touch`/`swipe`/`key` on the command port;
+  `tools/g2/uiround.sh` + `uibench.py` play the same gestures every round and summarise), a flicker counter
+  (A-B-A sparse checksums of each copied frame), a count of GPU jobs drawing into a surface the display still
+  holds, and `sweetfb_sync=1` (copy a frame at its swap, on CoreAnimation's thread, not at the next 30 Hz tick).
+- Rounds j56a / j56b (21:20 / 21:26, 4 Gold cores, same gestures, `logs/netlog-j56{a,b}-ui.txt`):
+
+| | j56a (copy at the timer tick) | j56b (`sweetfb_sync=1`) |
+|---|---|---|
+| GPU jobs drawing into a surface the display holds | **1130** | **0** |
+| frames shown (flicker-check windows of 300) | 300 | 600 |
+| frame interval under the script (median, pauses included) | 147 ms | 83 ms |
+| A-B-A flashes (dock / panel) | 1 / 3 | 1 / 2, then 0 / 0 |
+
+- Cause: CoreAnimation draws into its two swap surfaces (ids 2 and 4) without honouring our in-use count
+  (state page +0x18, `sweet_hold`), so the copy at our next tick read a surface already half into the next
+  frame. Copied at the swap, nothing can overwrite it first; the 30 Hz pacing (`sweetfb_hz=30`) goes too.
+  A-B-A checksums catch half-drawn frames poorly (new content, not an old frame): the held-surface count is
+  the measure. Next: `sweetfb_sync=1` the default on jasmine.
