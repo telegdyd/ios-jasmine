@@ -1,0 +1,431 @@
+From f99c7d6d95db7690f46b7025ff74580cb5d78f40 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 06:35:32 +0200
+Subject: [PATCH] jasmine-j0040: Gold cluster under OSM with open-loop CPRh
+ voltages (sweetosm=2)
+
+Phase 2 of jasmine/HANDOFF-CPUCLK.md, the stock (TrustZone) way: on stock
+(no qcom,osm-no-tz) Linux leaves the OSM sequencer program to TZ and only
+writes the LUT, the CC/LLM policy and, through scm_io_write, the MEM-ACC
+and APM virtual corners; SoMainline's upstream OSM series for
+MSM8998/SDM630 does the same. Round j39f showed TZ accepts those IO writes
+(program memory is not readable from the apps side either way).
+
+sweetosm=2, in the j0039 thread 60 s after start: this chip's table from
+the fuses, then CPRh apc1 set up as cpr3_regulator_init_ctrl() /
+cpr3_regulator_init_cprh() do (corner words, base quotients, timers, OSM
+interface, loop on) with HW closed loop off, the Gold L2 SAW AVS_CTL /
+AVS_LIMIT as the stock spm driver writes them, the OSM LUT (read back),
+CC/LLM policy, MEM-ACC thresholds and APM corners; FSMs and LMh stay off.
+OSM is enabled at index 0 from XBL's state (sweetgold= is skipped with
+sweetosm>=2) and stepped up to osmmax= kHz (default 1747200). Each step
+logs PLL / RCG / OSM pstate, CPRh status, SAW PMIC status and TSENS and
+runs the j0015 workload on this core and on all four; a wrong result
+drops to index 0 and stops.
+
+Adapted from the Linux msm-4.4 clk-cpu-osm.c and cpr3-regulator.c (The
+Linux Foundation, GPL-2.0; the user's OK of 2026-10-22).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/arm64/sweet_cpuclk.c |   5 +
+ osfmk/arm64/sweet_osm.c    | 330 ++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 328 insertions(+), 7 deletions(-)
+
+diff --git a/osfmk/arm64/sweet_cpuclk.c b/osfmk/arm64/sweet_cpuclk.c
+index 431ca1c..de8e25c 100644
+--- a/osfmk/arm64/sweet_cpuclk.c
++++ b/osfmk/arm64/sweet_cpuclk.c
+@@ -122,6 +122,11 @@ sweet_gold_clock(void)
+ 	if (!PE_parse_boot_argn("sweetgold", &mhz, sizeof(mhz)) || mhz == 0) {
+ 		return 0;
+ 	}
++	uint32_t osm = 0;
++	if (PE_parse_boot_argn("sweetosm", &osm, sizeof(osm)) && osm >= 2) {
++		printf("SWEET GOLD: sweetosm=%u: OSM takes the cluster from XBL's state, sweetgold=%u skipped\n", osm, mhz);
++		return 0;
++	}
+ 	int ok = 0;
+ 	for (uint32_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+ 		if (steps[i] == mhz) {
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 8abbcd7..68d928d 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -29,6 +29,8 @@
+ #include <pexpert/pexpert.h>
+ #include <kern/thread.h>
+ #include <kern/sched_prim.h>
++#include <kern/processor.h>
++#include <arm/cpu_internal.h>
+ #include <string.h>
+ 
+ void sweet_osm_init(void);
+@@ -279,6 +281,7 @@ static struct {
+ } cpr;
+ 
+ static uint64_t fuse_rows[80];
++static uint32_t osm_mode;
+ 
+ static uint64_t
+ fuse_param(const struct fuse_seg *s)                    /* cpr3_read_fuse_param */
+@@ -559,8 +562,8 @@ cpr_log(void)
+ 	    cpr.mem_acc_vc[2], cpr.mem_acc_vc[3], cpr.mem_acc_lval);
+ }
+ 
+-static void
+-osm_probe(void)
++static int
++osm_fuses(void)
+ {
+ 	volatile uint32_t *q = osm_map(QFPROM_CORR, 0x1000);
+ 	/* only the rows Linux reads (speed bin 38, CPR 65..71): a read of row 36 never completed */
+@@ -574,9 +577,17 @@ osm_probe(void)
+ 	}
+ 	printf("SWEET OSM: computing the table\n");
+ 	delay(50000);
+-	if (cpr_compute() == 0) {
+-		cpr_log();
++	if (cpr_compute() != 0) {
++		return -1;
+ 	}
++	cpr_log();
++	return 0;
++}
++
++static void
++osm_probe(void)
++{
++	(void)osm_fuses();
+ 	delay(100000);
+ 
+ 	volatile uint32_t *osm = osm_map(OSM_BASE, 0x4000);
+@@ -630,8 +641,308 @@ osm_probe(void)
+ 	}
+ }
+ 
++/*
++ * sweetosm=2 (j0040): OSM with open-loop CPRh voltages, the stock (TrustZone)
++ * way. On stock (no qcom,osm-no-tz) Linux leaves the sequencer program to TZ
++ * and only writes the LUT, the CC/LLM policy, the FSMs and, through
++ * scm_io_write, the MEM-ACC and APM virtual corners (clk-cpu-osm.c probe);
++ * SoMainline's upstream OSM series for MSM8998/SDM630 does the same. CPRh is
++ * set up first, as cpr3_regulator_init_ctrl() / cpr3_regulator_init_cprh()
++ * do it for a CPRh controller, but with HW closed loop off: every corner gets
++ * its open-loop voltage (= its ceiling, from this chip's fuses). The FSMs
++ * (boost, droop, power collapse) and LMh stay off (phase 5).
++ *
++ * Then, from XBL's state (sweetgold= is skipped with sweetosm>=2), OSM is
++ * enabled at LUT index 0 and stepped up to osmmax= kHz (default 1747200, the
++ * clock every image runs today). Each step: PLL / RCG / OSM pstate, CPRh
++ * status, SAW PMIC status, the j0015 workload on this core (time and result)
++ * and on all four at once, TSENS. A wrong result drops to index 0 and stops.
++ */
++#define OSM_GOLD                (OSM_BASE + 0x2000)
++#define OSM_SEQ(n)              (0x300 + 4 * (n))       /* relative to a cluster's OSM base */
++#define OSM_WORK                4000000ull
++#define OSM_WORK_1747_US        14227                   /* j0015 at 1747.2 MHz (round j39c) */
++
++static inline void
++osm_wr(volatile uint32_t *base, uint32_t off, uint32_t v)
++{
++	/* never "str wzr" to these blocks (the hypervisor's emulation hangs on it, j0018) */
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"((volatile uint8_t *)base + off) : "memory");
++}
++
++static inline uint32_t
++osm_rd(volatile uint32_t *base, uint32_t off)
++{
++	return base[off / 4];
++}
++
++/* scm_io_write to a Gold sequencer register; 0 = done */
++static uint64_t
++osm_seq_tz(uint32_t n, uint32_t v)
++{
++	uint64_t st = osm_scm2(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_WRITE), OSM_GOLD + OSM_SEQ(n), v), r = 0;
++	(void)osm_scm1(SCM_FAST_FN(SCM_SVC_IO, SCM_IO_READ), OSM_GOLD + OSM_SEQ(n), &r);
++	printf("SWEET OSM: SEQ_REG(%u) <- %#x via TZ: st %#llx, reads %#llx\n", n, v, st, r);
++	return st;
++}
++
++static volatile uint64_t osm_seed = 0x9e3779b97f4a7c15ull;
++
++static uint64_t
++osm_workload(uint64_t n)                                /* j0015's deterministic workload */
++{
++	uint64_t x = osm_seed, h = 0;
++	for (uint64_t i = 0; i < n; i++) {
++		x = x * 6364136223846793005ull + 1442695040888963407ull;
++		h ^= (x >> 17) + (h << 5) + (h >> 2);
++		h = (h << 7) | (h >> 57);
++	}
++	return h;
++}
++
++static uint64_t osm_ref;
++static volatile uint32_t osm_done, osm_errors;
++
++static void
++osm_load_thread(void *arg, wait_result_t result)
++{
++	(void)result;
++	processor_t p = cpu_to_processor((int)(uintptr_t)arg);
++	if (p != PROCESSOR_NULL) {
++		thread_bind(p);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++	for (int i = 0; i < 20; i++) {
++		if (osm_workload(OSM_WORK) != osm_ref) {
++			__atomic_fetch_add(&osm_errors, 1, __ATOMIC_RELAXED);
++		}
++	}
++	__atomic_fetch_add(&osm_done, 1, __ATOMIC_RELAXED);
++}
++
++/* all cores x 20 runs at once; returns the number of wrong results */
++static uint32_t
++osm_load_all(void)
++{
++	uint32_t n = 0;
++	osm_done = osm_errors = 0;
++	for (int cpu = 0; cpu < (int)real_ncpus; cpu++) {
++		thread_t t;
++		if (kernel_thread_start(osm_load_thread, (void *)(uintptr_t)cpu, &t) == KERN_SUCCESS) {
++			thread_deallocate(t);
++			n++;
++		}
++	}
++	while (osm_done < n) {
++		delay(10000);
++	}
++	return osm_errors;
++}
++
++static void
++osm_tsens(const char *when)
++{
++	volatile uint32_t *tm = osm_map(0x10ac000, 0x4000) + 0x2000 / 4;
++	char line[160];
++	int n = snprintf(line, sizeof(line), "SWEET OSM: TSENS %s:", when);
++	for (int i = 0; i < 14 && n < (int)sizeof(line) - 10; i++) {
++		uint32_t v = tm[(0xa0 + 4 * i) / 4];
++		int t = (int)(v & 0xfff);
++		if (t & 0x800) {
++			t -= 0x1000;
++		}
++		n += snprintf(line + n, sizeof(line) - n, (v & (1u << 21)) ? " %d.%d" : " -", t / 10, (t < 0 ? -t : t) % 10);
++	}
++	printf("%s C\n", line);
++}
++
++/* cpr3_regulator_init_ctrl() + cpr3_regulator_init_cprh() for apc1, thread 0 */
++static void
++cprh_init(volatile uint32_t *c, int closed_loop)
++{
++	uint32_t ro_used = 0, v;
++	for (uint32_t i = 0; i < cpr.n; i++) {
++		if (cpr.c[i].freq && cpr.c[i].quot > 0) {
++			ro_used |= 1u << cpr.c[i].ro;
++		}
++	}
++	/* GCNT = ceil(19.2 MHz * 1000 ns) - 1 for every RO in use */
++	for (int ro = 0; ro < CPR_RO_COUNT; ro++) {
++		if (ro_used & (1u << ro)) {
++			osm_wr(c, 0xa0 + 4 * ro, 19);
++		}
++	}
++	osm_wr(c, 0x00c, 96000);                        /* TIMER_AUTO_CONT: 19.2 MHz * 5 ms loop time */
++	osm_wr(c, 0x004, 15u << 1 | 0u << 6 | 14u << 9);  /* CPR_CTL: idle clocks 15, count mode 0, repeat 14; loop off */
++	osm_wr(c, 0x014, 12u | 14u << 6);               /* STEP_QUOT min 12 max 14 */
++	for (int s = 0; s < 9; s++) {
++		osm_wr(c, 0x200 + 4 * s, 0);            /* SENSOR_OWNER: thread 0 */
++	}
++	osm_wr(c, 0x808, 0u << 4 | 2u | 2u << 13 | 2u << 8);   /* THRESH: consecutive up 0 down 2, thresholds 2/2 */
++	osm_wr(c, 0x80c, 0xffff);                       /* RO_MASK: all masked until the base quotients */
++	v = osm_rd(c, 0x7f8);                           /* MARGIN_ADJ_CTL */
++	printf("SWEET OSM: CPRh MARGIN_ADJ_CTL %#x MISC %#x SAW_ERR %#x TIMERS %#x CTL %#x before\n", v,
++	    osm_rd(c, 0x700), osm_rd(c, 0x7a4), osm_rd(c, 0x7a8), osm_rd(c, 0x3aa0));
++	v = (v & ~(1u << 4)) | (closed_loop ? 1u << 4 : 0);
++	osm_wr(c, 0x7f8, v);
++	/* cpr3_regulator_set_base_target_quot: ROs no corner uses stay masked */
++	osm_wr(c, 0x80c, 0xffff & ~ro_used);
++	for (int ro = 0; ro < CPR_RO_COUNT; ro++) {
++		osm_wr(c, 0x840 + 4 * ro, cpr.base_quot[ro]);
++	}
++	for (uint32_t i = 0; i < cpr.n; i++) {
++		osm_wr(c, 0x3a00 + 4 * i, cpr.corner_reg[i]);
++	}
++	osm_wr(c, 0x700, osm_rd(c, 0x700) | 1u << 2);  /* MISC: reset step quot loop */
++	v = osm_rd(c, 0x7f8);
++	v = (v & ~(0x1fu << 12)) | 4u << 12;            /* PMIC step 4 (saw unit mV, 4 mV steps) */
++	v = (v & ~(0x3fu << 26)) | 0u << 26;            /* KV margin step quot: none fixed */
++	v |= 1u << 7;                                   /* per-RO KV margin (dynamic step quot) */
++	osm_wr(c, 0x7f8, v);
++	v = osm_rd(c, 0x7a4);
++	osm_wr(c, 0x7a4, (v & ~0x3ffu) | 1u << 5 | 1u);         /* SAW error step limit down 1, up 1 */
++	v = osm_rd(c, 0x7a8);
++	osm_wr(c, 0x7a8, (v & ~(0x7ffu << 18)) | 33u << 18);    /* settle: 19.2 MHz * 1760 ns */
++	v = osm_rd(c, 0x3aa0);
++	v &= ~(0xffu << 17 | 0x3ffu << 1 | 0xfu << 25 | 1u);
++	v |= 5u << 17;                                  /* mode switch delay: 19.2 MHz * 1042 ns / 4 */
++	v |= (CPR_BASE_VOLT / CPR_STEP) << 1 | (CPR_STEP / 1000) << 25 | 1u;   /* base 400 mV, 4 mV, OSM interface on */
++	osm_wr(c, 0x3aa0, v);
++	osm_wr(c, 0x004, osm_rd(c, 0x004) | 1u);        /* loop enable */
++	printf("SWEET OSM: CPRh init (%s): CTL %#x MARGIN_ADJ_CTL %#x MISC %#x CPR_CTL %#x STATUS %#x\n",
++	    closed_loop ? "HW closed loop" : "open loop", osm_rd(c, 0x3aa0), osm_rd(c, 0x7f8), osm_rd(c, 0x700),
++	    osm_rd(c, 0x004), osm_rd(c, 0x3aa4));
++}
++
++/* clk-cpu-osm.c probe, TZ path, Gold cluster only; FSMs off. 0 = programmed */
++static int
++osm_program(volatile uint32_t *o)
++{
++	osm_wr(o, 0x1f00, 1u | (200000000 / 19200000 - 1) << 1 | 1u << 8);    /* cycle counter, OSM:XO ratio, XO edge */
++	for (uint32_t i = 0; i < OSM_TABLE_SIZE; i++) {         /* clk_osm_setup_hw_table: rows past the end repeat the last */
++		const struct osm_row *r = &cpr.lut[i < cpr.lut_rows ? i : cpr.lut_rows - 1];
++		uint32_t off = 0x1150 + 32 * i;
++		osm_wr(o, off, i);
++		osm_wr(o, off + 0x4, r->fdata);
++		osm_wr(o, off + 0x8, (r->vc - 1) << 16 | (uint32_t)(cpr.c[r->vc - 1].ceiling / 1000));
++		osm_wr(o, off + 0xc, r->ovr);
++		osm_wr(o, off + 0x14, r->spare);
++	}
++	int bad = 0;
++	for (uint32_t i = 0; i < cpr.lut_rows; i++) {
++		uint32_t off = 0x1150 + 32 * i;
++		const struct osm_row *r = &cpr.lut[i];
++		uint32_t f = osm_rd(o, off + 4), vv = osm_rd(o, off + 8), ov = osm_rd(o, off + 0xc), sp = osm_rd(o, off + 0x14);
++		int ok = f == r->fdata && vv == ((r->vc - 1) << 16 | (uint32_t)(cpr.c[r->vc - 1].ceiling / 1000)) &&
++		    ov == r->ovr && sp == r->spare;
++		bad |= !ok;
++		printf("SWEET OSM: LUT %u read back: freq %#x volt %#x override %#x spare %u %s\n", i, f, vv, ov, sp, ok ? "OK" : "DIFFERS");
++	}
++	if (bad) {
++		return -1;
++	}
++	/* clk_osm_set_cc_policy: up/down timers 1000 ns at 200 MHz, no PC override, retention = active, CC DCVS on */
++	osm_wr(o, 0x101c, osm_rd(o, 0x101c) | 200u << 16 | 200u);
++	osm_wr(o, 0x100c, 0);
++	osm_wr(o, 0x1024, 0);
++	osm_wr(o, 0x1020, 0);
++	/* clk_osm_set_llm_freq_policy / _volt_policy: timers 327675 ns, LLM votes honoured */
++	osm_wr(o, 0x102c, osm_rd(o, 0x102c) | 0xffffu << 16 | 0xffffu);
++	osm_wr(o, 0x1030, osm_rd(o, 0x1030) | 0xffffu << 16 | 0xffffu);
++	osm_wr(o, 0x1034, osm_rd(o, 0x1034));
++	/* clk_osm_program_mem_acc_regs (TZ path) and clk_osm_apm_vc_setup (TZ path) */
++	uint64_t st = 0;
++	for (int k = 0; k < 4; k++) {
++		st |= osm_seq_tz(55 + k, cpr.mem_acc_vc[k]);
++	}
++	st |= osm_seq_tz(32, cpr.mem_acc_lval);
++	if (cpr.apm_threshold_vc) {
++		osm_wr(o, 0x1048, cpr.apm_threshold_vc);        /* SEQ_REG1_OFFSET */
++	}
++	st |= osm_seq_tz(72, cpr.apm_crossover_vc);
++	st |= osm_seq_tz(15, cpr.apm_threshold_vc);
++	st |= osm_seq_tz(31, cpr.apm_pre_vc);
++	st |= osm_seq_tz(76, 0x39u | cpr.apm_threshold_vc << 6);
++	return st ? -2 : 0;
++}
++
++static volatile uint32_t *osm_gpll, *osm_grcg, *osm_saw, *osm_cprh;
++
++static void
++osm_state(const char *when, volatile uint32_t *o)
++{
++	uint32_t st = osm_rd(osm_cprh, 0x3aa4);
++	printf("SWEET OSM: %s: PLL mode %#x L %#x status %#x, RCG cfg %#x; OSM enable %#x desired %u pstate %#x; "
++	    "CPRh corner %u last %u; SAW PMIC_STS %#x\n", when, osm_gpll[0], osm_gpll[1], osm_gpll[11], osm_grcg[1],
++	    osm_rd(o, 0x1004), osm_rd(o, 0x1f10), osm_rd(o, 0x1c00), st & 0x3f, (st >> 6) & 0xfff, osm_rd(osm_saw, 0xc18));
++}
++
++static void
++osm_phase2(void)
++{
++	uint32_t maxkhz = 1747200;
++	(void)PE_parse_boot_argn("osmmax", &maxkhz, sizeof(maxkhz));
++	volatile uint32_t *o = osm_map(OSM_GOLD, 0x2000);
++	osm_cprh = osm_map(CPRH_GOLD, 0x4000);
++	osm_saw = osm_map(GOLD_SAW, 0x1000);
++	osm_gpll = osm_map(0x17816000, 0x1000);
++	osm_grcg = osm_map(0x17811000, 0x1000) + 0x50 / 4;
++	if (osm_rd(o, 0x1004) != 0 || osm_grcg[1] != 0x401) {
++		printf("SWEET OSM: not XBL's state (OSM enable %#x, RCG cfg %#x): left alone\n", osm_rd(o, 0x1004), osm_grcg[1]);
++		return;
++	}
++	uint64_t t0 = mach_absolute_time(), ns_boot;
++	osm_ref = osm_workload(OSM_WORK);
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns_boot);
++	osm_state("boot", o);
++	osm_tsens("boot");
++
++	cprh_init(osm_cprh, 0);
++	/* stock spm driver, gold-l2 SAW (qcom,saw2-avs-ctl / -limit) */
++	osm_wr(osm_saw, 0x904, 0x1010031);
++	osm_wr(osm_saw, 0x908, 0x4580458);
++	printf("SWEET OSM: SAW AVS_CTL %#x AVS_LIMIT %#x\n", osm_rd(osm_saw, 0x904), osm_rd(osm_saw, 0x908));
++	int rc = osm_program(o);
++	if (rc) {
++		printf("SWEET OSM: OSM programming failed (%d), not enabled\n", rc);
++		return;
++	}
++	osm_wr(o, 0x1f10, 0);                           /* index 0 before enabling, as Linux */
++	delay(5);
++	osm_wr(o, 0x1004, 1);                           /* enable */
++	delay(100);
++	osm_state("enabled at index 0", o);
++
++	uint32_t good = 0;
++	for (uint32_t i = 0; i < cpr.lut_rows && cpr.lut[i].freq / 1000 <= maxkhz; i++) {
++		osm_wr(o, 0x1f10, i);
++		delay(2000);
++		char what[48];
++		snprintf(what, sizeof(what), "index %u (%u kHz)", i, cpr.lut[i].freq / 1000);
++		osm_state(what, o);
++		uint64_t ns;
++		t0 = mach_absolute_time();
++		uint64_t r = osm_workload(OSM_WORK);
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		uint32_t errs = r == osm_ref ? osm_load_all() : 1;
++		printf("SWEET OSM: index %u: workload %s, %llu us (boot %llu us, ~%llu MHz); 4 cores x 20: %u errors\n",
++		    i, r == osm_ref ? "OK" : "WRONG", ns / 1000, ns_boot / 1000,
++		    1747ull * OSM_WORK_1747_US * 1000 / (ns ? ns : 1), errs);
++		osm_tsens(what);
++		if (r != osm_ref || errs) {
++			osm_wr(o, 0x1f10, 0);
++			delay(2000);
++			osm_state("errors: back to index 0", o);
++			return;
++		}
++		good = i;
++	}
++	osm_wr(o, 0x1f10, good);
++	delay(2000);
++	osm_state("staying", o);
++}
++
+ static int sweet_osm_chan;
+-static uint32_t osm_mode;
+ 
+ static void
+ osm_thread(void *arg, wait_result_t result)
+@@ -642,8 +953,13 @@ osm_thread(void *arg, wait_result_t result)
+ 	clock_interval_to_deadline(60, NSEC_PER_SEC, &deadline);   /* live log up: a panic goes out over USB */
+ 	(void)assert_wait_deadline(&sweet_osm_chan, THREAD_UNINT, deadline);
+ 	thread_block(THREAD_CONTINUE_NULL);
+-	osm_probe();
+-	printf("SWEET OSM: probe done\n");
++	if (osm_mode == 1) {
++		osm_probe();
++		printf("SWEET OSM: probe done\n");
++	} else if (osm_fuses() == 0) {
++		osm_phase2();
++		printf("SWEET OSM: phase 2 done\n");
++	}
+ }
+ 
+ void
+-- 
+2.47.3
+
