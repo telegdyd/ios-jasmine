@@ -1,6 +1,6 @@
-From 6d81390c9f1d579a4eca4144477924ae804bf77c Mon Sep 17 00:00:00 2001
+From c984a13b95621c858303035f39b27a9014c8e8f7 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 04:02:20 +0200
+Date: Thu, 22 Oct 2026 04:19:05 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -9,7 +9,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  meson.build                                   |    5 +
  src/freedreno/drm/darwin/darwin_bo.c          |  154 ++
  src/freedreno/drm/darwin/darwin_device.c      |   82 +
- src/freedreno/drm/darwin/darwin_pipe.c        |  205 ++
+ src/freedreno/drm/darwin/darwin_pipe.c        |  215 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  113 +
  src/freedreno/drm/freedreno_device.c          |   15 +
  src/freedreno/drm/meson.build                 |   11 +
@@ -25,7 +25,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5689 insertions(+), 1 deletion(-)
+ 20 files changed, 5699 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -406,10 +406,10 @@ index 0000000..81c0409
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
 new file mode 100644
-index 0000000..bb58578
+index 0000000..0dcafea
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_pipe.c
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,215 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -494,9 +494,11 @@ index 0000000..bb58578
 +   uint32_t pad;
 +};
 +
-+/* As msm_ringbuffer_sp.c's flush_submit_list, minus the kernel BO table:
-+ * every buffer is always mapped, so only the command buffers' GPU
-+ * addresses go to the kernel.
++/* As msm_ringbuffer_sp.c's flush_submit_list. Every buffer is always mapped,
++ * so the BO table only tells the kernel which buffers' caches to maintain
++ * around this job (j0035: header word 2 = handle count, handles after the IBs).
++ * A table that would not fit IOKit's inline struct (4 KiB) is left out; the
++ * kernel then maintains every buffer, as before.
 + */
 +static int
 +flush_submit_list(struct list_head *submit_list)
@@ -509,7 +511,7 @@ index 0000000..bb58578
 +      nr_cmds += to_fd_ringbuffer_sp(submit->primary)->u.nr_cmds;
 +
 +   size_t len = 8 + nr_cmds * sizeof(struct darwin_ib);
-+   uint8_t *req = calloc(1, len);
++   uint8_t *req = calloc(1, 4096 > len ? 4096 : len);
 +   if (!req)
 +      return -ENOMEM;
 +   *(uint32_t *)req = nr_cmds;
@@ -536,6 +538,14 @@ index 0000000..bb58578
 +
 +      list_del(&submit->node);
 +      fd_submit_del(submit);
++   }
++
++   if (len + 4ull * fd_submit->nr_bos <= 4096) {
++      uint32_t *handles = (uint32_t *)(req + len);
++      for (unsigned i = 0; i < fd_submit->nr_bos; i++)
++         handles[i] = fd_submit->bos[i]->handle;
++      ((uint32_t *)req)[1] = fd_submit->nr_bos;
++      len += 4ull * fd_submit->nr_bos;
 +   }
 +
 +   uint64_t seqno = 0;

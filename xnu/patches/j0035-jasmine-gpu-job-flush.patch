@@ -1,0 +1,292 @@
+From 215f1b9535682f2513f49690531f45c7d33b0522 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 04:18:38 +0200
+Subject: [PATCH] jasmine-j0035: SweetGPU cleans only the buffers a submit uses
+ (msm model), with per-client cache statistics
+
+A submit may now list the buffer handles it uses (header word 2, after the
+IBs). Those are cleaned and invalidated before the GPU runs the job and
+invalidated again once it has completed (on wait or a completion query);
+the job holds them until then. Before, every cacheable buffer of the
+client was cleaned around every submit, wait and completion query, which
+made backboardd with ~50 imported surfaces slower on the GPU than on the
+CPU. Submits without a list keep the old behaviour. Every 10 s each client
+logs its submits and the time spent on cache maintenance.
+---
+ iokit/Kernel/arm/SweetGPU.cpp | 174 +++++++++++++++++++++++++++++++---
+ 1 file changed, 163 insertions(+), 11 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 9bfa6d7..87d75f7 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -57,6 +57,7 @@
+ #include <libkern/c++/OSArray.h>
+ #include <pexpert/pexpert.h>
+ #include <sys/proc.h>
++#include <kern/clock.h>
+ #include "SweetSurface.h"
+ 
+ extern "C" {
+@@ -85,6 +86,7 @@ static uint32_t sweet_gpu_wc;
+ 
+ #define SWEET_GPU_MAX_BUFFER    (256ull << 20)
+ #define SWEET_GPU_MAX_IBS       64
++#define SWEET_GPU_MAX_JOB_BUFS  1024
+ 
+ class SweetGPU : public IOService {
+ 	OSDeclareDefaultStructors(SweetGPU);
+@@ -242,17 +244,39 @@ SweetGPUBuffer::free()
+ 	OSObject::free();
+ }
+ 
++/*
++ * What one submit used (j0035). Its buffers' caches are cleaned and invalidated
++ * before the GPU runs it and invalidated again once it is done, as msm does with
++ * a submit's BO list. Before, every buffer of the client was cleaned around every
++ * submit, wait and completion query: backboardd, with ~50 imported surfaces and
++ * two 11 MB swap surfaces, ran slower on the GPU than on the CPU (G2 step 3).
++ * all: a submit that came without a list (older test programs): every buffer.
++ */
++struct SweetGPUJob {
++	SweetGPUJob     *next;
++	uint32_t         seqno;
++	uint32_t         n;
++	bool             all;
++	SweetGPUBuffer **bufs;
++};
++
+ class SweetGPUUserClient : public IOUserClient {
+ 	OSDeclareDefaultStructors(SweetGPUUserClient);
+ 
+ 	IOLock  *fLock;
+ 	OSArray *fBuffers;      /* handle = index + 1; freed slots hold kOSBooleanFalse */
++	SweetGPUJob *fJobs, *fJobsTail; /* submitted, not yet retired, in seqno order (fLock) */
++	char     fName[32];
++	uint64_t fStatT0, fStatNs, fStatBytes;
++	uint32_t fStatSubmits, fStatBufs;
+ 
+ 	SweetGPUBuffer *buffer(uint64_t handle);
+ 	uint32_t addBuffer(SweetGPUBuffer *b);
+ 	uint32_t surfaceHandle(uint32_t id);
+-	void flushBuffers(void);
++	uint64_t flushBuffers(void);
+ 	SweetGPUBuffer *bufferAt(uint64_t iova, uint64_t len);
++	void retireJobs(uint32_t completed, bool everything);
++	void account(uint64_t t0, uint64_t bytes, bool submit, uint32_t nbufs);
+ 
+ public:
+ 	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
+@@ -271,9 +295,11 @@ SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ 	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
+ 		return false;
+ 	}
+-	char name[32];
+-	proc_selfname(name, sizeof(name));
+-	GPULOG("opened by %s", name);
++	proc_selfname(fName, sizeof(fName));
++	GPULOG("opened by %s", fName);
++	fJobs = fJobsTail = NULL;
++	fStatT0 = fStatNs = fStatBytes = 0;
++	fStatSubmits = fStatBufs = 0;
+ 	fLock = IOLockAlloc();
+ 	fBuffers = OSArray::withCapacity(64);
+ 	return fLock != NULL && fBuffers != NULL;
+@@ -293,6 +319,7 @@ SweetGPUUserClient::free()
+ IOReturn
+ SweetGPUUserClient::clientClose(void)
+ {
++	retireJobs(0, true);
+ 	IOLockLock(fLock);
+ 	fBuffers->flushCollection();    /* unmaps and frees every buffer */
+ 	IOLockUnlock(fLock);
+@@ -368,18 +395,104 @@ SweetGPUUserClient::bufferAt(uint64_t iova, uint64_t len)
+ 	return found;
+ }
+ 
+-/* Clean and invalidate every cacheable buffer of this client (the GPU is not coherent) */
+-void
++/* Clean and invalidate every cacheable buffer of this client (the GPU is not coherent); bytes done */
++uint64_t
+ SweetGPUUserClient::flushBuffers(void)
+ {
++	uint64_t bytes = 0;
+ 	IOLockLock(fLock);
+ 	for (unsigned int i = 0; i < fBuffers->getCount(); i++) {
+ 		SweetGPUBuffer *b = OSDynamicCast(SweetGPUBuffer, fBuffers->getObject(i));
+ 		if (b != NULL && b->flush) {
+ 			IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->kva, b->size);
++			bytes += b->size;
+ 		}
+ 	}
+ 	IOLockUnlock(fLock);
++	return bytes;
++}
++
++static uint64_t
++sweet_gpu_flush_one(SweetGPUBuffer *b)
++{
++	if (!b->flush) {
++		return 0;
++	}
++	IOFlushProcessorCache(kernel_task, (IOVirtualAddress)b->kva, b->size);
++	return b->size;
++}
++
++static void
++sweet_gpu_job_free(SweetGPUJob *j)
++{
++	for (uint32_t i = 0; i < j->n; i++) {
++		j->bufs[i]->release();
++	}
++	if (j->bufs != NULL) {
++		IODelete(j->bufs, SweetGPUBuffer *, SWEET_GPU_MAX_JOB_BUFS);
++	}
++	IODelete(j, SweetGPUJob, 1);
++}
++
++/*
++ * Jobs up to seqno completed are done: invalidate what they used, so the CPU
++ * (and the kernel's display copy) reads what the GPU wrote, and drop them.
++ * everything: the client is closing, drop all without touching caches.
++ */
++void
++SweetGPUUserClient::retireJobs(uint32_t completed, bool everything)
++{
++	for (;;) {
++		IOLockLock(fLock);
++		SweetGPUJob *j = fJobs;
++		if (j != NULL && (everything || (int32_t)(completed - j->seqno) >= 0)) {
++			fJobs = j->next;
++			if (fJobs == NULL) {
++				fJobsTail = NULL;
++			}
++		} else {
++			j = NULL;
++		}
++		IOLockUnlock(fLock);
++		if (j == NULL) {
++			return;
++		}
++		if (!everything) {
++			uint64_t t0 = mach_absolute_time(), bytes = j->all ? flushBuffers() : 0;
++			for (uint32_t i = 0; i < j->n; i++) {
++				bytes += sweet_gpu_flush_one(j->bufs[i]);
++			}
++			account(t0, bytes, false, 0);
++		}
++		sweet_gpu_job_free(j);
++	}
++}
++
++/* time spent on cache maintenance, logged every 10 s per client */
++void
++SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t nbufs)
++{
++	uint64_t now = mach_absolute_time(), ns = 0, since = 0;
++	absolutetime_to_nanoseconds(now - t0, &ns);
++	fStatNs += ns;
++	fStatBytes += bytes;
++	if (submit) {
++		fStatSubmits++;
++		fStatBufs += nbufs;
++	}
++	if (fStatT0 == 0) {
++		fStatT0 = now;
++		return;
++	}
++	absolutetime_to_nanoseconds(now - fStatT0, &since);
++	if (since >= 10ull * NSEC_PER_SEC) {
++		IOLog("SWEET GPU: %s: %u submits in %llu ms (%u buffers each), caches of %llu MB maintained in %llu ms\n",
++		    fName, fStatSubmits, since / NSEC_PER_MSEC, fStatSubmits ? fStatBufs / fStatSubmits : 0,
++		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC);
++		fStatT0 = now;
++		fStatNs = fStatBytes = 0;
++		fStatSubmits = fStatBufs = 0;
++	}
+ }
+ 
+ IOReturn
+@@ -455,8 +568,11 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (s == NULL || len < 8 || args->scalarOutputCount < 1) {
+ 			return kIOReturnBadArgument;
+ 		}
++		/* header: IB count, then the count of buffer handles that follow the IBs (j0035; 0: none given) */
+ 		uint32_t n = *(const uint32_t *)(const void *)s;
+-		if (n == 0 || n > SWEET_GPU_MAX_IBS || len < 8 + n * sizeof(struct ib)) {
++		uint32_t nbo = *(const uint32_t *)(const void *)(s + 4);
++		if (n == 0 || n > SWEET_GPU_MAX_IBS || nbo > SWEET_GPU_MAX_JOB_BUFS ||
++		    len < 8 + n * sizeof(struct ib) + 4ull * nbo) {
+ 			return kIOReturnBadArgument;
+ 		}
+ 		uint64_t iova[SWEET_GPU_MAX_IBS];
+@@ -481,11 +597,47 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			}
+ 			b->release();
+ 		}
++		SweetGPUJob *job = IONew(SweetGPUJob, 1);
++		if (job == NULL) {
++			return kIOReturnNoMemory;
++		}
++		job->next = NULL;
++		job->seqno = 0;
++		job->n = 0;
++		job->all = nbo == 0;
++		job->bufs = nbo != 0 ? IONew(SweetGPUBuffer *, SWEET_GPU_MAX_JOB_BUFS) : NULL;
++		if (nbo != 0 && job->bufs == NULL) {
++			IODelete(job, SweetGPUJob, 1);
++			return kIOReturnNoMemory;
++		}
++		uint64_t t0 = mach_absolute_time(), bytes = job->all ? flushBuffers() : 0;
++		for (uint32_t i = 0; i < nbo; i++) {
++			uint32_t h;
++			memcpy(&h, s + 8 + n * sizeof(struct ib) + 4 * i, sizeof(h));
++			SweetGPUBuffer *b = buffer(h);
++			if (b != NULL) {
++				bytes += sweet_gpu_flush_one(b);
++				job->bufs[job->n++] = b;
++			}
++		}
++		account(t0, bytes, true, job->n);
+ 		uint32_t seqno = 0;
+-		flushBuffers();
+ 		int err = sweet_gpu_submit(iova, dw, n, &seqno);
+ 		args->scalarOutput[0] = seqno;
+-		GPULOG("submit of %u IBs: seqno %u (err %d)", n, seqno, err);
++		GPULOG("submit of %u IBs, %u buffers: seqno %u (err %d)", n, job->n, seqno, err);
++		if (err != 0) {
++			sweet_gpu_job_free(job);
++		} else {
++			job->seqno = seqno;
++			IOLockLock(fLock);
++			if (fJobsTail != NULL) {
++				fJobsTail->next = job;
++			} else {
++				fJobs = job;
++			}
++			fJobsTail = job;
++			IOLockUnlock(fLock);
++		}
+ 		if (err == 0 && sweet_gpu_debug && sweet_gpu_hang_check(seqno, 1000) != 0) {
+ 			return kIOReturnTimeout;
+ 		}
+@@ -498,14 +650,14 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (sweet_gpu_wait((uint32_t)in[0], (uint32_t)(in[1] < 60000 ? in[1] : 60000)) != 0) {
+ 			return kIOReturnTimeout;
+ 		}
+-		flushBuffers();
++		retireJobs(sweet_gpu_completed(), false);
+ 		return kIOReturnSuccess;
+ 	case 5:         /* completed */
+ 		if (args->scalarOutputCount < 1) {
+ 			return kIOReturnBadArgument;
+ 		}
+ 		args->scalarOutput[0] = sweet_gpu_completed();
+-		flushBuffers();
++		retireJobs((uint32_t)args->scalarOutput[0], false);
+ 		return kIOReturnSuccess;
+ 	case 6: {       /* import IOSurface */
+ 		if (nin < 2 || in[0] == 0 || in[0] > 0xffffffffull || args->scalarOutputCount < 4) {
+-- 
+2.47.3
+

@@ -82,9 +82,11 @@ struct darwin_ib {
    uint32_t pad;
 };
 
-/* As msm_ringbuffer_sp.c's flush_submit_list, minus the kernel BO table:
- * every buffer is always mapped, so only the command buffers' GPU
- * addresses go to the kernel.
+/* As msm_ringbuffer_sp.c's flush_submit_list. Every buffer is always mapped,
+ * so the BO table only tells the kernel which buffers' caches to maintain
+ * around this job (j0035: header word 2 = handle count, handles after the IBs).
+ * A table that would not fit IOKit's inline struct (4 KiB) is left out; the
+ * kernel then maintains every buffer, as before.
  */
 static int
 flush_submit_list(struct list_head *submit_list)
@@ -97,7 +99,7 @@ flush_submit_list(struct list_head *submit_list)
       nr_cmds += to_fd_ringbuffer_sp(submit->primary)->u.nr_cmds;
 
    size_t len = 8 + nr_cmds * sizeof(struct darwin_ib);
-   uint8_t *req = calloc(1, len);
+   uint8_t *req = calloc(1, 4096 > len ? 4096 : len);
    if (!req)
       return -ENOMEM;
    *(uint32_t *)req = nr_cmds;
@@ -124,6 +126,14 @@ flush_submit_list(struct list_head *submit_list)
 
       list_del(&submit->node);
       fd_submit_del(submit);
+   }
+
+   if (len + 4ull * fd_submit->nr_bos <= 4096) {
+      uint32_t *handles = (uint32_t *)(req + len);
+      for (unsigned i = 0; i < fd_submit->nr_bos; i++)
+         handles[i] = fd_submit->bos[i]->handle;
+      ((uint32_t *)req)[1] = fd_submit->nr_bos;
+      len += 4ull * fd_submit->nr_bos;
    }
 
    uint64_t seqno = 0;
