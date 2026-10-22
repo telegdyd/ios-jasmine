@@ -1,6 +1,6 @@
-From 882fc6ad03da565b1fe1c931304384843070ec28 Mon Sep 17 00:00:00 2001
+From 040b77cfb6a66e0ede5e276c482d581895bdb346 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 18:40:08 +0200
+Date: Thu, 22 Oct 2026 19:40:26 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -9,7 +9,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  meson.build                                   |    5 +
  src/freedreno/drm/darwin/darwin_bo.c          |  154 ++
  src/freedreno/drm/darwin/darwin_device.c      |   82 +
- src/freedreno/drm/darwin/darwin_pipe.c        |  226 ++
+ src/freedreno/drm/darwin/darwin_pipe.c        |  231 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  116 +
  src/freedreno/drm/freedreno_device.c          |   15 +
  src/freedreno/drm/meson.build                 |   11 +
@@ -25,7 +25,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5795 insertions(+), 1 deletion(-)
+ 20 files changed, 5800 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -406,10 +406,10 @@ index 0000000..81c0409
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
 new file mode 100644
-index 0000000..d2f1845
+index 0000000..4dc42a1
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_pipe.c
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,231 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -613,6 +613,11 @@ index 0000000..d2f1845
 +   struct fd_pipe *pipe = &darwin_pipe->base;
 +   pipe->dev = dev;
 +   pipe->funcs = &sp_funcs;
++   /* SweetGPU has no implicit sync between processes: submits naming shared
++    * buffers (imported IOSurfaces) can be merged like the others. Without
++    * this, backboardd made a kernel submit for every ~1.5 draws.
++    */
++   pipe->no_implicit_sync = true;
 +
 +   uint64_t v = 0;
 +   if (!darwin_get_param(dev, SWEETGPU_PARAM_GPU_ID, &v))

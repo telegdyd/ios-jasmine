@@ -201,6 +201,11 @@ darwin_pipe_new(struct fd_device *dev, enum fd_pipe_id id, uint32_t prio)
    struct fd_pipe *pipe = &darwin_pipe->base;
    pipe->dev = dev;
    pipe->funcs = &sp_funcs;
+   /* SweetGPU has no implicit sync between processes: submits naming shared
+    * buffers (imported IOSurfaces) can be merged like the others. Without
+    * this, backboardd made a kernel submit for every ~1.5 draws.
+    */
+   pipe->no_implicit_sync = true;
 
    uint64_t v = 0;
    if (!darwin_get_param(dev, SWEETGPU_PARAM_GPU_ID, &v))
