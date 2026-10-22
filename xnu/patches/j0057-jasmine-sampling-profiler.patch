@@ -1,0 +1,727 @@
+From 4a63d4ca24667506b2a0bee523b883ef21cdd8e9 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 22:12:04 +0200
+Subject: [PATCH] jasmine-j0057: sampling profiler over the command port (prof
+ start/stat/get/meta): per-CPU running timer samples kernel + user stacks of
+ every thread, census of waiting threads of named tasks, meta with slides,
+ names and file mappings
+
+---
+ bsd/dev/sweet_usb.c      |   6 +-
+ bsd/kern/proc_info.c     |  43 +++
+ osfmk/arm64/sweet_prof.c | 561 +++++++++++++++++++++++++++++++++++++++
+ osfmk/conf/files.arm64   |   1 +
+ osfmk/kern/processor.c   |   3 +
+ osfmk/kern/sched_prim.c  |   4 +
+ osfmk/kern/timer_call.h  |   1 +
+ 7 files changed, 618 insertions(+), 1 deletion(-)
+ create mode 100755 osfmk/arm64/sweet_prof.c
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index dd344e9..4ce8bd5 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1457,6 +1457,7 @@ ud_panic_test_thread(void *arg, wait_result_t wr __unused)
+  * Boot-arg sweetusbcmd=0 disables the port.
+  */
+ extern int sweet_osm_cmd(char *line, char *out, size_t len);
++extern const char *sweet_prof_cmd(const char *line);     /* osfmk/arm64/sweet_prof.c (j0057) */
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+@@ -1516,7 +1517,10 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		}
+ 		bool reboot = strcmp(line, "reboot") == 0;
+ 		const char *reply = reboot ? "rebooting\n" : "?\n";
+-		if (!reboot && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
++		const char *prof = reboot ? NULL : sweet_prof_cmd(line);
++		if (prof != NULL) {
++			reply = prof;
++		} else if (!reboot && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
+ 			reply = ud_cmd_reply;
+ 		}
+ 		for (size_t off = 0, rl = strlen(reply); off < rl;) {
+diff --git a/bsd/kern/proc_info.c b/bsd/kern/proc_info.c
+index 82607ee..6cb2ea5 100644
+--- a/bsd/kern/proc_info.c
++++ b/bsd/kern/proc_info.c
+@@ -3809,3 +3809,46 @@ proc_set_dyld_images(int pid, user_addr_t buffer, uint32_t buffersize, int32_t *
+ 	*retval = 0;
+ 	return 0;
+ }
++
++/*
++ * jasmine j0057 (osfmk/arm64/sweet_prof.c): the file mappings of a task outside the shared
++ * region, one line each: "map PID ADDR SIZE FILEOFF PROT PATH". Returns the bytes written.
++ */
++int sweet_prof_maps(task_t task, char *out, size_t len);
++int
++sweet_prof_maps(task_t task, char *out, size_t len)
++{
++	static char path[MAXPATHLEN];   /* (one caller: the profiler's thread) */
++	struct proc_regioninfo_internal pri;
++	uint64_t addr = 0;
++	size_t k = 0;
++	int pid = task_pid(task);
++
++	for (int i = 0; i < 4096 && k + MAXPATHLEN + 100 < len; i++) {
++		uintptr_t vnodeaddr = 0;
++		uint32_t vid = 0;
++		bzero(&pri, sizeof(pri));
++		if (fill_procregioninfo_onlymappedvnodes(task, addr, &pri, &vnodeaddr, &vid) == 0) {
++			break;
++		}
++		addr = pri.pri_address + pri.pri_size;
++		if (vnodeaddr == 0) {
++			continue;
++		}
++		vnode_t vp = (vnode_t)vnodeaddr;
++		if (vnode_getwithvid(vp, vid) != 0) {
++			continue;
++		}
++		int count = MAXPATHLEN;
++		path[0] = 0;
++		vn_getpath(vp, path, &count);
++		path[MAXPATHLEN - 1] = 0;
++		vnode_put(vp);
++		int n = snprintf(out + k, len - k, "map %d 0x%llx 0x%llx 0x%llx %x %s\n", pid, pri.pri_address,
++		    pri.pri_size, pri.pri_offset, pri.pri_protection, path);
++		if (n > 0) {
++			k += (size_t)n < len - k ? (size_t)n : len - k - 1;
++		}
++	}
++	return (int)k;
++}
+diff --git a/osfmk/arm64/sweet_prof.c b/osfmk/arm64/sweet_prof.c
+new file mode 100755
+index 0000000..f7c8a18
+--- /dev/null
++++ b/osfmk/arm64/sweet_prof.c
+@@ -0,0 +1,561 @@
++/*
++ * Copyright (c) 2026 ios-jasmine contributors. All rights reserved.
++ *
++ * jasmine (Mi A2) j0057: a sampling profiler for the UI's frame time, driven over the USB
++ * command port (bsd/dev/sweet_usb.c, tools/g2/prof.py). Two kinds of samples go into one
++ * buffer for SECS seconds:
++ *
++ *  - on CPU: a per-CPU running timer (as kperf's, RUNNING_TIMER_SWEETPROF) fires every
++ *    PERIOD us while a non-idle thread runs, on a fixed grid (an idle CPU skips grid points
++ *    instead of firing at its next dispatch), and records the interrupted thread: pid, tid,
++ *    kernel or user mode, the interrupted kernel stack (up to 16 frames), the user PC, LR and
++ *    frame-pointer chain (up to 32 frames). User stacks are read through `at s1e0r` and the
++ *    physical aperture, so nothing can fault at interrupt level.
++ *  - off CPU (census): a kernel thread every CENSUS us walks the threads of the named tasks
++ *    (default backboardd) and records each one that is waiting or runnable (not on a CPU) and
++ *    ran in the last 500 ms: state, block hint, wait event, the trap number (x16) and the user
++ *    stack saved at its kernel entry. A thread whose saved user state is unchanged since its
++ *    last record reuses that stack (no page-table walks).
++ *
++ * At the end the census thread writes a text table (meta): kernel slide, shared-cache slide,
++ * every task (pid, name), every thread (tid, pid, name) and the file mappings of every task
++ * outside the shared cache, so tools/g2/prof.py can symbolicate without the phone.
++ *
++ * Commands (one line each):
++ *   prof start SECS [PERIOD_US [CENSUS_US [NAME,NAME..]]]   default 10 s, 1000 us, 2000 us, backboardd
++ *   prof stat                 running, seconds, samples, bytes, dropped
++ *   prof get OFF              hex of the sample buffer from byte OFF (up to 48 KiB)
++ *   prof meta OFF             the meta text from byte OFF (up to 96 KiB)
++ */
++
++#include <stdint.h>
++#include <string.h>
++#include <mach/mach_types.h>
++#include <kern/misc_protos.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/task.h>
++#include <kern/processor.h>
++#include <kern/sched_prim.h>
++#include <kern/timer_call.h>
++#include <kern/backtrace.h>
++#include <kern/locks.h>
++#include <vm/vm_kern.h>
++#include <vm/vm_map.h>
++#include <vm/pmap.h>
++#include <vm/vm_shared_region.h>
++#include <arm/cpu_data_internal.h>
++#include <arm/machine_routines.h>
++#include <arm/pmap.h>
++#include <arm64/proc_reg.h>
++#include <kern/sched.h>
++#include <stdarg.h>
++#include <pexpert/pexpert.h>
++#include <sys/errno.h>
++#include <sys/bsdtask_info.h>
++
++extern char *proc_name_address(void *p);
++extern int vsnprintf(char *, size_t, const char *, va_list);
++extern int sweet_prof_maps(task_t task, char *out, size_t len);    /* bsd/kern/proc_info.c */
++
++#ifndef MAXTHREADNAMESIZE
++#define MAXTHREADNAMESIZE 64    /* bsd/sys/proc_info.h */
++#endif
++
++#define SP_KFRAMES      16
++#define SP_UFRAMES      32
++#define SP_TASKS        4
++#define SP_CACHE        96
++
++/* record kinds */
++#define SP_ONCPU_USER   0       /* interrupted in user mode */
++#define SP_ONCPU_KERN   1       /* interrupted in the kernel (a user thread in a trap, or a kernel thread) */
++#define SP_WAIT         2       /* census: blocked */
++#define SP_RUNNABLE     3       /* census: runnable, not on a CPU */
++
++/*
++ * One record, 8-byte words: hdr, tid, pid | trap << 32, lr, event, then nk kernel and nu user
++ * frames. hdr: bits 0-31 us since start, 32-39 cpu, 40-43 kind, 44-51 nk, 52-59 nu,
++ * 60-63 unused; event: census wait event (low 48 bits) | block hint << 48 | sched_pri << 56,
++ * on CPU the sched_pri << 56 only.
++ */
++struct sp_rec {
++	uint64_t hdr, tid, pidtrap, lr, event;
++};
++
++static char *sp_buf;                    /* samples */
++static uint64_t sp_size;
++static volatile uint64_t sp_used, sp_dropped, sp_samples;
++static char *sp_meta;                   /* text, written at the end */
++static uint64_t sp_meta_size, sp_meta_used;
++
++static volatile int sp_on;
++static uint64_t sp_epoch, sp_end, sp_period, sp_census_period, sp_period_us, sp_census_us;
++static char sp_names[SP_TASKS][32];
++static uint32_t sp_ntasks;
++static int sp_census_running;
++
++static void
++sp_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const uintptr_t *uf, unsigned nu)
++{
++	uint64_t len = sizeof(*r) + 8ull * (nk + nu);
++	uint64_t off = os_atomic_add_orig(&sp_used, len, relaxed);
++	if (off + len > sp_size) {
++		os_atomic_inc(&sp_dropped, relaxed);
++		return;
++	}
++	uint64_t *p = (uint64_t *)(void *)(sp_buf + off);
++	memcpy(p, r, sizeof(*r));
++	p += sizeof(*r) / 8;
++	for (unsigned i = 0; i < nk; i++) {
++		*p++ = kf[i];
++	}
++	for (unsigned i = 0; i < nu; i++) {
++		*p++ = uf[i];
++	}
++	os_atomic_inc(&sp_samples, relaxed);
++}
++
++static uint64_t
++sp_hdr(uint64_t now, unsigned cpu, unsigned kind, unsigned nk, unsigned nu)
++{
++	uint64_t us = 0;
++	absolutetime_to_nanoseconds(now - sp_epoch, &us);
++	us /= 1000;
++	return (us & 0xffffffffull) | ((uint64_t)(cpu & 0xff) << 32) | ((uint64_t)(kind & 0xf) << 40) |
++	       ((uint64_t)(nk & 0xff) << 44) | ((uint64_t)(nu & 0xff) << 52);
++}
++
++/* user memory of the current thread, at interrupt level: stage 1 EL0 translation, no fault */
++static errno_t
++sp_copy_cur(void *ctx __unused, void *dst, user_addr_t src, size_t size)
++{
++	if (size > 16 || ((src & 0xfff) + size) > 0x1000) {
++		return EFAULT;
++	}
++	pmap_paddr_t pa = mmu_uvtop((vm_offset_t)src);
++	if (pa == 0 || !pmap_valid_address(pa)) {
++		return EFAULT;
++	}
++	memcpy(dst, (const void *)phystokv(pa), size);
++	return 0;
++}
++
++/* user memory of another task's thread (census thread, preemptible) */
++static errno_t
++sp_copy_other(void *ctx, void *dst, user_addr_t src, size_t size)
++{
++	if (size > 16 || ((src & 0xfff) + size) > 0x1000) {
++		return EFAULT;
++	}
++	pmap_paddr_t pa = pmap_find_pa((pmap_t)ctx, (addr64_t)src);
++	if (pa == 0 || !pmap_valid_address(pa)) {
++		return EFAULT;
++	}
++	memcpy(dst, (const void *)phystokv(pa), size);
++	return 0;
++}
++
++static uint64_t
++sp_next(uint64_t now)
++{
++	return sp_epoch + ((now - sp_epoch) / sp_period + 1) * sp_period;
++}
++
++/* running timer: interrupts off, on the CPU it fires for */
++void sweet_prof_expire(timer_call_param_t p0, timer_call_param_t p1);
++void
++sweet_prof_expire(timer_call_param_t p0, timer_call_param_t p1 __unused)
++{
++	processor_t processor = (processor_t)p0;
++	uint64_t now = mach_absolute_time();
++	if (!sp_on || now >= sp_end) {
++		running_timer_clear(processor, RUNNING_TIMER_SWEETPROF);
++		return;
++	}
++	thread_t th = current_thread();
++	task_t task = get_threadtask(th);
++	struct arm_saved_state *st = getCpuDatap()->cpu_int_state;
++	bool user = st != NULL && PSR64_IS_USER(get_saved_state_cpsr(st));
++	uintptr_t kf[SP_KFRAMES], uf[SP_UFRAMES];
++	unsigned nk = 0, nu = 0;
++	struct sp_rec r = {};
++
++	if (!user && st != NULL) {
++		struct backtrace_control kctl = BTCTL_INIT;
++		kctl.btc_flags = BTF_KERN_INTERRUPTED;
++		nk = backtrace(kf, SP_KFRAMES, &kctl, NULL);
++	}
++	if (task != kernel_task && task != TASK_NULL && th->map != VM_MAP_NULL) {
++		struct backtrace_control uctl = BTCTL_INIT;
++		uctl.btc_user_copy = sp_copy_cur;
++		nu = backtrace_user(uf, SP_UFRAMES, &uctl, NULL);
++		struct arm_saved_state *us = get_user_regs(th);
++		if (us != NULL) {
++			r.lr = get_saved_state_lr(us);
++			r.pidtrap = (uint64_t)(uint32_t)get_saved_state_reg(us, 16) << 32;
++		}
++	}
++	r.hdr = sp_hdr(now, cpu_number(), user ? SP_ONCPU_USER : SP_ONCPU_KERN, nk, nu);
++	r.tid = th->thread_id;
++	r.pidtrap |= (uint32_t)(task != TASK_NULL ? task_pid(task) : -1);
++	r.event = (uint64_t)(th->sched_pri & 0xff) << 56;
++	sp_put(&r, kf, nk, uf, nu);
++	running_timer_setup(processor, RUNNING_TIMER_SWEETPROF, NULL, sp_next(now), now);
++}
++
++/* thread_dispatch(), interrupts off: a CPU leaving idle waits for the next grid point */
++void sweet_prof_running_setup(processor_t processor, uint64_t now);
++void
++sweet_prof_running_setup(processor_t processor, uint64_t now)
++{
++	if (sp_on && now < sp_end) {
++		running_timer_setup(processor, RUNNING_TIMER_SWEETPROF, NULL, sp_next(now), now);
++	}
++}
++
++static void
++sp_arm_cpu(void *arg __unused)
++{
++	uint64_t now = mach_absolute_time();
++	running_timer_enter(current_processor(), RUNNING_TIMER_SWEETPROF, NULL, sp_next(now), now);
++}
++
++/* census: per-thread cache of the last stack, keyed by tid + saved pc/fp/sp */
++static struct sp_cached {
++	uint64_t tid, pc, fp, sp;
++	unsigned nu;
++	uintptr_t uf[SP_UFRAMES];
++} sp_cache[SP_CACHE];
++
++static struct sp_cached *
++sp_cache_find(uint64_t tid)
++{
++	for (unsigned i = 0; i < SP_CACHE; i++) {
++		if (sp_cache[i].tid == tid) {
++			return &sp_cache[i];
++		}
++	}
++	for (unsigned i = 0; i < SP_CACHE; i++) {
++		if (sp_cache[i].tid == 0) {
++			sp_cache[i].tid = tid;
++			sp_cache[i].pc = 1;     /* (no stack yet) */
++			return &sp_cache[i];
++		}
++	}
++	return NULL;
++}
++
++static void
++sp_census_task(task_t task, uint64_t now)
++{
++	thread_t th;
++	uint64_t recent = 0;
++	nanoseconds_to_absolutetime(500 * NSEC_PER_MSEC, &recent);
++	pmap_t pmap = task->map != VM_MAP_NULL ? vm_map_pmap(task->map) : NULL;
++	int pid = task_pid(task);
++
++	task_lock(task);
++	queue_iterate(&task->threads, th, thread_t, task_threads) {
++		int state = th->state;
++		bool waiting = (state & TH_WAIT) != 0;
++		if (!waiting && (!(state & TH_RUN) || th->runq == PROCESSOR_NULL)) {
++			continue;               /* on a CPU (the running timer has it) or terminating */
++		}
++		if (th->last_run_time + recent < now) {
++			continue;               /* idle for a while: not part of a frame */
++		}
++		struct arm_saved_state *us = get_user_regs(th);
++		struct sp_cached *c = sp_cache_find(th->thread_id);
++		uintptr_t uf[SP_UFRAMES];
++		unsigned nu = 0;
++		uint64_t pc = 0, fp = 0, sp = 0, lr = 0, trap = 0;
++		if (us != NULL) {
++			pc = get_saved_state_pc(us);
++			fp = get_saved_state_fp(us);
++			sp = get_saved_state_sp(us);
++			lr = get_saved_state_lr(us);
++			trap = (uint32_t)get_saved_state_reg(us, 16);
++		}
++		if (c != NULL && c->pc == pc && c->fp == fp && c->sp == sp) {
++			nu = c->nu;
++			memcpy(uf, c->uf, sizeof(uf[0]) * nu);
++		} else if (us != NULL && pmap != NULL) {
++			struct backtrace_control uctl = BTCTL_INIT;
++			uctl.btc_user_copy = sp_copy_other;
++			uctl.btc_user_copy_context = pmap;
++			uctl.btc_user_thread = th;
++			nu = backtrace_user(uf, SP_UFRAMES, &uctl, NULL);
++			if (c != NULL) {
++				c->pc = pc;
++				c->fp = fp;
++				c->sp = sp;
++				c->nu = nu;
++				memcpy(c->uf, uf, sizeof(uf[0]) * nu);
++			}
++		}
++		struct sp_rec r = {};
++		r.hdr = sp_hdr(now, 0xff, waiting ? SP_WAIT : SP_RUNNABLE, 0, nu);
++		r.tid = th->thread_id;
++		r.pidtrap = (uint32_t)pid | trap << 32;
++		r.lr = lr;
++		r.event = ((uint64_t)VM_KERNEL_UNSLIDE_OR_PERM((vm_offset_t)th->wait_event) & 0xffffffffffffull) |
++		    ((uint64_t)(th->block_hint & 0xff) << 48) | ((uint64_t)(th->sched_pri & 0xff) << 56);
++		sp_put(&r, NULL, 0, uf, nu);
++	}
++	task_unlock(task);
++}
++
++static void
++sp_meta_printf(const char *fmt, ...) __printflike(1, 2);
++static void
++sp_meta_printf(const char *fmt, ...)
++{
++	va_list ap;
++	if (sp_meta_used + 2 >= sp_meta_size) {
++		return;
++	}
++	va_start(ap, fmt);
++	int n = vsnprintf(sp_meta + sp_meta_used, sp_meta_size - sp_meta_used, fmt, ap);
++	va_end(ap);
++	if (n > 0) {
++		sp_meta_used += (uint64_t)n < sp_meta_size - sp_meta_used ? (uint64_t)n : sp_meta_size - sp_meta_used - 1;
++	}
++}
++
++#define SP_ALLTASKS 768
++
++static void
++sp_write_meta(void)
++{
++	static task_t all[SP_ALLTASKS];
++	unsigned n = 0;
++	task_t task;
++
++	sp_meta_used = 0;
++	sp_meta[0] = 0;
++	sp_meta_printf("kslide 0x%lx\nperiod_us %llu\ncensus_us %llu\nsamples %llu\nbytes %llu\ndropped %llu\n",
++	    (unsigned long)vm_kernel_slide, sp_period_us, sp_census_us, sp_samples,
++	    sp_used < sp_size ? sp_used : sp_size, sp_dropped);
++	lck_mtx_lock(&tasks_threads_lock);
++	queue_iterate(&tasks, task, task_t, tasks) {
++		if (n < SP_ALLTASKS) {
++			task_reference(task);
++			all[n++] = task;
++		}
++	}
++	lck_mtx_unlock(&tasks_threads_lock);
++	for (unsigned i = 0; i < n; i++) {
++		task = all[i];
++		void *p = get_bsdtask_info(task);
++		int pid = task_pid(task);
++		sp_meta_printf("task %d %s\n", pid, p != NULL ? proc_name_address(p) : "kernel_task");
++		vm_shared_region_t sr = task != kernel_task ? vm_shared_region_get(task) : NULL;
++		if (sr != NULL) {
++			sp_meta_printf("slide %d 0x%x mh 0x%llx\n", pid, sr->sr_slide, task->mach_header_vm_address);
++			vm_shared_region_deallocate(sr);
++		}
++		thread_t th;
++		char name[MAXTHREADNAMESIZE];
++		task_lock(task);
++		queue_iterate(&task->threads, th, thread_t, task_threads) {
++			name[0] = 0;
++			if (get_bsdthread_info(th) != NULL) {
++				bsd_getthreadname(get_bsdthread_info(th), name);
++			}
++			name[sizeof(name) - 1] = 0;
++			sp_meta_printf("thread %llu %d %s\n", th->thread_id, pid, name);
++		}
++		task_unlock(task);
++		if (task != kernel_task && sp_meta_used + 4096 < sp_meta_size) {
++			sp_meta_used += (uint64_t)sweet_prof_maps(task, sp_meta + sp_meta_used, sp_meta_size - sp_meta_used);
++		}
++		task_deallocate(task);
++	}
++	sp_meta_printf("end\n");
++}
++
++static void
++sp_census_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	static task_t targets[SP_TASKS];
++	unsigned nt = 0;
++	task_t task;
++
++	lck_mtx_lock(&tasks_threads_lock);
++	queue_iterate(&tasks, task, task_t, tasks) {
++		void *p = get_bsdtask_info(task);
++		if (p == NULL || nt >= SP_TASKS) {
++			continue;
++		}
++		for (unsigned i = 0; i < sp_ntasks; i++) {
++			if (!strncmp(proc_name_address(p), sp_names[i], sizeof(sp_names[i]))) {
++				task_reference(task);
++				targets[nt++] = task;
++				break;
++			}
++		}
++	}
++	lck_mtx_unlock(&tasks_threads_lock);
++	bzero(sp_cache, sizeof(sp_cache));
++
++	for (uint64_t now = mach_absolute_time(); now < sp_end && sp_on; now = mach_absolute_time()) {
++		if (sp_census_period != 0) {
++			for (unsigned i = 0; i < nt; i++) {
++				sp_census_task(targets[i], now);
++			}
++		}
++		uint64_t deadline = sp_epoch + ((now - sp_epoch) / (sp_census_period ?: sp_period * 100) + 1) *
++		    (sp_census_period ?: sp_period * 100);
++		(void)assert_wait_deadline(&sp_census_running, THREAD_UNINT, deadline < sp_end ? deadline : sp_end);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++	sp_on = 0;
++	for (unsigned i = 0; i < nt; i++) {
++		task_deallocate(targets[i]);
++	}
++	sp_write_meta();
++	printf("SWEET PROF: done: %llu samples, %llu bytes, %llu dropped, %llu bytes of meta\n",
++	    sp_samples, sp_used < sp_size ? sp_used : sp_size, sp_dropped, sp_meta_used);
++	sp_census_running = 0;
++}
++
++static uint64_t
++sp_num(const char **s)
++{
++	uint64_t v = 0;
++	while (**s == ' ') {
++		(*s)++;
++	}
++	while (**s >= '0' && **s <= '9') {
++		v = v * 10 + (uint64_t)(*(*s)++ - '0');
++	}
++	return v;
++}
++
++static char sp_reply[128 * 1024];
++
++/* bsd/dev/sweet_usb.c: a "prof ..." line; the reply, or NULL when the line is not ours */
++const char *sweet_prof_cmd(const char *line);
++const char *
++sweet_prof_cmd(const char *line)
++{
++	if (strncmp(line, "prof ", 5) != 0) {
++		return NULL;
++	}
++	const char *a = line + 5;
++	sp_reply[0] = 0;
++	if (!strncmp(a, "start", 5)) {
++		a += 5;
++		if (sp_census_running) {
++			snprintf(sp_reply, sizeof(sp_reply), "prof: busy\n");
++			return sp_reply;
++		}
++		uint64_t secs = sp_num(&a), period = sp_num(&a), census = 2000;
++		while (*a == ' ') {
++			a++;
++		}
++		if (*a >= '0' && *a <= '9') {
++			census = sp_num(&a);
++		}
++		secs = secs ? (secs > 60 ? 60 : secs) : 10;
++		period = period ? (period < 100 ? 100 : period) : 1000;
++		sp_ntasks = 0;
++		while (*a == ' ') {
++			a++;
++		}
++		while (*a && sp_ntasks < SP_TASKS) {
++			unsigned k = 0;
++			while (*a && *a != ',' && *a != ' ' && k < sizeof(sp_names[0]) - 1) {
++				sp_names[sp_ntasks][k++] = *a++;
++			}
++			sp_names[sp_ntasks++][k] = 0;
++			while (*a == ',' || *a == ' ') {
++				a++;
++			}
++		}
++		if (sp_ntasks == 0) {
++			strlcpy(sp_names[0], "backboardd", sizeof(sp_names[0]));
++			sp_ntasks = 1;
++		}
++		if (sp_buf == NULL) {
++			vm_offset_t b = 0, m = 0;
++			sp_size = 48ull << 20;
++			sp_meta_size = 2ull << 20;
++			if (kmem_alloc(kernel_map, &b, sp_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS ||
++			    kmem_alloc(kernel_map, &m, sp_meta_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++				snprintf(sp_reply, sizeof(sp_reply), "prof: no memory\n");
++				return sp_reply;
++			}
++			sp_buf = (char *)b;
++			sp_meta = (char *)m;
++		}
++		sp_used = sp_dropped = sp_samples = 0;
++		sp_meta_used = 0;
++		sp_meta[0] = 0;
++		sp_period_us = period;
++		sp_census_us = census;
++		nanoseconds_to_absolutetime(period * NSEC_PER_USEC, &sp_period);
++		nanoseconds_to_absolutetime(census * NSEC_PER_USEC, &sp_census_period);
++		sp_epoch = mach_absolute_time();
++		uint64_t len = 0;
++		nanoseconds_to_absolutetime(secs * NSEC_PER_SEC, &len);
++		sp_end = sp_epoch + len;
++		sp_census_running = 1;
++		sp_on = 1;
++		(void)cpu_broadcast_xcall_simple(TRUE, sp_arm_cpu, NULL);
++		thread_t t;
++		if (kernel_thread_start_priority(sp_census_thread, NULL, MAXPRI_KERNEL, &t) != KERN_SUCCESS) {
++			sp_on = 0;
++			sp_census_running = 0;
++			snprintf(sp_reply, sizeof(sp_reply), "prof: no thread\n");
++			return sp_reply;
++		}
++		thread_deallocate(t);
++		printf("SWEET PROF: start: %llu s, every %llu us on CPU, census every %llu us of %s%s%s\n",
++		    secs, period, census, sp_names[0], sp_ntasks > 1 ? ", " : "", sp_ntasks > 1 ? sp_names[1] : "");
++		snprintf(sp_reply, sizeof(sp_reply), "prof: started %llu s, %llu us, census %llu us, %u tasks\n",
++		    secs, period, census, sp_ntasks);
++		return sp_reply;
++	}
++	if (!strncmp(a, "stat", 4)) {
++		uint64_t ns = 0;
++		if (sp_epoch) {
++			absolutetime_to_nanoseconds(mach_absolute_time() - sp_epoch, &ns);
++		}
++		snprintf(sp_reply, sizeof(sp_reply), "prof: %s, %llu ms, %llu samples, %llu bytes, %llu dropped, meta %llu\n",
++		    sp_census_running ? "running" : "idle", ns / 1000000, sp_samples,
++		    sp_used < sp_size ? sp_used : sp_size, sp_dropped, sp_meta_used);
++		return sp_reply;
++	}
++	if (!strncmp(a, "get", 3) || !strncmp(a, "meta", 4)) {
++		bool meta = a[0] == 'm';
++		a += meta ? 4 : 3;
++		uint64_t off = sp_num(&a);
++		if (sp_census_running || sp_buf == NULL) {
++			snprintf(sp_reply, sizeof(sp_reply), "prof: %s\n", sp_buf ? "busy" : "empty");
++			return sp_reply;
++		}
++		if (meta) {
++			uint64_t n = off < sp_meta_used ? sp_meta_used - off : 0;
++			n = n > sizeof(sp_reply) - 1 ? sizeof(sp_reply) - 1 : n;
++			memcpy(sp_reply, sp_meta + off, n);
++			sp_reply[n] = 0;
++			return sp_reply;
++		}
++		static const char hex[] = "0123456789abcdef";
++		uint64_t used = sp_used < sp_size ? sp_used : sp_size;
++		uint64_t n = off < used ? used - off : 0;
++		n = n > (sizeof(sp_reply) - 2) / 2 ? (sizeof(sp_reply) - 2) / 2 : n;
++		for (uint64_t i = 0; i < n; i++) {
++			uint8_t b = (uint8_t)sp_buf[off + i];
++			sp_reply[2 * i] = hex[b >> 4];
++			sp_reply[2 * i + 1] = hex[b & 15];
++		}
++		sp_reply[2 * n] = '\n';
++		sp_reply[2 * n + 1] = 0;
++		return sp_reply;
++	}
++	snprintf(sp_reply, sizeof(sp_reply), "prof: ? (start SECS [US [CENSUS_US [NAMES]]], stat, get OFF, meta OFF)\n");
++	return sp_reply;
++}
+diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
+index bc9ea96..0019641 100644
+--- a/osfmk/conf/files.arm64
++++ b/osfmk/conf/files.arm64
+@@ -43,6 +43,7 @@ osfmk/arm64/arm_vm_init.c	optional config_pmap_ppl
+ osfmk/arm64/sweet_early.c	standard
+ osfmk/arm64/sweet_cpuclk.c	standard
+ osfmk/arm64/sweet_osm.c	standard
++osfmk/arm64/sweet_prof.c	standard
+ osfmk/arm64/arm64_hypercall.c	standard
+ osfmk/arm/io_map.c		standard
+ osfmk/arm64/loose_ends.c	standard
+diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
+index aad9f3b..bccb7cb 100644
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -146,9 +146,12 @@ struct processor        PERCPU_DATA(processor);
+ processor_t             processor_array[MAX_SCHED_CPUS] = { 0 };
+ processor_set_t         pset_array[MAX_PSETS] = { 0 };
+ 
++extern void sweet_prof_expire(timer_call_param_t, timer_call_param_t);   /* osfmk/arm64/sweet_prof.c */
++
+ static timer_call_func_t running_timer_funcs[] = {
+ 	[RUNNING_TIMER_QUANTUM] = thread_quantum_expire,
+ 	[RUNNING_TIMER_KPERF] = kperf_timer_expire,
++	[RUNNING_TIMER_SWEETPROF] = sweet_prof_expire,
+ };
+ static_assert(sizeof(running_timer_funcs) / sizeof(running_timer_funcs[0])
+     == RUNNING_TIMER_MAX, "missing running timer function");
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index 8e29586..0bf1d1d 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -99,6 +99,8 @@
+ #include <kern/restartable.h>
+ #include <kern/sched.h>
+ #include <kern/sched_prim.h>
++
++extern void sweet_prof_running_setup(processor_t, uint64_t);    /* jasmine j0057: osfmk/arm64/sweet_prof.c */
+ #include <kern/sfi.h>
+ #include <kern/syscall_subr.h>
+ #include <kern/task.h>
+@@ -3752,6 +3754,8 @@ thread_dispatch(
+ 			 * CPU is not running.
+ 			 */
+ 			kperf_running_setup(processor, processor->last_dispatch);
++			/* jasmine j0057: the profiler's timer back on its grid */
++			sweet_prof_running_setup(processor, processor->last_dispatch);
+ 		}
+ 		running_timers_activate(processor);
+ 		processor->first_timeslice = TRUE;
+diff --git a/osfmk/kern/timer_call.h b/osfmk/kern/timer_call.h
+index c35c4cc..291ccf5 100644
+--- a/osfmk/kern/timer_call.h
++++ b/osfmk/kern/timer_call.h
+@@ -213,6 +213,7 @@ enum running_timer {
+ #if KPERF
+ 	RUNNING_TIMER_KPERF,
+ #endif /* KPERF */
++	RUNNING_TIMER_SWEETPROF,        /* jasmine j0057: osfmk/arm64/sweet_prof.c */
+ 	RUNNING_TIMER_MAX,
+ };
+ 
+-- 
+2.47.3
+
