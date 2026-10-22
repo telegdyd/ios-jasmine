@@ -565,6 +565,23 @@ w_CopyTexSubImage2D(void *rctx, GLenum target, GLint level, GLint xo, GLint yo, 
               c->tex_w[c->held[c->active] % TEXMAX], c->tex_h[c->held[c->active] % TEXMAX], level, xo, yo, x, y, w, h,
               c->fbo);
    glCopyTexSubImage2D(tgt(c, target), level, xo, yo, x, y, w, h);
+   if (trace_on > 1) {
+      /* what the copy holds, and what it copied from */
+      static int shown;
+      GLuint dst = c->held[c->active], tmp = 0;
+      uint8_t src[4] = {0}, got[4] = {0};
+      if (shown++ < 8 && dst) {
+         glReadPixels(x + w / 2, y + h / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, src);
+         glGenFramebuffers(1, &tmp);
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, tmp);
+         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
+         glReadPixels(xo + w / 2, yo + h / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, got);
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, c->fbo);
+         glDeleteFramebuffers(1, &tmp);
+         sca_log("sweetca:   source center %02x%02x%02x%02x, copy center %02x%02x%02x%02x", src[0], src[1], src[2], src[3],
+                 got[0], got[1], got[2], got[3]);
+      }
+   }
    POST(56);
 }
 
