@@ -1,0 +1,145 @@
+From d35fc01bdaaebd11a6e5919c82ba9000770fa225 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 20:49:38 +0200
+Subject: [PATCH] jasmine-j0055: the display's copy and IOSurfaceLock wait for
+ the GPU's last job on a surface (dock flicker)
+
+Mesa runs without implicit sync and CoreAnimation hands frames to the display
+without waiting for the GPU: the display copied surfaces the GPU was still
+drawing, more often the earlier the GPU started (separate or kicked submits).
+SweetGPU notes the last job writing each imported surface; the CPU reader waits
+for it (100 ms at most) before the j0053 invalidate. IOSurfaceLock does the
+same unless kIOSurfaceLockAvoidSync, as Apple's.
+---
+ iokit/Kernel/arm/SweetGPU.cpp     |  6 ++++++
+ iokit/Kernel/arm/SweetSurface.cpp | 32 ++++++++++++++++++++++++++++---
+ iokit/Kernel/arm/SweetSurface.h   | 11 ++++++++---
+ 3 files changed, 43 insertions(+), 6 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index d22792f..26c57c8 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -813,6 +813,12 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			sweet_gpu_job_free(job);
+ 		} else {
+ 			job->seqno = seqno;
++			/* the display and IOSurfaceLock wait for this job before reading what it draws (j0055) */
++			for (uint32_t i = 0; i < job->n; i++) {
++				if (job->bufs[i]->surface != NULL && !job->bufs[i]->readonly) {
++					job->bufs[i]->surface->gpuSeqno = seqno;
++				}
++			}
+ 			IOLockLock(fLock);
+ 			if (fJobsTail != NULL) {
+ 				fJobsTail->next = job;
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index b87977d..8a0b023 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -45,6 +45,7 @@
+ #include <libkern/c++/OSUnserialize.h>
+ #include <libkern/c++/OSSerialize.h>
+ #include <sys/proc.h>
++#include <kern/clock.h>
+ 
+ /* topaz GPU (TopazAdreno.cpp): the GPU pool below 4 GiB */
+ extern "C" uint64_t topaz_gpu_pool_alloc(uint64_t size, void **va);
+@@ -105,6 +106,7 @@ enum {
+ #define SWEET_SURFACE_STATE_BULK        0x30    /* 0x70 bytes of bulk attachments */
+ #define SWEET_SURFACE_BULK_SIZE         0x70
+ #define kIOSurfaceLockReadOnly          0x1
++#define kIOSurfaceLockAvoidSync         0x2     /* IOSurfaceRef.h: do not wait for pending GPU work */
+ 
+ static IOLock       *sweet_surface_lock;
+ static SweetSurface *sweet_surface_table[SWEET_SURFACE_MAX_ID];
+@@ -1614,6 +1616,12 @@ sweet_surface_held(IOLock *lock, OSArray *refs, uint32_t id)
+ 
+ extern "C" uint64_t sweet_gpu_bulk_bytes(void);  /* bsd/dev/sweet_gpu.c */
+ extern "C" void sweet_gpu_flush_all(void);
++extern "C" int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
++extern "C" uint32_t sweet_gpu_completed(void);
++
++/* j0055: how often a CPU reader found the GPU still drawing (logged every 100) */
++static uint32_t sweet_surface_waits;
++static uint64_t sweet_surface_wait_us;
+ 
+ /*
+  * jasmine (j0053): a surface the GPU may have written since the CPU last read it
+@@ -1622,8 +1630,26 @@ extern "C" void sweet_gpu_flush_all(void);
+  * memory is kept up around each job as before, the GPU pool is write-combined.
+  */
+ void
+-sweet_surface_cpu_access(SweetSurface *s)
++sweet_surface_cpu_access(SweetSurface *s, bool sync)
+ {
++	/*
++	 * jasmine (j0055): Mesa runs without implicit sync and CoreAnimation hands a frame
++	 * to the display without waiting for the GPU, so the display's copy (and a lock)
++	 * could read a surface the GPU was still drawing: the dock flicker, more often
++	 * the earlier the GPU started. Apple's IOSurfaceLock waits for pending GPU work
++	 * too unless kIOSurfaceLockAvoidSync.
++	 */
++	uint32_t seq = s->gpuSeqno;
++	if (sync && seq != 0 && (int32_t)(sweet_gpu_completed() - seq) < 0) {
++		uint64_t t0 = mach_absolute_time(), ns = 0;
++		(void)sweet_gpu_wait(seq, 100);
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		sweet_surface_wait_us += ns / 1000;
++		if ((++sweet_surface_waits % 100) == 0) {
++			IOLog("SWEET SURF: %u CPU reads waited for the GPU (%llu ms in all)\n", sweet_surface_waits,
++			    sweet_surface_wait_us / 1000);
++		}
++	}
+ 	if (!s->gpuDirty || OSDynamicCast(IOBufferMemoryDescriptor, s->memory) == NULL) {
+ 		return;
+ 	}
+@@ -1637,14 +1663,14 @@ sweet_surface_cpu_access(SweetSurface *s)
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOut,
++IOSurfaceRootUserClient::trapLock(void *id, void *options, void *seedOut,
+     void *, void *, void *)
+ {
+ 	SweetSurface *s = sweet_surface_held(fLock, fRefs, (uint32_t)(uintptr_t)id);
+ 	if (s == NULL) {
+ 		return kIOReturnNotFound;
+ 	}
+-	sweet_surface_cpu_access(s);
++	sweet_surface_cpu_access(s, !((uintptr_t)options & kIOSurfaceLockAvoidSync));
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
+ 	s->release();
+ 	return ret;
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index f7e5a4d..13fb443 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -56,16 +56,21 @@ public:
+ 	 * next use instead of around every GPU job.
+ 	 */
+ 	volatile bool             cpuDirty, gpuDirty;
++	volatile uint32_t         gpuSeqno;     /* jasmine: last SweetGPU job that writes it (j0055), or 0 */
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; cpuDirty = true; gpuDirty = false; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; cpuDirty = true; gpuDirty = false; gpuSeqno = 0; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+ 
+ 	/* Kernel address of the pixels (mapped on first use), or 0. */
+ 	uintptr_t kernelAddress();
+ };
+ 
+-/* The CPU is about to read s: drop cache lines the GPU's writes made stale (j0053). */
+-void sweet_surface_cpu_access(SweetSurface *s);
++/*
++ * The CPU is about to read s: wait for the GPU's last job on it (j0055; not with
++ * sync false, IOSurfaceLock's kIOSurfaceLockAvoidSync), then drop cache lines its
++ * writes made stale (j0053).
++ */
++void sweet_surface_cpu_access(SweetSurface *s, bool sync = true);
+ 
+ /* Retained surface for an id, or NULL. */
+ SweetSurface *sweet_surface_copy(uint32_t id);
+-- 
+2.47.3
+
