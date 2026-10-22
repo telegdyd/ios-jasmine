@@ -316,3 +316,26 @@ the band, and that the other fbfetch draws (11 to 13) still pass. If a copy turn
 **Leftovers to remove when fixed:** `flip_mode` and its uses in `w_TexImage2D`, `w_TexParameteri`, `draw_prep`,
 `w_ShaderSource` (the `mix(...)` replacement), `diag_dump`, the 68x68 dump in `draw_prep`; `sweetca_set_flip`; the
 mode loop in `sweetca_test.m` (currently modes 5 to 8).
+
+---
+
+# Update 2026-10-22 03:01: fixed, `sweetca_test` PASS (Opus)
+
+**Cause:** the `d0` texture was *incomplete*, not stale. Nobody sets filters on the texture CA renders into, and its
+default `MIN_FILTER` (`NEAREST_MIPMAP_LINEAR`) with only level 0 makes it incomplete for sampling, which GL defines
+as `(0,0,0,1)`: exactly the `000000ff` of rounds q and s, and why `glFinish` (round p) changed nothing.
+`glReadPixels` was unaffected because reading a framebuffer does not care about texture completeness.
+
+**Fix** (`sweetca.c`, commit `d8503bf`): one sampler object per context (NEAREST, CLAMP_TO_EDGE) bound on the
+reserved fbfetch unit at context creation; ES 2 contexts set the texture's MIN_FILTER in `draw_prep` instead. The
+leftovers listed above (`flip_mode`, `sweetca_set_flip`, diag dumps, the test's mode loop) are removed; the test keeps
+trace level 1.
+
+**Result** (Mesa CI `39702791445`, phone already up on j33, run with the new `tools/g2/s2quick.sh 39702791445 t`,
+which pushes and runs without a reboot and attaches the live kernel log): `PASS`, 1089 of 65536 pixels differ (image
+826, rounded 119, rotated 144, others 0); rounded layer's character map identical to the CPU's. No SMMU fault, hang
+or panic. Logs: `logs/netlog-s2-t.txt.tests`, `logs/netlog-s2-t.txt`.
+
+Still open (unchanged from above): IOSurface row-bytes / `0xe00002bd` import refusal for CA's 64x64 surface, the
+texture-function GLSL (0x14, 0x26, 0x27, 0x2d) not exercised by this tree, `glGetString(0x8a1e)`, GPU speed not
+measured. Next: step 3 (backboardd), which needs the user's OK because the library goes onto the iOS root.

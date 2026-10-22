@@ -415,3 +415,20 @@ client also serving the RAM speed.
 #### G2 step 2 result (2026-10-22 00:18 to 02:16): libsweetca
 
 `libsweetca.dylib` (our sweetgl + an EAGL layer, `mesa/darwin/sweetgl/sweetca.c`) makes CA's own `GLESContext` + `OGL::Renderer` run on freedreno: `sweetca_test` renders a 6-layer tree through `+[CARenderer rendererWithEAGLContext:options:]` into a BGRA IOSurface; background, opacity, text match the CPU renderer exactly, 2290 of 65536 pixels differ (black corner wedge of a masked rounded layer). 15 phone rounds, CI Mesa runs up to `39698050816`, no SMMU fault or panic. The 60 GLI slots agree with GLEngine's own table in our cache; our QuartzCore has the same code as sailfish's, 0x4000 higher (texture-function tables at `0x1d5b48a10` and `0x18855e1e4`). IOSurface textures from `texImageIOSurface:` need a vertical flip unless CA passes `invert`. Full account: [HANDOFF-G2-STEP2.md](HANDOFF-G2-STEP2.md).
+
+#### G2 step 2 done (2026-10-22 03:01): `sweetca_test` PASS
+
+Cause of the black corners: the texture CA renders into (here the test's `texImageIOSurface:` texture; in
+backboardd the `attachImage:` one) never gets filters set, and its default `MIN_FILTER` `NEAREST_MIPMAP_LINEAR` with
+only level 0 makes it **incomplete for sampling**, which reads as `(0,0,0,1)`. So every `gl_LastFragData` read (our
+`texture2D(sca_fb, ...)`) returned opaque black, and draw 10 (`mix(s1, d0, s0.a)`) painted black wherever the mask
+was above 0. Fix (commit `d8503bf`): a sampler object of our own (NEAREST, CLAMP_TO_EDGE) bound once on the
+reserved framebuffer-fetch unit, so the texture's own state is untouched (ES 2 contexts, which have no samplers, set
+the texture's MIN_FILTER instead). The experiment modes are gone.
+
+Mesa CI `39702791445`, run on the phone already up on the j33 image (no reboot: `tools/g2/s2quick.sh`), logs
+`logs/netlog-s2-t.txt.tests` and `logs/netlog-s2-t.txt` (kernel ring + run): **1089 of 65536 pixels differ** (tolerance
+8; image 826, rounded layer 119, rotated square 144, background/opacity/text 0); the rounded layer's character map
+is identical to the CPU's. No SMMU fault, hang or panic. Left within tolerance: the image's quadrant edges and diagonal,
+and anti-aliased edges (CPU and GPU filter and cover edges differently; not looked into further). Render took 24.6 s
+with `sweetgpu_debug` on (150 ms per kernel log line), so it says nothing about GPU speed.

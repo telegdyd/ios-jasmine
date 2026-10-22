@@ -135,6 +135,10 @@ script file; Python on Windows needs `newline='\n'`; `wsl bash /mnt/c/...` paths
 > `tools/g2/ci-wait.sh` re-runs CI jobs no macOS runner picked up. Phone state: running the j0033 test image.
 > **Step 2 brief for the next agent: [HANDOFF-G2-STEP2.md](HANDOFF-G2-STEP2.md).**
 > **Step 2 result 2026-10-22 02:20: CA draws on the GPU in `sweetca_test`; one defect (black corners of a masked rounded layer) is left, see the Result section of that file.**
+> **2026-10-22 03:01: step 2 done, `sweetca_test` PASS** (1089 of 65536 pixels differ, all edge filtering; GPU.md
+> "G2 step 2 done"). Phone state: still up on the j33 test image, `sweetca_test` + `libsweetca.dylib` in
+> `/usr/local/bin`. Next: step 3 (libsweetca into backboardd via `sweetenv=backboardd:DYLD_INSERT_LIBRARIES=...`),
+> which puts the library on the iOS root and **needs the user's OK first**.
 
 ### Step A: decide how CoreAnimation reaches our GL (research only, nothing on the phone)
 
