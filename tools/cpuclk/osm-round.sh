@@ -21,8 +21,8 @@ if [ "$KR" != - ]; then
 	rm -rf xnu/out-jasmine-$T
 	"$G" run download $KR -R telegdyd/ios-jasmine -n xnu-kernel -D xnu/out-jasmine-$T || exit 1
 fi
-# G2 state of 2026-10-22 05:04 (shim-boot-j38-bb8.img) + ARGS
-BASE="gpudelay=1 gpupause=0 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib"
+# G2 state of 2026-10-22 05:04 (shim-boot-j38-bb8.img) + ARGS; sweetfb_sync=1 since 22:15 (j0056 flicker fix)
+BASE="gpudelay=1 gpupause=0 sweetfb_sync=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib"
 wsl env GPUDBG=0 VARIANT=osm AMP=${AMP:-0} RO=${RO:-0} ${CPUS:+CPUS=$CPUS} EXTRA_ARGS="$BASE $ARGS" bash "/mnt/c/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/tools/g2/mkimg.sh" $T || exit 1
 for i in $(seq 1 ${WAIT:-60}); do
 	[ -n "$(fastboot devices)" ] && break
