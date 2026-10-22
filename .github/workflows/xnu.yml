@@ -119,6 +119,9 @@ jobs:
           codesign -f -s - out/libsweetca.dylib
           xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -fobjc-arc -O1 -Wno-deprecated-declarations             mesa/darwin/sweetgl/sweetca_test.m -o out/sweetca_test             -framework Foundation -framework QuartzCore -framework CoreGraphics -framework IOSurface -framework OpenGLES             -Lout -lsweetca
           codesign -f -s - --entitlements ios/entitlements.plist out/sweetca_test
+          # screenshot through the render server (G2 step 3)
+          xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 mesa/darwin/sweetgl/sweet_shot.m -o out/sweet_shot -framework Foundation -framework IOSurface
+          codesign -f -s - --entitlements ios/entitlements.plist out/sweet_shot
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
