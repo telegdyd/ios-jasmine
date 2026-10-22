@@ -1,6 +1,6 @@
-From 3172bbbc9ad46ebaf35d6fef0ced81f3a201c29f Mon Sep 17 00:00:00 2001
+From c3ed058c6dd49dc8ce908d308128699be3fb80f0 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 03:18:17 +0200
+Date: Thu, 22 Oct 2026 03:33:35 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -10,7 +10,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/darwin/darwin_bo.c          |  160 ++
  src/freedreno/drm/darwin/darwin_device.c      |   82 +
  src/freedreno/drm/darwin/darwin_pipe.c        |  205 ++
- src/freedreno/drm/darwin/darwin_priv.h        |  113 ++
+ src/freedreno/drm/darwin/darwin_priv.h        |  113 +
  src/freedreno/drm/freedreno_device.c          |   15 +
  src/freedreno/drm/meson.build                 |   11 +
  src/freedreno/meson.build                     |    2 +-
@@ -18,14 +18,14 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 1719 +++++++++++++++++
- .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++++
- src/gallium/frontends/sweetgl/sweetgl.c       |  450 +++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 1809 +++++++++++++++++
+ .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++++
+ src/gallium/frontends/sweetgl/sweetgl.c       |  450 ++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   95 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 ++++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5452 insertions(+), 1 deletion(-)
+ 20 files changed, 5542 insertions(+), 1 deletion(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1283,10 +1283,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..083618b
+index 0000000..f7068f9
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,1719 @@
+@@ -0,0 +1,1809 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1402,8 +1402,13 @@ index 0000000..083618b
 +   GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
 +   uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
 +   uint8_t tex_swizzled[TEXMAX];
++   struct sca_copy *copies[TEXMAX];     /* textures holding a copy of an IOSurface */
 +   struct sca_obj obj[OBJMAX];
 +};
++
++static void copy_forget(struct sca_ctx *c, GLuint tex);
++static void copy_refresh(struct sca_ctx *c, int u, GLuint tex);
++static void copy_mipped(struct sca_ctx *c, GLuint tex);
 +
 +static struct sca_ctx *ctxs[MAX_CTX];
 +static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1795,6 +1800,7 @@ index 0000000..083618b
 +         if (c->held[u] == tex[i])
 +            c->held[u] = 0;
 +      }
++      copy_forget(c, tex[i]);
 +      if (tex[i] < TEXMAX) {
 +         c->tex_w[tex[i]] = c->tex_h[tex[i]] = 0;
 +         c->tex_swizzled[tex[i]] = 0;
@@ -1854,8 +1860,10 @@ index 0000000..083618b
 +      ifmt = GL_BGRA_EXT_;
 +   glTexImage2D(t, level, ifmt, w, h, border, format, type, pixels);
 +   POST(301);
-+   if (level == 0)
++   if (level == 0) {
 +      note_size(c, c->held[c->active], w, h);
++      copy_forget(c, c->held[c->active]);
++   }
 +}
 +
 +static void
@@ -1874,8 +1882,10 @@ index 0000000..083618b
 +   CUR(rctx);
 +   glCompressedTexImage2D(tgt(c, target), level, ifmt, w, h, border, size, data);
 +   POST(380);
-+   if (level == 0)
++   if (level == 0) {
 +      note_size(c, c->held[c->active], w, h);
++      copy_forget(c, c->held[c->active]);
++   }
 +}
 +
 +static void
@@ -1913,6 +1923,7 @@ index 0000000..083618b
 +{
 +   CUR(rctx);
 +   glGenerateMipmap(tgt(c, target));
++   copy_mipped(c, c->held[c->active]);
 +   POST(681);
 +}
 +
@@ -2292,6 +2303,8 @@ index 0000000..083618b
 +      GLuint want = u == runit ? c->bindrect[u] : c->bind2d[u];
 +      if (c->held[u] != want)
 +         set_unit(c, u, want);
++      if (want && want < TEXMAX && c->copies[want])
++         copy_refresh(c, u, want);
 +   }
 +   if (runit >= 0 && runit < UNITS && p->rect_scale_loc >= 0)
 +      texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
@@ -2518,6 +2531,73 @@ index 0000000..083618b
 +   return e == GL_NO_ERROR;
 +}
 +
++/*
++ * A copied surface is a snapshot, but its owner keeps drawing into it (SpringBoard's
++ * text and widgets arrive empty and are filled later; CA binds each surface once):
++ * keep what is needed to copy it again, and do so before a draw that samples it
++ * once the surface's seed (bumped by every write lock) has moved.
++ */
++struct sca_copy {
++   IOSurfaceRef s;
++   uint32_t seed;
++   struct surf_fmt f;
++   size_t w, h, pitch, bpe;
++   bool flip, mipped;
++};
++
++static unsigned n_refreshes;
++
++static void
++copy_forget(struct sca_ctx *c, GLuint tex)
++{
++   if (tex == 0 || tex >= TEXMAX || !c->copies[tex])
++      return;
++   CFRelease(c->copies[tex]->s);
++   free(c->copies[tex]);
++   c->copies[tex] = NULL;
++}
++
++static void
++copy_note(struct sca_ctx *c, GLuint tex, IOSurfaceRef s, uint32_t seed, const struct surf_fmt *f, size_t w,
++          size_t h, size_t pitch, size_t bpe, bool flip)
++{
++   copy_forget(c, tex);
++   struct sca_copy *k = tex && tex < TEXMAX ? calloc(1, sizeof(*k)) : NULL;
++   if (!k)
++      return;
++   CFRetain(s);
++   *k = (struct sca_copy){s, seed, *f, w, h, pitch, bpe, flip, false};
++   c->copies[tex] = k;
++}
++
++static void
++copy_mipped(struct sca_ctx *c, GLuint tex)
++{
++   if (tex && tex < TEXMAX && c->copies[tex])
++      c->copies[tex]->mipped = true;
++}
++
++static void
++copy_refresh(struct sca_ctx *c, int u, GLuint tex)
++{
++   struct sca_copy *k = c->copies[tex];
++   uint32_t seed = IOSurfaceGetSeed(k->s);
++   if (seed == k->seed)
++      return;
++   k->seed = seed;
++   int active = c->active;
++   glActiveTexture(GL_TEXTURE0 + u);
++   c->active = u;
++   copy_surface(c, k->s, GL_TEXTURE_2D, &k->f, k->w, k->h, k->pitch, k->bpe, k->flip);
++   if (k->mipped)
++      glGenerateMipmap(GL_TEXTURE_2D);
++   c->active = active;
++   glActiveTexture(GL_TEXTURE0 + active);
++   if (n_refreshes++ < 20 || n_refreshes % 1000 == 0)
++      sca_log("sweetca: surface %u changed (seed %u): copied again, %u refreshes so far", IOSurfaceGetID(k->s),
++              seed, n_refreshes);
++}
++
 +/* the surface's memory as the storage of the texture bound to target */
 +static bool
 +bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GLenum type,
@@ -2543,6 +2623,7 @@ index 0000000..083618b
 +   }
 +   GLenum t = tgt(c, target);
 +   set_swizzle(c, t, f.swz, f.swizzled);
++   uint32_t seed = IOSurfaceGetSeed(s);
 +   bool done = false;
 +   const char *how = "in place";
 +   if (pitch % 64 == 0 && !flip)
@@ -2557,8 +2638,12 @@ index 0000000..083618b
 +                 IOSurfaceGetID(s), cc, w, h, pitch);
 +      return false;
 +   }
-+   if (strcmp(how, "in place") == 0)
++   if (strcmp(how, "in place") == 0) {
 +      note_size(c, c->held[c->active], w, h);
++      copy_forget(c, c->held[c->active]);
++   } else {
++      copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
++   }
 +   if (trace_on && logged++ < 80)
 +      sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, flip %d)", why,
 +              IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, flip);
@@ -2845,7 +2930,9 @@ index 0000000..083618b
 +   }
 +   if (cur != c)
 +      bind_ctx(c);
-+   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, !invert, "texImageIOSurface");
++   /* invert:YES asks for the rows turned over; NO is the surface as it is (step 3: flipping
++    * on NO, as step 2's test suggested, put every icon in backboardd upside down) */
++   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, invert, "texImageIOSurface");
 +}
 +
 +static BOOL
@@ -2856,6 +2943,9 @@ index 0000000..083618b
 +      return ((BOOL(*)(id, SEL, NSUInteger, IOSurfaceRef, BOOL))orig_attach)(self, cmd, target, s, inverted);
 +   if (cur != c)
 +      bind_ctx(c);
++   static int told;
++   if (told++ < 4)
++      sca_log("sweetca: attachImage surface %u invertedRender %d", IOSurfaceGetID(s), inverted);
 +   return bind_surface(c, s, (GLenum)target, 0, 0, 0, false, "attachImage");
 +}
 +

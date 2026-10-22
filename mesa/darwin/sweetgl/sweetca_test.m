@@ -260,7 +260,7 @@ main(void)
       BOOL bound = ((BOOL(*)(id, SEL, IOSurfaceRef, NSUInteger, NSUInteger, uint32_t, uint32_t, NSUInteger,
                              NSUInteger, uint32_t, BOOL))objc_msgSend)(
          ctx, sel_registerName("texImageIOSurface:target:internalFormat:width:height:format:type:plane:invert:"),
-         surf, GL_TEXTURE_2D, GL_RGBA, W, H, GL_BGRA, GL_UNSIGNED_BYTE, 0, YES); /* rows as they are: it is a render target */
+         surf, GL_TEXTURE_2D, GL_RGBA, W, H, GL_BGRA, GL_UNSIGNED_BYTE, 0, NO); /* rows as they are: it is a render target */
       CHECK(bound && tex != 0, "texImageIOSurface: binds the surface to texture %u", tex);
 
       /* CA draws into the framebuffer bound on the context: ours has the surface's texture as its color */
@@ -311,8 +311,13 @@ main(void)
       double t1 = CACurrentMediaTime();
       ((void (*)(void *))disp[89])(rctx); /* glFinish: the display waits for nobody */
 
+      /* CARenderer into an FBO the caller bound renders the GL way, bottom row first in
+       * memory (backboardd's display surfaces come out top first: CA flips its projection
+       * for attachImage: targets itself); turn it over for the comparison */
       IOSurfaceLock(surf, kIOSurfaceLockReadOnly, NULL);
-      memcpy(out, IOSurfaceGetBaseAddress(surf), (size_t)H * pitch);
+      for (int y = 0; y < H; y++)
+         memcpy(out + (size_t)y * pitch, (const uint8_t *)IOSurfaceGetBaseAddress(surf) + (size_t)(H - 1 - y) * pitch,
+                pitch);
       IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, NULL);
       printf("render took %.0f ms\n", (t1 - t0) * 1000);
       samples("GPU", out, pitch);

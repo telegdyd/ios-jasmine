@@ -113,8 +113,13 @@ struct sca_ctx {
    GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
    uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
    uint8_t tex_swizzled[TEXMAX];
+   struct sca_copy *copies[TEXMAX];     /* textures holding a copy of an IOSurface */
    struct sca_obj obj[OBJMAX];
 };
+
+static void copy_forget(struct sca_ctx *c, GLuint tex);
+static void copy_refresh(struct sca_ctx *c, int u, GLuint tex);
+static void copy_mipped(struct sca_ctx *c, GLuint tex);
 
 static struct sca_ctx *ctxs[MAX_CTX];
 static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -506,6 +511,7 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
          if (c->held[u] == tex[i])
             c->held[u] = 0;
       }
+      copy_forget(c, tex[i]);
       if (tex[i] < TEXMAX) {
          c->tex_w[tex[i]] = c->tex_h[tex[i]] = 0;
          c->tex_swizzled[tex[i]] = 0;
@@ -565,8 +571,10 @@ w_TexImage2D(void *rctx, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsi
       ifmt = GL_BGRA_EXT_;
    glTexImage2D(t, level, ifmt, w, h, border, format, type, pixels);
    POST(301);
-   if (level == 0)
+   if (level == 0) {
       note_size(c, c->held[c->active], w, h);
+      copy_forget(c, c->held[c->active]);
+   }
 }
 
 static void
@@ -585,8 +593,10 @@ w_CompressedTexImage2D(void *rctx, GLenum target, GLint level, GLenum ifmt, GLsi
    CUR(rctx);
    glCompressedTexImage2D(tgt(c, target), level, ifmt, w, h, border, size, data);
    POST(380);
-   if (level == 0)
+   if (level == 0) {
       note_size(c, c->held[c->active], w, h);
+      copy_forget(c, c->held[c->active]);
+   }
 }
 
 static void
@@ -624,6 +634,7 @@ w_GenerateMipmap(void *rctx, GLenum target)
 {
    CUR(rctx);
    glGenerateMipmap(tgt(c, target));
+   copy_mipped(c, c->held[c->active]);
    POST(681);
 }
 
@@ -1003,6 +1014,8 @@ draw_prep(struct sca_ctx *c)
       GLuint want = u == runit ? c->bindrect[u] : c->bind2d[u];
       if (c->held[u] != want)
          set_unit(c, u, want);
+      if (want && want < TEXMAX && c->copies[want])
+         copy_refresh(c, u, want);
    }
    if (runit >= 0 && runit < UNITS && p->rect_scale_loc >= 0)
       texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
@@ -1229,6 +1242,73 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
    return e == GL_NO_ERROR;
 }
 
+/*
+ * A copied surface is a snapshot, but its owner keeps drawing into it (SpringBoard's
+ * text and widgets arrive empty and are filled later; CA binds each surface once):
+ * keep what is needed to copy it again, and do so before a draw that samples it
+ * once the surface's seed (bumped by every write lock) has moved.
+ */
+struct sca_copy {
+   IOSurfaceRef s;
+   uint32_t seed;
+   struct surf_fmt f;
+   size_t w, h, pitch, bpe;
+   bool flip, mipped;
+};
+
+static unsigned n_refreshes;
+
+static void
+copy_forget(struct sca_ctx *c, GLuint tex)
+{
+   if (tex == 0 || tex >= TEXMAX || !c->copies[tex])
+      return;
+   CFRelease(c->copies[tex]->s);
+   free(c->copies[tex]);
+   c->copies[tex] = NULL;
+}
+
+static void
+copy_note(struct sca_ctx *c, GLuint tex, IOSurfaceRef s, uint32_t seed, const struct surf_fmt *f, size_t w,
+          size_t h, size_t pitch, size_t bpe, bool flip)
+{
+   copy_forget(c, tex);
+   struct sca_copy *k = tex && tex < TEXMAX ? calloc(1, sizeof(*k)) : NULL;
+   if (!k)
+      return;
+   CFRetain(s);
+   *k = (struct sca_copy){s, seed, *f, w, h, pitch, bpe, flip, false};
+   c->copies[tex] = k;
+}
+
+static void
+copy_mipped(struct sca_ctx *c, GLuint tex)
+{
+   if (tex && tex < TEXMAX && c->copies[tex])
+      c->copies[tex]->mipped = true;
+}
+
+static void
+copy_refresh(struct sca_ctx *c, int u, GLuint tex)
+{
+   struct sca_copy *k = c->copies[tex];
+   uint32_t seed = IOSurfaceGetSeed(k->s);
+   if (seed == k->seed)
+      return;
+   k->seed = seed;
+   int active = c->active;
+   glActiveTexture(GL_TEXTURE0 + u);
+   c->active = u;
+   copy_surface(c, k->s, GL_TEXTURE_2D, &k->f, k->w, k->h, k->pitch, k->bpe, k->flip);
+   if (k->mipped)
+      glGenerateMipmap(GL_TEXTURE_2D);
+   c->active = active;
+   glActiveTexture(GL_TEXTURE0 + active);
+   if (n_refreshes++ < 20 || n_refreshes % 1000 == 0)
+      sca_log("sweetca: surface %u changed (seed %u): copied again, %u refreshes so far", IOSurfaceGetID(k->s),
+              seed, n_refreshes);
+}
+
 /* the surface's memory as the storage of the texture bound to target */
 static bool
 bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GLenum type,
@@ -1254,6 +1334,7 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
    }
    GLenum t = tgt(c, target);
    set_swizzle(c, t, f.swz, f.swizzled);
+   uint32_t seed = IOSurfaceGetSeed(s);
    bool done = false;
    const char *how = "in place";
    if (pitch % 64 == 0 && !flip)
@@ -1268,8 +1349,12 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
                  IOSurfaceGetID(s), cc, w, h, pitch);
       return false;
    }
-   if (strcmp(how, "in place") == 0)
+   if (strcmp(how, "in place") == 0) {
       note_size(c, c->held[c->active], w, h);
+      copy_forget(c, c->held[c->active]);
+   } else {
+      copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
+   }
    if (trace_on && logged++ < 80)
       sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, flip %d)", why,
               IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, flip);
@@ -1556,7 +1641,9 @@ m_tex_iosurface(id self, SEL cmd, IOSurfaceRef s, NSUInteger target, NSUInteger 
    }
    if (cur != c)
       bind_ctx(c);
-   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, !invert, "texImageIOSurface");
+   /* invert:YES asks for the rows turned over; NO is the surface as it is (step 3: flipping
+    * on NO, as step 2's test suggested, put every icon in backboardd upside down) */
+   return bind_surface(c, s, (GLenum)target, (GLenum)format, (GLenum)type, plane, invert, "texImageIOSurface");
 }
 
 static BOOL
@@ -1567,6 +1654,9 @@ m_attach(id self, SEL cmd, NSUInteger target, IOSurfaceRef s, BOOL inverted)
       return ((BOOL(*)(id, SEL, NSUInteger, IOSurfaceRef, BOOL))orig_attach)(self, cmd, target, s, inverted);
    if (cur != c)
       bind_ctx(c);
+   static int told;
+   if (told++ < 4)
+      sca_log("sweetca: attachImage surface %u invertedRender %d", IOSurfaceGetID(s), inverted);
    return bind_surface(c, s, (GLenum)target, 0, 0, 0, false, "attachImage");
 }
 
