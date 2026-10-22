@@ -483,3 +483,30 @@ the feedback barrier (theirs is the same `TextureBarrierNV` we issue).
 Next: the lock screen, Control Center and notification centre (the texture-function patches 0x14/0x26/0x27/0x2d
 still need to be seen working), speed (frame timing, then GPU clock), `sweetca_test` orientation, and porting what
 else sailfish's `eagl.c` does that ours does not.
+
+#### G2 step 3, speed (2026-10-22 04:15 to 05:00): cache maintenance was the slowness
+
+After round e the user found the GPU-drawn UI **slower than the CPU renderer**. Measured, not guessed:
+
+- **Round f** (kernel j0035, `shim-boot-j36-bb6.img`; j0035: the darwin backend sends each submit's BO list
+  `fd_submit->bos`, and SweetGPU cleans and invalidates only those buffers before the job and again once it has
+  completed, the msm / ios-sailfish 0150-0151 model, instead of every buffer of the client around every submit, wait
+  and completion query; per-client statistics every 10 s): backboardd still spent **up to 9897 ms of 10002 ms** in
+  cache maintenance (19685 MB for 95 submits). The ~10 buffers of a job include the 11 MB swap surfaces and
+  full-screen textures, and `IOFlushProcessorCache` walks them line by line (`dc civac`) at about 2 GB/s.
+  j0036 (`gpupause=0`: no 35 s of pauses between bring-up stages) made SweetGPU appear before backboardd starts.
+- **Round g** (j0037, `shim-boot-j37-bb7.img`): above 2x L2 (2 MB) every online CPU cleans and invalidates its
+  caches by set/way (`cpu_broadcast_xcall_simple` + `FlushPoC_Dcache`, as XNU's `flush_dcache_syscall` does past
+  `c_bulksize_op`), **0.6 ms each, no trouble under Qualcomm's hypervisor**: 6457 submits in 10 s (from 95-1180),
+  2723 ms of them in cache maintenance. Frames (libsweetca: one `glFlush` per frame) 52-190 ms apart while the UI
+  moves, of which 1-6 ms in `glFinish`: the GPU itself is not the limit. ~57 submits per frame, each two whole-cache
+  flushes (before, and at retirement).
+- **Round h** (j0038, `shim-boot-j38-bb8.img`: a submit's pass also covers the jobs completed meanwhile): **no
+  change**, round g already did ~1 whole-cache flush per submit (retirements were merged at waits); 6568 submits in
+  10 s, 2789 ms in cache maintenance (20-28 %), frames 60-113 ms apart while the UI moves (1-5 ms of it in
+  `glFinish`). No SMMU fault, hang or panic in rounds f-h. Logs `logs/netlog-s3-{f,g,h}.txt`.
+
+Boot-args of these images: `sweetgpu=4 gpumhz=266 sweetwdt=20 sweetgpu_debug=0 gpudelay=1 gpupause=0
+sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib`; `sweetgpu_bulk=0` turns j0037 off.
+Open: why ~57 submits per frame (Mesa batches per render target, libsweetca's readbacks); GPU clock 266 MHz and the
+DDR vote (sailfish 0144/0146/0147/0164 did these on MSM8996; SDM660 needs its own values).

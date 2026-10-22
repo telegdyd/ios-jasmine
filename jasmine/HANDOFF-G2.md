@@ -9,12 +9,12 @@ sweet/topaz projects' and still apply where they talk about rules.
 
 > **Update 2026-10-22 04:12, G2 step 3: backboardd draws the UI on the GPU.** Home screen and Settings correct
 > (labels, clock, icons), no SMMU fault, hang or panic; details, rounds and open items in GPU.md "G2 step 3".
-> **Phone state:** up on `shim/out/shim-boot-j34-bb4.img` (`fastboot boot`, kernel j0034 CI `39705841200`, boot-args
-> `sweetgpu=4 gpumhz=266 sweetwdt=20 sweetgpu_debug=0 gpudelay=1
-> sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib,SWEETCA_TRACE=1`), libsweetca from Mesa
-> CI `39709137207` in `/usr/local/bin` (with `sweetca_test`, `sweet_shot`). Slot b unchanged; nothing flashed; no
+> **Phone state (05:04):** up on `shim/out/shim-boot-j38-bb8.img` (`fastboot boot`, kernel j0038 CI `39713689897`, boot-args
+> `sweetgpu=4 gpumhz=266 sweetwdt=20 sweetgpu_debug=0 gpudelay=1 gpupause=0
+> sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib`), libsweetca from Mesa
+> CI `39710717919` in `/usr/local/bin` (with `sweetca_test`, `sweet_shot`). Slot b unchanged; nothing flashed; no
 > root file outside `/usr/local/bin` changed. Booting `shim-boot-j33-gpu.img` (no `sweetenv`) gives the CPU renderer.
-> **ios-sailfish code may now be copied (author's consent, NOTES.md).**
+> **ios-sailfish code may now be copied (author's consent, NOTES.md).** Speed work j0035-j0038: GPU.md "G2 step 3, speed".
 
 The GPU pipeline works end to end in test programs. CoreAnimation does not use it yet: the UI is still drawn by
 CA's CPU renderer.
