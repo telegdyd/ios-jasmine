@@ -100,7 +100,7 @@ and pushed. Partial results (some layer types wrong) are worth recording too: sa
 
 ## 3. Constraints
 
-- **Licence.** Neither ios-sailfish nor ios-sweet has a licence file, and the user has not decided yet whether to ask
+- **Licence (VOID since 2026-10-22 ~04:10: the sailfish author consented to adaptation, see NOTES.md; copy and credit).** Neither ios-sailfish nor ios-sweet has a licence file, and the user has not decided yet whether to ask
   the sailfish author. Until a note in [NOTES.md](NOTES.md) says otherwise: **write our own code.** Using
   sailfish's repo (`github.com/joranv1/ios-sailfish`, `tools/sweetgl/`) to learn what CA needs is fine; copying its
   source is not. Credit their findings in comments and docs, as GPU.md does.

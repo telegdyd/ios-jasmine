@@ -2,6 +2,7 @@
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
 **GPU work (G2) handoff, 2026-10-21 21:45: [HANDOFF-G2.md](HANDOFF-G2.md)** (state, rules, workflow, next steps).
+**Licence, 2026-10-22 ~04:10 (user): ios-sailfish's code MAY be copied and adapted.** Its author (Joran Vancoillie, [joranv1/ios-sailfish](https://github.com/joranv1/ios-sailfish)) consented on Reddit to adapting it to other devices. This voids the "write our own code" rule in HANDOFF-G2-STEP2.md §3 and GPU.md (an agent's assumption, never the user's). Port from sailfish (`tools/sweetgl/eagl.c` and friends) whenever it covers a problem, and credit it in comments and docs.
 **G2 step 2 done 2026-10-22 03:01: `sweetca_test` PASS** (CA's GLES renderer on the Adreno 512 matches the CPU renderer within tolerance; the black corners were an incomplete render-target texture sampled for framebuffer fetch, fixed with our own sampler, commit `d8503bf`, CI `39702791445`; GPU.md "G2 step 2 done"). Next: step 3 (backboardd), needs the user's OK.
 **G2 step 2, 2026-10-22 02:20: CoreAnimation's GLES renderer draws on the Adreno 512 through libsweetca** (2290 of 65536 pixels still differ from the CPU renderer: black corners on a cornerRadius+masksToBounds layer; `sweetca_test` not yet PASS). Details, tries and next experiments: [HANDOFF-G2-STEP2.md](HANDOFF-G2-STEP2.md) (Result).
 **G2 step A done 2026-10-21 ~22:00** ([GPU.md](GPU.md), "G2 step A"): backboardd already falls back to CA's GLES
