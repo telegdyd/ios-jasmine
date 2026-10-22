@@ -64,6 +64,16 @@ Licence of ios-sailfish's code: open (no licence file); until noted here, write 
     | 7 (APM crossover) | - | 872 | 872 | - | 0x20007676 |
 
     OSM: APM threshold vc 4 (pre 3), crossover vc 7; MEM-ACC threshold vcs 1 2 5 6, SEQ_REG(32) L 0x73.
+  - 06:11 `j39d` (CI `39720350595`): OSM both clusters at reset values (enable 0, LUT 0, PDN_FSM 0x05000000, LMh request 0x05dc00ff); APCS LMH RCG cmd 2 cfg 0x105 = hmss_gpll0 (600 MHz) / 3 = 200 MHz OSM clock, running; CPRh CPR_CTL 0xfffffe3e (reset). SError on the CPRh GCNT / sensor registers (0x0d4..0x140, Linux only writes them).
+  - 06:19 `j39e` (CI `39721248584`): complete. Through TZ IO read: OSM program memory 0, Gold SEQ 4 = 0x179c0240, SEQ 7 = 0x17811250, SEQ 47 = 0xf, SEQ 55-58 = 7/8/11/12, SEQ 72 = 0x19, SEQ 73 = 0x400000, SEQ 76 = 0x5b9; Silver alike. CPRh CTL / STATUS 0, SAW4 PMIC_STS 0.
+  - 06:31 `j39f` (CI `39722215911`): TZ IO writes of the current value return 0 for SEQ 72, SEQ 0 and program word 0.
+  - 07:19 `j43` (j0043, CI `39726717817`): **the sequencer region is not readable from the apps side** (direct reads give the previous bus value, then 0). TZ's values above are its defaults for a 25-row LUT (crossover 25, APM threshold 22): TZ ran an OSM init of its own.
+- **Phase 2 (j0040 `sweetosm=2`, j0041/j0042/j0044 diagnostics), the stock TZ path (stock Linux and SoMainline's upstream MSM8998/SDM630 series write only the LUT + policy directly and SEQ 15/31/32/55-58/72/76 through `scm_io_write`; no other OSM TZ call exists in the downstream kernel):**
+  - 06:40 `j40` (CI `39723238644`): no hang. CPRh init (open loop) CTL 0x80a00c9 MARGIN_ADJ_CTL 0x4080, SAW AVS_CTL/LIMIT as stock, LUT read back correct, all 9 TZ sequencer writes read back. **OSM enable 1, desired stepped 0..3, but the clock never moved**: Gold PLL L 0x20, RCG cfg 0x401 (GPLL0 = index 0's source), pstate 0, CPRh corner 0, SAW PMIC_STS 0, workload ~580 MHz at every step. The sdm660-mainline OSM PR #239's SDM660 tester (Redmi Note 3, same speed-bin fuse 0x3040008c) saw the same.
+  - 06:54 `j41` (CI `39724520008`, `osmseq=1`): B (LLM votes and CC DCVS off) no change; C (Linux's no-TZ sequencer load through TZ IO writes) no change: **TZ answers 0 to IO writes outside stock Linux's set but drops them** (SEQ 0, SEQ 39 and the branch table read back 0). The no-TZ path is impossible from the apps side.
+  - 07:07 `j42` (CI `39725646937`, osm watch, `osmdelay=15`): the word at OSM+0 is no version register (flips 0 / 0x70000 / 0x1 every few hundred ms); enabling at 15 s changes nothing either.
+  - 07:31 `j44` (CI `39727833856`): D, the zero-core override (CC_ZERO_BEHAV_CTRL bit 0 + index), no change. Cycle counter control reads back 0x113 but the counter (0x1f04) and the sequencer PC (0x1c74) stay 0: **the OSM core does not execute at all**.
+  - Every j40..j44 step passed the 4-core check: nothing broke, the cluster simply stays on GPLL0 (~590 MHz while sweetgold is skipped).
 
 ## Kernel patches (ours, on top of topaz's)
 
