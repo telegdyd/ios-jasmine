@@ -1,4 +1,4 @@
-From 5984d234eb39f6e0bb478364793d42c8434e9daa Mon Sep 17 00:00:00 2001
+From b420614a7606d30ffb1ed006daa7df9ac51ec3c3 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 20:08:21 +0200
 Subject: [PATCH] jasmine-j0029: SweetGPU buffers: step log, sweetgpu_wc=0 for

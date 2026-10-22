@@ -1,4 +1,4 @@
-From e86b48ec097e22d0ff447b0b4ef6d68620d3f1b1 Mon Sep 17 00:00:00 2001
+From cceb22642cb239adb17b508661289fb22a51494e Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 07:59:07 +0200
 Subject: [PATCH] jasmine-j0046: osmctl "ramoops": read the stock-kernel

@@ -5,6 +5,8 @@ Only what the early boot path actually reads (see NOTES.md). Every MMIO
 address comes from the board's live FDT: jasmine (Xiaomi Mi A2, SDM660; the
 default, see jasmine/HARDWARE.md) or topaz (Redmi Note 12 4G, SM6225 khaje).
 Usage:  mkadt.py OUT.adt [--board jasmine|topaz] [--dump] [--qemu] [--highmem]
+        --amp: all eight cores for a 4 KiB-page (TOPAZ_4K) kernel: Gold as the P
+        cluster (cpu0-3, boot CPU first), Silver as the E cluster (cpu4-7)
 """
 import hashlib, os, struct, sys
 
@@ -51,6 +53,7 @@ BOOT_MANIFEST_HASH = hashlib.sha384(b'topaz boot manifest').digest()
 COMPAT = (b'xiaomi,topaz', b'qcom,khaje')
 EMMC = None
 CPU_HZ = 2803200000
+SILVER_HZ = 1900800000  # A53 cluster max
 RESET = None
 SPMI = PON_REBOOT = PMIC_KEYS = PMIC_RTC = TOUCH = MDP = GPU = USB = WDT = None
 
@@ -74,6 +77,7 @@ if BOARD == 'jasmine':
     BOOT_MANIFEST_HASH = hashlib.sha384(b'jasmine boot manifest').digest()
     COMPAT = (b'xiaomi,jasmine', b'qcom,sdm660')
     CPU_HZ = 2208000000  # Kryo 260 Gold max
+    SILVER_HZ = 1843200000  # Kryo 260 Silver max (XBL leaves it at 1382.4)
     # qcom,pshold restart@10ac000; stock DT qcom,msm-imem@146bf000 restart_reason@65c
     RESET = (0x010ac000, 0x146bf65c)
     # spmi@800f000 (qcom,spmi-pmic-arb v3, EE 0); pm660 pon@800 (qcom,pm8998-pon: shift 1, mode-bootloader 2)
@@ -176,7 +180,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
+def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, amp=False):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = ((MID_PHYS_BASE, MID_MEM_SIZE) if midmem else
                            (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE))
@@ -232,24 +236,34 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     # the Kryo 260 Silver cores have no 16K granule, so the shim boots xnu
     # on gold CPU 0x100 and parks the silver cluster. One cluster. The kernel defaults to one
     # and uses cpus=N to select an initial prefix (N <= 8).
+    # amp (4 KiB-page kernel, topaz 0140/0141): also the four Silver cores,
+    # MPIDR 0x0-0x3. ml_parse_cpu_topology reads cluster-type 'P' / 'E' and
+    # numbers clusters and CPUs in DT order, so Gold (boot CPU 0x100, which
+    # SweetCPU wants as CPU 0) comes first; cpus=4 still gives the Gold four.
     # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
+    cpu_list = [(0x100 | c, 'P' if amp else None, 0, CPU_HZ) for c in range(4)]
+    if amp:
+        cpu_list += [(c, 'E', 1, SILVER_HZ) for c in range(4)]
+    if qemu:
+        cpu_list = [(0, None, 0, CPU_HZ)]
     cpu_nodes = []
-    for core in range(1 if qemu else 4):
+    for core, (mpidr, ctype, cluster, hz) in enumerate(cpu_list):
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
             ('compatible', cstr('qcom,kryo260') + cstr('qcom,kryo470') + cstr('ARM,v8')),
-            ('reg', u32(core if qemu else 0x100 | core)),  # actual MPIDR Aff1:Aff0, NOT logical ID
+            ('reg', u32(mpidr)),  # actual MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
-            ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology
-            ('cluster-type', u32(0)),  # homogeneous CLUSTER_TYPE_SMP, not AMP
+            ('cluster-id', u32(cluster)),  # descriptive; see ml_parse_cpu_topology
+            # 0: homogeneous CLUSTER_TYPE_SMP; 'P' / 'E' with amp
+            ('cluster-type', u32(ord(ctype) if ctype else 0)),
             ('die-cluster-id', u32(0)),
-            ('cluster-core-id', u32(core)),
-            ('l2-cache-id', u32(0)),  # gold L2
+            ('cluster-core-id', u32(mpidr & 0xff)),
+            ('l2-cache-id', u32(cluster)),  # gold L2 0, silver L2 1
             ('l3-cache-id', u32(0)),
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(CPU_HZ)),
+            ('clock-frequency', u32(hz)),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -392,7 +406,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
 
 if __name__ == '__main__':
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
-                 native='--native' in sys.argv, midmem='--midmem' in sys.argv)
+                 native='--native' in sys.argv, midmem='--midmem' in sys.argv, amp='--amp' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

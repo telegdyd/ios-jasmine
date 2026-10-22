@@ -1,4 +1,4 @@
-From def86a6b31ec4985c062f8eb00ad4f16d2c8816c Mon Sep 17 00:00:00 2001
+From 7cf10925ea03f7247261c211b69529e9b7d3a412 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 20:25:50 +0200
 Subject: [PATCH] jasmine-j0030: panic over USB: the panic text goes out on the

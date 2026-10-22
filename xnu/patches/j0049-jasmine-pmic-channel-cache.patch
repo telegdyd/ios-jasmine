@@ -1,4 +1,4 @@
-From 6c60ee1028189b9d98226a62584613e2e96feca3 Mon Sep 17 00:00:00 2001
+From 5429bcf93f1df4a6be736acc567ddff7c17ada1f Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 16:07:21 +0200
 Subject: [PATCH] jasmine-j0049: map each PMIC observer channel once

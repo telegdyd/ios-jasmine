@@ -1,4 +1,4 @@
-From 8e49f4100f5e0e06a2d02afbebd75e305218f20e Mon Sep 17 00:00:00 2001
+From b97b3958703d5fd83c9fc579d332ae8f56b8d889 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 03:27:46 +0200
 Subject: [PATCH] jasmine-j0034: read-only client IOSurfaces map read-only
@@ -52,10 +52,10 @@ index 1f5fcce..9bfa6d7 100644
  		return NULL;
  	}
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
-index 19ef8ab..8730079 100644
+index e17297a..e2334cd 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
-@@ -188,7 +188,9 @@ SweetSurface::kernelAddress()
+@@ -316,7 +316,9 @@ SweetSurface::kernelAddress()
  	}
  	IOLockLock(sweet_surface_lock);
  	if (kernelMap == NULL && memory != NULL) {
@@ -66,7 +66,7 @@ index 19ef8ab..8730079 100644
  	}
  	IOLockUnlock(sweet_surface_lock);
  	return kernelMap != NULL ? (uintptr_t)kernelMap->getVirtualAddress() : 0;
-@@ -633,7 +635,7 @@ IOSurfaceRootUserClient::addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool
+@@ -812,7 +814,7 @@ IOSurfaceRootUserClient::addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool
  	s->retain();
  	ref->surface = s;
  	ref->count = 1;
@@ -75,8 +75,8 @@ index 19ef8ab..8730079 100644
  	ref->state = s->state->createMappingInTask(fTask, 0, kIOMapAnywhere | kIOMapReadOnly);
  	if (ref->data == NULL || ref->state == NULL) {
  		ref->release();
-@@ -912,8 +914,9 @@ sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, ui
- 	uint64_t length = round_page_64(address + size) - first;
+@@ -1147,8 +1149,9 @@ sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, ui
+ 	uint64_t length = sweet_round_upage(address + size) - first;
  	IOMemoryDescriptor *md = NULL;
  	IOReturn held = kIOReturnNoMemory;
 +	int attempt;
@@ -86,7 +86,7 @@ index 19ef8ab..8730079 100644
  		OSSafeReleaseNULL(md);
  		md = IOMemoryDescriptor::withAddressRange(first, length, attempt == 0 ? kIODirectionInOut : kIODirectionOut, task);
  		held = md != NULL ? md->prepare() : kIOReturnNoMemory;
-@@ -924,6 +927,7 @@ sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, ui
+@@ -1159,6 +1162,7 @@ sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, ui
  	}
  	s->memory = md;
  	s->wrapped = true;
@@ -95,17 +95,17 @@ index 19ef8ab..8730079 100644
  	s->mapCache = kIOMapDefaultCache;
  	return kIOReturnSuccess;
 diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
-index a2f7201..dce1670 100644
+index 5b74320..13e937a 100644
 --- a/iokit/Kernel/arm/SweetSurface.h
 +++ b/iokit/Kernel/arm/SweetSurface.h
-@@ -45,8 +45,9 @@ public:
- 	uint32_t                  purgeable;    /* IOSurfaceSetPurgeable state */
- 	uint32_t                  wrapDelta;    /* wrapped client memory: where it starts in its first page */
- 	bool                      wrapped;      /* memory is a prepared range of a task (IOSurfaceWrapClient*) */
+@@ -48,8 +48,9 @@ public:
+ 	bool                      gpuPool;      /* topaz GPU: memory from the GPU pool below 4 GiB (scanoutPhys = its address) */
+ 	uint64_t                  poolSize;     /* bytes taken from the GPU pool (allocSize and a guard) */
+ 	uint32_t                  drawn;        /* topaz GPU: last submission naming this surface (RedwoodGPU.cpp) */
 +	bool                      readOnly;     /* wrapped memory the task can only read: every mapping is read-only */
  
--	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; return OSObject::init(); }
-+	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; readOnly = false; return OSObject::init(); }
+-	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; return OSObject::init(); }
  	void free() APPLE_KEXT_OVERRIDE;
  
  	/* Kernel address of the pixels (mapped on first use), or 0. */

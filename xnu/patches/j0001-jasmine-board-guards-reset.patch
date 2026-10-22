@@ -1,4 +1,4 @@
-From ec8f63924317bd380e3ed0becaa8396c2d2debcc Mon Sep 17 00:00:00 2001
+From 4c514197490d6141f0f241dbc2d634a26f1611ed Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Tue, 20 Oct 2026 18:20:20 +0200
 Subject: [PATCH] jasmine-0136: board guards, early console on the jasmine
@@ -15,24 +15,24 @@ reset into ABL fastboot.
  bsd/dev/sweet_board.h                    |  9 +++
  bsd/dev/sweet_ufs.c                      |  9 ++-
  iokit/Kernel/arm/SweetBattery.cpp        | 10 ++-
- iokit/Kernel/arm/SweetFramebuffer.cpp    | 21 +++++--
+ iokit/Kernel/arm/SweetFramebuffer.cpp    | 30 ++++++---
  iokit/Kernel/arm/SweetPlatformExpert.cpp | 77 ++++++++++++++++++++++++
- osfmk/arm64/arm_vm_init.c                |  2 +-
- osfmk/arm64/start.s                      |  4 +-
- osfmk/arm64/sweet_early.c                |  6 +-
- pexpert/pexpert/arm64/SWEET.h            | 10 +++
- 11 files changed, 165 insertions(+), 15 deletions(-)
+ osfmk/arm64/arm_vm_init.c                |  4 +-
+ osfmk/arm64/start.s                      | 16 ++---
+ osfmk/arm64/sweet_early.c                | 10 +--
+ pexpert/pexpert/arm64/SWEET.h            | 17 ++++++
+ 11 files changed, 182 insertions(+), 32 deletions(-)
  create mode 100644 bsd/dev/sweet_board.c
  create mode 100644 bsd/dev/sweet_board.h
 
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 21cdb5c..740d10e 100644
+index c2864ab..27f2e61 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -105,6 +105,7 @@ bsd/dev/random/randomdev.c		standard
- 
- bsd/dev/memdev.c			standard
- bsd/dev/sweet_ufs.c			standard
+@@ -109,6 +109,7 @@ bsd/dev/redwood_sta.c		standard
+ bsd/dev/redwood_net.c		standard
+ bsd/dev/redwood_apple80211.c	standard
+ bsd/dev/topaz_sta.c		standard
 +bsd/dev/sweet_board.c			standard
  bsd/dev/sweet_sample.c			standard
  bsd/dev/sweet_keys.c			standard
@@ -117,7 +117,7 @@ index 143db60..1c37484 100644
  		sweet_usb_probe();
  	} else {
 diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
-index 824c022..32bea7e 100644
+index ed9a0c7..8d2d938 100644
 --- a/iokit/Kernel/arm/SweetBattery.cpp
 +++ b/iokit/Kernel/arm/SweetBattery.cpp
 @@ -12,6 +12,8 @@
@@ -129,7 +129,7 @@ index 824c022..32bea7e 100644
  /* bsd/dev/sweet_spmi.c */
  extern "C" int sweet_spmi_init(void);
  extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
-@@ -323,10 +325,14 @@ SweetBattery::start(IOService *provider)
+@@ -435,10 +437,14 @@ SweetBattery::start(IOService *provider)
  	if (!IOPMPowerSource::start(provider)) {
  		return false;
  	}
@@ -147,41 +147,50 @@ index 824c022..32bea7e 100644
  	poll();
  	if (fReal) {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 6f29fba..6f174af 100644
+index 1d3ee17..246ba70 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -40,6 +40,8 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
- extern "C" void sweet_console_retarget(vm_offset_t va);   /* osfmk/console/video_console.c */
- extern "C" void (*sweet_console_show_hook)(void);
+@@ -42,6 +42,8 @@ extern "C" void (*sweet_console_show_hook)(void);
  extern "C" void topaz_modem_init(void);
+ extern "C" void topaz_audio_init(void);
+ extern "C" void sweet_amfi_service_init(void);
 +extern "C" int sweet_board_is(const char *compat);   /* bsd/dev/sweet_board.c */
 +#define SWEET_BOARD_TOPAZ() sweet_board_is("xiaomi,topaz")
  extern "C" void sweet_busy_init(void);              /* iokit/Kernel/arm/SweetBusy.cpp (boot-arg sweetbusy=N) */             /* iokit/Kernel/arm/TopazModem.cpp (boot-arg modem=1) */
  extern "C" int sweet_console_copy_dirty(void *dst);
- 
-@@ -267,7 +269,11 @@ AppleCLCD::start(IOService *provider)
+ extern "C" void topaz_adreno_init(void);           /* iokit/Kernel/arm/TopazAdreno.cpp (boot-arg gpu=1) */
+@@ -312,9 +314,14 @@ AppleCLCD::start(IOService *provider)
  	if (!IOService::start(provider)) {
  		return false;
  	}
 -	topaz_modem_init();
-+	/* MDP, DSI and modem register blocks below are SM6225 (topaz) addresses */
+-	topaz_audio_init();
+-	sweet_amfi_service_init();
++	/* MDP, DSI, modem, ADSP and Adreno 610 register blocks below are SM6225 (topaz) addresses */
 +	bool topaz = SWEET_BOARD_TOPAZ();
 +	if (topaz) {
 +		topaz_modem_init();
++		topaz_audio_init();
++		/* topaz 0151 (HackiOS): not yet tried on jasmine */
++		sweet_amfi_service_init();
 +	}
  	sweet_busy_init();
  	PE_current_console(&video);
  	fPhys = video.v_baseAddr;
-@@ -305,9 +311,14 @@ AppleCLCD::start(IOService *provider)
+@@ -352,11 +359,16 @@ AppleCLCD::start(IOService *provider)
  		IOLog("SWEET FB: no vsync timer\n");
  		return false;
  	}
 -	fVig0 = (volatile uint32_t *)ml_io_map(0x05e05000, 0x1000);
 -	fCtl0 = (volatile uint32_t *)ml_io_map(0x05e02000, 0x1000);
+-	topaz_adreno_init();
+-	setProperty("RedwoodWaitsForGPU", true);         /* present() waits for the GPU (eagl.c reads it) */
 -	fDsi = (volatile uint8_t *)ml_io_map(0x05e94000, 0x1000);
 +	if (topaz) {
 +		fVig0 = (volatile uint32_t *)ml_io_map(0x05e05000, 0x1000);
 +		fCtl0 = (volatile uint32_t *)ml_io_map(0x05e02000, 0x1000);
++		topaz_adreno_init();
++		setProperty("RedwoodWaitsForGPU", true);         /* present() waits for the GPU (eagl.c reads it) */
 +		fDsi = (volatile uint8_t *)ml_io_map(0x05e94000, 0x1000);
 +	} else {
 +		/* CPU copy into the ABL framebuffer only (the sweet path) */
@@ -190,7 +199,7 @@ index 6f29fba..6f174af 100644
  	fDsiBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
  	    kIODirectionInOut | kIOMemoryPhysicallyContiguous, page_size, 0x00000000fffff000ull);
  	fDsiBufPhys = fDsiBuf ? fDsiBuf->getPhysicalSegment(0, NULL, kIOMemoryMapperNone) : 0;
-@@ -350,7 +361,7 @@ AppleCLCD::start(IOService *provider)
+@@ -399,7 +411,7 @@ AppleCLCD::start(IOService *provider)
  	}
  	OSSafeReleaseNULL(accel);
  	/* dpu sm6115 catalog: intf_1 at mdp+0x6a800, mdp at 0x5e01000 */
@@ -303,10 +312,19 @@ index 0631685..cec5464 100644
  		return false;
  	}
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index 06bb568..1537de9 100644
+index b926886..f93a9c0 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -1843,7 +1843,7 @@ sweet_early_map_final(void)
+@@ -1853,7 +1853,7 @@ sweet_early_map_final(void)
+ 		}
+ 	}
+ 	for (unsigned int i = 0; i < 6; i++) {
+-		l2[first + i] = (0x5c000000ULL + i * ARM_TT_L2_SIZE) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++		l2[first + i] = ((uint64_t)SWEET_EARLY_FB_BLOCK + i * ARM_TT_L2_SIZE) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+ 		    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+ 		    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+ 		    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
+@@ -1881,7 +1881,7 @@ sweet_early_map_final(void)
  	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
  	tt_entry_t *slot = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
  	assert(*slot == ARM_TTE_EMPTY);
@@ -316,19 +334,40 @@ index 06bb568..1537de9 100644
  	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
  	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index 023086f..ea7a2b6 100644
+index 9fd1cb9..840390c 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
-@@ -515,7 +515,7 @@ LEXT(start_first_cpu)
+@@ -515,11 +515,7 @@ LEXT(start_first_cpu)
  
  #if defined(SWEET)
  	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-#if defined(TOPAZ_4K)
+-	MOV64	x0, (0x5c000000 + 2368 * 4320)	/* topaz splash framebuffer */
+-#else
 -	MOV64	x0, (0x9c000000 + 2368 * 4320)
+-#endif
 +	MOV64	x0, (SWEET_EARLY_FB_BLOCK + SWEET_EARLY_FB_OFFSET + (SWEET_EARLY_FB_HEIGHT - 32) * 4320)
  	mov		w1, #-1
  	mov		x2, #32
  	mov		x4, #4320
-@@ -686,7 +686,7 @@ Lkernelcache_base_found:
+@@ -684,12 +680,12 @@ Lkernelcache_base_found:
+ 
+ #if defined(SWEET) && defined(TOPAZ_4K)
+ 	/*
+-	 * topaz splash framebuffer (0x5c000000, 1080x2400x4 = 10 MB) VA=PA as
+-	 * Normal-NC: six 2 MB blocks in an L2 table of its own (L1 index 1;
+-	 * RAM is at 0x140000000), for the early screen console.
++	 * splash framebuffer (jasmine 0x9d400000, 1080x2160x4 = 9 MB) VA=PA as
++	 * Normal-NC: six 2 MB blocks in an L2 table of its own (L1 index 2;
++	 * RAM is at 0x100000000), for the early screen console.
+ 	 */
+ 	add		x2, x2, PGBYTES
+-	MOV64	x10, 0x5c000000
++	MOV64	x10, SWEET_EARLY_FB_BLOCK
+ 	create_l1_table_entry x10, x1, x2, x11, x12, x13
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+@@ -712,7 +708,7 @@ Ltopaz_fb_block:
  	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
  	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
  	 */
@@ -338,14 +377,18 @@ index 023086f..ea7a2b6 100644
  	orr		x11, x11, x10
  	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
 diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
-index 6928957..530e7eb 100644
+index 9429767..530e7eb 100644
 --- a/osfmk/arm64/sweet_early.c
 +++ b/osfmk/arm64/sweet_early.c
-@@ -11,10 +11,10 @@
+@@ -11,14 +11,10 @@
  #include <stdint.h>
  #include <kern/misc_protos.h>
  
+-#if defined(TOPAZ_4K)
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x5c000000;  /* topaz splash */
+-#else
 -static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
+-#endif
 +static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)(SWEET_EARLY_FB_BLOCK + SWEET_EARLY_FB_OFFSET);
  #define EARLY_FB early_fb
  #define EARLY_WIDTH 1080u
@@ -354,7 +397,7 @@ index 6928957..530e7eb 100644
  #define EARLY_STRIDE (4320u / 4)
  #define EARLY_SCALE 2u
  #define EARLY_CELL_W (8u * EARLY_SCALE)
-@@ -129,7 +129,7 @@ void
+@@ -133,7 +129,7 @@ void
  sweet_early_relocate(uint64_t base)
  {
  	sweet_early_mark(8, "leaving bootstrap TTBR0");
@@ -364,10 +407,10 @@ index 6928957..530e7eb 100644
  	sweet_early_mark(9, "kernel framebuffer VA live");
  }
 diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
-index 424e1c0..6da12df 100644
+index cfeb976..68aef45 100644
 --- a/pexpert/pexpert/arm64/SWEET.h
 +++ b/pexpert/pexpert/arm64/SWEET.h
-@@ -26,6 +26,16 @@
+@@ -26,6 +26,23 @@
   */
  #define SWEET_SMP_MAX_CPUS         8
  
@@ -376,9 +419,16 @@ index 424e1c0..6da12df 100644
 + * mapped as the one 32MB block at SWEET_EARLY_FB_BLOCK. jasmine (Mi A2,
 + * SDM660): splash at 0x9d400000, 1080x2160. sweet used 0x9c000000 + 0, 2400
 + * lines; topaz's 0x5c000000 was never drawn by this console.
++ * TOPAZ_4K (4 KiB pages, 2 MB blocks): the blocks start at the splash itself
++ * (0x9d400000 is 2 MB aligned), six of them as on topaz.
 + */
++#if defined(TOPAZ_4K)
++#define SWEET_EARLY_FB_BLOCK      0x9d400000
++#define SWEET_EARLY_FB_OFFSET     0
++#else
 +#define SWEET_EARLY_FB_BLOCK      0x9c000000
 +#define SWEET_EARLY_FB_OFFSET     0x01400000
++#endif
 +#define SWEET_EARLY_FB_HEIGHT     2160
 +
  #define ARM_ARCH_TIMER

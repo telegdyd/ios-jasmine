@@ -1,4 +1,4 @@
-From 0b352865da2bcaec7c2ace0c68162c44307ac2b5 Mon Sep 17 00:00:00 2001
+From 5ef10566f3fe473f86f5c47734e738d1e3ec448b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 05:21:16 +0200
 Subject: [PATCH] jasmine-j0039: OSM/CPRh read-only probe and per-chip table

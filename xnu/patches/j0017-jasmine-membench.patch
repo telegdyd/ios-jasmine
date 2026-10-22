@@ -1,4 +1,4 @@
-From d0ca50d5eaf0f51f34fb89642d2f2b0b43d5d5ae Mon Sep 17 00:00:00 2001
+From 01f3eaad82c8e746c4fcbaa0b05a5b69c8321d4f Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 06:09:12 +0200
 Subject: [PATCH] jasmine-j0017: memory bandwidth on one core (is RAM the

@@ -1,4 +1,4 @@
-From 81df22b195ae028c7f656df1f23ca65404940489 Mon Sep 17 00:00:00 2001
+From 539f6cd659d3f8e60cf9092ef3c2ae4f45abca3a Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 15:22:05 +0200
 Subject: [PATCH] jasmine-j0024: file access to the iOS root over USB Ethernet
@@ -17,10 +17,10 @@ pushing builds into the root and pulling logs without reflashing userdata
  create mode 100644 bsd/dev/sweet_netfs.c
 
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 0f71085..1e855a5 100644
+index f43a900..782517e 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -110,6 +110,7 @@ bsd/dev/sweet_sample.c			standard
+@@ -114,6 +114,7 @@ bsd/dev/sweet_sample.c			standard
  bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_pmic.c			standard
  bsd/dev/sweet_gpu.c			standard

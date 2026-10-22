@@ -1,4 +1,4 @@
-From 86d9368cd37cb18aad2c2b108fa896fabe46102a Mon Sep 17 00:00:00 2001
+From bdd6f10b88944e3e58a4fe7bb1fc4872cd70b4df Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 19:58:21 +0200
 Subject: [PATCH] jasmine-j0028: SweetGPU debug logs every call; GPU state

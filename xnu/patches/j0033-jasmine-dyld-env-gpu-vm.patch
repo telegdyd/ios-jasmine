@@ -1,4 +1,4 @@
-From a00bcfd7d096ef26e4a6c42fff57a90f392665e7 Mon Sep 17 00:00:00 2001
+From 09a4a8d493c77bef87fca03ecbc351b74d411274 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 22:14:41 +0200
 Subject: [PATCH] jasmine-j0033: DYLD_* for sweetenv (AMFI dyld policy call,
@@ -6,10 +6,9 @@ Subject: [PATCH] jasmine-j0033: DYLD_* for sweetenv (AMFI dyld policy call,
  and reused GPU VAs
 
 ---
- bsd/dev/sweet_gpu.c   | 153 +++++++++++++++++++++++++++++++++++-------
- bsd/kern/kern_exec.c  |  80 ++++++++++++++++++++++
- bsd/kern/sweet_amfi.c |  33 ++++++++-
- 3 files changed, 239 insertions(+), 27 deletions(-)
+ bsd/dev/sweet_gpu.c  | 153 +++++++++++++++++++++++++++++++++++--------
+ bsd/kern/kern_exec.c |  79 ++++++++++++++++++++++
+ 2 files changed, 206 insertions(+), 26 deletions(-)
 
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
 index d9ede89..eab50fd 100755
@@ -250,10 +249,10 @@ index d9ede89..eab50fd 100755
  	gpu_power_off();
  	lck_mtx_unlock(gpu_lock);
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 68612db..1f5e61b 100644
+index 4710f0b..b483c8c 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -5540,6 +5540,79 @@ bad:
+@@ -5587,6 +5587,79 @@ bad:
  	return error;
  }
  
@@ -333,73 +332,19 @@ index 68612db..1f5e61b 100644
  
  /*
   * exec_extract_strings
-@@ -5741,6 +5814,13 @@ exec_extract_strings(struct image_params *imgp)
+@@ -5896,6 +5969,12 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_argspace -= new_ptr_size;
  		imgp->ip_envc++;
  	}
- 
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	error = sweet_exec_env(imgp, new_ptr_size);
 +	if (error) {
 +		goto bad;
 +	}
 +#endif
-+
+ 
  	/* Save space for envv[] NULL terminator */
  	if (imgp->ip_argspace < new_ptr_size) {
- 		error = E2BIG;
-diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
-index cb67b4d..6e0856a 100644
---- a/bsd/kern/sweet_amfi.c
-+++ b/bsd/kern/sweet_amfi.c
-@@ -305,8 +305,39 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
- 	}
- }
- 
-+/*
-+ * dyld asks the policy named "AMFI" which DYLD_* variables it may honour
-+ * (op 90, amfi_check_dyld_policy_self: in {u64 input flags; u64 *output})
-+ * and honours none when the call fails, so DYLD_INSERT_LIBRARIES from
-+ * sweetenv was dropped. Allowed (dyld's bits): @paths 0x1, path variables
-+ * incl. DYLD_INSERT_LIBRARIES 0x2, fallback paths 0x8, print variables
-+ * 0x10, failed insertions 0x20 (a broken library must not stop backboardd)
-+ * and interposing 0x40. Other ops fail as they did with no such policy.
-+ */
-+#define SWEET_AMFI_DYLD_POLICY  90
-+#define SWEET_AMFI_DYLD_ALLOW   0x7bull
-+
-+static int
-+sweet_amfi_syscall(struct proc *p __unused, int call, user_addr_t arg)
-+{
-+	struct {
-+		uint64_t in;
-+		uint64_t out;
-+	} a;
-+	uint64_t allow = SWEET_AMFI_DYLD_ALLOW;
-+
-+	if (call != SWEET_AMFI_DYLD_POLICY) {
-+		return ENOPOLICY;
-+	}
-+	if (copyin(arg, &a, sizeof(a)) != 0 || a.out == 0) {
-+		return EFAULT;
-+	}
-+	return copyout(&allow, (user_addr_t)a.out, sizeof(allow));
-+}
-+
- static const struct mac_policy_ops sweet_amfi_mac_ops = {
- 	.mpo_vnode_check_signature = sweet_amfi_vnode_check_signature,
-+	.mpo_policy_syscall = sweet_amfi_syscall,
- };
- 
- /*
-@@ -360,7 +391,7 @@ static struct mac_policy_conf sweet_sandbox_mac_conf = {
- static mac_policy_handle_t sweet_sandbox_mac_handle;
- 
- static struct mac_policy_conf sweet_amfi_mac_conf = {
--	.mpc_name = "SWEET AMFI",
-+	.mpc_name = "AMFI",             /* __mac_syscall("AMFI", ...) finds policies by name */
- 	.mpc_fullname = "SWEET built-in Mobile File Integrity",
- 	.mpc_ops = &sweet_amfi_mac_ops,
- };
 -- 
 2.47.3
 

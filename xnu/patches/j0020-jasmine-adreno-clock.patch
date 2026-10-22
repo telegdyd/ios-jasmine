@@ -1,4 +1,4 @@
-From feab39e0832edeaa813d12d67daefbc49ff87cc1 Mon Sep 17 00:00:00 2001
+From 4acc7e0271aff9b7d6fd54c0dec37ea3674ab424 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 14:11:48 +0200
 Subject: [PATCH] jasmine-j0020: GPU core clock from GPU PLL0 (gpumhz=160|266)

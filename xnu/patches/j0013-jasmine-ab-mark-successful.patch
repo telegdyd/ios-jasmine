@@ -1,4 +1,4 @@
-From b31b1a4dea14fd0ec21c4c2bb25952acdd4c1b3b Mon Sep 17 00:00:00 2001
+From 720f428dcdbc38bed3b469ff2dd1aab8bacf329e Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 04:05:52 +0200
 Subject: [PATCH] jasmine-j0013: mark the booted A/B slot successful (abmark=)

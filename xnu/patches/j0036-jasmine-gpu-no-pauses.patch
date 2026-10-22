@@ -1,4 +1,4 @@
-From 806a008173d0ec4f19185c72b1c05467e3f0d21e Mon Sep 17 00:00:00 2001
+From 2b1ca51d477c5efaf632bd4757f9cc1ec11e3ca7 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 04:20:56 +0200
 Subject: [PATCH] jasmine-j0036: boot-arg gpupause=0 skips the pauses between

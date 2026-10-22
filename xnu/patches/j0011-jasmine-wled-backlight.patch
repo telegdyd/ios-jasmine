@@ -1,4 +1,4 @@
-From 191fae95e7ffda81bac7edb106b646fdcfe049f1 Mon Sep 17 00:00:00 2001
+From 72e8004df61863c6f634575233095716b29f192f Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 03:11:15 +0200
 Subject: [PATCH] jasmine-j0011: backlight off with the display (PM660L WLED)
@@ -15,9 +15,9 @@ PMIC and touch before registerService: SweetBattery and AppleCLCD started
 before it and missed the gauge.
 ---
  bsd/dev/sweet_pmic.c                     | 109 +++++++++++++++++++++++
- iokit/Kernel/arm/SweetFramebuffer.cpp    |  43 +++++++--
+ iokit/Kernel/arm/SweetFramebuffer.cpp    |  45 +++++++++-
  iokit/Kernel/arm/SweetPlatformExpert.cpp |   9 +-
- 3 files changed, 153 insertions(+), 8 deletions(-)
+ 3 files changed, 157 insertions(+), 6 deletions(-)
 
 diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
 index 17e4569..70f4314 100644
@@ -161,10 +161,10 @@ index 17e4569..70f4314 100644
  	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
  	if (!enabled ||
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 4af9f54..f4dec49 100644
+index 4ca70e9..1f4f233 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -80,6 +80,9 @@ class OSDictionary;
+@@ -101,6 +101,9 @@ class OSDictionary;
  static void sweet_bl_log(const char *who, OSDictionary *d);
  extern "C" void sweet_dcache_clean(vm_offset_t addr, unsigned length);  /* osfmk/arm/caches.c */
  extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -174,7 +174,7 @@ index 4af9f54..f4dec49 100644
  
  #if defined(SWEET)
  #include <IOKit/IOService.h>
-@@ -186,6 +189,8 @@ public:
+@@ -231,6 +234,8 @@ public:
  	uint32_t      fFitX, fFitW;
  	uint16_t     *fFitXMap, *fFitYMap;  /* panel column / row -> logical x / y */
  	bool          jasmineMdp(void);
@@ -183,7 +183,7 @@ index 4af9f54..f4dec49 100644
  	void          composeFit(uint8_t *dst, SweetSurface *s, int32_t sx, int32_t sy,
  	    int32_t dx, int32_t dy, int32_t w, int32_t h);
  	uint64_t      fFlipPhys[2];
-@@ -342,8 +347,23 @@ AppleCLCD::start(IOService *provider)
+@@ -392,8 +397,23 @@ AppleCLCD::start(IOService *provider)
  	fBlLevel = 0x133;                       /* panel init level (stock DT) */
  	fBlSent = ~0u;
  	fBlCall = thread_call_allocate(&AppleCLCD::blWork, this);
@@ -209,18 +209,20 @@ index 4af9f54..f4dec49 100644
  		setProperty("IOMFBBrightnessLevel", (unsigned long long)(200u << 16), 32);
  		/*
  		 * Off unless sweetbl=1: with a backlight service CoreBrightness also
-@@ -631,8 +651,8 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -705,6 +725,12 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  		 * topaz: fade in cached memory and flip whole frames to the MDP.
  		 * Fading the uncached boot framebuffer in place crawled down the panel.
  		 */
--		if (fb->fDsi != NULL) {
--			/* the panel is dark (DCS 0x51 0); keep the last frame */
-+		if (fb->fDsi != NULL || fb->fWled) {
-+			/* the panel is dark (DCS 0x51 0 / WLED off); keep the last frame */
- 			IOLockUnlock(fb->fLock);
- 			sender->setTimeoutUS(SWEET_FB_VSYNC_US);
- 			return;
-@@ -851,6 +871,11 @@ AppleCLCD::dsiSend(const uint8_t hdr[4], const uint8_t *payload, uint32_t len)
++		if (fb->fWled) {
++			/* jasmine: the panel is dark (WLED off); keep the last frame */
++			IOLockUnlock(fb->fLock);
++			sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++			return;
++		}
+ 		/*
+ 		 * topaz: the DCS commands (0x51 0, 0x28, 0x10) do not reach the panel
+ 		 * yet (video mode). Show one black frame of the kernel's own instead:
+@@ -1239,6 +1265,11 @@ AppleCLCD::dsiSend(const uint8_t hdr[4], const uint8_t *payload, uint32_t len)
  void
  AppleCLCD::setPanelOn(bool on)
  {
@@ -229,10 +231,10 @@ index 4af9f54..f4dec49 100644
 +		IOLog("SWEET FB: backlight %s (WLED %u): %d\n", on ? "on" : "off", on ? fWledOn : 0, r);
 +		return;
 +	}
- 	uint8_t hdr[4] = { (uint8_t)(on ? 0x29 : 0x28), 0, 0x05, 0x80 };
- 	IOLockLock(fBlLock);
- 	bool done = dsiSend(hdr, NULL, 0);
-@@ -861,6 +886,12 @@ AppleCLCD::setPanelOn(bool on)
+ 	uint8_t first[4] = { (uint8_t)(on ? 0x11 : 0x28), 0, 0x05, 0x80 };
+ 	uint8_t second[4] = { (uint8_t)(on ? 0x29 : 0x10), 0, 0x05, 0x80 };
+ 	bool done = true;
+@@ -1262,6 +1293,12 @@ AppleCLCD::setPanelOn(bool on)
  void
  AppleCLCD::setPanelLevel(uint32_t level)
  {
@@ -245,7 +247,7 @@ index 4af9f54..f4dec49 100644
  	uint8_t cmd[3] = { 0x51, (uint8_t)(level >> 8), (uint8_t)level };   /* MSB first */
  	IOLockLock(fBlLock);
  	bool done = dsiDcsLong(cmd, sizeof(cmd));
-@@ -882,7 +913,7 @@ AppleCLCD::setProperties(OSObject *properties)
+@@ -1283,7 +1320,7 @@ AppleCLCD::setProperties(OSObject *properties)
  	OSDictionary *d = OSDynamicCast(OSDictionary, properties);
  	sweet_bl_log("iomfb", d);
  	OSNumber *n = d ? OSDynamicCast(OSNumber, d->getObject("IOMFBBrightnessLevel")) : NULL;
@@ -254,7 +256,7 @@ index 4af9f54..f4dec49 100644
  		return kIOReturnUnsupported;
  	}
  	uint64_t v = n->unsigned64BitValue();
-@@ -1399,7 +1430,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -1819,7 +1856,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
  			}
  			uint32_t level = fFB->fBlLevel;
  			IOLockUnlock(fFB->fLock);

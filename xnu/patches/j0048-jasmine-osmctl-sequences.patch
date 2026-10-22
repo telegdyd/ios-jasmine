@@ -1,4 +1,4 @@
-From 0ec223ee6286517b5610cd10ba0e6df6129af38b Mon Sep 17 00:00:00 2001
+From 034441b1a9f589ad06210c618f3aa8dd7a6c63a8 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 15:44:23 +0200
 Subject: [PATCH] jasmine-j0048: osmctl sequences (m, poll, d, t, rep) so

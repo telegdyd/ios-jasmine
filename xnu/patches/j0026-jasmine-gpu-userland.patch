@@ -1,4 +1,4 @@
-From 33fbfb0c4f654e2b1e7c0dba6c9ee2d299e9c25e Mon Sep 17 00:00:00 2001
+From 2ed843ba0b4f2663f915cca34449baa6fb407265 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 16:30:59 +0200
 Subject: [PATCH] jasmine-j0026: Adreno driver for userland: GPU VM, buffers,
@@ -769,17 +769,17 @@ index 0000000..cf77d04
 +	OSSafeReleaseNULL(gpu);
 +}
 diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
-index cc24c81..0dbc445 100644
+index c92beb0..0064653 100644
 --- a/iokit/conf/files.arm64
 +++ b/iokit/conf/files.arm64
-@@ -16,6 +16,7 @@ iokit/Kernel/arm/SweetEntitlements.cpp                           optional iokitc
+@@ -21,6 +21,7 @@ iokit/Kernel/arm/SweetEntitlements.cpp                           optional iokitc
  iokit/Kernel/arm/SweetKeyStore.cpp                               optional iokitcpp
  iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
  iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
 +iokit/Kernel/arm/SweetGPU.cpp                                    optional iokitcpp
  iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
- iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
- iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/TopazAdreno.cpp                                 optional iokitcpp
+ iokit/Kernel/arm/TopazAdrenoFw.cpp                               optional iokitcpp
 -- 
 2.47.3
 

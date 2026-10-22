@@ -1,4 +1,4 @@
-From caae6abd8fa82692680c2cdea08605100d885bf9 Mon Sep 17 00:00:00 2001
+From 0b5ddb39dcf70c2954e978d0c8e1cbb5e5cbacee Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 02:28:43 +0200
 Subject: [PATCH] jasmine-j0008: log every swap layout change
@@ -13,10 +13,10 @@ with four words of the swap record after the mask.
  1 file changed, 18 insertions(+), 5 deletions(-)
 
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 704501f..4af9f54 100644
+index 362e284..4ca70e9 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -735,6 +735,8 @@ get32(const uint8_t *p, uint32_t off)
+@@ -928,6 +928,8 @@ get32(const uint8_t *p, uint32_t off)
  }
  
  static uint32_t sweet_fb_swaps_logged;
@@ -25,7 +25,7 @@ index 704501f..4af9f54 100644
  static uint64_t sweet_fb_swap_count;
  
  /* Copy each enabled layer's surface into the panel memory (no scaling). */
-@@ -1157,12 +1159,22 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1562,12 +1564,22 @@ AppleCLCD::present(const uint8_t *rec)
  			continue;
  		}
  		SweetSurface *s = sweet_surface_copy(id);
@@ -53,7 +53,7 @@ index 704501f..4af9f54 100644
  		}
  		if (s == NULL || s == fSurface) {
  			OSSafeReleaseNULL(s);
-@@ -1229,6 +1241,7 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -1635,6 +1647,7 @@ AppleCLCD::present(const uint8_t *rec)
  		}
  		s->release();
  	}

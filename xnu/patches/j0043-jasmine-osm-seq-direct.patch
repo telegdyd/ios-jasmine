@@ -1,4 +1,4 @@
-From 39fddc9bde70d4d13f46272382cbadf54690091c Mon Sep 17 00:00:00 2001
+From 3a2db08978e6786871b813f6c9fe3c58ad181624 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 07:12:39 +0200
 Subject: [PATCH] jasmine-j0043: probe reads the OSM sequencer registers

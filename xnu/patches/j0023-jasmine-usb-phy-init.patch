@@ -1,4 +1,4 @@
-From 64a05a8fd63ad97609cacddd2a3c3795b6bc5e8e Mon Sep 17 00:00:00 2001
+From 2e93d4f33bd26c03e621e0e288ec820d0b905c46 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 15:04:44 +0200
 Subject: [PATCH] jasmine-j0023: USB after a normal boot: QUSB2 PHY init and

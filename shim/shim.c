@@ -37,6 +37,7 @@
 #define PSCI_CPU_SUSPEND	0xc4000001UL
 #define PSCI_CPU_OFF		0x84000002UL
 #define PSCI_CPU_ON		0xc4000003UL
+#define PSCI_AFFINITY_INFO	0xc4000004UL
 #define PSCI_MIGRATE_INFO_TYPE	0x84000006UL
 #define PSCI_SYSTEM_RESET	0x84000009UL
 #define PSCI_FEATURES		0x8400000aUL
@@ -175,6 +176,49 @@ static uintptr_t find_gicr(void);
  */
 static volatile uint64_t gold_dtb;
 static void test_gic(void);
+
+/*
+ * All eight cores (4 KiB-page xnu, cpus=5..8): xnu starts the silver cluster
+ * itself with PSCI CPU_ON, which fails for a core that is still on, so the
+ * parked boot core powers itself off (PSCI CPU_OFF) when gold is about to
+ * enter xnu. With cpus<=4 it stays parked as before.
+ */
+static volatile uint32_t silver_parked;		/* boot core handed off to gold and waits */
+static volatile uint32_t silver_power_off;	/* gold -> silver: CPU_OFF now */
+static volatile int64_t silver_off_rc = 1;	/* CPU_OFF's result if it returned (1: none yet) */
+
+static unsigned int cmdline_cpus(const char *cmdline)
+{
+	for (const char *c = cmdline; *c; c++) {
+		if ((c == cmdline || c[-1] == ' ') && c[0] == 'c' && c[1] == 'p' && c[2] == 'u' &&
+		    c[3] == 's' && c[4] == '=') {
+			unsigned int n = 0;
+			for (c += 5; *c >= '0' && *c <= '9'; c++)
+				n = n * 10 + (unsigned int)(*c - '0');
+			return n;
+		}
+	}
+	return 0;
+}
+
+/* loader.c, just before the jump into xnu (on gold). */
+void shim_before_xnu(const char *cmdline)
+{
+	unsigned int cpus = cmdline_cpus(cmdline);
+	if (!silver_parked || cpus <= 4)
+		return;
+	silver_power_off = 1;
+	__asm__ volatile("dsb sy; sev" ::: "memory");
+	/* AFFINITY_INFO: 0 on, 1 off, 2 on pending */
+	int64_t st = 0;
+	for (int i = 0; i < 200; i++) {
+		st = smc(PSCI_AFFINITY_INFO, 0, 0, 0);
+		if (st == 1 || silver_off_rc != 1)
+			break;
+		delay_ms(1);
+	}
+	con_hex2("SILVER", "aff_info=", (uint32_t)st, "off_rc=", (uint32_t)silver_off_rc);
+}
 
 /*
  * xnu starts the other gold CPUs itself (PSCI CPU_ON), without the shim, so
@@ -553,11 +597,21 @@ void shim_main(uint64_t dtb)
 		silver_ticks = speed_ticks();
 		gold_dtb = dtb;
 		__asm__ volatile("dsb sy" ::: "memory");
+		silver_parked = 1;
+		__asm__ volatile("dsb sy" ::: "memory");
 		int64_t r = smc(PSCI_CPU_ON, 0x100, (uintptr_t)secondary_entry, 4);
 		if (r == 0) {
-			for (;;)	/* parked with DAIF masked (start.S) */
-				__asm__ volatile("wfi");
+			for (;;) {	/* parked with DAIF masked (start.S) */
+				if (silver_power_off) {
+					silver_power_off = 0;
+					/* returns only if TZ refuses; then stay parked */
+					silver_off_rc = smc(PSCI_CPU_OFF, 0, 0, 0);
+					__asm__ volatile("dsb sy" ::: "memory");
+				}
+				__asm__ volatile("wfe");
+			}
 		}
+		silver_parked = 0;
 		gold_dtb = 0;
 		con_hex("CPU_ON", (uint64_t)r);
 	}

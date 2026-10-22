@@ -1,4 +1,4 @@
-From a515aad43ca9ab4c09dac9cc735ffc70b56bd5a7 Mon Sep 17 00:00:00 2001
+From 00b1cfde13c0e97b2718f294a5209a07b5cd62d3 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 03:35:54 +0200
 Subject: [PATCH] jasmine-j0012: steadier battery percent
@@ -13,10 +13,10 @@ moves by at most 1 % per poll.
  1 file changed, 19 insertions(+), 6 deletions(-)
 
 diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
-index 582daf4..a1a39a9 100644
+index be46fb4..0268954 100644
 --- a/iokit/Kernel/arm/SweetBattery.cpp
 +++ b/iokit/Kernel/arm/SweetBattery.cpp
-@@ -44,6 +44,8 @@ private:
+@@ -45,6 +45,8 @@ private:
  	int fLastMode;
  	unsigned fDesign;       /* mAh: topaz 5020, jasmine 3000 (DT charge-full-design) */
  	int fTempC100;          /* centidegrees C; 2500 when not measured */
@@ -25,7 +25,7 @@ index 582daf4..a1a39a9 100644
  	bool pollJasmine(void);
  	void putNumber(const char *key, UInt32 value);
  	void putBool(const char *key, bool value);
-@@ -72,6 +74,8 @@ SweetBattery::init(OSDictionary *dictionary)
+@@ -73,6 +75,8 @@ SweetBattery::init(OSDictionary *dictionary)
  	fTimerAdded = fRunning = fReal = fJasmine = false;
  	fDesign = 5020;
  	fTempC100 = 2500;
@@ -34,7 +34,7 @@ index 582daf4..a1a39a9 100644
  	if (dictionary) {
  		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
  		if (!it) {
-@@ -275,8 +279,10 @@ SweetBattery::pollTopaz(void)
+@@ -387,8 +391,10 @@ SweetBattery::pollTopaz(void)
  /*
   * jasmine: the PM660 fuel gauge's voltage, current and temperature and the
   * charger state. Percent is the voltage curve at an IR-corrected voltage
@@ -47,7 +47,7 @@ index 582daf4..a1a39a9 100644
   */
  bool
  SweetBattery::pollJasmine(void)
-@@ -285,15 +291,22 @@ SweetBattery::pollJasmine(void)
+@@ -397,15 +403,22 @@ SweetBattery::pollJasmine(void)
  	if (sweet_fg_read(&f) != 0 || f.mv < 2800 || f.mv > 4600) {
  		return false;
  	}

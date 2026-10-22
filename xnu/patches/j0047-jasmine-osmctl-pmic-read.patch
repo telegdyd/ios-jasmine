@@ -1,4 +1,4 @@
-From c39c39d7199200d9851b5f7e82b412b71a582d6b Mon Sep 17 00:00:00 2001
+From f6ca86130deb12f79ae6460bfffa5d7ed572ae3b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 14:49:14 +0200
 Subject: [PATCH] jasmine-j0047: osmctl "spmi" / "rails": read the PMIC (APC

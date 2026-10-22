@@ -1,4 +1,4 @@
-From 5df25f2ed618d55b521dfc1b336e0cd8a614f449 Mon Sep 17 00:00:00 2001
+From 67169c68fa325969853313a1628dc0fbc43206bc Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 20:25:50 +0200
 Subject: [PATCH] jasmine-j0031: SweetGPU buffers are cacheable by default

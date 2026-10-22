@@ -1,4 +1,4 @@
-From a82783e163542da1bded1d4fee4e7b05ed102530 Mon Sep 17 00:00:00 2001
+From 84a7a445ab8831d7b2934a9505e01bca6c6e14aa Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 07:44:16 +0200
 Subject: [PATCH] jasmine-j0045: live register access over the USB command port

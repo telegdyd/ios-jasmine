@@ -1,4 +1,4 @@
-From eec5a927174dfe4e45b10123c84f180c15f68590 Mon Sep 17 00:00:00 2001
+From e7a57efe4dbc7be7003d57cea7db39e2d725514b Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 22 Oct 2026 04:51:29 +0200
 Subject: [PATCH] jasmine-j0038: a submit maintains its buffers in one pass

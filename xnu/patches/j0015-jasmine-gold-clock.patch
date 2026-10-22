@@ -1,4 +1,4 @@
-From ff0e8c6851873a1d0aae0c0c5914f15f6051198b Mon Sep 17 00:00:00 2001
+From 2d49360d450bc56022ab3f4fcd69263f3f7e7a1c Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 05:03:26 +0200
 Subject: [PATCH] jasmine-j0015: Gold cluster off GPLL0 (sweetgold=MHz),

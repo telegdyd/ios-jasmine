@@ -1,4 +1,4 @@
-From 11e706aa96d62ff70bba617d76588bf8458d491e Mon Sep 17 00:00:00 2001
+From 43d08619cf8e183eb70e80d93fd4a2edb4033590 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 15:36:12 +0200
 Subject: [PATCH] jasmine-j0025: APSS hardware watchdog for test boots
@@ -17,10 +17,10 @@ default (the slot b image). ADT /sweet-wdt.
  create mode 100644 bsd/dev/sweet_wdt.c
 
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 1e855a5..c1a06c9 100644
+index 782517e..d2fe527 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -111,6 +111,7 @@ bsd/dev/sweet_keys.c			standard
+@@ -115,6 +115,7 @@ bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_pmic.c			standard
  bsd/dev/sweet_gpu.c			standard
  bsd/dev/sweet_netfs.c			standard

@@ -1,4 +1,4 @@
-From 82f1c1f81217f3197cfc587e85a2cf1cfb722b71 Mon Sep 17 00:00:00 2001
+From a198e3399a78d2822ce38f59940bcfadf9cc892c Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 21:17:44 +0200
 Subject: [PATCH] jasmine-j0032: SweetGPU imports IOSurfaces into the GPU

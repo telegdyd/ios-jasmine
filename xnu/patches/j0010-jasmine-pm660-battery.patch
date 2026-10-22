@@ -1,4 +1,4 @@
-From 9d543eeba9936b73d7717c93e472d9edc4871a0e Mon Sep 17 00:00:00 2001
+From 1d859d71849a22f7c64b706738b9698c4787943a Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 03:08:09 +0200
 Subject: [PATCH] jasmine-j0010: battery readout from the PM660 fuel gauge
@@ -151,13 +151,13 @@ index c512365..17e4569 100644
  	(void)PE_parse_boot_argn("sweetkeys", &enabled, sizeof(enabled));
  	if (!enabled ||
 diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
-index 32bea7e..582daf4 100644
+index 8d2d938..be46fb4 100644
 --- a/iokit/Kernel/arm/SweetBattery.cpp
 +++ b/iokit/Kernel/arm/SweetBattery.cpp
-@@ -21,6 +21,14 @@ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
- extern "C" int sweet_i2c1_init(void);
+@@ -22,6 +22,14 @@ extern "C" int sweet_i2c1_init(void);
  extern "C" int sweet_cpufreq_max(void);    /* bsd/dev/sweet_cpufreq.c */
  extern "C" int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
+ extern "C" int sweet_i2c1_write(uint8_t addr, uint8_t reg, uint8_t val);
 +/* bsd/dev/sweet_pmic.c: jasmine PM660 fuel gauge + charger state (same layout) */
 +struct sweet_fg {
 +	int mv, ma;             /* ma > 0: charging */
@@ -169,7 +169,7 @@ index 32bea7e..582daf4 100644
  
  class SweetBattery : public IOPMPowerSource {
  	OSDeclareDefaultStructors(SweetBattery);
-@@ -32,8 +40,11 @@ public:
+@@ -33,8 +41,11 @@ public:
  private:
  	IOWorkLoop *fLoop;
  	IOTimerEventSource *fTimer;
@@ -182,7 +182,7 @@ index 32bea7e..582daf4 100644
  	void putNumber(const char *key, UInt32 value);
  	void putBool(const char *key, bool value);
  	void publish(unsigned percent, unsigned mv, int ma, bool external,
-@@ -58,7 +69,9 @@ SweetBattery::init(OSDictionary *dictionary)
+@@ -59,7 +70,9 @@ SweetBattery::init(OSDictionary *dictionary)
  	}
  	fLoop = NULL;
  	fTimer = NULL;
@@ -193,7 +193,7 @@ index 32bea7e..582daf4 100644
  	if (dictionary) {
  		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
  		if (!it) {
-@@ -108,11 +121,11 @@ void
+@@ -109,11 +122,11 @@ void
  SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
      bool capable, bool charging, bool full, bool measured, bool currentValid)
  {
@@ -208,7 +208,7 @@ index 32bea7e..582daf4 100644
  	setExternalConnected(external);
  	setExternalChargeCapable(capable);
  	setIsCharging(charging);
-@@ -126,15 +139,15 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+@@ -127,15 +140,15 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
  	putBool("FullyCharged", full);
  	putBool("AppleRawExternalConnected", external);
  	putNumber("AppleRawCurrentCapacity", capacity);
@@ -229,7 +229,7 @@ index 32bea7e..582daf4 100644
  	putBool("SweetBatteryFallback", !measured);
  	putNumber("SweetBatteryPercent", percent);
  
-@@ -144,7 +157,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+@@ -145,7 +158,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
  		const char *keys[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
  		    kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
  		    kIOBatteryFlagsKey};
@@ -238,7 +238,7 @@ index 32bea7e..582daf4 100644
  		    (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
  		    (charging ? kIOBatteryCharge : 0))};
  		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
-@@ -161,7 +174,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+@@ -162,7 +175,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
  	int mode = measured ? 1 : 0;
  	if (mode != fLastMode) {
  		IOLog("SWEET BATTERY: %s, %u%% %umV external=%d charging=%d\n",
@@ -247,7 +247,7 @@ index 32bea7e..582daf4 100644
  		    percent, mv, external, charging);
  		fLastMode = mode;
  	}
-@@ -259,10 +272,43 @@ SweetBattery::pollTopaz(void)
+@@ -371,10 +384,43 @@ SweetBattery::pollTopaz(void)
  	return true;
  }
  
@@ -292,7 +292,7 @@ index 32bea7e..582daf4 100644
  		return;
  	}
  	if (fReal) {
-@@ -332,7 +378,15 @@ SweetBattery::start(IOService *provider)
+@@ -444,7 +490,15 @@ SweetBattery::start(IOService *provider)
  	}
  	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
  	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));

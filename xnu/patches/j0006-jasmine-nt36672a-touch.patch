@@ -1,4 +1,4 @@
-From 15fd760259e2d6e88f7c5b338c72f196ff7b28e8 Mon Sep 17 00:00:00 2001
+From 1b859c622458e19cdd235f1e5fa36d79cae71733 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 01:07:42 +0200
 Subject: [PATCH] jasmine-0141: NT36672A touch on BLSP1 QUP1 (polled QUP v2
@@ -21,10 +21,10 @@ console instead of topaz's 1080x2400.
  create mode 100644 bsd/dev/sweet_nvt.c
 
 diff --git a/bsd/conf/files b/bsd/conf/files
-index bd3b5d9..acc75a1 100644
+index 06232a1..f7f1f2a 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,7 @@ bsd/dev/sweet_board.c			standard
+@@ -113,6 +113,7 @@ bsd/dev/sweet_board.c			standard
  bsd/dev/sweet_sample.c			standard
  bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_pmic.c			standard

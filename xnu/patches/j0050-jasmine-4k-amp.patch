@@ -1,0 +1,144 @@
+From a9a744aab3b27be09ca78a54df46fbde7640d988 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 16:24:39 +0200
+Subject: [PATCH] jasmine-j0050: 4K pages + AMP on jasmine: 16 KiB user pages
+ for SweetGPU buffers, per-core osmctl check, cluster in the CPU log
+
+---
+ iokit/Kernel/arm/SweetCPU.cpp |  4 ++--
+ iokit/Kernel/arm/SweetGPU.cpp | 14 ++++++++++++--
+ osfmk/arm64/sweet_osm.c       | 35 +++++++++++++++++++++++++++++++----
+ 3 files changed, 45 insertions(+), 8 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 96c557b..55bfa29 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -169,8 +169,8 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 			}
+ 			IOSleep(1);
+ 		}
+-		IOLog("SWEET CPU: cpu=%u mpidr=0x%x came alive; SGI1 OK\n",
+-		    i, topology->cpus[i].phys_id);
++		IOLog("SWEET CPU: cpu=%u mpidr=0x%x cluster %u type %u came alive; SGI1 OK\n",
++		    i, topology->cpus[i].phys_id, topology->cpus[i].cluster_id, (unsigned)topology->cpus[i].cluster_type);
+ 	}
+ 	/* Publish exactly once, after every selected CPU has completed initCPU(). */
+ 	ml_cpu_init_completed();
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 5a547ba..136b550 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -87,6 +87,16 @@ static uint32_t sweet_gpu_wc;
+ } while (0)
+ 
+ #define SWEET_GPU_MAX_BUFFER    (256ull << 20)
++/*
++ * Buffers are mapped into the client: a 4 KiB-page kernel (TOPAZ_4K) still
++ * gives 64-bit tasks 16 KiB pages, so size and align them to that or the
++ * client's mapping shows the memory next to them (as SweetSurface.cpp does).
++ */
++#if defined(TOPAZ_4K)
++#define SWEET_GPU_UPAGE         16384ull
++#else
++#define SWEET_GPU_UPAGE         ((uint64_t)page_size)
++#endif
+ #define SWEET_GPU_MAX_IBS       64
+ #define SWEET_GPU_MAX_JOB_BUFS  1024
+ 
+@@ -146,7 +156,7 @@ SweetGPUBuffer::mapGPU(bool readonly)
+ SweetGPUBuffer *
+ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ {
+-	size = round_page(size);
++	size = (size + SWEET_GPU_UPAGE - 1) & ~(SWEET_GPU_UPAGE - 1);
+ 	if (size == 0 || size > SWEET_GPU_MAX_BUFFER) {
+ 		return NULL;
+ 	}
+@@ -160,7 +170,7 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ 	b->mapCache = sweet_gpu_wc ? kIOMapWriteCombineCache : kIOMapDefaultCache;
+ 	GPULOG("buffer of %llu bytes: memory%s next", size, sweet_gpu_wc ? " (write-combined)" : "");
+ 	IOBufferMemoryDescriptor *bmd = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+-	    kIODirectionInOut | kIOMemoryKernelUserShared | (sweet_gpu_wc ? kIOMapWriteCombineCache : 0), size, page_size);
++	    kIODirectionInOut | kIOMemoryKernelUserShared | (sweet_gpu_wc ? kIOMapWriteCombineCache : 0), size, SWEET_GPU_UPAGE);
+ 	b->md = bmd;
+ 	GPULOG("buffer: memory %p, prepare next", b->md);
+ 	if (b->md == NULL || b->md->prepare() != kIOReturnSuccess) {
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 9e2fd0b..06f0062 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -723,21 +723,34 @@ osm_workload(uint64_t n)                                /* j0015's deterministic
+ 
+ static uint64_t osm_ref;
+ static volatile uint32_t osm_done, osm_errors;
++/* per logical CPU of the last osm_load_all(): us per run, wrong results, the CPU it ran on (-1: never bound) */
++static uint32_t osm_cpu_us[MAX_CPUS], osm_cpu_err[MAX_CPUS];
++static int osm_cpu_ran[MAX_CPUS];
+ 
+ static void
+ osm_load_thread(void *arg, wait_result_t result)
+ {
+ 	(void)result;
+-	processor_t p = cpu_to_processor((int)(uintptr_t)arg);
++	int cpu = (int)(uintptr_t)arg;
++	processor_t p = cpu_to_processor(cpu);
+ 	if (p != PROCESSOR_NULL) {
+ 		thread_bind(p);
+ 		thread_block(THREAD_CONTINUE_NULL);
+ 	}
++	uint32_t errs = 0;
++	uint64_t ns, t0 = mach_absolute_time();
+ 	for (int i = 0; i < 20; i++) {
+ 		if (osm_workload(OSM_WORK) != osm_ref) {
+ 			__atomic_fetch_add(&osm_errors, 1, __ATOMIC_RELAXED);
++			errs++;
+ 		}
+ 	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++	if (cpu < MAX_CPUS) {
++		osm_cpu_us[cpu] = (uint32_t)(ns / 20 / 1000);
++		osm_cpu_err[cpu] = errs;
++		osm_cpu_ran[cpu] = cpu_number();
++	}
+ 	__atomic_fetch_add(&osm_done, 1, __ATOMIC_RELAXED);
+ }
+ 
+@@ -747,6 +760,10 @@ osm_load_all(void)
+ {
+ 	uint32_t n = 0;
+ 	osm_done = osm_errors = 0;
++	for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
++		osm_cpu_us[cpu] = osm_cpu_err[cpu] = 0;
++		osm_cpu_ran[cpu] = -1;
++	}
+ 	for (int cpu = 0; cpu < (int)real_ncpus; cpu++) {
+ 		thread_t t;
+ 		if (kernel_thread_start(osm_load_thread, (void *)(uintptr_t)cpu, &t) == KERN_SUCCESS) {
+@@ -1405,10 +1422,20 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		uint64_t ns, t0 = mach_absolute_time();
+ 		uint64_t r = osm_workload(OSM_WORK);
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		int me = cpu_number();
+ 		uint32_t errs = r == osm_ref ? osm_load_all() : 1;
+-		return snprintf(out, len, "check: %s %llu us (~%llu MHz, boot %llu us), all cores x 20: %u errors\n",
+-		    r == osm_ref ? "OK" : "WRONG", ns / 1000, 1747ull * OSM_WORK_1747_US * 1000 / (ns ? ns : 1),
+-		    osm_ns_boot / 1000, errs);
++		int k = snprintf(out, len, "check: %s %llu us on cpu %d (~%llu MHz, boot %llu us), %u cores x 20: %u errors\n",
++		    r == osm_ref ? "OK" : "WRONG", ns / 1000, me, 1747ull * OSM_WORK_1747_US * 1000 / (ns ? ns : 1),
++		    osm_ns_boot / 1000, real_ncpus, errs);
++		/* each core at once: logical CPU (MPIDR, cluster type), us per run, the CPU it ran on, wrong results */
++		const ml_topology_info_t *topo = ml_get_topology_info();
++		for (unsigned int i = 0; r == osm_ref && i < real_ncpus && i < MAX_CPUS && k < (int)len - 64; i++) {
++			const ml_topology_cpu_t *tc = i < topo->num_cpus ? &topo->cpus[i] : NULL;
++			k += snprintf(out + k, len - k, "  cpu %u mpidr %#x %c: %u us/run on cpu %d, %u errors\n", i,
++			    tc ? tc->phys_id : 0, !tc ? '?' : tc->cluster_type == CLUSTER_TYPE_P ? 'P' :
++			    tc->cluster_type == CLUSTER_TYPE_E ? 'E' : 'S', osm_cpu_us[i], osm_cpu_ran[i], osm_cpu_err[i]);
++		}
++		return k;
+ 	}
+ 	if (!strcmp(c, "tsens")) {
+ 		volatile uint32_t *tm = osm_ptr(0x10ae000);
+-- 
+2.47.3
+

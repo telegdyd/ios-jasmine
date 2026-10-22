@@ -1,4 +1,4 @@
-From c0d5f1cd82446556300e0529d645819c740a19e3 Mon Sep 17 00:00:00 2001
+From 5e897f028bfcbfffbfbd7cdd6069385b66ecd0a7 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 13:48:51 +0200
 Subject: [PATCH] jasmine-j0018: Adreno 512 bring-up, power and command
@@ -19,10 +19,10 @@ locked a CPU up on the first GPU register access.
  create mode 100755 bsd/dev/sweet_gpu.c
 
 diff --git a/bsd/conf/files b/bsd/conf/files
-index acc75a1..0f71085 100644
+index f7f1f2a..f43a900 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,7 @@ bsd/dev/sweet_board.c			standard
+@@ -113,6 +113,7 @@ bsd/dev/sweet_board.c			standard
  bsd/dev/sweet_sample.c			standard
  bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_pmic.c			standard

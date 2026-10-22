@@ -18,6 +18,9 @@ on:
       build:
         description: kernel, ios (the ios/*.c userland tools only), both, or mesa (Mesa freedreno for iOS, mesa/)
         default: kernel
+      topaz_4k:
+        description: 1 = 4 KiB pages + AMP (TOPAZ_4K, all eight cores with mkadt.py --amp), 0 = 16 KiB pages, Gold only
+        default: "0"
   push:
     branches: [main]
     paths:
@@ -26,7 +29,7 @@ on:
 
 
 concurrency:
-  group: xnu-${{ github.ref }}-${{ inputs.build || 'kernel' }}
+  group: xnu-${{ github.ref }}-${{ inputs.build || 'kernel' }}-${{ inputs.topaz_4k || '0' }}
   cancel-in-progress: true
 
 env:
@@ -42,6 +45,8 @@ env:
   CCACHE_SLOPPINESS: time_macros,include_file_mtime,include_file_ctime,file_macro,pch_defines
   CCACHE_MAXSIZE: 3G
   CCACHE_WRAP: ${{ github.workspace }}/ccache-bin
+  # makedefs/MakeInc.def (topaz 0140) reads it: 1 builds SWEET with 4 KiB pages
+  TOPAZ_4K: ${{ inputs.topaz_4k == '1' && '1' || '' }}
 
 jobs:
   # iOS 16 userland programs for jasmine (ios/*.c): Xcode's iPhoneOS SDK,
@@ -173,8 +178,11 @@ jobs:
           xcodebuild -version
           xcrun --find iig
           mkdir -p "$CCACHE_WRAP"
+          # Assembly (.s) includes the generated assym.s, which ccache does not hash for
+          # assembler input: a cached object kept stale structure offsets with TOPAZ_4K +
+          # AMP (topaz tools/build-local.sh). No cache for it.
           for t in clang clang++; do
-            printf '#!/bin/sh\nexec ccache %s "$@"\n' "$(xcrun -find $t)" > "$CCACHE_WRAP/$t"
+            printf '#!/bin/sh\nfor a; do case "$a" in *.s) exec %s "$@";; esac; done\nexec ccache %s "$@"\n' "$(xcrun -find $t)" "$(xcrun -find $t)" > "$CCACHE_WRAP/$t"
             chmod +x "$CCACHE_WRAP/$t"
           done
           cat "$CCACHE_WRAP/clang"
@@ -183,9 +191,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-${{ env.MACHINE_CONFIG }}-${{ env.KERNEL_CONFIG }}-${{ hashFiles('xnu/patches/**', '.github/workflows/xnu.yml') }}
+          key: ccache-${{ env.MACHINE_CONFIG }}-${{ env.KERNEL_CONFIG }}-${{ env.TOPAZ_4K == '1' && '4k-' || '' }}${{ hashFiles('xnu/patches/**', '.github/workflows/xnu.yml') }}
           restore-keys: |
-            ccache-${{ env.MACHINE_CONFIG }}-${{ env.KERNEL_CONFIG }}-
+            ccache-${{ env.MACHINE_CONFIG }}-${{ env.KERNEL_CONFIG }}-${{ env.TOPAZ_4K == '1' && '4k-' || '' }}
 
       - name: Build
         working-directory: dxb

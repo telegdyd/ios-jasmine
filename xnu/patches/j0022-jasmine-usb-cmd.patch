@@ -1,4 +1,4 @@
-From b89341c050b1984dad4a1464e48020b2049df670 Mon Sep 17 00:00:00 2001
+From a2ae491266d67611d2de1cd2a6aa928f4a2d15dc Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Wed, 21 Oct 2026 14:42:40 +0200
 Subject: [PATCH] jasmine-j0022: command port (TCP 5141, "reboot"); USB device
