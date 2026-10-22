@@ -1,0 +1,95 @@
+From eec5a927174dfe4e45b10123c84f180c15f68590 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 04:51:29 +0200
+Subject: [PATCH] jasmine-j0038: a submit maintains its buffers in one pass
+ with those of the jobs completed meanwhile
+
+Round s3-g (j0037): backboardd makes ~57 submits per frame, each a
+whole-cache flush before it runs and another when it is retired. The
+retirement of jobs that completed before a new submit now joins that
+submit's pass, so one flush serves both.
+---
+ iokit/Kernel/arm/SweetGPU.cpp | 25 ++++++++++++++++++-------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index d1e430a..5a547ba 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -277,7 +277,7 @@ class SweetGPUUserClient : public IOUserClient {
+ 	uint32_t surfaceHandle(uint32_t id);
+ 	uint64_t flushBuffers(void);
+ 	SweetGPUBuffer *bufferAt(uint64_t iova, uint64_t len);
+-	void retireJobs(uint32_t completed, bool everything);
++	void retireJobs(uint32_t completed, bool everything, SweetGPUJob *also = NULL);
+ 	uint64_t maintain(SweetGPUBuffer *const *bufs, uint32_t n, bool all);
+ 	void account(uint64_t t0, uint64_t bytes, bool submit, uint32_t nbufs);
+ 
+@@ -443,7 +443,7 @@ sweet_gpu_job_free(SweetGPUJob *j)
+  * everything: the client is closing, drop all without touching caches.
+  */
+ void
+-SweetGPUUserClient::retireJobs(uint32_t completed, bool everything)
++SweetGPUUserClient::retireJobs(uint32_t completed, bool everything, SweetGPUJob *also)
+ {
+ 	SweetGPUJob *done = NULL, **tail = &done;
+ 	IOLockLock(fLock);
+@@ -458,7 +458,7 @@ SweetGPUUserClient::retireJobs(uint32_t completed, bool everything)
+ 		fJobsTail = NULL;
+ 	}
+ 	IOLockUnlock(fLock);
+-	if (done == NULL) {
++	if (done == NULL && also == NULL) {
+ 		return;
+ 	}
+ 	if (!everything) {
+@@ -467,7 +467,10 @@ SweetGPUUserClient::retireJobs(uint32_t completed, bool everything)
+ 		SweetGPUBuffer **uniq = IONew(SweetGPUBuffer *, SWEET_GPU_MAX_JOB_BUFS);
+ 		uint32_t nu = 0;
+ 		bool all = uniq == NULL;        /* no memory for the list: every buffer */
+-		for (SweetGPUJob *j = done; j != NULL; j = j->next) {
++		if (also != NULL) {
++			also->next = done;      /* walked with the done ones, unlinked below */
++		}
++		for (SweetGPUJob *j = also != NULL ? also : done; j != NULL; j = j->next) {
+ 			all = all || j->all;
+ 			for (uint32_t i = 0; uniq != NULL && i < j->n; i++) {
+ 				uint32_t k = 0;
+@@ -483,7 +486,10 @@ SweetGPUUserClient::retireJobs(uint32_t completed, bool everything)
+ 				}
+ 			}
+ 		}
+-		account(t0, maintain(uniq, nu, all), false, 0);
++		if (also != NULL) {
++			also->next = NULL;
++		}
++		account(t0, maintain(uniq, nu, all), also != NULL, also != NULL ? also->n : 0);
+ 		if (uniq != NULL) {
+ 			IODelete(uniq, SweetGPUBuffer *, SWEET_GPU_MAX_JOB_BUFS);
+ 		}
+@@ -671,7 +677,6 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			IODelete(job, SweetGPUJob, 1);
+ 			return kIOReturnNoMemory;
+ 		}
+-		uint64_t t0 = mach_absolute_time();
+ 		for (uint32_t i = 0; i < nbo; i++) {
+ 			uint32_t h;
+ 			memcpy(&h, s + 8 + n * sizeof(struct ib) + 4 * i, sizeof(h));
+@@ -680,7 +685,13 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 				job->bufs[job->n++] = b;
+ 			}
+ 		}
+-		account(t0, maintain(job->bufs, job->n, job->all), true, job->n);
++		/*
++		 * The new job's buffers are cleaned in one pass with the buffers of the jobs
++		 * that have completed meanwhile (their invalidation): ~57 submits per frame
++		 * in backboardd, each a whole-cache flush, plus another one per retired job
++		 * (j0038). A whole-cache flush now serves both.
++		 */
++		retireJobs(sweet_gpu_completed(), false, job);
+ 		uint32_t seqno = 0;
+ 		int err = sweet_gpu_submit(iova, dw, n, &seqno);
+ 		args->scalarOutput[0] = seqno;
+-- 
+2.47.3
+
