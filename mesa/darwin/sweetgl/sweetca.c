@@ -1170,6 +1170,29 @@ trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
            blend, tex);
 }
 
+/*
+ * Merged submits (Mesa darwin: no implicit sync) reach the GPU only when a fence
+ * is needed, at CA's per-frame finish: the GPU then idles while the CPU builds the
+ * frame and the CPU waits while the GPU draws it. Every kick_every draws, a fence
+ * checked without waiting sends what is queued, so both work at once.
+ * SWEETCA_KICK=N (default 32, 0: off).
+ */
+static unsigned kick_every = 32;
+static __thread unsigned kick_draws;
+
+static void
+kick_after_draw(void)
+{
+   if (kick_every == 0 || ++kick_draws < kick_every)
+      return;
+   kick_draws = 0;
+   GLsync s = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+   if (s) {
+      (void)glClientWaitSync(s, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+      glDeleteSync(s);
+   }
+}
+
 static void
 w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
@@ -1179,6 +1202,7 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    trace_draw(c, mode, count);
    glDrawArrays(mode, first, count);
    shadow_drawn(c);
+   kick_after_draw();
    POST(65);
 }
 
@@ -1191,6 +1215,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    trace_draw(c, mode, count);
    glDrawElements(mode, count, type, indices);
    shadow_drawn(c);
+   kick_after_draw();
    POST(67);
 }
 
@@ -2016,6 +2041,9 @@ sweetca_init(void)
 {
    const char *t = getenv("SWEETCA_TRACE");
    trace_on = t && t[0] == '1' ? 1 : t && t[0] == '2' ? 2 : 0;
+   const char *k = getenv("SWEETCA_KICK");
+   if (k)
+      kick_every = (unsigned)strtoul(k, NULL, 10);
    if (!getenv("SWEETCA_NO_TEXFNS"))
       install_texfns();
    Class cls = objc_getClass("EAGLContext");
