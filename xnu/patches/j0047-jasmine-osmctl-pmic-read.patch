@@ -1,0 +1,141 @@
+From 1a24d72929e19f25c6382d06be69ca91d411a8d5 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 22 Oct 2026 14:49:14 +0200
+Subject: [PATCH] jasmine-j0047: osmctl "spmi" / "rails": read the PMIC (APC
+ supplies)
+
+Software DVFS needs the Gold voltage to follow the clock. The SAW is the
+path the hardware uses (CPRh -> SAW -> PMIC), but msm-spm.c sends an 8-bit
+vlevel and the FTS426 that feeds the APC rails takes millivolts (16 bits),
+so the encoding has to be checked on the PMIC itself before any request.
+This adds a read-only path to any PM660 / PM660L register (SPMI observer
+EXT_READL, as the battery code) and two live-tool commands:
+  spmi SID ADDR [N]   raw register read
+  rails               PM660 S1-S3: set point, valid voltage, mode, limit
+---
+ bsd/dev/sweet_spmi.c    | 21 +++++++++++++++++++++
+ bsd/dev/sweet_spmi.h    |  2 ++
+ osfmk/arm64/sweet_osm.c | 41 ++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 63 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 1981490..a4499be 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -83,6 +83,8 @@ sweet_spmi_init(void)
+ 	return 0;
+ }
+ 
++static int sp_read(unsigned sid, unsigned addr, uint8_t *out);
++
+ int
+ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ {
+@@ -93,6 +95,25 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ 	    peripheral != 0x13 && peripheral != 0x48)) {
+ 		return -1;
+ 	}
++	return sp_read(sid, addr, out);
++}
++
++int
++sweet_spmi_read_any(unsigned sid, unsigned addr, uint8_t *out)
++{
++	/* The keys (PPIDs 008, 4c1) keep their own lanes. */
++	unsigned peripheral = addr >> 8;
++	if (!sp_ready || !out || sid > 3 || addr > 0xffffu ||
++	    (sid == 0 && (peripheral == 0x08 || peripheral == 0xc1))) {
++		return -1;
++	}
++	return sp_read(sid, addr, out);
++}
++
++static int
++sp_read(unsigned sid, unsigned addr, uint8_t *out)
++{
++	unsigned peripheral = addr >> 8;
+ 	IOLockLock(sp_lock);
+ 	uint16_t apid = sp_find_apid((sid << 8) | peripheral);
+ 	if (apid == SP_NO_APID || sp_poisoned[apid]) {
+diff --git a/bsd/dev/sweet_spmi.h b/bsd/dev/sweet_spmi.h
+index 45565d1..bfdee29 100644
+--- a/bsd/dev/sweet_spmi.h
++++ b/bsd/dev/sweet_spmi.h
+@@ -8,6 +8,8 @@ extern "C" {
+ int sweet_spmi_init(void);
+ /* Thread context only; 0 success, -1 failure; *out unchanged on failure. */
+ int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
++/* Same, any register of SIDs 0-3 (PM660, PM660L); the osmctl "spmi" command. Still read-only. */
++int sweet_spmi_read_any(unsigned sid, unsigned addr, uint8_t *out);
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 546c611..408b8c9 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1204,6 +1204,8 @@ osm_phase2(void)
+  *   prog           CPRh open loop + Gold SAW AVS + OSM LUT / policy / TZ corners, not enabled
+  *   ramoops [KEY] [SKIP]  lines containing KEY ('_' = space; default "SWEETREF", the stock-
+  *                  kernel reference's, tools/cpuclk/refinit.c) in the ramoops region at 0xa0000000
++ *   spmi SID ADDR [N]  read N PMIC registers (SIDs 0-3, read-only)
++ *   rails          PM660 S1-S3 (the APC supplies): set point, valid voltage, mode, limit
+  * Direct accesses only inside the blocks this work touches (osm_ok()); a read of
+  * an unimplemented offset can still SError (the panic then goes out on the live
+  * log and the phone resets into fastboot). Every write goes through a register
+@@ -1278,6 +1280,8 @@ osm_num(const char *s)                          /* 0x... hex or decimal */
+ 	return v;
+ }
+ 
++extern int sweet_spmi_read_any(unsigned sid, unsigned addr, uint8_t *out);
++
+ static int
+ osm_cmd_one(char *cmd, char *out, size_t len)
+ {
+@@ -1434,7 +1438,42 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		}
+ 		return k + snprintf(out + k, len - k, "(%u matches seen)\n", seen);
+ 	}
+-	return snprintf(out, len, "%s: ? (r w tr tw check tsens state table prog ramoops)\n", c);
++	if (!strcmp(c, "spmi") && argc >= 3) {
++		/* PM660 S1-S3 (SID 1, 0x1400 / 0x1700 / 0x1a00) feed the APC rails, FTS426:
++		 * +0x40/0x41 voltage set point (mV), +0x42/0x43 valid, +0x68/0x69 upper limit */
++		uint32_t n = argc > 3 ? (uint32_t)osm_num(argv[3]) : 1;
++		if (n < 1 || n > 64) {
++			n = 1;
++		}
++		int k = snprintf(out, len, "spmi %llu %#llx:", a, b);
++		for (uint32_t i = 0; i < n && k < (int)len - 8; i++) {
++			uint8_t v = 0;
++			if (sweet_spmi_read_any((unsigned)a, (unsigned)b + i, &v)) {
++				k += snprintf(out + k, len - k, " --");
++			} else {
++				k += snprintf(out + k, len - k, " %02x", v);
++			}
++		}
++		return k + snprintf(out + k, len - k, "\n");
++	}
++	if (!strcmp(c, "rails")) {
++		/* S1-S3 set point / valid voltage / upper limit, mV */
++		int k = 0;
++		for (unsigned r = 0; r < 3; r++) {
++			unsigned base = 0x1400 + 0x300 * r;
++			uint8_t v[10] = { 0 };
++			static const uint8_t off[10] = { 0x04, 0x05, 0x40, 0x41, 0x42, 0x43, 0x45, 0x46, 0x68, 0x69 };
++			int bad = 0;
++			for (int i = 0; i < 10; i++) {
++				bad |= sweet_spmi_read_any(1, base + off[i], &v[i]);
++			}
++			k += snprintf(out + k, len - k, "S%u%s: type %02x/%02x set %u mV valid %u mV mode %02x en %02x limit %u mV\n",
++			    r + 1, bad ? " (read error)" : "", v[0], v[1], v[2] | (v[3] << 8), v[4] | (v[5] << 8), v[6], v[7],
++			    v[8] | (v[9] << 8));
++		}
++		return k;
++	}
++	return snprintf(out, len, "%s: ? (r w tr tw check tsens state table prog ramoops spmi rails)\n", c);
+ }
+ 
+ /* bsd/dev/sweet_usb.c command port: line in, reply out; 0 = not ours (no sweetosm) */
+-- 
+2.47.3
+
