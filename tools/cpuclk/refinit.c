@@ -24,6 +24,9 @@
 #include <unistd.h>
 #include <linux/reboot.h>
 
+#ifndef REF_FIRST_SLEEP
+#define REF_FIRST_SLEEP 5
+#endif
 static int kmsg = -1;
 
 static void
@@ -85,8 +88,8 @@ work(uint64_t n)                        /* the j0015 workload */
 	return h;
 }
 
-static void
-timed(const char *what)
+static uint64_t
+timed(const char *what)                 /* returns the estimated MHz */
 {
 	struct timespec a, b;
 	clock_gettime(CLOCK_MONOTONIC, &a);
@@ -96,6 +99,7 @@ timed(const char *what)
 	/* 14227 us = 1747.2 MHz on XNU (j0015) */
 	rlog("%s: workload %llu us (~%llu MHz), result %016llx\n", what, (unsigned long long)us,
 	    (unsigned long long)(1747ull * 14227 / (us ? us : 1)), (unsigned long long)r);
+	return 1747ull * 14227 / (us ? us : 1);
 }
 
 int
@@ -132,6 +136,7 @@ main(void)
 	snprintf(p, sizeof(p), "%sscaling_governor", cf);
 	put(p, "userspace");
 	static const char *steps[] = { "300000", "1747200", "2208000" };
+	uint64_t mhz[3] = { 1, 1, 1 };
 	for (unsigned i = 0; i < 3; i++) {
 		snprintf(p, sizeof(p), "%sscaling_setspeed", cf);
 		put(p, steps[i]);
@@ -141,12 +146,24 @@ main(void)
 		cat("/sys/kernel/debug/clk/perfcl_clk/measure");
 		char what[32];
 		snprintf(what, sizeof(what), "cpu4 at %s kHz", steps[i]);
-		timed(what);
+		mhz[i] = timed(what);
 	}
 	cat("/proc/cmdline");
-	rlog("done, rebooting into fastboot\n");
+	/*
+	 * The answer also goes out as time, in case nothing of the log survives: the
+	 * reboot waits 10 s per unit of speed ratio 2208-setting : 300-setting (OSM
+	 * scaling: ~7 -> ~70 s; clock not following: ~1 -> ~10 s). The PC measures
+	 * fastboot boot -> fastboot again (about 23 s without the wait).
+	 */
+	uint64_t ratio10 = mhz[0] ? mhz[2] * 10 / mhz[0] : 10;
+	if (ratio10 > 120) {
+		ratio10 = 120;
+	}
+	rlog("done: %llu / %llu / %llu MHz, ratio %llu.%llu; rebooting into fastboot in %llu s\n",
+	    (unsigned long long)mhz[0], (unsigned long long)mhz[1], (unsigned long long)mhz[2],
+	    (unsigned long long)(ratio10 / 10), (unsigned long long)(ratio10 % 10), (unsigned long long)ratio10);
 	sync();
-	sleep(2);
+	sleep((unsigned)ratio10);
 	syscall(SYS_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2, LINUX_REBOOT_CMD_RESTART2, "bootloader");
 	for (;;) {
 		pause();
