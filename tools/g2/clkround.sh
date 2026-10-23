@@ -1,5 +1,5 @@
 #!/bin/bash
-# GPU clock round (j0060): boot xnu/out-jasmine-KTAG like uiround.sh (gpumhz=266 from mkimg.sh), play
+# GPU clock round (j0060): boot xnu/out-jasmine-KTAG like uiround.sh (gpumhz=588 from mkimg.sh; pass gpumhz=266 in ARGS for the old start), play
 # tools/g2/uibench.py's gestures at 266 MHz, then switch with the command port's "gpu clk MHZ" to each
 # level in LEVELS and play them again, all in one boot. Stops at the first level whose switch fails or
 # loses the phone (sweetwdt=20 sends a hang back to fastboot).

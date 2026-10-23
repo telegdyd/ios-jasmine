@@ -862,3 +862,12 @@ symbols from `xnu/out-mesa-kick`, the newest build, plausible but not checked ag
 
 Next by this profile: task 4 (Mesa buffer reuse, Mesa build only) and task 7 (the daemon loops) before the Gold
 clock (task 2).
+
+**GPU default 588 MHz (2026-10-23 05:45).** j0060 had left the images at `gpumhz=266`. `tools/g2/mkimg.sh` now boots
+`gpumhz=588`: the top level at the NOM CX corner, which the bootloader already holds (CX vset 772 mV before and
+after the vote), so 2.2x the clock without a voltage increase. 647 MHz needs NOM_L1 (CX 816-924 mV, more heat on the
+whole CX rail) for 10 % more clock on a GPU that is off the frame's critical path, and the open j60b stall was at a
+647 boot. First boot at the default: the Mesa session's round t4b1 (`logs/netlog-t4b1-ui.txt`): measured 587 MHz,
+self-test PASS, UI rendering. A later `gpumhz=` in the extra boot-args overrides the default. The j0064 DDR round
+(j64a) ran at 266 MHz: its CPU-side result (Mesa CPU per flush flat 1296 -> 1804) holds; the GPU-wait part was
+measured at 266 only. Task 11 (GPU DCVS) replaces the fixed level.

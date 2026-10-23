@@ -24,7 +24,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | --- | --- | --- | --- | --- |
 | 1 | ~~Display scale off the CPU~~ **done 2026-10-23** | 8.8 | `SweetFramebuffer.cpp` (+ `SweetSurface.cpp`) | j0058 |
 | 2 | Gold clock 1747 -> 2208 MHz (voltage, DVFS) | ~7.7 | `sweet_cpuclk.c`, `sweet_osm.c`, PMIC code | j0059 |
-| 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top) | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
+| 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top); **default 588 MHz since 2026-10-23 05:45** (`mkimg.sh`; it had stayed at 266) | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
 | 4 | Make Mesa's buffer caches hit (textures, render targets, rings) | ~17 % of CA's frame thread (j64p) | `mesa/darwin/*` (Mesa build only) | none |
 | 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
