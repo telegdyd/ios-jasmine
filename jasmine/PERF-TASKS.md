@@ -32,9 +32,24 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 8 | Fix the pmap 32-bit page-number shift | ~0 (correctness) | `osfmk/arm/pmap/pmap.c` | j0063 |
 | 9 | ~~DDR clock vote through the RPM~~ **done 2026-10-23: not the brake** (1296 -> 1804 MHz: no gain; below 1296 Mesa slows 20-60 %) | 0 measured | `bsd/dev/sweet_rpm.c`, `bsd/dev/sweet_ddr.c` | j0064 |
 | 10 | Load-based DDR governor, ceiling 1804 MHz, on by default | 1804's CPU gains when busy (latency -14 %, copy faster), power back when idle | `bsd/dev/sweet_ddr.c` (+ `sweet_gpu.c` counters) | j0065 |
+| 11 | GPU power management: hardware clock gating, idle power-down, load-based clock (DCVS) | power and heat (GPU busy only ~8-25 % while the UI moves, j64a) | `bsd/dev/sweet_gpu.c` | j0066 |
+| 12 | CPU idle power: core / cluster power collapse instead of WFI, unused cores off | power and heat at idle | `osfmk/arm64` idle path, new `sweet_idle.c` | j0067 |
+| 13 | Thermal limits: TSENS-driven caps on CPU and GPU clocks | keeps the phone usable under long load | new `sweet_thermal.c` (after 2 and 11) | j0068 |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
-Mesa: give them to one agent, or run them one after the other. Every other pair touches different files.
+Mesa: give them to one agent, or run them one after the other. Tasks 10 and 11 both touch `sweet_gpu.c` (10 only
+reads the bus counters j0064 added): run them one after the other or coordinate. Task 13 needs the clock levels of
+tasks 2 and 11. Every other pair touches different files.
+
+**Power and heat (state 2026-10-23, user: "the phone is hot"; tasks 7 and 10-13).** Nothing scales today: Gold is
+fixed at 1747 MHz on XBL's voltage and Silver at XBL's 1382 MHz (no DVFS, no thermal throttling,
+`HANDOFF-CPUCLK.md`); CPU idle is XNU's WFI only, no PSCI CPU_SUSPEND or cluster power collapse; the GPU is fixed at
+266 MHz, never powered down after bring-up (`gpu_power_off` only on failures) and runs without hardware clock gating
+(`sweet_gpu.c`: "a5xx_hw_init without clock gating"); the DDR is fixed at 1296 MHz. On top, task 7's daemon loops
+keep ~1.9 of the 4 Gold cores at 100 % all the time, probably the largest heat source by itself: do task 7 early.
+These tasks need a power reading: the PM660 fuel gauge's battery current (j0010 reads the FG; add the current if it
+is missing; on battery, unplugged, with the user's OK) or a USB power meter reading from the user; TSENS (readable
+through the command port, osmctl `tsens`) as the temperature side. Record idle and moving power before and after.
 
 ## For every agent
 
@@ -338,3 +353,67 @@ the thresholds through `ddr gov KEY VALUE` keeps the build-test loops down.
 
 **Done when:** on by default; UI per-flush cost equal to fixed 1804; idle rate at the floor; the idle current saving
 measured; 10 minutes without a hang; result in GPU.md.
+
+## 11. GPU power management: hardware clock gating, idle power-down, load-based clock
+
+**Now.** `bsd/dev/sweet_gpu.c` powers the Adreno 512 up once at boot (GFX head switch, GDSCs, clocks, j0018-j0020) and
+never down again except on a failure. `a5xx_hw_init` runs **without hardware clock gating** (HWCG), so every GPU
+block keeps its clock running whether it works or not. The core clock is fixed (`gpumhz=`, 266 MHz by default; j0060
+added every stock level up to this chip's 647 MHz and the live `gpu clk MHZ`). While the UI moves the GPU is busy
+only ~8-25 % of the time (j64a/j0064 bus counters: busy 15-64 Mcyc/s of 266), and idle the rest.
+
+**How** (msm-4.4 kgsl, GPL code may be adapted closely with credit):
+1. **HWCG**: `adreno_a5xx.c` `a5xx_hwcg_set()` with the A512 register table (`a512_hwcg_regs`, line ~1140) and
+   `RBBM_CLOCK_CNTL` as `a5xx_start` sets it. Cheapest, no policy, likely the biggest idle win.
+2. **Idle power-down**: kgsl's idle timer (`kgsl_pwrctrl.c`, `idle_timeout`, ~80 ms by default): when no job is
+   pending, drop to NAP (core clock off) and later SLUMBER (clocks off, GX GDSC off, CX vote down); wake on the next
+   submit (SweetGPU's submit path). Save and restore what a power-down loses (the CP state, SMMU programming, ring
+   pointers: check what `gpu_power_on` sets up and what j0026's VM needs).
+3. **DCVS**: a load governor over the j0060 levels (160-647 MHz) from the busy counter (j0064's
+   `sweet_gpu_bus_counters`), as kgsl's `msm-adreno-tz` does: up fast on busy, down after a few idle samples. The
+   GPU clock barely changes the frame (task 3: 2.2x clock = -15 % GPU wait), so lean low. Note j60b: one 647 MHz boot
+   had backboardd stop after 35 GPU jobs (not reproduced); watch for it.
+
+**Test (as few builds as possible: put 1-3 behind boot-args in one build).** Same uibench rounds with each part
+on/off; Mesa CPU time per flush (`tools/g2/ddrcost.py`) and the GPU wait must not get worse; held draws / flicker
+unchanged; idle power (task list note) and TSENS lower; no GPU fault or hang over 10 minutes.
+
+**Done when:** HWCG on, idle power-down on, DCVS on, all by default; UI cost unchanged within noise; idle and moving
+power measured lower than today; 10 minutes without a GPU fault.
+
+## 12. CPU idle power: power collapse instead of WFI, unused cores off
+
+**Now.** XNU's idle on these cores is WFI (`machine_idle` -> `Idle_context`); nothing calls PSCI CPU_SUSPEND, so cores
+and clusters never power-collapse, and the L2 and the cluster rails stay up. With `cpus=4` the Silver cores' state
+is unknown (`HANDOFF-CPUCLK.md` section 4 lists it as a check: spinning, WFE or PSCI CPU_OFF after the shim hands
+over to Gold). Gold runs at a fixed 1747 MHz on XBL's voltage (task 2 adds DVFS and a governor).
+
+**How.** PSCI CPU_SUSPEND with the stock idle states (stock DT `qcom,lpm-levels`, `~/jasmine-dtb/stock/dtb0.dts` line ~7419:
+core retention, core power collapse, cluster power collapse; msm-4.4 `drivers/cpuidle/lpm-levels.c` and
+`arch/arm64/kernel/psci.c` for the state IDs), chosen by the expected idle time from XNU's timer deadlines. XNU
+already has the hooks Apple uses for deep idle (`cpu_idle` / `ml_arm_sleep`, `CPU_SUSPEND`-like state save in
+`osfmk/arm64/start.S` / `caches_asm.s`): reuse them instead of a new path. Silver: PSCI CPU_OFF for every core XNU
+does not use (`cpus=4`). Check the timers survive power collapse (the generic timer keeps counting; the per-CPU
+timer interrupt may need the broadcast timer or a wake from the GIC).
+
+**Test.** One build with the deepest state behind a boot-arg; idle on the lock screen and uibench rounds; no lost
+timers (clock and animations run on time), no hang over 10 minutes, idle power lower.
+
+**Done when:** core and cluster power collapse used at idle by default; unused cores off; idle power measured lower;
+UI unchanged; 10 minutes without a hang.
+
+## 13. Thermal limits: TSENS-driven caps on CPU and GPU clocks
+
+**Now.** No thermal management: TSENS is readable (osmctl `tsens`, j0045), nothing acts on it. With fixed clocks a
+long load (or task 7's loops while charging) just heats up.
+
+**How.** A kernel thread reading the TSENS sensors (CPU clusters, GPU, the stock DT `thermal-zones` sensor map)
+every ~250 ms and capping the CPU governor's top level (task 2) and the GPU's (task 11) step-wise above a limit, as
+the stock `thermal-engine` / msm-4.4 `msm_thermal` limits do (use the stock trip points from the DT); LMh (hardware
+limits, `HANDOFF-CPUCLK.md` phase 5) as the hardware backstop. `sweetthermal=0` off; command port `thermal` shows
+temperatures and active caps.
+
+**Test.** A long all-core load plus uibench: the caps engage before the stock limits, clocks recover when it cools,
+UI stays usable.
+
+**Done when:** on by default; caps engage and release as above; documented limits.
