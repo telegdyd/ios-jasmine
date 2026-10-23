@@ -1,0 +1,9 @@
+23:52:39 boot 1: clean after 94 s; backboardd: 5 submits backboardd: 29 submits 
+23:54:00 boot 2: clean after 62 s; backboardd: 3 submits backboardd: 55 submits 
+23:55:54 boot 3: clean after 66 s; backboardd: 5 submits backboardd: 29 submits 
+23:57:12 boot 4: clean after 60 s; backboardd: 5 submits backboardd: 25 submits 
+23:58:31 boot 5: clean after 63 s; backboardd: 5 submits backboardd: 241 submits 
+23:59:50 boot 6: clean after 62 s; backboardd: 5 submits backboardd: 32 submits 
+00:01:43 boot 7: clean after 94 s; backboardd: 5 submits backboardd: 32 submits 
+00:03:20 boot 8: clean after 79 s; backboardd: 5 submits backboardd: 56 submits 
+no freeze in 8 boots

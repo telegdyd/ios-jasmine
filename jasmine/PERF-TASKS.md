@@ -570,6 +570,18 @@ effect and a race equally.
   the gesture script stops. Take the census after the play, or between plays.
 - So far at 588/647: 3 freezes (j60b, t4d2, t14a) and 4 clean boots (j60c, t4b1, t14b, t14c).
 
+**Freeze hunt (2026-10-23 23:42 to 00:04).** `tools/g2/freezehunt.sh KTAG TAG ARGS` boots up to N times with no
+gestures. It reboots as soon as backboardd draws (>= 25 submits in one 10-second line); with no draw after 150 s it
+counts the boot as frozen, takes the j0069 census and stops.
+- j69 at 588, normal voltage: **1 freeze in 14 boots**.
+  - t14h boots 1-4 and t14i boots 1-8 were clean, all drawing 60-94 s after boot.
+  - **t14h-5 froze like t4d2** (5 submits, then nothing) and was lost: a stray byte made grep treat the log as
+    binary, so the loop called the boot clean and the next boot's launcher rebooted the phone (the user saw it
+    freeze).
+  - Fixed with `grep -a` and a numeric check.
+- Tally at 588/647: 5 freezes (j60b, t4d2, t14a, t14h-5) in 20 boots at normal voltage, plus t14b (high voltage,
+  clean). The rate is well under the ~50 % first seen.
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock

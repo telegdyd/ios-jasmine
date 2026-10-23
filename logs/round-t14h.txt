@@ -1,0 +1,5 @@
+23:43:38 boot 1: clean after 75 s; backboardd: 5 submits backboardd: 32 submits 
+23:45:03 boot 2: clean after 66 s; backboardd: 5 submits backboardd: 259 submits 
+23:46:47 boot 3: clean after 88 s; backboardd: 5 submits backboardd: 295 submits 
+23:48:15 boot 4: clean after 69 s; backboardd: 5 submits backboardd: 31 submits 
+23:49:31 boot 5: clean after 60 s; Binary file logs/netlog-t14h-5.txt matches 
