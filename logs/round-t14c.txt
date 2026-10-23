@@ -1,0 +1,6 @@
+shim/out/jasmine-t14c.adt: 68816 bytes
+uibench: start 23:34:42
+uibench: command port lost
+logs/netlog-t14c-ui.txt:
+  no moving 100-frame stretch
+  GPU jobs drawing into a surface on the display: 0

@@ -553,6 +553,23 @@ moving frame 117.7 ms, no panic. Two 1-submit windows right before and at the ge
 freeze: the next window had 280 submits. One clean boot does not settle a ~50 % event; it fits a voltage margin
 effect and a race equally.
 
+**j0069 (2026-10-23 23:10-23:30, test branch `t14-census`, CI 40026354719, `xnu/out-jasmine-j69`).**
+- The fix for the census gap above: `prof start SECS PERIOD CENSUS NAME,NAME,all` takes every thread of the tasks,
+  however long it has slept. For each blocked thread it also records the kernel stack, walked from the context the
+  thread switched out with, or the continuation if it has no stack.
+- `tools/g2/prof.py stuck OUT --kernel K --lib L` prints each thread's last census record: kernel stack, user
+  stack, wait event, block hint.
+- Usage: `prof.py fetch OUT --secs 3 --census 200000 --tasks backboardd,SpringBoard,all`.
+- The patch is only on the test branch, not on `jasmine-merge`.
+
+**Round t14c (23:33, one boot, j69 at `gpumhz=588`, normal CX 772 mV).**
+- No freeze: lock screen, then 160-200 submits per window while the gestures ran, and a swipe at 23:37 still drew
+  (GPU jobs 1091 -> 1106).
+- The full census works: all 18 backboardd threads came back with kernel frames (logs/prof-t14c2-stuck.txt).
+- **Tool catch:** `prof.py fetch` during `uibench.py play` makes uibench lose the command port (t14a and t14c), so
+  the gesture script stops. Take the census after the play, or between plays.
+- So far at 588/647: 3 freezes (j60b, t4d2, t14a) and 4 clean boots (j60c, t4b1, t14b, t14c).
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock
