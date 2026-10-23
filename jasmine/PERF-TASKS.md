@@ -444,7 +444,8 @@ UI stays usable.
 bar only. `gpu state` says the GPU is idle with every job completed (36 of 36). Seen in **j60b** (647 MHz,
 `logs/netlog-j60b-clk.txt`, "backboardd stopped after 35 GPU jobs") and **t4d2** (588 MHz, `logs/netlog-t4d2-ui.txt`);
 not in j60c (647) or t4b1 (588), which ran normally. **Never in 54 logged boots at 266 MHz.** Switching to 588 live
-*after* startup ran clean (j60a, `gpu clk 588`). So the clock changes timing, and a race at startup fires.
+*after* startup ran clean (j60a, `gpu clk 588`). The same library as t4d2 at 266 MHz ran clean (t4d3, full gesture
+script), so the freeze follows the clock, not the library. The clock changes timing, and a race at startup fires.
 
 **What was seen in t4d2 (from the task 4 session).** CoreAnimation's display thread stuck in the kernel for minutes
 in a SweetGPU buffer free: Mesa `darwin_bo_close_handle` -> `IOConnectCallScalarMethod` selector 2 -> the user client
