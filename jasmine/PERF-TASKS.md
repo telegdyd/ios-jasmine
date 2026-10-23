@@ -25,7 +25,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 1 | ~~Display scale off the CPU~~ **done 2026-10-23** | 8.8 | `SweetFramebuffer.cpp` (+ `SweetSurface.cpp`) | j0058 |
 | 2 | Gold clock 1747 -> 2208 MHz (voltage, DVFS) | ~7.7 | `sweet_cpuclk.c`, `sweet_osm.c`, PMIC code | j0059 |
 | 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top) | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
-| 4 | Reuse Mesa's batch buffers | ~5.4 | `mesa/darwin/*` (Mesa build only) | none |
+| 4 | Make Mesa's buffer caches hit (textures, render targets, rings) | ~17 % of CA's frame thread (j64p) | `mesa/darwin/*` (Mesa build only) | none |
 | 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
 | 7 | Stop the XPC retry loops (~2 Gold cores) | CA's thread waits 45 ms/s for a CPU (~20 % on top of its 214 ms/s, j64p); needed for 8 cores and battery | userland services, maybe kernel | j0062 |
@@ -162,18 +162,54 @@ The same RPM client can later raise the RAM clock.
 **Done when:** the GPU runs at its top stock level, measured with the CP cycle counter as in j0020; the GPU wait
 in the libsweetca `prof:` lines drops; there are no hangs over a 10-minute `uiround.sh` series.
 
-## 4. Reuse Mesa's batch buffers (saves ~5.4 ms; Mesa build only)
+## 4. Make Mesa's buffer caches hit (~17 % of CA's frame thread; Mesa build only)
 
-**Now.** The profile shows a new set of GPU buffers for every batch (one per render target): 2.4 ms per frame in
-Mesa's allocation path, plus 3.0 ms in the kernel creating, mapping (`IOConnectMapMemory`) and freeing them. Mesa
-normally recycles these through its BO cache and ring pool (`fd_bo_cache`, `fd_pipe_sp_ringpool_*`). Find out why
-the darwin backend (`mesa/darwin/darwin_bo.c`, `darwin_device.c`) misses that path: cache flags, `madvise`
-returning "willneed", or the IOKit mapping freed in `darwin_bo_destroy`. Make freed buffers go back to the cache,
-mapped, and come out of it again.
+**Measured 2026-10-23 05:12 (profile j64p, `logs/prof-j64p-report.txt`, CA's display thread, 2137 on-CPU samples).**
+The cost is the buffer *cache misses*, not a missing cache. Share of the thread's CPU time:
+- `darwin_bo_new` **11.6 %** (a cache miss, then SweetGPU's create: `SweetGPUBuffer::create` 6.2 % self, the GPU
+  page tables `pt_l3` and cache flushes in `sweet_gpu_vm_map`, an `IOMemoryDescriptor`, `vm_map_enter`);
+- `fd_bo_map` -> `darwin_bo_map` **3.6 %** (`IOConnectMapMemory64` for every new buffer);
+- frees **2.5 %** (`darwin_bo_close_handle` 2.0, `darwin_bo_destroy` 0.6).
 
-**Done when:** kernel `SweetGPU` buffer create/free calls per frame are near 0 while moving (add a counter if
-needed); the profile's allocation and ioctl time drops; frames are ~5 ms shorter; no leak over a 10-minute run
-(SweetGPU per-client buffer count stays flat).
+Where the new buffers come from (callers of `bo_new`):
+- **6.7 %** `fd_resource_create_with_modifiers` -> `realloc_bo`: textures and render targets created again and again,
+  mostly CA's offscreen surfaces for the backdrop blur (`CA::OGL::ImagingNode::retain_surface` 18.8 % inclusive);
+- **5.3 %** `fd_bo_new_ring` (the ring cache) from `fd_submit_sp_new_ringbuffer`, via `fd_batch_create` 3.4 and
+  `subpass_create` 1.9: the per-batch command rings (non-streaming, `SUBALLOC_SIZE` 32 KiB).
+
+The caches are initialized and consulted (`fd_bo_cache_alloc` is reached, 0.3 %), but they miss. The freed buffers
+are *expired*: almost every free goes `fd_bo_del` -> `fd_bo_cache_free` -> `fd_bo_cache_cleanup` ->
+`fd_bo_del_list_nocache` -> `close_handle`, i.e. buffers sit in the cache for over a second unused while new ones
+are created. Both caches (bo_cache and ring_cache) fail the same way, so look first at what they share,
+`find_in_bucket()` in `src/freedreno/drm/freedreno_bo_cache.c`:
+1. **`fd_bo_state(entry) != FD_BO_STATE_IDLE`** -> it stops at the first busy entry. A buffer counts as idle only once
+   `pipe->control->fence` (written by the GPU's `CACHE_FLUSH_TS` from `fd_pipe_emit_fence`) has passed the buffer's
+   `ufence` (`cleanup_fences()` in `freedreno_bo.c`). **First check: does `pipe->control->fence` advance at all
+   on Darwin?** The control buffer comes from SweetGPU like any other (`fd_bo_new(... _FD_BO_NOSYNC ...)` in
+   `freedreno_pipe.c`); if the GPU's write never lands there, or the CPU reads a stale copy, every fenced buffer is
+   busy forever, which matches this profile exactly (and it would also send every `fd_pipe_wait` to the kernel
+   instead of returning early, `freedreno_pipe.c` line ~178). Log `pipe->control->fence` against
+   `pipe->last_fence` in libsweetca's `prof:` line.
+2. `entry->alloc_flags == flags`: a flags mismatch also skips an idle entry.
+3. Only if those are fine: why CA's offscreen render targets are destroyed and created again at all (sweetgl /
+   EAGL side, `mesa/darwin/sweetgl/`).
+
+Set `FD_BO_CACHE_STATS 1` (top of `freedreno_bo_cache.c`) in the same Mesa build: it logs hits, misses and expired per
+bucket every 32 frees and settles 1 and 2 in one round. Put both diagnostics into **one** Mesa build, then the fix
+into the next.
+
+Tips:
+- Symbols: `tools/g2/prof.py report` needs the libsweetca.dylib that is on the phone; j64p used
+  `xnu/out-mesa-kick` (the newest build, plausible but not checked). Fetch the phone's copy first:
+  `MSYS_NO_PATHCONV=1 python tools/sweet-fs.py get /usr/local/bin/libsweetca.dylib <local file>`.
+- Measure with Mesa's CPU time per flush (`tools/g2/ddrcost.py LOG` on a uiround log: GL - wait from libsweetca's
+  `prof:` lines). The 100-flush "ms each" figure mostly measures the idle gaps of the gesture script and is too noisy.
+  j64a baseline at DDR 1296: 18.6-20.0 ms Mesa CPU per flush.
+- `tools/g2/profsplit.py` finds no frames since j0058 (it counts runs inside `AppleCLCD::present`).
+
+**Done when:** SweetGPU buffer creates and frees per frame are near 0 while the UI moves (add a counter if needed);
+the profile's `darwin_bo_new` / `darwin_bo_map` / `close_handle` share drops from ~17 % to a few %; Mesa's CPU time
+per flush drops against a same-day baseline; no leak over a 10-minute run (SweetGPU per-client buffer count flat).
 
 ## 5. Cut Mesa's per-draw CPU cost (part of 14.6 ms)
 
