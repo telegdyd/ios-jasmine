@@ -1,4 +1,4 @@
-From 75bc127ed3aa7d0fe48293652954156cb0c62802 Mon Sep 17 00:00:00 2001
+From 8f2c107a5c91557040fac235d9afd3123ec320ad Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Fri, 23 Oct 2026 23:11:21 +0200
 Subject: [PATCH] jasmine-j0069: prof census of every thread of the named tasks
@@ -7,11 +7,11 @@ Subject: [PATCH] jasmine-j0069: prof census of every thread of the named tasks
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- osfmk/arm64/sweet_prof.c | 58 +++++++++++++++++++++++++++++++++++-----
- 1 file changed, 51 insertions(+), 7 deletions(-)
+ osfmk/arm64/sweet_prof.c | 57 +++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 50 insertions(+), 7 deletions(-)
 
 diff --git a/osfmk/arm64/sweet_prof.c b/osfmk/arm64/sweet_prof.c
-index f7c8a18..7050d5e 100644
+index f7c8a18..12138df 100644
 --- a/osfmk/arm64/sweet_prof.c
 +++ b/osfmk/arm64/sweet_prof.c
 @@ -16,13 +16,16 @@
@@ -32,15 +32,7 @@ index f7c8a18..7050d5e 100644
   *   prof stat                 running, seconds, samples, bytes, dropped
   *   prof get OFF              hex of the sample buffer from byte OFF (up to 48 KiB)
   *   prof meta OFF             the meta text from byte OFF (up to 96 KiB)
-@@ -39,6 +42,7 @@
- #include <kern/sched_prim.h>
- #include <kern/timer_call.h>
- #include <kern/backtrace.h>
-+#include <kern/thread_kernel_state.h>
- #include <kern/locks.h>
- #include <vm/vm_kern.h>
- #include <vm/vm_map.h>
-@@ -94,6 +98,7 @@ static uint64_t sp_epoch, sp_end, sp_period, sp_census_period, sp_period_us, sp_
+@@ -94,6 +97,7 @@ static uint64_t sp_epoch, sp_end, sp_period, sp_census_period, sp_period_us, sp_
  static char sp_names[SP_TASKS][32];
  static uint32_t sp_ntasks;
  static int sp_census_running;
@@ -48,7 +40,7 @@ index f7c8a18..7050d5e 100644
  
  static void
  sp_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const uintptr_t *uf, unsigned nu)
-@@ -246,6 +251,36 @@ sp_cache_find(uint64_t tid)
+@@ -246,6 +250,36 @@ sp_cache_find(uint64_t tid)
  	return NULL;
  }
  
@@ -85,7 +77,7 @@ index f7c8a18..7050d5e 100644
  static void
  sp_census_task(task_t task, uint64_t now)
  {
-@@ -262,7 +297,7 @@ sp_census_task(task_t task, uint64_t now)
+@@ -262,7 +296,7 @@ sp_census_task(task_t task, uint64_t now)
  		if (!waiting && (!(state & TH_RUN) || th->runq == PROCESSOR_NULL)) {
  			continue;               /* on a CPU (the running timer has it) or terminating */
  		}
@@ -94,7 +86,7 @@ index f7c8a18..7050d5e 100644
  			continue;               /* idle for a while: not part of a frame */
  		}
  		struct arm_saved_state *us = get_user_regs(th);
-@@ -294,14 +329,16 @@ sp_census_task(task_t task, uint64_t now)
+@@ -294,14 +328,16 @@ sp_census_task(task_t task, uint64_t now)
  				memcpy(c->uf, uf, sizeof(uf[0]) * nu);
  			}
  		}
@@ -113,7 +105,7 @@ index f7c8a18..7050d5e 100644
  	}
  	task_unlock(task);
  }
-@@ -461,6 +498,7 @@ sweet_prof_cmd(const char *line)
+@@ -461,6 +497,7 @@ sweet_prof_cmd(const char *line)
  		secs = secs ? (secs > 60 ? 60 : secs) : 10;
  		period = period ? (period < 100 ? 100 : period) : 1000;
  		sp_ntasks = 0;
@@ -121,7 +113,7 @@ index f7c8a18..7050d5e 100644
  		while (*a == ' ') {
  			a++;
  		}
-@@ -469,7 +507,12 @@ sweet_prof_cmd(const char *line)
+@@ -469,7 +506,12 @@ sweet_prof_cmd(const char *line)
  			while (*a && *a != ',' && *a != ' ' && k < sizeof(sp_names[0]) - 1) {
  				sp_names[sp_ntasks][k++] = *a++;
  			}
@@ -135,7 +127,7 @@ index f7c8a18..7050d5e 100644
  			while (*a == ',' || *a == ' ') {
  				a++;
  			}
-@@ -512,8 +555,9 @@ sweet_prof_cmd(const char *line)
+@@ -512,8 +554,9 @@ sweet_prof_cmd(const char *line)
  			return sp_reply;
  		}
  		thread_deallocate(t);
