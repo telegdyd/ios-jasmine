@@ -1,0 +1,2525 @@
+kslide 0x0
+period_us 1000
+census_us 200000
+samples 620
+bytes 84928
+dropped 0
+task 0 kernel_task
+thread 101 0 VM_pageout_scan
+thread 102 0 idle #0
+thread 103 0 sched_maintenance_thread
+thread 104 0 
+thread 105 0 daemon.deferred-deallocation
+thread 106 0 daemon.thread-stack
+thread 107 0 daemon.thread-exception
+thread 108 0 daemon.thread-backtrace
+thread 109 0 thread_call_daemon
+thread 110 0 IOServiceTerminateThread
+thread 111 0 daemon.core-analytics-events
+thread 112 0 VM_reclaim
+thread 113 0 VM_pageout_garbage_collect
+thread 114 0 SweetHIDButtons
+thread 116 0 thread call high #1
+thread 118 0 IOPMrootDomain
+thread 152 0 idle #1
+thread 154 0 idle #2
+thread 156 0 idle #3
+thread 158 0 AppleCLCD
+thread 159 0 VM_io_reprioritize_thread
+thread 160 0 
+thread 161 0 
+thread 162 0 
+thread 163 0 
+thread 167 0 
+thread 171 0 SweetBattery
+thread 173 0 
+thread 174 0 
+thread 176 0 
+thread 177 0 
+thread 178 0 
+thread 179 0 
+thread 180 0 
+thread 181 0 
+thread 182 0 
+thread 183 0 
+thread 184 0 
+thread 185 0 
+thread 186 0 
+thread 187 0 
+thread 188 0 VM_memorystatus_1
+thread 189 0 VM_memorystatus_2
+thread 190 0 VM_memorystatus_3
+thread 191 0 thread call kernel-high #1
+thread 193 0 dlil_input_gif0
+thread 194 0 CFIL_STATS_REPORT
+thread 195 0 dlil_input_stf0
+thread 196 0 
+thread 197 0 
+thread 198 0 
+thread 200 0 dlil_input_ue0
+thread 201 0 
+thread 202 0 
+thread 203 0 
+thread 204 0 
+thread 207 0 
+thread 208 0 VM_pageout_external_iothread
+thread 209 0 VM_pressure
+thread 210 0 VM_object_reaper_thread
+thread 211 0 
+thread 212 0 VM_compressor
+thread 213 0 VM_compressor
+thread 214 0 VM_swapout
+thread 215 0 VM_swapfile_create
+thread 216 0 VM_swapfile_gc
+thread 219 0 thread call kernel #1
+thread 430 0 thread call qos-ui #1
+thread 432 0 thread call user #1
+thread 562 0 dlil_input_utun0
+thread 563 0 ifnet_start_utun0
+thread 1230 0 dlil_input_utun1
+thread 1231 0 ifnet_start_utun1
+thread 1245 0 dlil_input_utun2
+thread 1246 0 skywalk_doorbell_utun2_tx
+thread 1247 0 skywalk_fsw_reap_utun2
+thread 1248 0 skywalk_utun2_rx_0
+thread 2198 0 
+task 1 launchd
+slide 1 0x11eec000 mh 0x100d28000
+thread 223 1 
+thread 2170 1 
+thread 2200 1 
+thread 2203 1 
+thread 2207 1 user/501/com.apple.bluetoothd throttled after exit()
+map 1 0x100d28000 0x68000 0x0 5 /sbin/launchd
+map 1 0x100d98000 0x4000 0x0 3 /sbin/launchd
+map 1 0x100d9c000 0x14000 0x74000 1 /sbin/launchd
+map 1 0x100f20000 0x80000 0x0 5 /usr/lib/dyld
+map 1 0x100fa0000 0x8000 0x0 1 /usr/lib/dyld
+map 1 0x100fa8000 0x4000 0x0 3 /usr/lib/dyld
+map 1 0x100fac000 0x4000 0x0 3 /usr/lib/dyld
+map 1 0x100fb0000 0x54000 0x90000 1 /usr/lib/dyld
+task 26 SpringBoard
+slide 26 0x11eec000 mh 0x100ba4000
+thread 251 26 
+thread 509 26 
+thread 515 26 
+wait 251 26 state 1 x0 0x1000002 x1 0x1f3c5e4b8 x2 0x1d02 x3 0x0 word 0x1d02 ts2 -> thread 509 pid 26
+wait 509 26 state 41 x0 0x16f2dd360 x1 0x40700420e x2 0x0 x3 0xa203 word ?0x0 ts4 ts5 -> thread 1477 pid 98
+wait 515 26 state 1 x0 0x4 x1 0x0 x2 0x0 x3 0x0 word ?0x0
+map 26 0x100ba4000 0x4000 0x0 5 /System/Library/CoreServices/SpringBoard.app/SpringBoard
+map 26 0x100bac000 0x14000 0x8000 1 /System/Library/CoreServices/SpringBoard.app/SpringBoard
+map 26 0x100c80000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 26 0x100c94000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 26 0x1029a4000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 26 0x1029b4000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 26 0x1029c0000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 26 0x1029e8000 0x8000 0x0 3 /private/var/mobile/Library/FrontBoard/applicationState.db-shm
+task 23 UserEventAgent
+slide 23 0x11eec000 mh 0x100bd4000
+thread 315 23 
+thread 609 23 
+thread 622 23 
+thread 623 23 com.apple.CFSocket.private
+thread 783 23 
+thread 2052 23 
+map 23 0x100bd4000 0x4000 0x0 5 /usr/libexec/UserEventAgent
+map 23 0x100bdc000 0x4000 0x0 3 /usr/libexec/UserEventAgent
+map 23 0x100be0000 0xc000 0xc000 1 /usr/libexec/UserEventAgent
+map 23 0x100ca4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 23 0x100cc4000 0x4000 0x0 5 /System/Library/UserEventPlugins/ADEventListenerPlugin.plugin/ADEventListenerPlugin
+map 23 0x100cc8000 0x4000 0x0 3 /System/Library/UserEventPlugins/ADEventListenerPlugin.plugin/ADEventListenerPlugin
+map 23 0x100ccc000 0x8000 0x8000 1 /System/Library/UserEventPlugins/ADEventListenerPlugin.plugin/ADEventListenerPlugin
+map 23 0x100cd4000 0x4000 0x0 5 /System/Library/UserEventPlugins/BonjourEvents.plugin/BonjourEvents
+map 23 0x100cd8000 0x4000 0x0 3 /System/Library/UserEventPlugins/BonjourEvents.plugin/BonjourEvents
+map 23 0x100cdc000 0x8000 0x8000 1 /System/Library/UserEventPlugins/BonjourEvents.plugin/BonjourEvents
+map 23 0x100ce8000 0x8000 0x0 5 /System/Library/UserEventPlugins/AHTUserEventAgent.plugin/AHTUserEventAgent
+map 23 0x100cf0000 0x4000 0x0 3 /System/Library/UserEventPlugins/AHTUserEventAgent.plugin/AHTUserEventAgent
+map 23 0x100cf4000 0x8000 0xc000 1 /System/Library/UserEventPlugins/AHTUserEventAgent.plugin/AHTUserEventAgent
+map 23 0x101d00000 0x4000 0x0 5 /System/Library/UserEventPlugins/GreenTeaUserEventAgent.plugin/GreenTeaUserEventAgent
+map 23 0x101d04000 0x4000 0x0 3 /System/Library/UserEventPlugins/GreenTeaUserEventAgent.plugin/GreenTeaUserEventAgent
+map 23 0x101d08000 0x8000 0x8000 1 /System/Library/UserEventPlugins/GreenTeaUserEventAgent.plugin/GreenTeaUserEventAgent
+map 23 0x101d10000 0x4000 0x0 5 /System/Library/UserEventPlugins/ManagedConfigurationUEA.plugin/ManagedConfigurationUEA
+map 23 0x101d14000 0x4000 0x0 3 /System/Library/UserEventPlugins/ManagedConfigurationUEA.plugin/ManagedConfigurationUEA
+map 23 0x101d18000 0x8000 0x8000 1 /System/Library/UserEventPlugins/ManagedConfigurationUEA.plugin/ManagedConfigurationUEA
+map 23 0x101d28000 0x4000 0x0 5 /System/Library/UserEventPlugins/MemoryMonitor.plugin/MemoryMonitor
+map 23 0x101d2c000 0x4000 0x0 3 /System/Library/UserEventPlugins/MemoryMonitor.plugin/MemoryMonitor
+map 23 0x101d30000 0x8000 0x8000 1 /System/Library/UserEventPlugins/MemoryMonitor.plugin/MemoryMonitor
+map 23 0x101d38000 0x4000 0x0 5 /System/Library/UserEventPlugins/MobileGestaltEvents.plugin/MobileGestaltEvents
+map 23 0x101d3c000 0x4000 0x0 3 /System/Library/UserEventPlugins/MobileGestaltEvents.plugin/MobileGestaltEvents
+map 23 0x101d40000 0x8000 0x8000 1 /System/Library/UserEventPlugins/MobileGestaltEvents.plugin/MobileGestaltEvents
+map 23 0x101d4c000 0x8000 0x0 5 /System/Library/UserEventPlugins/MobileBackupUEA.plugin/MobileBackupUEA
+map 23 0x101d54000 0x4000 0x0 3 /System/Library/UserEventPlugins/MobileBackupUEA.plugin/MobileBackupUEA
+map 23 0x101d58000 0x8000 0xc000 1 /System/Library/UserEventPlugins/MobileBackupUEA.plugin/MobileBackupUEA
+map 23 0x101d60000 0x4000 0x0 5 /System/Library/UserEventPlugins/MobileKeyBagLockState.plugin/MobileKeyBagLockState
+map 23 0x101d64000 0x4000 0x0 3 /System/Library/UserEventPlugins/MobileKeyBagLockState.plugin/MobileKeyBagLockState
+map 23 0x101d68000 0x8000 0x8000 1 /System/Library/UserEventPlugins/MobileKeyBagLockState.plugin/MobileKeyBagLockState
+map 23 0x101d70000 0x4000 0x0 5 /System/Library/UserEventPlugins/USBEthernetSharing.plugin/USBEthernetSharing
+map 23 0x101d74000 0x4000 0x0 3 /System/Library/UserEventPlugins/USBEthernetSharing.plugin/USBEthernetSharing
+map 23 0x101d78000 0x8000 0x8000 1 /System/Library/UserEventPlugins/USBEthernetSharing.plugin/USBEthernetSharing
+map 23 0x101d8c000 0x10000 0x0 5 /System/Library/UserEventPlugins/PerfPowerServicesEventListenerPlugin.plugin/PerfPowerServicesEventListenerPlugin
+map 23 0x101d9c000 0x4000 0x0 3 /System/Library/UserEventPlugins/PerfPowerServicesEventListenerPlugin.plugin/PerfPowerServicesEventListenerPlugin
+map 23 0x101da0000 0x8000 0x14000 1 /System/Library/UserEventPlugins/PerfPowerServicesEventListenerPlugin.plugin/PerfPowerServicesEventListenerPlugin
+map 23 0x101db8000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.AppleKeyStoreEvents.plugin/com.apple.AppleKeyStoreEvents
+map 23 0x101dbc000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.AppleKeyStoreEvents.plugin/com.apple.AppleKeyStoreEvents
+map 23 0x101dc0000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.AppleKeyStoreEvents.plugin/com.apple.AppleKeyStoreEvents
+map 23 0x101dc8000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.ExternalAccessory.matching.plugin/com.apple.ExternalAccessory.matching
+map 23 0x101dcc000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.ExternalAccessory.matching.plugin/com.apple.ExternalAccessory.matching
+map 23 0x101dd0000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.ExternalAccessory.matching.plugin/com.apple.ExternalAccessory.matching
+map 23 0x101de0000 0xc000 0x0 5 /System/Library/UserEventPlugins/com.apple.BackgroundTaskAgentPlugin.plugin/com.apple.BackgroundTaskAgentPlugin
+map 23 0x101dec000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.BackgroundTaskAgentPlugin.plugin/com.apple.BackgroundTaskAgentPlugin
+map 23 0x101df0000 0x8000 0x10000 1 /System/Library/UserEventPlugins/com.apple.BackgroundTaskAgentPlugin.plugin/com.apple.BackgroundTaskAgentPlugin
+map 23 0x101df8000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.alarm.plugin/com.apple.alarm
+map 23 0x101dfc000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.alarm.plugin/com.apple.alarm
+map 23 0x101e00000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.alarm.plugin/com.apple.alarm
+map 23 0x101e08000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.bonjour.plugin/com.apple.bonjour
+map 23 0x101e0c000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.bonjour.plugin/com.apple.bonjour
+map 23 0x101e10000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.bonjour.plugin/com.apple.bonjour
+map 23 0x101e18000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.cfnotification.plugin/com.apple.cfnotification
+map 23 0x101e1c000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.cfnotification.plugin/com.apple.cfnotification
+map 23 0x101e20000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.cfnotification.plugin/com.apple.cfnotification
+map 23 0x101e28000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.dispatch.vfs.plugin/com.apple.dispatch.vfs
+map 23 0x101e2c000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.dispatch.vfs.plugin/com.apple.dispatch.vfs
+map 23 0x101e30000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.dispatch.vfs.plugin/com.apple.dispatch.vfs
+map 23 0x101e38000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.iokit.matching.plugin/com.apple.iokit.matching
+map 23 0x101e3c000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.iokit.matching.plugin/com.apple.iokit.matching
+map 23 0x101e40000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.iokit.matching.plugin/com.apple.iokit.matching
+map 23 0x101e4c000 0x10000 0x0 5 /System/Library/UserEventPlugins/com.apple.cts.plugin/com.apple.cts
+map 23 0x101e5c000 0x8000 0x0 3 /System/Library/UserEventPlugins/com.apple.cts.plugin/com.apple.cts
+map 23 0x101e64000 0xc000 0x18000 1 /System/Library/UserEventPlugins/com.apple.cts.plugin/com.apple.cts
+map 23 0x101e70000 0x8000 0x0 5 /System/Library/UserEventPlugins/com.apple.fsevents.matching.plugin/com.apple.fsevents.matching
+map 23 0x101e78000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.fsevents.matching.plugin/com.apple.fsevents.matching
+map 23 0x101e7c000 0x8000 0xc000 1 /System/Library/UserEventPlugins/com.apple.fsevents.matching.plugin/com.apple.fsevents.matching
+map 23 0x101e84000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.launchd.helper.plugin/com.apple.launchd.helper
+map 23 0x101e88000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.launchd.helper.plugin/com.apple.launchd.helper
+map 23 0x101e8c000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.launchd.helper.plugin/com.apple.launchd.helper
+map 23 0x101e9c000 0x48000 0x0 5 /System/Library/UserEventPlugins/com.apple.accessoryd.matching.plugin/com.apple.accessoryd.matching
+map 23 0x101ee4000 0xc000 0x0 3 /System/Library/UserEventPlugins/com.apple.accessoryd.matching.plugin/com.apple.accessoryd.matching
+map 23 0x101ef0000 0x50000 0x54000 1 /System/Library/UserEventPlugins/com.apple.accessoryd.matching.plugin/com.apple.accessoryd.matching
+map 23 0x101f40000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.nsurlsessiond.plugin/com.apple.nsurlsessiond
+map 23 0x101f44000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.nsurlsessiond.plugin/com.apple.nsurlsessiond
+map 23 0x101f48000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.nsurlsessiond.plugin/com.apple.nsurlsessiond
+map 23 0x101f50000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.rapport.events.plugin/com.apple.rapport.events
+map 23 0x101f54000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.rapport.events.plugin/com.apple.rapport.events
+map 23 0x101f58000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.rapport.events.plugin/com.apple.rapport.events
+map 23 0x101f64000 0x14000 0x0 5 /System/Library/UserEventPlugins/com.apple.netsvcproxy.plugin/com.apple.netsvcproxy
+map 23 0x101f78000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.netsvcproxy.plugin/com.apple.netsvcproxy
+map 23 0x101f7c000 0xc000 0x18000 1 /System/Library/UserEventPlugins/com.apple.netsvcproxy.plugin/com.apple.netsvcproxy
+map 23 0x101f88000 0x8000 0x0 5 /System/Library/UserEventPlugins/com.apple.networkextension.plugin/com.apple.networkextension
+map 23 0x101f90000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.networkextension.plugin/com.apple.networkextension
+map 23 0x101f94000 0x8000 0xc000 1 /System/Library/UserEventPlugins/com.apple.networkextension.plugin/com.apple.networkextension
+map 23 0x101f9c000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.systemconfiguration.plugin/com.apple.systemconfiguration
+map 23 0x101fa0000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.systemconfiguration.plugin/com.apple.systemconfiguration
+map 23 0x101fa4000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.systemconfiguration.plugin/com.apple.systemconfiguration
+map 23 0x101fb4000 0xc000 0x0 5 /System/Library/UserEventPlugins/com.apple.spd.plugin/com.apple.spd
+map 23 0x101fc0000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.spd.plugin/com.apple.spd
+map 23 0x101fc4000 0x8000 0x10000 1 /System/Library/UserEventPlugins/com.apple.spd.plugin/com.apple.spd
+map 23 0x101fcc000 0x4000 0x0 5 /System/Library/UserEventPlugins/com.apple.tailspin.plugin/com.apple.tailspin
+map 23 0x101fd0000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.tailspin.plugin/com.apple.tailspin
+map 23 0x101fd4000 0x8000 0x8000 1 /System/Library/UserEventPlugins/com.apple.tailspin.plugin/com.apple.tailspin
+map 23 0x101fdc000 0x4000 0x0 5 /System/Library/UserEventPlugins/locationd.events.plugin/locationd.events
+map 23 0x101fe0000 0x4000 0x0 3 /System/Library/UserEventPlugins/locationd.events.plugin/locationd.events
+map 23 0x101fe4000 0x8000 0x8000 1 /System/Library/UserEventPlugins/locationd.events.plugin/locationd.events
+map 23 0x101fec000 0x4000 0x0 5 /System/Library/UserEventPlugins/routined.events.plugin/routined.events
+map 23 0x101ff0000 0x4000 0x0 3 /System/Library/UserEventPlugins/routined.events.plugin/routined.events
+map 23 0x101ff4000 0x8000 0x8000 1 /System/Library/UserEventPlugins/routined.events.plugin/routined.events
+map 23 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 23 0x10550c000 0x8000 0x0 5 /System/Library/UserEventPlugins/com.apple.telemetry.plugin/com.apple.telemetry
+map 23 0x105514000 0x4000 0x0 3 /System/Library/UserEventPlugins/com.apple.telemetry.plugin/com.apple.telemetry
+map 23 0x105518000 0x8000 0xc000 1 /System/Library/UserEventPlugins/com.apple.telemetry.plugin/com.apple.telemetry
+map 23 0x105520000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 24 logd
+slide 24 0x11eec000 mh 0x1008fc000
+thread 400 24 
+thread 2157 24 
+thread 2176 24 
+thread 2206 24 
+map 24 0x1008fc000 0x28000 0x0 5 /usr/libexec/logd
+map 24 0x100928000 0x4000 0x0 3 /usr/libexec/logd
+map 24 0x100930000 0x10000 0x30000 1 /usr/libexec/logd
+map 24 0x100f40000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 35 configd
+slide 35 0x11eec000 mh 0x100628000
+thread 317 35 
+thread 526 35 InterfaceNamer thread
+thread 626 35 
+thread 627 35 
+thread 650 35 
+thread 1991 35 
+map 35 0x100628000 0x68000 0x0 5 /usr/libexec/configd
+map 35 0x100698000 0x4000 0x0 3 /usr/libexec/configd
+map 35 0x10069c000 0x18000 0x74000 1 /usr/libexec/configd
+map 35 0x10076c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 35 0x100794000 0x8000 0x0 5 /System/Library/SystemConfiguration/EAPOLController.bundle/EAPOLController
+map 35 0x10079c000 0x4000 0x0 1 /System/Library/SystemConfiguration/EAPOLController.bundle/EAPOLController
+map 35 0x1007a0000 0x4000 0x0 3 /System/Library/SystemConfiguration/EAPOLController.bundle/EAPOLController
+map 35 0x1007a4000 0x8000 0x10000 1 /System/Library/SystemConfiguration/EAPOLController.bundle/EAPOLController
+map 35 0x1007ac000 0x4000 0x0 5 /System/Library/SystemConfiguration/USBDeviceConfiguration.bundle/USBDeviceConfiguration
+map 35 0x1007b0000 0x4000 0x0 1 /System/Library/SystemConfiguration/USBDeviceConfiguration.bundle/USBDeviceConfiguration
+map 35 0x1007b4000 0x4000 0x0 3 /System/Library/SystemConfiguration/USBDeviceConfiguration.bundle/USBDeviceConfiguration
+map 35 0x1007b8000 0x8000 0xc000 1 /System/Library/SystemConfiguration/USBDeviceConfiguration.bundle/USBDeviceConfiguration
+map 35 0x103000000 0x68000 0x0 5 /System/Library/SystemConfiguration/IPConfiguration.bundle/IPConfiguration
+map 35 0x103068000 0x8000 0x0 1 /System/Library/SystemConfiguration/IPConfiguration.bundle/IPConfiguration
+map 35 0x103070000 0x4000 0x0 3 /System/Library/SystemConfiguration/IPConfiguration.bundle/IPConfiguration
+map 35 0x103074000 0x10000 0x74000 1 /System/Library/SystemConfiguration/IPConfiguration.bundle/IPConfiguration
+map 35 0x103084000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 28 mediaserverd
+slide 28 0x11eec000 mh 0x1003fc000
+thread 318 28 
+thread 449 28 
+thread 460 28 
+thread 473 28 
+thread 503 28 HAL Async Logger
+thread 504 28 caulk.messenger.shared:17
+thread 525 28 
+thread 530 28 caulk.messenger.shared:21
+thread 545 28 
+thread 597 28 
+thread 1037 28 FigTransportConnectionUSB.messagesending
+thread 1038 28 FigTransportConnectionUSB.server
+thread 1039 28 
+thread 1043 28 
+thread 1530 28 caulk.messenger.shared:high
+thread 1550 28 caulk.messenger.shared:25
+thread 1553 28 com.apple.CoreMotion.MotionThread
+thread 1765 28 
+wait 318 28 state 1 x0 0x16fa029a8 x1 0x507000806 x2 0x200000000 x3 0x1a0300000000 word ?0x0
+wait 449 28 state 41 x0 0x1000002 x1 0x1f3c5e4b8 x2 0x3b02 x3 0x0 word 0x3b02 ts2 -> thread 473 pid 28
+wait 460 28 state 1 x0 0x100 x1 0x16fb16b80 x2 0x2 x3 0x0 word 0x1018046a0
+wait 473 28 state 41 x0 0x16fb9d990 x1 0x40700420e x2 0x0 x3 0x9703 word ?0x0 ts4 ts5 -> thread 1477 pid 98
+wait 503 28 state 1 x0 0x5403 x1 0x0 x2 0x0 x3 0x16fcbb061 word ?0x0
+wait 504 28 state 1 x0 0x5303 x1 0x10180991a x2 0x0 x3 0x16fd4706a word ?0x0
+wait 525 28 state 41 x0 0x16fdd24e0 x1 0x400304003 x2 0x1800131513 x3 0x720300014b07 word ?0x0 ts4 ts4 -> thread 251 pid 26
+wait 530 28 state 1 x0 0x5b03 x1 0x1005090ca x2 0x0 x3 0x16fe5f06a word ?0x0
+wait 545 28 state 41 x0 0x1006253d0 x1 0x16ff769c8 x2 0x1 x3 0x16ff769c8 word 0x6703 ts5 -> thread 1039 pid 28
+wait 597 28 state 41 x0 0x1006253d0 x1 0x170002028 x2 0x1 x3 0x170002028 word 0x4a07 ts5 -> thread 1039 pid 28
+wait 1037 28 state 1 x0 0x8f03 x1 0x200000003 x2 0x2800001513 x3 0x8e0300000203 word ?0x0
+wait 1038 28 state 1 x0 0x170119e98 x1 0x507000806 x2 0x200000000 x3 0x910300000000 word ?0x0
+wait 1039 28 state 41 x0 0x1701a24f0 x1 0x40700420e x2 0x0 x3 0xa803 word ?0x0 ts4 ts4 -> port of pid 28
+wait 1043 28 state 41 x0 0x710b x1 0x200000003 x2 0x2800001513 x3 0x9c0700000203 word ?0x0
+wait 1530 28 state 1 x0 0xaf03 x1 0x10181d03c x2 0x0 x3 0x17034b06c word ?0x0
+wait 1550 28 state 1 x0 0x11a07 x1 0x10063784a x2 0x0 x3 0x170c0b06a word ?0x0
+wait 1553 28 state 1 x0 0x170d21f28 x1 0x507000806 x2 0x200000000 x3 0x1450300000000 word ?0x0
+wait 1765 28 state 1 x0 0x40 x1 0x16fc2eb80 x2 0x1 x3 0x0 word 0xffffffffffffff00
+map 28 0x1003fc000 0x18000 0x0 5 /usr/sbin/mediaserverd
+map 28 0x100418000 0x4000 0x0 3 /usr/sbin/mediaserverd
+map 28 0x10041c000 0x10000 0x20000 1 /usr/sbin/mediaserverd
+map 28 0x1004e4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 28 0x101d2c000 0x10000 0x0 5 /System/Library/Audio/Plug-Ins/HAL/AirPlayHalogen.driver/AirPlayHalogen
+map 28 0x101d3c000 0x4000 0x0 1 /System/Library/Audio/Plug-Ins/HAL/AirPlayHalogen.driver/AirPlayHalogen
+map 28 0x101d40000 0x4000 0x0 3 /System/Library/Audio/Plug-Ins/HAL/AirPlayHalogen.driver/AirPlayHalogen
+map 28 0x101d44000 0xc000 0x18000 1 /System/Library/Audio/Plug-Ins/HAL/AirPlayHalogen.driver/AirPlayHalogen
+map 28 0x101d6c000 0xc000 0x0 5 /System/Library/Audio/Plug-Ins/HAL/AppleTimeSyncAudioClock.driver/AppleTimeSyncAudioClock
+map 28 0x101d78000 0x4000 0x0 1 /System/Library/Audio/Plug-Ins/HAL/AppleTimeSyncAudioClock.driver/AppleTimeSyncAudioClock
+map 28 0x101d7c000 0x4000 0x0 3 /System/Library/Audio/Plug-Ins/HAL/AppleTimeSyncAudioClock.driver/AppleTimeSyncAudioClock
+map 28 0x101d80000 0x8000 0x14000 1 /System/Library/Audio/Plug-Ins/HAL/AppleTimeSyncAudioClock.driver/AppleTimeSyncAudioClock
+map 28 0x101d88000 0x8000 0x0 5 /System/Library/Audio/Plug-Ins/HAL/CarPlayHalogen.driver/CarPlayHalogen
+map 28 0x101d90000 0x4000 0x0 1 /System/Library/Audio/Plug-Ins/HAL/CarPlayHalogen.driver/CarPlayHalogen
+map 28 0x101d94000 0x4000 0x0 3 /System/Library/Audio/Plug-Ins/HAL/CarPlayHalogen.driver/CarPlayHalogen
+map 28 0x101d98000 0x8000 0x10000 1 /System/Library/Audio/Plug-Ins/HAL/CarPlayHalogen.driver/CarPlayHalogen
+map 28 0x101da8000 0x10000 0x0 5 /System/Library/Audio/Plug-Ins/HAL/BasebandVoice.driver/BasebandVoice
+map 28 0x101db8000 0x4000 0x0 1 /System/Library/Audio/Plug-Ins/HAL/BasebandVoice.driver/BasebandVoice
+map 28 0x101dbc000 0x4000 0x0 3 /System/Library/Audio/Plug-Ins/HAL/BasebandVoice.driver/BasebandVoice
+map 28 0x101dc0000 0x8000 0x18000 1 /System/Library/Audio/Plug-Ins/HAL/BasebandVoice.driver/BasebandVoice
+map 28 0x101dc8000 0xc000 0x0 5 /System/Library/Audio/Plug-Ins/HAL/NetworkUplinkClock.driver/NetworkUplinkClock
+map 28 0x101dd4000 0x4000 0x0 1 /System/Library/Audio/Plug-Ins/HAL/NetworkUplinkClock.driver/NetworkUplinkClock
+map 28 0x101dd8000 0x4000 0x0 3 /System/Library/Audio/Plug-Ins/HAL/NetworkUplinkClock.driver/NetworkUplinkClock
+map 28 0x101ddc000 0x8000 0x14000 1 /System/Library/Audio/Plug-Ins/HAL/NetworkUplinkClock.driver/NetworkUplinkClock
+map 28 0x101df0000 0x50000 0x0 5 /System/Library/Audio/Plug-Ins/HAL/AppleUSBAudio.driver/AppleUSBAudio
+map 28 0x101e40000 0x4000 0x0 1 /System/Library/Audio/Plug-Ins/HAL/AppleUSBAudio.driver/AppleUSBAudio
+map 28 0x101e44000 0x8000 0x0 3 /System/Library/Audio/Plug-Ins/HAL/AppleUSBAudio.driver/AppleUSBAudio
+map 28 0x101e4c000 0xc000 0x5c000 1 /System/Library/Audio/Plug-Ins/HAL/AppleUSBAudio.driver/AppleUSBAudio
+map 28 0x101e84000 0x14000 0x0 5 /System/Library/Audio/Plug-Ins/HAL/OctaviaHalogen.driver/OctaviaHalogen
+map 28 0x101e98000 0x4000 0x0 1 /System/Library/Audio/Plug-Ins/HAL/OctaviaHalogen.driver/OctaviaHalogen
+map 28 0x101e9c000 0x4000 0x0 3 /System/Library/Audio/Plug-Ins/HAL/OctaviaHalogen.driver/OctaviaHalogen
+map 28 0x101ea0000 0x10000 0x1c000 1 /System/Library/Audio/Plug-Ins/HAL/OctaviaHalogen.driver/OctaviaHalogen
+map 28 0x101eb0000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 28 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 42 remoted
+slide 42 0x11eec000 mh 0x100f44000
+thread 423 42 
+thread 489 42 
+map 42 0x100f44000 0x44000 0x0 5 /usr/libexec/remoted
+map 42 0x100f8c000 0x4000 0x0 3 /usr/libexec/remoted
+map 42 0x100f90000 0x10000 0x4c000 1 /usr/libexec/remoted
+map 42 0x101058000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 43 keybagd
+slide 43 0x11eec000 mh 0x101060000
+thread 320 43 
+thread 406 43 
+map 43 0x101060000 0x2c000 0x0 5 /usr/libexec/keybagd
+map 43 0x101094000 0x4000 0x0 3 /usr/libexec/keybagd
+map 43 0x101098000 0xc000 0x38000 1 /usr/libexec/keybagd
+map 43 0x10115c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 43 0x10117c000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 45 amfid
+slide 45 0x11eec000 mh 0x100b98000
+thread 464 45 
+map 45 0x100b98000 0x10000 0x0 5 /usr/libexec/amfid
+map 45 0x100bac000 0x4000 0x0 3 /usr/libexec/amfid
+map 45 0x100bb0000 0xc000 0x18000 1 /usr/libexec/amfid
+map 45 0x100c74000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 48 mobiletimerd
+slide 48 0x11eec000 mh 0x10078c000
+thread 323 48 
+thread 500 48 
+thread 501 48 
+thread 576 48 
+thread 2183 48 
+map 48 0x10078c000 0x4000 0x0 5 /System/Library/PrivateFrameworks/MobileTimer.framework/Executables/mobiletimerd
+map 48 0x100794000 0x4000 0x0 3 /System/Library/PrivateFrameworks/MobileTimer.framework/Executables/mobiletimerd
+map 48 0x100798000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/MobileTimer.framework/Executables/mobiletimerd
+map 48 0x100858000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 48 0x100870000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 48 0x100880000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 48 0x10088c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 48 0x100d00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 51 nfcd
+slide 51 0x11eec000 mh 0x100acc000
+thread 325 51 
+thread 1723 51 
+map 51 0x100acc000 0x22c000 0x0 5 /usr/libexec/nfcd
+map 51 0x100d38000 0x18000 0x268000 1 /usr/libexec/nfcd
+map 51 0x100dc8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 51 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 71 ptpd
+slide 71 0x11eec000 mh 0x100e68000
+thread 326 71 
+thread 502 71 
+thread 1961 71 
+map 71 0x100e68000 0x44000 0x0 5 /usr/libexec/ptpd
+map 71 0x100ec4000 0xc000 0x5c000 1 /usr/libexec/ptpd
+map 71 0x100f88000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 71 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 52 identityservices
+slide 52 0x11eec000 mh 0x101298000
+thread 327 52 
+thread 611 52 
+thread 1154 52 
+thread 1224 52 TransportThread Primary
+thread 1225 52 TransportThread URGENT
+thread 1226 52 TransportThread Default
+thread 1227 52 TransportThread Sync
+thread 2180 52 
+map 52 0x101298000 0xa80000 0x0 5 /System/Library/PrivateFrameworks/IDS.framework/identityservicesd.app/identityservicesd
+map 52 0x101dd0000 0x58000 0xb34000 1 /System/Library/PrivateFrameworks/IDS.framework/identityservicesd.app/identityservicesd
+map 52 0x101eec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 52 0x102f04000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 52 0x102f14000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 52 0x102f20000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 52 0x102f30000 0xc000 0x0 1 /System/Library/Frameworks/LocalAuthentication.framework/Support/SharedUtils.framework/Shared.loctable
+map 52 0x102f54000 0x8000 0x0 3 /private/var/mobile/Library/IdentityServices/ids-a.db-shm
+map 52 0x102f6c000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 52 0x102fe0000 0x8000 0x0 3 /private/var/mobile/Library/IdentityServices/ids-c.db-shm
+map 52 0x102ff8000 0x8000 0x0 3 /private/var/mobile/Library/IdentityServices/ids.db-shm
+map 52 0x104800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 52 0x10650c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 52 0x1065e4000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+task 54 thermalmonitord
+slide 54 0x11eec000 mh 0x100538000
+thread 328 54 
+thread 1048 54 
+thread 2099 54 
+thread 2166 54 
+thread 2167 54 
+map 54 0x100538000 0x84000 0x0 5 /usr/libexec/thermalmonitord
+map 54 0x1005e4000 0x14000 0xa4000 1 /usr/libexec/thermalmonitord
+map 54 0x1006b0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 56 backboardd
+slide 56 0x11eec000 mh 0x100394000
+thread 329 56 
+thread 505 56 IOHIDService - RunLoopCompatibilityThread
+thread 532 56 
+thread 540 56 com.apple.coreanimation.render-server
+thread 551 56 com.apple.coreanimation.display.primary
+thread 561 56 backboar:ir3q0
+thread 564 56 backboar:ir3q1
+thread 565 56 backbo:traceq0
+thread 568 56 com.apple.coreanimation.display.wireless0
+thread 569 56 com.apple.coreanimation.display.wireless1
+thread 570 56 com.apple.coreanimation.display.wireless2
+thread 574 56 com.apple.CoreMotion.MotionThread
+thread 1049 56 
+thread 1950 56 
+thread 2007 56 IOHIDEvent Server Connection - Root
+thread 2096 56 
+thread 2097 56 
+wait 329 56 state 1 x0 0x16fa6a928 x1 0x507000806 x2 0x200000000 x3 0x2d0300000000 word ?0x0
+wait 505 56 state 1 x0 0x16fc09f98 x1 0x507000806 x2 0x200000000 x3 0x380300000000 word ?0x0
+wait 532 56 state 41 x0 0x1000001 x1 0x1007863b4 x2 0x0 x3 0x0 word ?0x0 ts2 -> none
+wait 540 56 state 1 x0 0x16fe2aa98 x1 0x50300080e x2 0x200000000 x3 0x0 word ?0x0
+wait 551 56 state 1 x0 0x16ffc5e78 x1 0x507000806 x2 0x200000000 x3 0xa30300000000 word ?0x0
+wait 561 56 state 1 x0 0x1008141f0 x1 0x60000000800 x2 0x600 x3 0x0 word ?0x0
+wait 564 56 state 1 x0 0x1008141f0 x1 0x60100000700 x2 0x600 x3 0x0 word ?0x0
+wait 565 56 state 1 x0 0x102a2f260 x1 0x30100000400 x2 0x300 x3 0x0 word ?0x0
+wait 568 56 state 1 x0 0x170275e78 x1 0x507000806 x2 0x200000000 x3 0xa00300000000 word ?0x0
+wait 569 56 state 1 x0 0x170381e78 x1 0x507000806 x2 0x200000000 x3 0x9d0300000000 word ?0x0
+wait 570 56 state 1 x0 0x17048de78 x1 0x507000806 x2 0x200000000 x3 0x980300000000 word ?0x0
+wait 574 56 state 1 x0 0x170519f28 x1 0x507000806 x2 0x200000000 x3 0x910300000000 word ?0x0
+wait 1049 56 state 41 x0 0x17062caa0 x1 0x40700420e x2 0x0 x3 0xc613 word ?0x0 ts4 ts4 ts5 -> thread 1477 pid 98
+wait 1950 56 state 1 x0 0x100 x1 0x1706beb80 x2 0x1 x3 0x0 word 0x10102f410
+wait 2007 56 state 1 x0 0x230b x1 0x3b9ac51e00000004 x2 0x3b9ac51e x3 0xfffffc088 word ?0x0
+wait 2096 56 state 1 x0 0x40 x1 0x16faf2b80 x2 0x0 x3 0x0 word 0x1
+wait 2097 56 state 1 x0 0x40 x1 0x17074ab80 x2 0x0 x3 0x0 word 0x1
+map 56 0x100394000 0xd8000 0x0 5 /usr/libexec/backboardd
+map 56 0x10049c000 0x1c000 0x108000 1 /usr/libexec/backboardd
+map 56 0x10057c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 56 0x1005a8000 0x4000 0x0 5 /System/Library/HIDPlugins/SessionFilters/IOHIDDisplaySessionFilter.plugin/IOHIDDisplaySessionFilter
+map 56 0x1005ac000 0x4000 0x0 1 /System/Library/HIDPlugins/SessionFilters/IOHIDDisplaySessionFilter.plugin/IOHIDDisplaySessionFilter
+map 56 0x1005b0000 0x4000 0x0 3 /System/Library/HIDPlugins/SessionFilters/IOHIDDisplaySessionFilter.plugin/IOHIDDisplaySessionFilter
+map 56 0x1005b4000 0x8000 0xc000 1 /System/Library/HIDPlugins/SessionFilters/IOHIDDisplaySessionFilter.plugin/IOHIDDisplaySessionFilter
+map 56 0x1005c0000 0xc000 0x0 5 /System/Library/HIDPlugins/SessionFilters/IOAnalytics.plugin/IOAnalytics
+map 56 0x1005cc000 0x4000 0x0 1 /System/Library/HIDPlugins/SessionFilters/IOAnalytics.plugin/IOAnalytics
+map 56 0x1005d0000 0x4000 0x0 3 /System/Library/HIDPlugins/SessionFilters/IOAnalytics.plugin/IOAnalytics
+map 56 0x1005d4000 0x18000 0x14000 1 /System/Library/HIDPlugins/SessionFilters/IOAnalytics.plugin/IOAnalytics
+map 56 0x1005ec000 0x4000 0x0 5 /System/Library/HIDPlugins/SessionFilters/IOHIDMotionEventSessionFilter.plugin/IOHIDMotionEventSessionFilter
+map 56 0x1005f0000 0x4000 0x0 1 /System/Library/HIDPlugins/SessionFilters/IOHIDMotionEventSessionFilter.plugin/IOHIDMotionEventSessionFilter
+map 56 0x1005f4000 0x4000 0x0 3 /System/Library/HIDPlugins/SessionFilters/IOHIDMotionEventSessionFilter.plugin/IOHIDMotionEventSessionFilter
+map 56 0x1005f8000 0x8000 0xc000 1 /System/Library/HIDPlugins/SessionFilters/IOHIDMotionEventSessionFilter.plugin/IOHIDMotionEventSessionFilter
+map 56 0x101600000 0x4000 0x0 5 /System/Library/HIDPlugins/SessionFilters/IOHIDRemoteSensorSessionFilter.plugin/IOHIDRemoteSensorSessionFilter
+map 56 0x101604000 0x4000 0x0 1 /System/Library/HIDPlugins/SessionFilters/IOHIDRemoteSensorSessionFilter.plugin/IOHIDRemoteSensorSessionFilter
+map 56 0x101608000 0x4000 0x0 3 /System/Library/HIDPlugins/SessionFilters/IOHIDRemoteSensorSessionFilter.plugin/IOHIDRemoteSensorSessionFilter
+map 56 0x10160c000 0x8000 0xc000 1 /System/Library/HIDPlugins/SessionFilters/IOHIDRemoteSensorSessionFilter.plugin/IOHIDRemoteSensorSessionFilter
+map 56 0x101614000 0x4000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/IOHIDEventServicePlugin.plugin/IOHIDEventServicePlugin
+map 56 0x101618000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/IOHIDEventServicePlugin.plugin/IOHIDEventServicePlugin
+map 56 0x10161c000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/IOHIDEventServicePlugin.plugin/IOHIDEventServicePlugin
+map 56 0x101620000 0x8000 0xc000 1 /System/Library/HIDPlugins/ServicePlugins/IOHIDEventServicePlugin.plugin/IOHIDEventServicePlugin
+map 56 0x10162c000 0x4000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/ApplePencilDMServicePlugin.plugin/ApplePencilDMServicePlugin
+map 56 0x101630000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/ApplePencilDMServicePlugin.plugin/ApplePencilDMServicePlugin
+map 56 0x101634000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/ApplePencilDMServicePlugin.plugin/ApplePencilDMServicePlugin
+map 56 0x101638000 0xc000 0xc000 1 /System/Library/HIDPlugins/ServicePlugins/ApplePencilDMServicePlugin.plugin/ApplePencilDMServicePlugin
+map 56 0x101668000 0x14000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin
+map 56 0x10167c000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin
+map 56 0x101680000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin
+map 56 0x101684000 0x8000 0x1c000 1 /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin
+map 56 0x10168c000 0x14000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/DualShock4HIDServicePlugin.plugin/DualShock4HIDServicePlugin
+map 56 0x1016a0000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/DualShock4HIDServicePlugin.plugin/DualShock4HIDServicePlugin
+map 56 0x1016a4000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/DualShock4HIDServicePlugin.plugin/DualShock4HIDServicePlugin
+map 56 0x1016a8000 0x8000 0x1c000 1 /System/Library/HIDPlugins/ServicePlugins/DualShock4HIDServicePlugin.plugin/DualShock4HIDServicePlugin
+map 56 0x1016b0000 0x14000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/GenericGamepadHIDServicePlugin.plugin/GenericGamepadHIDServicePlugin
+map 56 0x1016c4000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/GenericGamepadHIDServicePlugin.plugin/GenericGamepadHIDServicePlugin
+map 56 0x1016c8000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/GenericGamepadHIDServicePlugin.plugin/GenericGamepadHIDServicePlugin
+map 56 0x1016cc000 0x8000 0x1c000 1 /System/Library/HIDPlugins/ServicePlugins/GenericGamepadHIDServicePlugin.plugin/GenericGamepadHIDServicePlugin
+map 56 0x1016d4000 0xc000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/LunaHIDServicePlugin.plugin/LunaHIDServicePlugin
+map 56 0x1016e0000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/LunaHIDServicePlugin.plugin/LunaHIDServicePlugin
+map 56 0x1016e4000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/LunaHIDServicePlugin.plugin/LunaHIDServicePlugin
+map 56 0x1016e8000 0x8000 0x14000 1 /System/Library/HIDPlugins/ServicePlugins/LunaHIDServicePlugin.plugin/LunaHIDServicePlugin
+map 56 0x101704000 0x20000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/JoyConHIDServicePlugin.plugin/JoyConHIDServicePlugin
+map 56 0x101724000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/JoyConHIDServicePlugin.plugin/JoyConHIDServicePlugin
+map 56 0x101728000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/JoyConHIDServicePlugin.plugin/JoyConHIDServicePlugin
+map 56 0x10172c000 0x8000 0x28000 1 /System/Library/HIDPlugins/ServicePlugins/JoyConHIDServicePlugin.plugin/JoyConHIDServicePlugin
+map 56 0x101750000 0x1020000 0x0 5 /usr/local/bin/libsweetca.dylib
+map 56 0x102878000 0x164000 0x10f0000 1 /usr/local/bin/libsweetca.dylib
+map 56 0x1029dc000 0x10000 0x0 5 /System/Library/HIDPlugins/ServicePlugins/XboxOneHIDServicePlugin.plugin/XboxOneHIDServicePlugin
+map 56 0x1029ec000 0x4000 0x0 1 /System/Library/HIDPlugins/ServicePlugins/XboxOneHIDServicePlugin.plugin/XboxOneHIDServicePlugin
+map 56 0x1029f0000 0x4000 0x0 3 /System/Library/HIDPlugins/ServicePlugins/XboxOneHIDServicePlugin.plugin/XboxOneHIDServicePlugin
+map 56 0x1029f4000 0x8000 0x18000 1 /System/Library/HIDPlugins/ServicePlugins/XboxOneHIDServicePlugin.plugin/XboxOneHIDServicePlugin
+map 56 0x1029fc000 0x10000 0x0 5 /System/Library/HIDPlugins/ColourSensorFilterPlugin.plugin/ColourSensorFilterPlugin
+map 56 0x102a0c000 0x4000 0x0 1 /System/Library/HIDPlugins/ColourSensorFilterPlugin.plugin/ColourSensorFilterPlugin
+map 56 0x102a10000 0x4000 0x0 3 /System/Library/HIDPlugins/ColourSensorFilterPlugin.plugin/ColourSensorFilterPlugin
+map 56 0x102a14000 0x8000 0x18000 1 /System/Library/HIDPlugins/ColourSensorFilterPlugin.plugin/ColourSensorFilterPlugin
+map 56 0x102fe0000 0x10000 0x1138000 1 /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.05
+map 56 0x104800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 56 0x107608000 0x30000 0x0 5 /System/Library/AccessibilityBundles/BackBoard.axbundle/BackBoard
+map 56 0x107638000 0x4000 0x0 1 /System/Library/AccessibilityBundles/BackBoard.axbundle/BackBoard
+map 56 0x10763c000 0x8000 0x0 3 /System/Library/AccessibilityBundles/BackBoard.axbundle/BackBoard
+map 56 0x107644000 0x30000 0x3c000 1 /System/Library/AccessibilityBundles/BackBoard.axbundle/BackBoard
+map 56 0x107680000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 56 0x19a448000 0x8000 0x0 5 /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.03
+task 58 timed
+slide 58 0x11eec000 mh 0x100b08000
+thread 330 58 
+thread 431 58 
+thread 649 58 
+thread 1314 58 
+map 58 0x100b08000 0x24000 0x0 5 /usr/libexec/timed
+map 58 0x100b34000 0x4000 0x0 3 /usr/libexec/timed
+map 58 0x100b38000 0xc000 0x30000 1 /usr/libexec/timed
+map 58 0x100bfc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 58 0x100c10000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 58 0x100c34000 0xc000 0x0 5 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/AccessoryTimeSync.bundle/AccessoryTimeSync
+map 58 0x100c40000 0x4000 0x0 1 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/AccessoryTimeSync.bundle/AccessoryTimeSync
+map 58 0x100c44000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/AccessoryTimeSync.bundle/AccessoryTimeSync
+map 58 0x100c48000 0x10000 0x14000 1 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/AccessoryTimeSync.bundle/AccessoryTimeSync
+map 58 0x100c58000 0x8000 0x0 5 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/CellularSource.bundle/CellularSource
+map 58 0x100c60000 0x4000 0x0 1 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/CellularSource.bundle/CellularSource
+map 58 0x100c64000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/CellularSource.bundle/CellularSource
+map 58 0x100c68000 0x8000 0x10000 1 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/CellularSource.bundle/CellularSource
+map 58 0x100c70000 0x10000 0x0 5 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/LinkSource.bundle/LinkSource
+map 58 0x100c80000 0x4000 0x0 1 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/LinkSource.bundle/LinkSource
+map 58 0x100c84000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/LinkSource.bundle/LinkSource
+map 58 0x100c88000 0x8000 0x18000 1 /System/Library/PrivateFrameworks/CoreTime.framework/TimeSources/LinkSource.bundle/LinkSource
+map 58 0x101100000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 59 sharingd
+slide 59 0x11eec000 mh 0x100bf0000
+thread 331 59 
+thread 575 59 
+thread 1545 59 
+thread 1559 59 
+map 59 0x100bf0000 0x3b4000 0x0 5 /usr/libexec/sharingd
+map 59 0x10102c000 0x54000 0x438000 1 /usr/libexec/sharingd
+map 59 0x10154c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 59 0x101564000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 59 0x101588000 0x14000 0x0 1 /System/Library/Frameworks/CoreFoundation.framework/Error.loctable
+map 59 0x103c00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 61 locationd
+slide 61 0x11eec000 mh 0x1011c0000
+thread 332 61 
+thread 655 61 com.apple.CoreMotion.MotionThread
+thread 930 61 
+thread 942 61 
+thread 945 61 
+thread 1024 61 
+thread 1025 61 
+thread 1026 61 
+thread 1109 61 
+thread 1215 61 
+thread 1253 61 CommonUtilities-WiFi-Thread
+thread 2181 61 
+map 61 0x1011c0000 0x1b38000 0x0 5 /usr/libexec/locationd
+map 61 0x102cf8000 0x4000 0x0 3 /usr/libexec/locationd
+map 61 0x102eb0000 0xa4000 0x1cdc000 1 /usr/libexec/locationd
+map 61 0x10300c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 61 0x103020000 0x4000 0x0 1 /System/Library/Frameworks/CoreLocation.framework/InfoPlist.loctable
+map 61 0x103048000 0x8000 0x0 3 /private/var/root/Library/Caches/locationd/cache_encryptedC.db-shm
+map 61 0x103070000 0x8000 0x0 3 /private/var/root/Library/Caches/locationd/gyroCal.db-shm
+map 61 0x1030b8000 0x8000 0x0 3 /private/var/root/Library/Caches/locationd/cache_encryptedB.db-shm
+map 61 0x1030ec000 0x8000 0x0 3 /private/var/root/Library/Caches/locationd/consolidated.db-shm
+map 61 0x1030f4000 0x8000 0x0 3 /private/var/root/Library/Caches/locationd/cache_unencrypted.db-shm
+map 61 0x103500000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 61 0x105230000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 61 0x105240000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 61 0x10524c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 61 0x105274000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 63 containermanager
+slide 63 0x11eec000 mh 0x100520000
+thread 333 63 
+thread 421 63 
+thread 2094 63 
+map 63 0x100520000 0x4000 0x0 5 /usr/libexec/containermanagerd
+map 63 0x100528000 0x8000 0x8000 1 /usr/libexec/containermanagerd
+map 63 0x1005e8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 62 imagent
+slide 62 0x11eec000 mh 0x100d40000
+thread 335 62 
+thread 587 62 
+thread 637 62 
+thread 856 62 
+map 62 0x100d40000 0xb0000 0x0 5 /System/Library/PrivateFrameworks/IMCore.framework/imagent.app/imagent
+map 62 0x100e04000 0x1c000 0xc4000 1 /System/Library/PrivateFrameworks/IMCore.framework/imagent.app/imagent
+map 62 0x100eec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 62 0x101f08000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 62 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 69 sweetd
+slide 69 0x11eec000 mh 0x100150000
+thread 336 69 
+map 69 0x100150000 0x8000 0x0 5 /usr/local/bin/sweetd
+map 69 0x10015c000 0x8000 0xc000 1 /usr/local/bin/sweetd
+task 70 sleepd
+slide 70 0x11eec000 mh 0x100d8c000
+thread 337 70 
+thread 536 70 
+thread 602 70 
+thread 606 70 
+thread 1363 70 
+map 70 0x100d8c000 0x4000 0x0 5 /System/Library/PrivateFrameworks/SleepDaemon.framework/sleepd
+map 70 0x100d94000 0x4000 0x0 3 /System/Library/PrivateFrameworks/SleepDaemon.framework/sleepd
+map 70 0x100d98000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/SleepDaemon.framework/sleepd
+map 70 0x100e64000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 70 0x100e8c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 70 0x100e9c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 70 0x100ea8000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 70 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 73 lockdownd
+slide 73 0x11eec000 mh 0x100f68000
+thread 338 73 
+thread 1249 73 
+map 73 0x100f68000 0xec000 0x0 5 /usr/libexec/lockdownd
+map 73 0x101078000 0x18000 0x110000 1 /usr/libexec/lockdownd
+map 73 0x101148000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 73 0x10115c000 0x74000 0x0 1 /System/Library/PrivateFrameworks/CoreNLP.framework/tokruleLE.data
+map 73 0x101600000 0x8bc000 0x0 1 /usr/share/langid/langid.inv
+map 73 0x101ebc000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 82 rapportd
+slide 82 0x11eec000 mh 0x100c90000
+thread 339 82 
+thread 628 82 
+thread 1491 82 
+map 82 0x100c90000 0xb4000 0x0 5 /usr/libexec/rapportd
+map 82 0x100d5c000 0x14000 0xcc000 1 /usr/libexec/rapportd
+map 82 0x100de8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 77 AppleCredentialM
+slide 77 0x11eec000 mh 0x100930000
+thread 396 77 
+thread 512 77 
+map 77 0x100930000 0x18000 0x0 5 /System/Library/PrivateFrameworks/AppleCredentialManager.framework/AppleCredentialManagerDaemon
+map 77 0x10094c000 0x4000 0x0 3 /System/Library/PrivateFrameworks/AppleCredentialManager.framework/AppleCredentialManagerDaemon
+map 77 0x100950000 0x8000 0x20000 1 /System/Library/PrivateFrameworks/AppleCredentialManager.framework/AppleCredentialManagerDaemon
+map 77 0x1009d0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 74 distnoted
+slide 74 0x11eec000 mh 0x100f24000
+thread 342 74 
+thread 433 74 
+map 74 0x100f24000 0x8000 0x0 5 /usr/sbin/distnoted
+map 74 0x100f30000 0x4000 0x0 3 /usr/sbin/distnoted
+map 74 0x100f34000 0x8000 0x10000 1 /usr/sbin/distnoted
+map 74 0x100ff4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 87 fseventsd
+slide 87 0x11eec000 mh 0x1009e0000
+thread 385 87 com.apple.fseventsd.notify
+thread 386 87 
+thread 418 87 com.apple.fseventsd.volume
+thread 419 87 com.apple.fseventsd.dev.fsevents
+thread 420 87 com.apple.fseventsd.disklogger.87
+thread 424 87 
+map 87 0x1009e0000 0x1c000 0x0 5 /usr/libexec/fseventsd
+map 87 0x100a00000 0x4000 0x0 3 /usr/libexec/fseventsd
+map 87 0x100a04000 0xc000 0x24000 1 /usr/libexec/fseventsd
+map 87 0x100f0c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 89 notifyd
+slide 89 0x11eec000 mh 0x1004ec000
+thread 382 89 
+thread 383 89 
+thread 1736 89 
+map 89 0x1004ec000 0x10000 0x0 5 /usr/sbin/notifyd
+map 89 0x100500000 0x4000 0x0 3 /usr/sbin/notifyd
+map 89 0x100504000 0x8000 0x18000 1 /usr/sbin/notifyd
+task 84 usermanagerd
+slide 84 0x11eec000 mh 0x1009b8000
+thread 347 84 
+thread 2079 84 
+thread 2093 84 
+map 84 0x1009b8000 0x90000 0x0 5 /usr/libexec/usermanagerd
+map 84 0x100a54000 0x10000 0x9c000 1 /usr/libexec/usermanagerd
+task 29 assistantd
+slide 29 0x11eec000 mh 0x100890000
+thread 348 29 
+thread 872 29 
+thread 873 29 
+thread 874 29 
+thread 882 29 
+thread 883 29 
+thread 884 29 
+thread 1509 29 
+map 29 0x100890000 0x440000 0x0 5 /System/Library/PrivateFrameworks/AssistantServices.framework/assistantd
+map 29 0x100d58000 0x7c000 0x4c8000 1 /System/Library/PrivateFrameworks/AssistantServices.framework/assistantd
+map 29 0x100ea0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 29 0x100eb8000 0x4000 0x0 1 /System/Library/PrivateFrameworks/MorphunAssets.framework/DefaultFactors/default_factors_755.pb
+map 29 0x100ec0000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 29 0x100ed0000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 29 0x100edc000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 29 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 31 mediaremoted
+slide 31 0x11eec000 mh 0x10105c000
+thread 349 31 
+thread 1549 31 
+thread 1769 31 
+map 31 0x10105c000 0x148000 0x0 5 /System/Library/PrivateFrameworks/MediaRemote.framework/Support/mediaremoted
+map 31 0x1011dc000 0x28000 0x17c000 1 /System/Library/PrivateFrameworks/MediaRemote.framework/Support/mediaremoted
+map 31 0x1012bc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 31 0x101700000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 31 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 25 runningboardd
+slide 25 0x11eec000 mh 0x100eb8000
+thread 350 25 
+thread 461 25 
+thread 2050 25 
+map 25 0x100eb8000 0x4000 0x0 5 /usr/libexec/runningboardd
+map 25 0x100ec0000 0x4000 0x0 3 /usr/libexec/runningboardd
+map 25 0x100ec4000 0x8000 0xc000 1 /usr/libexec/runningboardd
+map 25 0x100f84000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 25 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 25 0x10550c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+task 27 peopled
+slide 27 0x11eec000 mh 0x100088000
+thread 351 27 
+thread 1381 27 
+map 27 0x100088000 0x4c000 0x0 5 /System/Library/PrivateFrameworks/People.framework/peopled
+map 27 0x1000e0000 0x1c000 0x58000 1 /System/Library/PrivateFrameworks/People.framework/peopled
+map 27 0x1001b4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 27 0x1001c8000 0x20000 0x0 1 /System/Library/PrivateFrameworks/People.framework/Localizable.loctable
+map 27 0x100600000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 34 healthd
+slide 34 0x11eec000 mh 0x100728000
+thread 352 34 
+thread 968 34 
+thread 970 34 
+thread 1102 34 
+thread 1104 34 
+thread 1105 34 
+thread 1316 34 
+map 34 0x100728000 0x4000 0x0 5 /System/Library/Frameworks/HealthKit.framework/healthd
+map 34 0x100730000 0x4000 0x0 3 /System/Library/Frameworks/HealthKit.framework/healthd
+map 34 0x100734000 0xc000 0xc000 1 /System/Library/Frameworks/HealthKit.framework/healthd
+map 34 0x1007b8000 0x4000 0x0 1 /System/Library/Frameworks/HealthKit.framework/InfoPlist.loctable
+map 34 0x101404000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 34 0x101440000 0x4000 0x0 5 /System/Library/Health/Plugins/HealthMedicationsDaemonPluginBundle.bundle/HealthMedicationsDaemonPluginBundle
+map 34 0x101444000 0x4000 0x0 1 /System/Library/Health/Plugins/HealthMedicationsDaemonPluginBundle.bundle/HealthMedicationsDaemonPluginBundle
+map 34 0x101448000 0x4000 0x0 3 /System/Library/Health/Plugins/HealthMedicationsDaemonPluginBundle.bundle/HealthMedicationsDaemonPluginBundle
+map 34 0x10144c000 0x8000 0xc000 1 /System/Library/Health/Plugins/HealthMedicationsDaemonPluginBundle.bundle/HealthMedicationsDaemonPluginBundle
+map 34 0x101454000 0x4000 0x0 5 /System/Library/Health/Plugins/HearingDaemonPlugin.bundle/HearingDaemonPlugin
+map 34 0x101458000 0x4000 0x0 1 /System/Library/Health/Plugins/HearingDaemonPlugin.bundle/HearingDaemonPlugin
+map 34 0x10145c000 0x4000 0x0 3 /System/Library/Health/Plugins/HearingDaemonPlugin.bundle/HearingDaemonPlugin
+map 34 0x101460000 0x8000 0xc000 1 /System/Library/Health/Plugins/HearingDaemonPlugin.bundle/HearingDaemonPlugin
+map 34 0x101468000 0x4000 0x0 5 /System/Library/Health/Plugins/MobilityDaemonPlugin.bundle/MobilityDaemonPlugin
+map 34 0x10146c000 0x4000 0x0 1 /System/Library/Health/Plugins/MobilityDaemonPlugin.bundle/MobilityDaemonPlugin
+map 34 0x101470000 0x4000 0x0 3 /System/Library/Health/Plugins/MobilityDaemonPlugin.bundle/MobilityDaemonPlugin
+map 34 0x101474000 0x8000 0xc000 1 /System/Library/Health/Plugins/MobilityDaemonPlugin.bundle/MobilityDaemonPlugin
+map 34 0x10147c000 0x14000 0x0 1 /System/Library/Frameworks/HealthKit.framework/Localizable-Clinical-Health-Records.loctable
+map 34 0x101498000 0xc000 0x0 5 /System/Library/Health/Plugins/WorkoutHealthPlugin.bundle/WorkoutHealthPlugin
+map 34 0x1014a4000 0x4000 0x0 1 /System/Library/Health/Plugins/WorkoutHealthPlugin.bundle/WorkoutHealthPlugin
+map 34 0x1014a8000 0x4000 0x0 3 /System/Library/Health/Plugins/WorkoutHealthPlugin.bundle/WorkoutHealthPlugin
+map 34 0x1014ac000 0x8000 0x14000 1 /System/Library/Health/Plugins/WorkoutHealthPlugin.bundle/WorkoutHealthPlugin
+map 34 0x1014b8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 34 0x1014c8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 34 0x1014d4000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 34 0x101598000 0xfc000 0x0 5 /System/Library/Health/Plugins/HealthRecordsPlugin.bundle/HealthRecordsPlugin
+map 34 0x101694000 0x10000 0x0 1 /System/Library/Health/Plugins/HealthRecordsPlugin.bundle/HealthRecordsPlugin
+map 34 0x1016a4000 0x1c000 0x0 3 /System/Library/Health/Plugins/HealthRecordsPlugin.bundle/HealthRecordsPlugin
+map 34 0x1016c0000 0x1c000 0x128000 1 /System/Library/Health/Plugins/HealthRecordsPlugin.bundle/HealthRecordsPlugin
+map 34 0x102c00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 30 routined
+slide 30 0x11eec000 mh 0x100c20000
+thread 365 30 
+thread 707 30 
+thread 1259 30 
+map 30 0x100c20000 0x8000 0x0 5 /usr/libexec/routined
+map 30 0x100c2c000 0x4000 0x0 3 /usr/libexec/routined
+map 30 0x100c30000 0xc000 0x10000 1 /usr/libexec/routined
+map 30 0x100cf8000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.routined/Cache.sqlite-shm
+map 30 0x101100000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 30 0x101110000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 30 0x102e1c000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 30 0x102e44000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 30 0x102e54000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 30 0x102e60000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 30 0x102ec8000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.routined/Cloud-V2.sqlite-shm
+map 30 0x102f30000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.routined/Local.sqlite-shm
+task 37 tccd
+slide 37 0x11eec000 mh 0x100574000
+thread 353 37 
+thread 794 37 
+thread 841 37 
+thread 848 37 
+map 37 0x100574000 0x78000 0x0 5 /System/Library/PrivateFrameworks/TCC.framework/Support/tccd
+map 37 0x100604000 0x10000 0x90000 1 /System/Library/PrivateFrameworks/TCC.framework/Support/tccd
+map 37 0x1006cc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 37 0x1006fc000 0x8000 0x0 3 /private/var/mobile/Library/TCC/TCC.db-shm
+task 38 powerd
+slide 38 0x11eec000 mh 0x100700000
+thread 474 38 
+thread 486 38 
+thread 2162 38 
+thread 2195 38 
+map 38 0x100700000 0x74000 0x0 5 /System/Library/CoreServices/powerd.bundle/powerd
+map 38 0x100788000 0x14000 0x88000 1 /System/Library/CoreServices/powerd.bundle/powerd
+map 38 0x100858000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 38 0x100870000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 38 0x100880000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 38 0x10088c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 38 0x1008a0000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 38 0x100d00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 41 biomed
+slide 41 0x11eec000 mh 0x100498000
+thread 479 41 
+thread 644 41 
+map 41 0x100498000 0x4000 0x0 5 /System/Library/PrivateFrameworks/BiomeStreams.framework/Support/biomed
+map 41 0x1004a0000 0x4000 0x0 3 /System/Library/PrivateFrameworks/BiomeStreams.framework/Support/biomed
+map 41 0x1004a4000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/BiomeStreams.framework/Support/biomed
+map 41 0x100564000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 41 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 49 softwareupdated
+slide 49 0x11eec000 mh 0x10061c000
+thread 357 49 
+thread 1429 49 
+map 49 0x10061c000 0x2c000 0x0 5 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/Support/softwareupdated
+map 49 0x100654000 0x4000 0x0 3 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/Support/softwareupdated
+map 49 0x100658000 0x2c000 0x3c000 1 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/Support/softwareupdated
+map 49 0x101340000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 49 0x10135c000 0x34000 0x0 1 /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ErrnoErrors.loctable
+map 49 0x101390000 0x14000 0x0 1 /System/Library/Frameworks/CoreFoundation.framework/Error.loctable
+map 49 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 49 0x104d0c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+task 44 familynotificati
+slide 44 0x11eec000 mh 0x100868000
+thread 358 44 
+thread 1360 44 
+map 44 0x100868000 0x8000 0x0 5 /System/Library/PrivateFrameworks/FamilyNotification.framework/familynotificationd
+map 44 0x100874000 0x4000 0x0 3 /System/Library/PrivateFrameworks/FamilyNotification.framework/familynotificationd
+map 44 0x100878000 0x8000 0x10000 1 /System/Library/PrivateFrameworks/FamilyNotification.framework/familynotificationd
+map 44 0x100d44000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 55 contextstored
+slide 55 0x11eec000 mh 0x1005c0000
+thread 359 55 
+thread 618 55 
+map 55 0x1005c0000 0x8000 0x0 5 /System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored
+map 55 0x1005cc000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored
+map 55 0x1005d0000 0xc000 0x10000 1 /System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored
+map 55 0x100694000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 55 0x1006fc000 0x4000 0x0 1 /private/var/mobile/Library/Biome/streams/public/AppLaunch/local/814231040134240
+map 55 0x101704000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 55 0x101710000 0x4000 0x0 1 /private/var/mobile/Library/Biome/streams/public/AppLaunch/local/814231040134240
+map 55 0x101714000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 55 0x101720000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 55 0x101750000 0x8000 0x0 3 /private/var/mobile/Library/CoreDuet/Knowledge/knowledgeC.db-shm
+map 55 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 47 seld
+slide 47 0x11eec000 mh 0x10054c000
+thread 360 47 
+thread 1359 47 
+map 47 0x10054c000 0x50000 0x0 5 /usr/libexec/seld
+map 47 0x1005a8000 0xc000 0x5c000 1 /usr/libexec/seld
+map 47 0x10066c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 47 0x100b00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 57 askpermissiond
+slide 57 0x11eec000 mh 0x100b34000
+thread 361 57 
+thread 2184 57 
+map 57 0x100b34000 0x30000 0x0 5 /System/Library/PrivateFrameworks/AskPermission.framework/Support/askpermissiond
+map 57 0x100b70000 0xc000 0x3c000 1 /System/Library/PrivateFrameworks/AskPermission.framework/Support/askpermissiond
+map 57 0x101040000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 65 nanoprefsyncd
+slide 65 0x11eec000 mh 0x1011dc000
+thread 362 65 
+thread 1352 65 
+thread 1367 65 
+thread 1368 65 
+map 65 0x1011dc000 0x3c000 0x0 5 /System/Library/PrivateFrameworks/NanoPreferencesSync.framework/nanoprefsyncd
+map 65 0x101224000 0x10000 0x48000 1 /System/Library/PrivateFrameworks/NanoPreferencesSync.framework/nanoprefsyncd
+map 65 0x1012ec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 65 0x10170c000 0x4000 0x0 1 /System/Library/PreferencesSyncBundles/NanoPassbookPreferencesSyncCompanion.bundle/InfoPlist.loctable
+map 65 0x101710000 0x4000 0x0 1 /System/Library/PreferencesSyncBundles/NanoClockBridgeSettingsPreferencesSyncCompanion.bundle/InfoPlist.loctable
+map 65 0x101714000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 65 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 60 ManagedSettingsA
+slide 60 0x11eec000 mh 0x1000bc000
+thread 1002 60 
+thread 1013 60 
+map 60 0x1000bc000 0x60000 0x0 5 /System/Library/Frameworks/ManagedSettings.framework/ManagedSettingsAgent
+map 60 0x100120000 0x4000 0x0 3 /System/Library/Frameworks/ManagedSettings.framework/ManagedSettingsAgent
+map 60 0x100128000 0x20000 0x68000 1 /System/Library/Frameworks/ManagedSettings.framework/ManagedSettingsAgent
+map 60 0x100600000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 60 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 72 passd
+slide 72 0x11eec000 mh 0x100514000
+thread 364 72 
+thread 667 72 
+thread 678 72 
+thread 864 72 
+map 72 0x100514000 0x56c000 0x0 5 /System/Library/PrivateFrameworks/PassKitCore.framework/passd
+map 72 0x100b38000 0x5c000 0x624000 1 /System/Library/PrivateFrameworks/PassKitCore.framework/passd
+map 72 0x100c60000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 72 0x100ca8000 0x4000 0x0 1 /System/Library/PrivateFrameworks/PassKitCore.framework/InfoPlist.loctable
+map 72 0x101d00000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 72 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 33 misd
+slide 33 0x11eec000 mh 0x10073c000
+thread 798 33 
+thread 828 33 
+map 33 0x10073c000 0x2c000 0x0 5 /usr/libexec/misd
+map 33 0x10076c000 0x4000 0x0 3 /usr/libexec/misd
+map 33 0x100770000 0xc000 0x34000 1 /usr/libexec/misd
+map 33 0x101240000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 67 dasd
+slide 67 0x11eec000 mh 0x100ce8000
+thread 367 67 
+thread 594 67 
+map 67 0x100ce8000 0xfc000 0x0 5 /usr/libexec/dasd
+map 67 0x100e24000 0x18000 0x138000 1 /usr/libexec/dasd
+map 67 0x100ef4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 39 atc
+slide 39 0x11eec000 mh 0x1010e4000
+thread 368 39 
+thread 1614 39 
+thread 1629 39 
+thread 1630 39 
+thread 2011 39 
+map 39 0x1010e4000 0x4000 0x0 5 /usr/libexec/atc
+map 39 0x1010ec000 0x4000 0x0 3 /usr/libexec/atc
+map 39 0x1010f0000 0xc000 0xc000 1 /usr/libexec/atc
+map 39 0x1011b4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 39 0x1011dc000 0x4000 0x0 5 /System/Library/SyncBundles/LogsPlugin.syncBundle/LogsPlugin
+map 39 0x1011e0000 0x4000 0x0 1 /System/Library/SyncBundles/LogsPlugin.syncBundle/LogsPlugin
+map 39 0x1011e4000 0x4000 0x0 3 /System/Library/SyncBundles/LogsPlugin.syncBundle/LogsPlugin
+map 39 0x1011e8000 0x8000 0xc000 1 /System/Library/SyncBundles/LogsPlugin.syncBundle/LogsPlugin
+map 39 0x101600000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 39 0x10330c000 0x18000 0x0 5 /System/Library/SyncBundles/Apps.syncBundle/Apps
+map 39 0x103324000 0x4000 0x0 1 /System/Library/SyncBundles/Apps.syncBundle/Apps
+map 39 0x103328000 0x4000 0x0 3 /System/Library/SyncBundles/Apps.syncBundle/Apps
+map 39 0x10332c000 0x8000 0x20000 1 /System/Library/SyncBundles/Apps.syncBundle/Apps
+map 39 0x103334000 0x20000 0x0 5 /System/Library/SyncBundles/Books.syncBundle/Books
+map 39 0x103354000 0x4000 0x0 1 /System/Library/SyncBundles/Books.syncBundle/Books
+map 39 0x103358000 0x4000 0x0 3 /System/Library/SyncBundles/Books.syncBundle/Books
+map 39 0x10335c000 0xc000 0x28000 1 /System/Library/SyncBundles/Books.syncBundle/Books
+map 39 0x103368000 0x4000 0x0 5 /System/Library/SyncBundles/MBATCPlugin.syncBundle/MBATCPlugin
+map 39 0x10336c000 0x4000 0x0 1 /System/Library/SyncBundles/MBATCPlugin.syncBundle/MBATCPlugin
+map 39 0x103370000 0x4000 0x0 3 /System/Library/SyncBundles/MBATCPlugin.syncBundle/MBATCPlugin
+map 39 0x103374000 0x8000 0xc000 1 /System/Library/SyncBundles/MBATCPlugin.syncBundle/MBATCPlugin
+map 39 0x10337c000 0x4000 0x0 5 /System/Library/SyncBundles/SMS.syncBundle/SMS
+map 39 0x103380000 0x4000 0x0 1 /System/Library/SyncBundles/SMS.syncBundle/SMS
+map 39 0x103384000 0x4000 0x0 3 /System/Library/SyncBundles/SMS.syncBundle/SMS
+map 39 0x103388000 0x8000 0xc000 1 /System/Library/SyncBundles/SMS.syncBundle/SMS
+map 39 0x103398000 0xc000 0x0 5 /System/Library/SyncBundles/Podcasts.syncBundle/Podcasts
+map 39 0x1033a4000 0x4000 0x0 1 /System/Library/SyncBundles/Podcasts.syncBundle/Podcasts
+map 39 0x1033a8000 0x4000 0x0 3 /System/Library/SyncBundles/Podcasts.syncBundle/Podcasts
+map 39 0x1033ac000 0x8000 0x14000 1 /System/Library/SyncBundles/Podcasts.syncBundle/Podcasts
+map 39 0x1033bc000 0x98000 0x0 5 /System/Library/SyncBundles/AirFair.syncBundle/AirFair
+map 39 0x103454000 0xc000 0x0 1 /System/Library/SyncBundles/AirFair.syncBundle/AirFair
+map 39 0x103460000 0x4000 0x0 3 /System/Library/SyncBundles/AirFair.syncBundle/AirFair
+map 39 0x103464000 0x8000 0xa8000 1 /System/Library/SyncBundles/AirFair.syncBundle/AirFair
+map 39 0x10346c000 0x24000 0x0 5 /System/Library/SyncBundles/MobileSlideShow.syncBundle/MobileSlideShow
+map 39 0x103490000 0x4000 0x0 1 /System/Library/SyncBundles/MobileSlideShow.syncBundle/MobileSlideShow
+map 39 0x103494000 0x4000 0x0 3 /System/Library/SyncBundles/MobileSlideShow.syncBundle/MobileSlideShow
+map 39 0x103498000 0xc000 0x2c000 1 /System/Library/SyncBundles/MobileSlideShow.syncBundle/MobileSlideShow
+map 39 0x1034a4000 0x8000 0x0 5 /System/Library/SyncBundles/ProofingPlugin.syncBundle/ProofingPlugin
+map 39 0x1034ac000 0x4000 0x0 1 /System/Library/SyncBundles/ProofingPlugin.syncBundle/ProofingPlugin
+map 39 0x1034b0000 0x4000 0x0 3 /System/Library/SyncBundles/ProofingPlugin.syncBundle/ProofingPlugin
+map 39 0x1034b4000 0x8000 0x10000 1 /System/Library/SyncBundles/ProofingPlugin.syncBundle/ProofingPlugin
+map 39 0x1034bc000 0x4000 0x0 5 /System/Library/SyncBundles/UserDataPlugin.syncBundle/UserDataPlugin
+map 39 0x1034c0000 0x4000 0x0 1 /System/Library/SyncBundles/UserDataPlugin.syncBundle/UserDataPlugin
+map 39 0x1034c4000 0x4000 0x0 3 /System/Library/SyncBundles/UserDataPlugin.syncBundle/UserDataPlugin
+map 39 0x1034c8000 0x8000 0xc000 1 /System/Library/SyncBundles/UserDataPlugin.syncBundle/UserDataPlugin
+map 39 0x1034d4000 0x8000 0x0 5 /System/Library/SyncBundles/Tones.syncBundle/Tones
+map 39 0x1034dc000 0x4000 0x0 1 /System/Library/SyncBundles/Tones.syncBundle/Tones
+map 39 0x1034e0000 0x4000 0x0 3 /System/Library/SyncBundles/Tones.syncBundle/Tones
+map 39 0x1034e4000 0x8000 0x10000 1 /System/Library/SyncBundles/Tones.syncBundle/Tones
+map 39 0x10352c000 0xa4000 0x0 5 /System/Library/SyncBundles/AirFair2.syncBundle/AirFair2
+map 39 0x1035d0000 0xc000 0x0 1 /System/Library/SyncBundles/AirFair2.syncBundle/AirFair2
+map 39 0x1035dc000 0x4000 0x0 3 /System/Library/SyncBundles/AirFair2.syncBundle/AirFair2
+map 39 0x1035e0000 0xc000 0xb4000 1 /System/Library/SyncBundles/AirFair2.syncBundle/AirFair2
+map 39 0x10368c000 0x80000 0x0 5 /System/Library/SyncBundles/MusicLibrary.syncBundle/MusicLibrary
+map 39 0x10370c000 0x8000 0x0 1 /System/Library/SyncBundles/MusicLibrary.syncBundle/MusicLibrary
+map 39 0x103714000 0x8000 0x0 3 /System/Library/SyncBundles/MusicLibrary.syncBundle/MusicLibrary
+map 39 0x10371c000 0x10000 0x90000 1 /System/Library/SyncBundles/MusicLibrary.syncBundle/MusicLibrary
+map 39 0x10372c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+task 40 WirelessRadioMan
+slide 40 0x11eec000 mh 0x100e30000
+thread 369 40 
+thread 1236 40 
+map 40 0x100e30000 0x1b8000 0x0 5 /usr/sbin/WirelessRadioManagerd
+map 40 0x101048000 0x1c000 0x218000 1 /usr/sbin/WirelessRadioManagerd
+map 40 0x10111c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 53 wcd
+slide 53 0x11eec000 mh 0x100ba8000
+thread 370 53 
+thread 719 53 
+thread 743 53 
+thread 744 53 
+thread 767 53 
+map 53 0x100ba8000 0x40000 0x0 5 /usr/libexec/wcd
+map 53 0x100bf8000 0x10000 0x50000 1 /usr/libexec/wcd
+map 53 0x100ccc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 53 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 75 aggregated
+slide 75 0x11eec000 mh 0x100ed0000
+thread 371 75 
+thread 1059 75 
+thread 1579 75 
+thread 1591 75 
+thread 2164 75 
+thread 2196 75 
+thread 2197 75 
+map 75 0x100ed0000 0x4000 0x0 5 /System/Library/PrivateFrameworks/AggregateDictionary.framework/Support/aggregated
+map 75 0x100ed8000 0x4000 0x0 3 /System/Library/PrivateFrameworks/AggregateDictionary.framework/Support/aggregated
+map 75 0x100edc000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/AggregateDictionary.framework/Support/aggregated
+map 75 0x100f9c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 75 0x100fb0000 0x8000 0x0 3 /private/var/containers/Shared/SystemGroup/9CD09D2F-51E2-44DC-AC86-4EDAA72A01D1/Library/BatteryLife/CurrentPowerlog.PLSQL-shm
+map 75 0x100ff8000 0x8000 0x0 3 /private/var/containers/Shared/SystemGroup/9CD09D2F-51E2-44DC-AC86-4EDAA72A01D1/Library/PerfPowerTelemetry/ExtendedPersistence/CurrentLog.EPSQL-shm
+map 75 0x101400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 75 0x10310c000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 75 0x103150000 0x8000 0x0 3 /private/var/containers/Shared/SystemGroup/9CD09D2F-51E2-44DC-AC86-4EDAA72A01D1/Library/PerfPowerTelemetry/CleanEnergy/CurrentCleanEnergyDB.CESQL-shm
+map 75 0x10317c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 75 0x10318c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 75 0x103198000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+task 79 peakpowermanager
+slide 79 0x11eec000 mh 0x1010c4000
+thread 1353 79 
+thread 1354 79 
+map 79 0x1010c4000 0x18000 0x0 5 /usr/libexec/peakpowermanagerd
+map 79 0x1010e0000 0x4000 0x0 3 /usr/libexec/peakpowermanagerd
+map 79 0x1010e4000 0x8000 0x20000 1 /usr/libexec/peakpowermanagerd
+map 79 0x1011a4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 64 cloudpaird
+slide 64 0x11eec000 mh 0x1001f8000
+thread 373 64 
+thread 773 64 
+thread 775 64 
+thread 983 64 
+thread 986 64 
+map 64 0x1001f8000 0x178000 0x0 5 /usr/libexec/cloudpaird
+map 64 0x100398000 0x28000 0x19c000 1 /usr/libexec/cloudpaird
+map 64 0x100478000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 64 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 78 remindd
+slide 78 0x11eec000 mh 0x100b04000
+thread 374 78 
+thread 1155 78 
+thread 1216 78 
+thread 1220 78 
+thread 1229 78 
+thread 1240 78 
+thread 1241 78 
+map 78 0x100b04000 0x784000 0x0 5 /usr/libexec/remindd
+map 78 0x101328000 0x98000 0x800000 1 /usr/libexec/remindd
+map 78 0x10148c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 78 0x1014a8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 78 0x1014b8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 78 0x1014c4000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 78 0x103500000 0x60000 0x0 1 /System/Library/PrivateFrameworks/ReminderKit.framework/Localizable.loctable
+map 78 0x10356c000 0x8000 0x0 3 /private/var/mobile/Library/Reminders/Container_v1/Stores/Data-6C0AE7C3-44DD-499C-8114-014C0B27C4BA.sqlite-shm
+map 78 0x1035a0000 0x8000 0x0 3 /private/var/mobile/Library/Reminders/Container_v1/Stores/Data-4559BD42-898E-4B17-B900-E7E96C0AE721.sqlite-shm
+map 78 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 68 bluetoothuserd
+slide 68 0x11eec000 mh 0x100cd8000
+thread 375 68 
+thread 722 68 
+thread 739 68 
+map 68 0x100cd8000 0x24000 0x0 5 /usr/libexec/bluetoothuserd
+map 68 0x100d00000 0x4000 0x0 3 /usr/libexec/bluetoothuserd
+map 68 0x100d04000 0x10000 0x2c000 1 /usr/libexec/bluetoothuserd
+map 68 0x100dcc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 68 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 86 amsaccountsd
+slide 86 0x11eec000 mh 0x100eb8000
+thread 376 86 
+thread 910 86 
+thread 911 86 
+thread 1474 86 
+map 86 0x100eb8000 0x84000 0x0 5 /System/Library/PrivateFrameworks/AppleMediaServices.framework/amsaccountsd
+map 86 0x100f54000 0x10000 0x9c000 1 /System/Library/PrivateFrameworks/AppleMediaServices.framework/amsaccountsd
+map 86 0x100fdc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 86 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 80 navd
+slide 80 0x11eec000 mh 0x100f10000
+thread 377 80 
+thread 1722 80 
+map 80 0x100f10000 0x7c000 0x0 5 /System/Library/PrivateFrameworks/MapsSupport.framework/navd
+map 80 0x100fa8000 0x14000 0x98000 1 /System/Library/PrivateFrameworks/MapsSupport.framework/navd
+map 80 0x101080000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 80 0x10109c000 0x4000 0x0 1 /System/Library/PrivateFrameworks/MapsSupport.framework/InfoPlist.loctable
+map 80 0x101500000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 80 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 81 safetyalertsd
+slide 81 0x11eec000 mh 0x100a04000
+thread 1010 81 
+thread 2130 81 
+map 81 0x100a04000 0x40000 0x0 5 /usr/libexec/safetyalertsd
+map 81 0x100a4c000 0x4000 0x0 3 /usr/libexec/safetyalertsd
+map 81 0x100a50000 0x10000 0x4c000 1 /usr/libexec/safetyalertsd
+map 81 0x100ad8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 81 0x100f40000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 81 0x103400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 76 OTACrashCopier
+slide 76 0x11eec000 mh 0x100960000
+thread 379 76 
+thread 766 76 
+map 76 0x100960000 0x4000 0x0 5 /System/Library/CoreServices/OTACrashCopier
+map 76 0x100968000 0x4000 0x0 3 /System/Library/CoreServices/OTACrashCopier
+map 76 0x10096c000 0x8000 0xc000 1 /System/Library/CoreServices/OTACrashCopier
+map 76 0x1009ec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 76 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 32 axassetsd
+slide 32 0x11eec000 mh 0x100410000
+thread 380 32 
+thread 1435 32 
+thread 1451 32 
+thread 1453 32 
+map 32 0x100410000 0x24000 0x0 5 /System/Library/PrivateFrameworks/AXAssetLoader.framework/Support/axassetsd
+map 32 0x100438000 0x4000 0x0 3 /System/Library/PrivateFrameworks/AXAssetLoader.framework/Support/axassetsd
+map 32 0x10043c000 0xc000 0x2c000 1 /System/Library/PrivateFrameworks/AXAssetLoader.framework/Support/axassetsd
+map 32 0x1004cc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 32 0x1004f0000 0x10000 0x0 1 /System/Library/PrivateFrameworks/TTSAsset.framework/TrialDefaults/default_factors_406.pb
+map 32 0x101944000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 32 0x101954000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 32 0x101960000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 32 0x10197c000 0x4000 0x0 5 /System/Library/TTSPlugins/MauiTTSSpeechBundle.speechbundle/MauiTTSSpeechBundle
+map 32 0x101980000 0x4000 0x0 1 /System/Library/TTSPlugins/MauiTTSSpeechBundle.speechbundle/MauiTTSSpeechBundle
+map 32 0x101984000 0x4000 0x0 3 /System/Library/TTSPlugins/MauiTTSSpeechBundle.speechbundle/MauiTTSSpeechBundle
+map 32 0x101988000 0x8000 0xc000 1 /System/Library/TTSPlugins/MauiTTSSpeechBundle.speechbundle/MauiTTSSpeechBundle
+map 32 0x1019a8000 0x8000 0x0 5 /System/Library/TTSPlugins/SiriTTSSpeechBundle.speechbundle/SiriTTSSpeechBundle
+map 32 0x1019b0000 0x4000 0x0 1 /System/Library/TTSPlugins/SiriTTSSpeechBundle.speechbundle/SiriTTSSpeechBundle
+map 32 0x1019b4000 0x4000 0x0 3 /System/Library/TTSPlugins/SiriTTSSpeechBundle.speechbundle/SiriTTSSpeechBundle
+map 32 0x1019b8000 0x8000 0x10000 1 /System/Library/TTSPlugins/SiriTTSSpeechBundle.speechbundle/SiriTTSSpeechBundle
+map 32 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 90 logd_helper
+slide 90 0x11eec000 mh 0x1003ec000
+thread 393 90 
+thread 394 90 
+map 90 0x1003ec000 0x8000 0x0 5 /usr/libexec/logd_helper
+map 90 0x1003f8000 0x4000 0x0 3 /usr/libexec/logd_helper
+map 90 0x1003fc000 0x8000 0x10000 1 /usr/libexec/logd_helper
+task 91 ReportCrash
+slide 91 0x11eec000 mh 0x100f38000
+thread 404 91 
+thread 429 91 
+thread 441 91 
+map 91 0x100f38000 0x28000 0x0 5 /System/Library/CoreServices/ReportCrash
+map 91 0x100f6c000 0x4000 0x0 3 /System/Library/CoreServices/ReportCrash
+map 91 0x100f70000 0xc000 0x38000 1 /System/Library/CoreServices/ReportCrash
+map 91 0x101b68000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 92 cfprefsd
+slide 92 0x11eec000 mh 0x101198000
+thread 415 92 
+thread 2175 92 
+thread 2205 92 
+map 92 0x101198000 0x4000 0x0 5 /usr/sbin/cfprefsd
+map 92 0x1011a0000 0x8000 0x8000 1 /usr/sbin/cfprefsd
+map 92 0x101264000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 93 mobileassetd
+slide 93 0x11eec000 mh 0x1008e0000
+thread 438 93 
+thread 510 93 
+thread 1980 93 
+map 93 0x1008e0000 0x8000 0x0 5 /usr/libexec/mobileassetd
+map 93 0x1008ec000 0x4000 0x0 3 /usr/libexec/mobileassetd
+map 93 0x1008f0000 0xc000 0x10000 1 /usr/libexec/mobileassetd
+map 93 0x1009c4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 93 0x100e00000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 93 0x103400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 94 analyticsd
+slide 94 0x11eec000 mh 0x100d48000
+thread 445 94 
+thread 817 94 
+thread 2017 94 
+map 94 0x100d48000 0x124000 0x0 5 /System/Library/PrivateFrameworks/CoreAnalytics.framework/Support/analyticsd
+map 94 0x100e78000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreAnalytics.framework/Support/analyticsd
+map 94 0x100e7c000 0x18000 0x134000 1 /System/Library/PrivateFrameworks/CoreAnalytics.framework/Support/analyticsd
+map 94 0x100f4c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 94 0x100f80000 0x8000 0x0 3 /private/var/db/analyticsd/state.sqlite-shm
+map 94 0x100fb4000 0x8000 0x0 3 /private/var/db/analyticsd/config.sqlite-shm
+map 94 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 94 0x105514000 0x14000 0x0 1 /System/Library/Frameworks/CoreFoundation.framework/Error.loctable
+map 94 0x1055ac000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 94 0x1055d0000 0x34000 0x0 1 /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ErrnoErrors.loctable
+task 95 apfs_iosd
+slide 95 0x11eec000 mh 0x1006b0000
+thread 455 95 
+thread 2012 95 
+map 95 0x1006b0000 0x8000 0x0 5 /System/Library/Filesystems/apfs.fs/apfs_iosd
+map 95 0x1006c0000 0x8000 0xc000 1 /System/Library/Filesystems/apfs.fs/apfs_iosd
+map 95 0x100780000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 96 PowerUIAgent
+slide 96 0x11eec000 mh 0x100014000
+thread 458 96 
+thread 1271 96 
+map 96 0x100014000 0x4000 0x0 5 /usr/libexec/PowerUIAgent
+map 96 0x10001c000 0x4000 0x0 3 /usr/libexec/PowerUIAgent
+map 96 0x100020000 0x8000 0xc000 1 /usr/libexec/PowerUIAgent
+map 96 0x1000ec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 96 0x100508000 0x4000 0x0 1 /System/Library/PrivateFrameworks/PowerUI.framework/com.apple.SmartCharging.Trial.pb
+map 96 0x100510000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 96 0x100520000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 96 0x10052c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 96 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 98 lsd
+slide 98 0x11eec000 mh 0x100d84000
+thread 470 98 
+thread 506 98 
+thread 1467 98 
+thread 1477 98 
+thread 1480 98 
+thread 1481 98 
+thread 1484 98 
+thread 1806 98 
+wait 470 98 state 1 x0 0x15bf1bb20 x1 0x16f07b6b8 x2 0x2 x3 0x16f07b6b8 word 0x15bf1bb20 ts5 -> thread 1480 pid 98
+wait 506 98 state 41 x0 0xe53b x1 0x0 x2 0x1 x3 0x40008ff word ?0x0
+wait 1467 98 state 41 x0 0x16f101f28 x1 0x507000806 x2 0x200000000 x3 0xd60300000000 word ?0x0
+wait 1477 98 state 41 x0 0x1000001 x1 0x15d0a5314 x2 0x0 x3 0x0 word ?0x0 ts2 -> none
+wait 1480 98 state 41 x0 0x1000001 x1 0x15d0a5314 x2 0x0 x3 0x0 word ?0x0 ts2 -> none
+wait 1481 98 state 1 x0 0x40 x1 0x16f44ab80 x2 0x1 x3 0x0 word 0xffffffffffffff00
+wait 1484 98 state 1 x0 0x100 x1 0x16f4d6b80 x2 0x1 x3 0x0 word 0x15bfb9eb0
+wait 1806 98 state 1 x0 0x0 x1 0x0 x2 0x0 x3 0x0 word ?0x0
+map 98 0x100d84000 0x4000 0x0 5 /usr/libexec/lsd
+map 98 0x100d8c000 0x8000 0x8000 1 /usr/libexec/lsd
+map 98 0x100e4c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 98 0x101500000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 98 0x10348c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 98 0x103564000 0x23c000 0x0 3 /private/var/tmp/ls-e03nl0TNrUbC4roU
+task 97 MobileGestaltHel
+slide 97 0x11eec000 mh 0x10073c000
+thread 472 97 
+thread 2140 97 
+thread 2185 97 
+map 97 0x10073c000 0x4000 0x0 5 /usr/libexec/MobileGestaltHelper
+map 97 0x100744000 0x4000 0x0 3 /usr/libexec/MobileGestaltHelper
+map 97 0x100748000 0x8000 0xc000 1 /usr/libexec/MobileGestaltHelper
+map 97 0x1007c8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 99 coreduetd
+slide 99 0x11eec000 mh 0x100b74000
+thread 493 99 
+thread 537 99 
+thread 860 99 
+thread 871 99 
+thread 878 99 
+thread 959 99 
+map 99 0x100b74000 0x38000 0x0 5 /usr/libexec/coreduetd
+map 99 0x100bb8000 0x10000 0x44000 1 /usr/libexec/coreduetd
+map 99 0x100c80000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 99 0x100c98000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 99 0x100ca8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 99 0x100cb4000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 99 0x100cd8000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 99 0x101100000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 99 0x102e0c000 0x8000 0x0 3 /private/var/mobile/Library/CoreDuet/Knowledge/knowledgeC.db-shm
+task 100 ACCHWComponentAu
+slide 100 0x11eec000 mh 0x100a18000
+thread 579 100 
+thread 580 100 
+map 100 0x100a18000 0x18000 0x0 5 /System/Library/PrivateFrameworks/CoreAccessories.framework/XPCServices/ACCHWComponentAuthService.xpc/ACCHWComponentAuthService
+map 100 0x100a34000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreAccessories.framework/XPCServices/ACCHWComponentAuthService.xpc/ACCHWComponentAuthService
+map 100 0x100a38000 0x20000 0x20000 1 /System/Library/PrivateFrameworks/CoreAccessories.framework/XPCServices/ACCHWComponentAuthService.xpc/ACCHWComponentAuthService
+map 100 0x100b10000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 102 nehelper
+slide 102 0x11eec000 mh 0x10117c000
+thread 523 102 
+thread 547 102 
+thread 549 102 
+thread 554 102 
+thread 789 102 
+map 102 0x10117c000 0x2c000 0x0 5 /usr/libexec/nehelper
+map 102 0x1011b0000 0x4000 0x0 3 /usr/libexec/nehelper
+map 102 0x1011b4000 0x10000 0x38000 1 /usr/libexec/nehelper
+map 102 0x10127c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 101 chronod
+slide 101 0x11eec000 mh 0x100904000
+thread 524 101 
+thread 1074 101 
+thread 1076 101 com.apple.uikit.eventfetch-thread
+thread 1644 101 
+map 101 0x100904000 0x4000 0x0 5 /System/Library/PrivateFrameworks/ChronoCore.framework/Support/chronod
+map 101 0x10090c000 0x8000 0x8000 1 /System/Library/PrivateFrameworks/ChronoCore.framework/Support/chronod
+map 101 0x1009e0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 101 0x100e2c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 101 0x100e3c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 101 0x100e48000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 101 0x100e88000 0x8000 0x0 3 /private/var/mobile/Library/chronod/chrono.sql-shm
+map 101 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 103 securityd
+slide 103 0x11eec000 mh 0x1003d8000
+thread 531 103 
+thread 1737 103 
+map 103 0x1003d8000 0x27c000 0x0 5 /usr/libexec/securityd
+map 103 0x1006b8000 0x28000 0x2e0000 1 /usr/libexec/securityd
+map 103 0x1007b8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 103 0x1007d8000 0x8000 0x0 3 /private/var/Keychains/keychain-2.db-shm
+map 103 0x102038000 0x8000 0x0 3 /private/var/Keychains/Analytics/ckks_analytics.db-shm
+map 103 0x102088000 0x8000 0x0 3 /private/var/Keychains/Analytics/sos_analytics.db-shm
+map 103 0x102500000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 103 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 104 audioclocksyncd
+slide 104 0x11eec000 mh 0x100b74000
+thread 596 104 
+thread 598 104 
+map 104 0x100b74000 0x40000 0x0 5 /usr/libexec/audioclocksyncd
+map 104 0x100bc4000 0xc000 0x50000 1 /usr/libexec/audioclocksyncd
+map 104 0x100c88000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 105 nsurlsessiond
+slide 105 0x11eec000 mh 0x1004d4000
+thread 560 105 
+thread 572 105 
+map 105 0x1004d4000 0x94000 0x0 5 /usr/libexec/nsurlsessiond
+map 105 0x100580000 0x14000 0xac000 1 /usr/libexec/nsurlsessiond
+map 105 0x10064c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 107 CloudKeychainPro
+slide 107 0x11eec000 mh 0x10083c000
+thread 584 107 
+thread 610 107 
+thread 612 107 
+thread 620 107 
+thread 683 107 
+map 107 0x10083c000 0x14000 0x0 5 /System/Library/Frameworks/Security.framework/CloudKeychainProxy.bundle/CloudKeychainProxy
+map 107 0x100854000 0x4000 0x0 3 /System/Library/Frameworks/Security.framework/CloudKeychainProxy.bundle/CloudKeychainProxy
+map 107 0x100858000 0xc000 0x1c000 1 /System/Library/Frameworks/Security.framework/CloudKeychainProxy.bundle/CloudKeychainProxy
+map 107 0x1008dc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 107 0x1008ec000 0x8000 0x0 3 /private/var/Keychains/Analytics/sos_analytics.db-shm
+task 106 nanoregistryd
+slide 106 0x11eec000 mh 0x1003f0000
+thread 585 106 
+thread 634 106 
+thread 635 106 
+thread 648 106 
+thread 1347 106 
+thread 1396 106 
+thread 1399 106 
+thread 1401 106 
+thread 1403 106 
+map 106 0x1003f0000 0x140000 0x0 5 /usr/libexec/nanoregistryd
+map 106 0x100570000 0x1c000 0x180000 1 /usr/libexec/nanoregistryd
+map 106 0x100644000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 106 0x100658000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 106 0x100b00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 106 0x10280c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+task 108 donotdisturbd
+slide 108 0x11eec000 mh 0x1002a4000
+thread 614 108 
+thread 652 108 
+thread 790 108 
+map 108 0x1002a4000 0x4000 0x0 5 /System/Library/PrivateFrameworks/DoNotDisturbServer.framework/Support/donotdisturbd
+map 108 0x1002ac000 0xc000 0x8000 1 /System/Library/PrivateFrameworks/DoNotDisturbServer.framework/Support/donotdisturbd
+map 108 0x10037c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 108 0x100398000 0x3c000 0x0 1 /System/Library/Frameworks/Contacts.framework/Errors.loctable
+map 108 0x102c00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 109 syncdefaultsd
+slide 109 0x11eec000 mh 0x101240000
+thread 621 109 
+thread 806 109 
+map 109 0x101240000 0x48000 0x0 5 /System/Library/PrivateFrameworks/SyncedDefaults.framework/Support/syncdefaultsd
+map 109 0x10128c000 0x4000 0x0 3 /System/Library/PrivateFrameworks/SyncedDefaults.framework/Support/syncdefaultsd
+map 109 0x101290000 0xc000 0x50000 1 /System/Library/PrivateFrameworks/SyncedDefaults.framework/Support/syncdefaultsd
+map 109 0x101354000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 109 0x10137c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 109 0x10138c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 109 0x101398000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 109 0x1013ac000 0x8000 0x0 3 /private/var/mobile/Library/SyncedPreferences/com.apple.kvs/com.apple.KeyValueService-Production.sqlite-shm
+map 109 0x1013d4000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 109 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 110 apsd
+slide 110 0x11eec000 mh 0x100534000
+thread 631 110 
+thread 738 110 
+thread 777 110 
+thread 785 110 CommonUtilities-WiFi-Thread
+thread 1150 110 
+thread 1153 110 
+map 110 0x100534000 0xd8000 0x0 5 /System/Library/PrivateFrameworks/ApplePushService.framework/apsd
+map 110 0x100638000 0x18000 0x100000 1 /System/Library/PrivateFrameworks/ApplePushService.framework/apsd
+map 110 0x1006c8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 110 0x1006f4000 0x8000 0x0 3 /private/var/mobile/Library/ApplePushService/aps.db-shm
+map 110 0x101a40000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 111 cloudd
+slide 111 0x11eec000 mh 0x1009c4000
+thread 632 111 
+thread 1485 111 
+map 111 0x1009c4000 0x10000 0x0 5 /System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd
+map 111 0x1009d8000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd
+map 111 0x1009dc000 0x10000 0x18000 1 /System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd
+map 111 0x100aa4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 112 accountsd
+slide 112 0x11eec000 mh 0x1006f8000
+thread 633 112 
+thread 643 112 
+thread 729 112 
+thread 1848 112 
+map 112 0x1006f8000 0x4000 0x0 5 /System/Library/Frameworks/Accounts.framework/accountsd
+map 112 0x100700000 0x4000 0x0 3 /System/Library/Frameworks/Accounts.framework/accountsd
+map 112 0x100704000 0xc000 0xc000 1 /System/Library/Frameworks/Accounts.framework/accountsd
+map 112 0x1007c8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 112 0x1007ec000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 112 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 112 0x104d0c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 112 0x104d18000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 112 0x104d4c000 0x8000 0x0 3 /private/var/mobile/Library/Accounts/Accounts3.sqlite-shm
+task 113 symptomsd
+slide 113 0x11eec000 mh 0x100460000
+thread 645 113 
+thread 1390 113 
+thread 1432 113 
+thread 2161 113 
+thread 2199 113 
+map 113 0x100460000 0x4000 0x0 5 /usr/libexec/symptomsd
+map 113 0x10046c000 0x8000 0x8000 1 /usr/libexec/symptomsd
+map 113 0x1004ec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 113 0x101550000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 113 0x101560000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 113 0x10156c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 113 0x101594000 0x8000 0x0 3 /private/var/networkd/db/netusage.sqlite-shm
+map 113 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 114 fmflocatord
+slide 114 0x11eec000 mh 0x1005b4000
+thread 660 114 
+thread 1817 114 
+map 114 0x1005b4000 0x48000 0x0 5 /usr/libexec/fmflocatord
+map 114 0x100610000 0xc000 0x5c000 1 /usr/libexec/fmflocatord
+map 114 0x1006d4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 114 0x100b00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 115 findmydeviced
+slide 115 0x11eec000 mh 0x101140000
+thread 662 115 
+thread 905 115 
+thread 1650 115 
+thread 1652 115 
+map 115 0x101140000 0x298000 0x0 5 /usr/libexec/findmydeviced
+map 115 0x10141c000 0x1c000 0x2dc000 1 /usr/libexec/findmydeviced
+map 115 0x1014f0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 115 0x102d18000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 115 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 117 siriactionsd
+slide 117 0x11eec000 mh 0x100408000
+thread 668 117 
+thread 779 117 
+thread 1345 117 
+thread 1397 117 
+thread 1724 117 
+map 117 0x100408000 0x4000 0x0 5 /System/Library/PrivateFrameworks/VoiceShortcuts.framework/Support/siriactionsd
+map 117 0x100410000 0x4000 0x0 3 /System/Library/PrivateFrameworks/VoiceShortcuts.framework/Support/siriactionsd
+map 117 0x100414000 0xc000 0xc000 1 /System/Library/PrivateFrameworks/VoiceShortcuts.framework/Support/siriactionsd
+map 117 0x1004ec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 117 0x101508000 0x20000 0x0 1 /System/Library/PrivateFrameworks/VoiceShortcuts.framework/Localizable.loctable
+map 117 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 118 seserviced
+slide 118 0x11eec000 mh 0x100cb8000
+thread 676 118 
+thread 730 118 
+thread 748 118 
+thread 1180 118 
+thread 1563 118 
+map 118 0x100cb8000 0x1a4000 0x0 5 /usr/libexec/seserviced
+map 118 0x100e9c000 0x28000 0x1e0000 1 /usr/libexec/seserviced
+map 118 0x100f88000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 118 0x100f9c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 118 0x100fac000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 118 0x100fb8000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 118 0x100fcc000 0x8000 0x0 3 /private/var/mobile/Library/SecureElementService/SESStorageV001.sqlite-shm
+map 118 0x103c04000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 121 installcoordinat
+slide 121 0x11eec000 mh 0x1008d4000
+thread 688 121 
+thread 1470 121 
+map 121 0x1008d4000 0xb4000 0x0 5 /System/Library/PrivateFrameworks/InstallCoordination.framework/Support/installcoordinationd
+map 121 0x1009a4000 0x14000 0xd0000 1 /System/Library/PrivateFrameworks/InstallCoordination.framework/Support/installcoordinationd
+map 121 0x100a70000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 124 dmd
+slide 124 0x11eec000 mh 0x1007fc000
+thread 689 124 
+thread 1124 124 
+map 124 0x1007fc000 0xb4000 0x0 5 /usr/libexec/dmd
+map 124 0x1008e8000 0x24000 0xe8000 1 /usr/libexec/dmd
+map 124 0x1009c4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 124 0x1009dc000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 124 0x1009ec000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 124 0x1009f8000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 124 0x100e00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 124 0x102b0c000 0x8000 0x0 3 /private/var/mobile/Library/dmd/Policies/Database-shm
+map 124 0x102b14000 0x8000 0x0 3 /private/var/mobile/Library/dmd/ConfigurationEngine/Database-shm
+task 123 remotepairingdev
+slide 123 0x11eec000 mh 0x100c80000
+thread 690 123 
+thread 1250 123 
+map 123 0x100c80000 0x4c000 0x0 5 /usr/libexec/remotepairingdeviced
+map 123 0x100cd0000 0x4000 0x0 3 /usr/libexec/remotepairingdeviced
+map 123 0x100cd8000 0x24000 0x54000 1 /usr/libexec/remotepairingdeviced
+map 123 0x100db4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 128 adprivacyd
+slide 128 0x11eec000 mh 0x100754000
+thread 691 128 
+thread 752 128 
+map 128 0x100754000 0x4000 0x0 5 /usr/libexec/adprivacyd
+map 128 0x10075c000 0x4000 0x0 3 /usr/libexec/adprivacyd
+map 128 0x100760000 0x8000 0xc000 1 /usr/libexec/adprivacyd
+map 128 0x1007e0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 128 0x1007f4000 0x8000 0x0 3 /private/var/mobile/Library/Application Support/com.apple.ap.adprivacyd/FeatureModel.sqlite-shm
+map 128 0x100c40000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 128 0x102950000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 128 0x102960000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 128 0x10296c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 128 0x1029b4000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 126 calaccessd
+slide 126 0x11eec000 mh 0x100d7c000
+thread 692 126 
+thread 849 126 
+thread 890 126 CommonUtilities-WiFi-Thread
+map 126 0x100d7c000 0x4000 0x0 5 /System/Library/PrivateFrameworks/CalendarDaemon.framework/Support/calaccessd
+map 126 0x100d84000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CalendarDaemon.framework/Support/calaccessd
+map 126 0x100d88000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/CalendarDaemon.framework/Support/calaccessd
+map 126 0x100e54000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 126 0x100e70000 0x14000 0x0 1 /System/Library/PrivateFrameworks/CalendarNotification.framework/Localizable.loctable
+map 126 0x100e84000 0x4000 0x0 1 /System/Library/PrivateFrameworks/CalendarNotification.framework/Summaries.loctable
+map 126 0x100e8c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 126 0x100e9c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 126 0x100ea8000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 126 0x100ec0000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 126 0x101f00000 0x9c000 0x0 1 /System/Library/PrivateFrameworks/CalendarUIKit.framework/Localizable.loctable
+map 126 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 129 ScreenTimeAgent
+slide 129 0x11eec000 mh 0x100eb8000
+thread 693 129 
+thread 805 129 
+thread 1511 129 
+thread 1512 129 
+thread 1661 129 
+map 129 0x100eb8000 0xf0000 0x0 5 /System/Library/PrivateFrameworks/ScreenTimeCore.framework/ScreenTimeAgent
+map 129 0x100fdc000 0x20000 0x124000 1 /System/Library/PrivateFrameworks/ScreenTimeCore.framework/ScreenTimeAgent
+map 129 0x1010b4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 129 0x1010cc000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 129 0x1010dc000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 129 0x1010e8000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 129 0x1010f0000 0x8000 0x0 3 /private/var/mobile/Library/Application Support/com.apple.remotemanagementd/RMAdminStore-Local.sqlite-shm
+map 129 0x1010f8000 0x8000 0x0 3 /private/var/mobile/Library/Application Support/com.apple.remotemanagementd/RMAdminStore-Cloud.sqlite-shm
+map 129 0x101500000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 129 0x103690000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 129 0x1037c8000 0x24000 0x0 1 /System/Library/Frameworks/CoreData.framework/CoreDataErrors.loctable
+task 131 liveactivitiesd
+slide 131 0x11eec000 mh 0x100f3c000
+thread 694 131 
+thread 796 131 
+thread 811 131 
+thread 831 131 
+thread 836 131 
+thread 837 131 
+thread 1472 131 
+map 131 0x100f3c000 0x4000 0x0 5 /System/Library/PrivateFrameworks/SessionCore.framework/Support/liveactivitiesd
+map 131 0x100f44000 0x4000 0x0 3 /System/Library/PrivateFrameworks/SessionCore.framework/Support/liveactivitiesd
+map 131 0x100f48000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/SessionCore.framework/Support/liveactivitiesd
+map 131 0x100fd4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 131 0x100ff8000 0x8000 0x0 3 /private/var/mobile/Library/sessionkitd/liveactivitiesd.sql-shm
+map 131 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 132 akd
+slide 132 0x11eec000 mh 0x1002f0000
+thread 695 132 
+thread 807 132 
+thread 832 132 
+thread 850 132 
+thread 2190 132 
+map 132 0x1002f0000 0x118000 0x0 5 /System/Library/PrivateFrameworks/AuthKit.framework/akd
+map 132 0x10043c000 0x1c000 0x14c000 1 /System/Library/PrivateFrameworks/AuthKit.framework/akd
+map 132 0x1004d0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 132 0x101140000 0x8000 0x0 3 /private/var/containers/Data/System/720741A2-F013-4E1F-BA7E-72C206064987/Library/Caches/Cache.db-shm
+map 132 0x10117c000 0x8000 0x0 3 /private/var/mobile/Library/HTTPStorages/com.apple.akd/httpstorages.sqlite-shm
+map 132 0x1011a4000 0x48000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/Localizable.loctable
+map 132 0x101600000 0xd4000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/DafsaData.bin
+map 132 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 130 mapspushd
+slide 130 0x11eec000 mh 0x100cc8000
+thread 696 130 
+thread 1471 130 
+map 130 0x100cc8000 0x3c000 0x0 5 /System/Library/PrivateFrameworks/MapsSupport.framework/mapspushd
+map 130 0x100d18000 0x10000 0x50000 1 /System/Library/PrivateFrameworks/MapsSupport.framework/mapspushd
+map 130 0x100de0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 130 0x101200000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 130 0x102f10000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 130 0x102f20000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 130 0x102f2c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+task 125 corespeechd
+slide 125 0x11eec000 mh 0x100638000
+thread 697 125 
+thread 814 125 
+thread 816 125 
+thread 818 125 
+map 125 0x100638000 0x204000 0x0 5 /System/Library/PrivateFrameworks/CoreSpeech.framework/corespeechd
+map 125 0x1008a8000 0x24000 0x270000 1 /System/Library/PrivateFrameworks/CoreSpeech.framework/corespeechd
+map 125 0x100984000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 125 0x100998000 0x14000 0x0 1 /System/Library/PrivateFrameworks/CoreEmbeddedSpeechRecognition.framework/default_factors_401.pb
+map 125 0x1009b0000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 125 0x1009c0000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 125 0x1009cc000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 125 0x100e00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 120 profiled
+slide 120 0x11eec000 mh 0x100e60000
+thread 698 120 
+thread 800 120 
+thread 1145 120 
+map 120 0x100e60000 0xc8000 0x0 5 /usr/libexec/profiled
+map 120 0x100f48000 0x28000 0xe8000 1 /usr/libexec/profiled
+map 120 0x101c40000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 120 0x101c64000 0x128000 0x0 1 /System/Library/PrivateFrameworks/DMCUtilities.framework/DMCLocalizable.loctable
+map 120 0x101d8c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 120 0x101e64000 0x34000 0x0 1 /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ErrnoErrors.loctable
+map 120 0x101e98000 0x14000 0x0 1 /System/Library/Frameworks/CoreFoundation.framework/Error.loctable
+map 120 0x101eac000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 120 0x103c00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 120 0x10590c000 0x3d4000 0x0 1 /System/Library/PrivateFrameworks/ManagedConfiguration.framework/Payloads.loctable
+map 120 0x105ce0000 0x1b8000 0x0 1 /System/Library/PrivateFrameworks/ManagedConfiguration.framework/Errors.loctable
+task 127 appleaccountd
+slide 127 0x11eec000 mh 0x100020000
+thread 699 127 
+thread 758 127 
+thread 759 127 
+thread 917 127 
+thread 918 127 
+thread 932 127 
+thread 938 127 
+thread 1162 127 
+thread 1163 127 
+thread 1164 127 
+thread 1166 127 
+thread 1167 127 
+thread 1168 127 
+thread 1169 127 
+thread 1170 127 
+thread 1171 127 
+thread 1172 127 
+thread 1174 127 
+thread 1175 127 
+thread 1176 127 
+thread 1178 127 
+thread 1858 127 
+thread 1859 127 
+map 127 0x100020000 0x1e8000 0x0 5 /usr/libexec/appleaccountd
+map 127 0x100244000 0x28000 0x218000 1 /usr/libexec/appleaccountd
+map 127 0x100324000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 127 0x100800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 122 ind
+slide 122 0x11eec000 mh 0x100dcc000
+thread 700 122 
+thread 1847 122 
+map 122 0x100dcc000 0x2c000 0x0 5 /System/Library/PrivateFrameworks/iCloudNotification.framework/ind
+map 122 0x100e04000 0xc000 0x38000 1 /System/Library/PrivateFrameworks/iCloudNotification.framework/ind
+map 122 0x100ed4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 122 0x101f20000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.AppleAccount/Cache.db-shm
+map 122 0x101f28000 0xd4000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/DafsaData.bin
+map 122 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 122 0x10550c000 0x48000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/Localizable.loctable
+task 133 mDNSResponder
+slide 133 0x11eec000 mh 0x100a50000
+thread 709 133 
+thread 792 133 
+thread 834 133 
+thread 858 133 
+map 133 0x100a50000 0x11c000 0x0 5 /usr/sbin/mDNSResponder
+map 133 0x100b90000 0x38000 0x12c000 1 /usr/sbin/mDNSResponder
+map 133 0x100c80000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 133 0x100cb4000 0xc000 0x0 5 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/BTD2DPlugin.bundle/BTD2DPlugin
+map 133 0x100cc0000 0x4000 0x0 1 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/BTD2DPlugin.bundle/BTD2DPlugin
+map 133 0x100cc4000 0x4000 0x0 3 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/BTD2DPlugin.bundle/BTD2DPlugin
+map 133 0x100cc8000 0xc000 0x14000 1 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/BTD2DPlugin.bundle/BTD2DPlugin
+map 133 0x100cd4000 0x4000 0x0 5 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiAwareD2DPlugin.bundle/WiFiAwareD2DPlugin
+map 133 0x100cd8000 0x4000 0x0 1 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiAwareD2DPlugin.bundle/WiFiAwareD2DPlugin
+map 133 0x100cdc000 0x4000 0x0 3 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiAwareD2DPlugin.bundle/WiFiAwareD2DPlugin
+map 133 0x100ce0000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiAwareD2DPlugin.bundle/WiFiAwareD2DPlugin
+map 133 0x100ce8000 0x4000 0x0 5 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiD2DPlugin.bundle/WiFiD2DPlugin
+map 133 0x100cec000 0x4000 0x0 1 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiD2DPlugin.bundle/WiFiD2DPlugin
+map 133 0x100cf0000 0x4000 0x0 3 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiD2DPlugin.bundle/WiFiD2DPlugin
+map 133 0x100cf4000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/DeviceToDeviceManager.framework/PlugIns/WiFiD2DPlugin.bundle/WiFiD2DPlugin
+task 116 callservicesd
+slide 116 0x11eec000 mh 0x100750000
+thread 715 116 
+thread 1408 116 
+thread 1411 116 
+thread 1772 116 
+map 116 0x100750000 0x440000 0x0 5 /System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+map 116 0x100c18000 0x54000 0x4bc000 1 /System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+map 116 0x100cec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 116 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 134 pfd
+slide 134 0x11eec000 mh 0x100b44000
+thread 787 134 
+thread 788 134 
+map 134 0x100b44000 0xc000 0x0 5 /usr/libexec/pfd
+map 134 0x100b54000 0x4000 0x0 3 /usr/libexec/pfd
+map 134 0x100b58000 0x8000 0x14000 1 /usr/libexec/pfd
+map 134 0x100bd8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 135 IMDPersistenceAg
+slide 135 0x11eec000 mh 0x100bec000
+thread 750 135 
+thread 802 135 
+thread 852 135 
+map 135 0x100bec000 0x4000 0x0 5 /System/Library/PrivateFrameworks/IMDPersistence.framework/XPCServices/IMDPersistenceAgent.xpc/IMDPersistenceAgent
+map 135 0x100bf4000 0x4000 0x0 3 /System/Library/PrivateFrameworks/IMDPersistence.framework/XPCServices/IMDPersistenceAgent.xpc/IMDPersistenceAgent
+map 135 0x100bf8000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/IMDPersistence.framework/XPCServices/IMDPersistenceAgent.xpc/IMDPersistenceAgent
+map 135 0x100cb8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 135 0x100cdc000 0x8000 0x0 3 /private/var/mobile/Library/SMS/sms.db-shm
+task 136 awdd
+slide 136 0x11eec000 mh 0x101030000
+thread 770 136 
+thread 813 136 
+thread 1501 136 
+map 136 0x101030000 0xe0000 0x0 5 /System/Library/PrivateFrameworks/WirelessDiagnostics.framework/Support/awdd
+map 136 0x10111c000 0x4000 0x0 3 /System/Library/PrivateFrameworks/WirelessDiagnostics.framework/Support/awdd
+map 136 0x101120000 0x1c000 0xf0000 1 /System/Library/PrivateFrameworks/WirelessDiagnostics.framework/Support/awdd
+map 136 0x1011f4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 136 0x101204000 0x8000 0x0 3 /private/var/wireless/awdd/persistent.db-shm
+task 137 mobileactivation
+slide 137 0x11eec000 mh 0x100f74000
+thread 840 137 
+thread 2092 137 
+thread 2187 137 
+map 137 0x100f74000 0x214000 0x0 5 /usr/libexec/mobileactivationd
+map 137 0x1011a0000 0x8000 0x0 3 /usr/libexec/mobileactivationd
+map 137 0x1011a8000 0x14000 0x234000 1 /usr/libexec/mobileactivationd
+map 137 0x101274000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 138 com.apple.siri.e
+slide 138 0x11eec000 mh 0x100a4c000
+thread 895 138 
+thread 897 138 
+map 138 0x100a4c000 0x78000 0x0 5 /System/Library/PrivateFrameworks/CoreEmbeddedSpeechRecognition.framework/XPCServices/com.apple.siri.embeddedspeech.xpc/com.apple.siri.embeddedspeech
+map 138 0x100ad4000 0x14000 0x88000 1 /System/Library/PrivateFrameworks/CoreEmbeddedSpeechRecognition.framework/XPCServices/com.apple.siri.embeddedspeech.xpc/com.apple.siri.embeddedspeech
+map 138 0x100bac000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 138 0x100be0000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 138 0x102c00000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 138 0x102c0c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 138 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 139 homed
+slide 139 0x11eec000 mh 0x101134000
+thread 893 139 
+thread 898 139 
+thread 912 139 
+thread 913 139 
+thread 1527 139 
+map 139 0x101134000 0x4000 0x0 5 /System/Library/PrivateFrameworks/HomeKitDaemon.framework/Support/homed
+map 139 0x10113c000 0x4000 0x0 3 /System/Library/PrivateFrameworks/HomeKitDaemon.framework/Support/homed
+map 139 0x101140000 0xc000 0xc000 1 /System/Library/PrivateFrameworks/HomeKitDaemon.framework/Support/homed
+map 139 0x101204000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 139 0x101700000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 140 announced
+slide 140 0x11eec000 mh 0x100730000
+thread 896 140 
+thread 904 140 
+thread 954 140 
+thread 1637 140 
+map 140 0x100730000 0x4000 0x0 5 /usr/libexec/announced
+map 140 0x100738000 0x4000 0x0 3 /usr/libexec/announced
+map 140 0x10073c000 0xc000 0xc000 1 /usr/libexec/announced
+map 140 0x1007cc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 140 0x1007f4000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.HomeKit/com.apple.announced/com.apple.HomeKit.HMCache/EventRouterLastEventStoreCache-shm
+map 140 0x103400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 141 coreidvd
+slide 141 0x11eec000 mh 0x1005e4000
+thread 902 141 
+thread 1930 141 
+map 141 0x1005e4000 0x404000 0x0 5 /usr/libexec/coreidvd
+map 141 0x100a54000 0x74000 0x44c000 1 /usr/libexec/coreidvd
+map 141 0x100b80000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 141 0x100bb8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 141 0x100bc8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 141 0x100bd4000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 141 0x101000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 141 0x102d2c000 0x8000 0x0 3 /private/var/mobile/Library/coreidvd/coreidvd-biome-cd.sqlite-shm
+map 141 0x102d34000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.coreidv.coreidvd/url/Cache.db-shm
+map 141 0x102d3c000 0x8000 0x0 3 /private/var/mobile/Library/coreidvd/coreidvd-cd.sqlite-shm
+map 141 0x102d64000 0xd4000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/DafsaData.bin
+map 141 0x102e38000 0x8000 0x0 3 /private/var/mobile/Library/HTTPStorages/com.apple.coreidv.coreidvd/httpstorages.sqlite-shm
+map 141 0x102e60000 0x48000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/Localizable.loctable
+map 141 0x102ea8000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 142 watchlistd
+slide 142 0x11eec000 mh 0x101270000
+thread 906 142 
+thread 909 142 
+map 142 0x101270000 0x40000 0x0 5 /System/Library/PrivateFrameworks/WatchListKit.framework/Support/watchlistd
+map 142 0x1012c4000 0x30000 0x54000 1 /System/Library/PrivateFrameworks/WatchListKit.framework/Support/watchlistd
+map 142 0x1013ac000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 143 CallHistorySyncH
+slide 143 0x11eec000 mh 0x100648000
+thread 919 143 
+thread 935 143 
+thread 939 143 
+thread 1087 143 
+thread 1161 143 
+thread 1332 143 
+map 143 0x100648000 0x34000 0x0 5 /System/Library/PrivateFrameworks/CallHistory.framework/Support/CallHistorySyncHelper
+map 143 0x100688000 0xc000 0x40000 1 /System/Library/PrivateFrameworks/CallHistory.framework/Support/CallHistorySyncHelper
+map 143 0x10074c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 143 0x100760000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 143 0x100788000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 143 0x100798000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 143 0x1007a4000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 143 0x1007d0000 0x8000 0x0 3 /private/var/mobile/Library/CallHistoryDB/CallHistory.storedata-shm
+map 143 0x100c00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 144 symptomsd-diag
+slide 144 0x11eec000 mh 0x100d48000
+thread 934 144 
+thread 1343 144 
+map 144 0x100d48000 0x4000 0x0 5 /usr/libexec/symptomsd-diag
+map 144 0x100d50000 0x4000 0x0 3 /usr/libexec/symptomsd-diag
+map 144 0x100d54000 0x8000 0xc000 1 /usr/libexec/symptomsd-diag
+map 144 0x100e14000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 144 0x100e2c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 144 0x100e3c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 144 0x100e48000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 144 0x100e50000 0x8000 0x0 3 /private/var/mobile/Library/DiagnosticPipeline/DRSTaskingDataModel.sqlite-shm
+map 144 0x101300000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 145 misagent
+slide 145 0x11eec000 mh 0x1007dc000
+thread 952 145 
+thread 953 145 
+map 145 0x1007dc000 0x10000 0x0 5 /usr/libexec/misagent
+map 145 0x1007f0000 0x4000 0x0 3 /usr/libexec/misagent
+map 145 0x1007f4000 0xc000 0x18000 1 /usr/libexec/misagent
+map 145 0x1008b8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 145 0x1008e8000 0x8000 0x0 3 /private/var/MobileDevice/ProvisioningProfiles/mis.db-shm
+task 146 amsengagementd
+slide 146 0x11eec000 mh 0x100d50000
+thread 949 146 
+thread 1478 146 
+map 146 0x100d50000 0x1a4000 0x0 5 /System/Library/PrivateFrameworks/AppleMediaServicesUI.framework/amsengagementd
+map 146 0x100f28000 0x30000 0x1cc000 1 /System/Library/PrivateFrameworks/AppleMediaServicesUI.framework/amsengagementd
+map 146 0x100fdc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 147 siriknowledged
+slide 147 0x11eec000 mh 0x1003f4000
+thread 971 147 
+thread 1192 147 
+map 147 0x1003f4000 0x20000 0x0 5 /usr/libexec/siriknowledged
+map 147 0x100418000 0x4000 0x0 3 /usr/libexec/siriknowledged
+map 147 0x10041c000 0xc000 0x28000 1 /usr/libexec/siriknowledged
+map 147 0x1004ec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 147 0x102d00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 147 0x104a18000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 147 0x104a28000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 147 0x104a34000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+task 148 bookassetd
+slide 148 0x11eec000 mh 0x100cf0000
+thread 975 148 
+thread 992 148 
+map 148 0x100cf0000 0x100000 0x0 5 /System/Library/PrivateFrameworks/BookLibraryCore.framework/Support/bookassetd
+map 148 0x100e18000 0x18000 0x128000 1 /System/Library/PrivateFrameworks/BookLibraryCore.framework/Support/bookassetd
+map 148 0x100ee8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 148 0x101300000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 148 0x103010000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 148 0x103020000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 148 0x10302c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 148 0x103034000 0x8000 0x0 3 /private/var/containers/Shared/SystemGroup/9A36D565-5439-48D5-A8B4-EB8EF0892EF9/Documents/BLDatabaseManager/BLDatabaseManager.sqlite-shm
+task 149 SafariBookmarksS
+slide 149 0x11eec000 mh 0x100374000
+thread 976 149 
+thread 1006 149 
+map 149 0x100374000 0xf0000 0x4000 5 /private/preboot/Cryptexes/App/System/Library/CoreServices/SafariSupport.bundle/SafariBookmarksSyncAgent
+map 149 0x100484000 0x14000 0x114000 1 /private/preboot/Cryptexes/App/System/Library/CoreServices/SafariSupport.bundle/SafariBookmarksSyncAgent
+map 149 0x10056c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 151 transparencyd
+slide 151 0x11eec000 mh 0x10101c000
+thread 977 151 
+thread 1097 151 
+map 151 0x10101c000 0x1bc000 0x0 5 /usr/libexec/transparencyd
+map 151 0x101234000 0x24000 0x214000 1 /usr/libexec/transparencyd
+map 151 0x101310000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 151 0x101320000 0x8000 0x0 3 /private/var/Keychains/Analytics/TransparencyAnalytics.db-shm
+map 151 0x101350000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 151 0x101360000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 151 0x10136c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 151 0x101374000 0x8000 0x0 3 /private/var/root/Library/Application Support/com.apple.transparencyd/TransparencyModel.sqlite-shm
+map 151 0x10139c000 0xc000 0x0 1 /System/Library/Frameworks/LocalAuthentication.framework/Support/SharedUtils.framework/Shared.loctable
+map 151 0x1013a8000 0x8000 0x0 3 /private/var/root/Library/HTTPStorages/com.apple.transparencyd/httpstorages.sqlite-shm
+map 151 0x1013d0000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 151 0x101800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 151 0x10350c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 151 0x1035e4000 0xd4000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/DafsaData.bin
+map 151 0x1036b8000 0x48000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/Localizable.loctable
+task 153 searchpartyd
+slide 153 0x11eec000 mh 0x100af0000
+thread 990 153 
+thread 991 153 
+thread 1886 153 
+thread 1889 153 
+map 153 0x100af0000 0xbdc000 0x0 5 /usr/libexec/searchpartyd
+map 153 0x1017e0000 0x94000 0xc84000 1 /usr/libexec/searchpartyd
+map 153 0x10192c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 153 0x101940000 0x14000 0x0 1 /System/Library/Frameworks/CoreFoundation.framework/Error.loctable
+map 153 0x101954000 0x48000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/Localizable.loctable
+map 153 0x101e00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 152 mediasetupd
+slide 152 0x11eec000 mh 0x1007c0000
+thread 979 152 
+thread 993 152 
+thread 994 152 
+thread 1028 152 
+thread 1634 152 
+thread 1759 152 
+map 152 0x1007c0000 0x48000 0x0 5 /usr/libexec/mediasetupd
+map 152 0x100814000 0x10000 0x54000 1 /usr/libexec/mediasetupd
+map 152 0x1008e8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 152 0x103400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 154 suggestd
+slide 154 0x11eec000 mh 0x100b0c000
+thread 980 154 
+thread 989 154 
+thread 1129 154 
+thread 1130 154 
+map 154 0x100b0c000 0xc000 0x0 5 /System/Library/PrivateFrameworks/CoreSuggestions.framework/suggestd
+map 154 0x100b1c000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreSuggestions.framework/suggestd
+map 154 0x100b20000 0xc000 0x14000 1 /System/Library/PrivateFrameworks/CoreSuggestions.framework/suggestd
+map 154 0x100bf0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 154 0x102c20000 0x8000 0x0 3 /private/var/mobile/Library/Suggestions/entities.db-shm
+map 154 0x102c68000 0x8000 0x0 3 /private/var/mobile/Library/Suggestions/snippets.db-shm
+map 154 0x102c74000 0x10000 0x0 3 /private/var/mobile/Library/Suggestions/significant-pseudo-contacts.bf.bf2-head
+map 154 0x102c84000 0x10000 0x0 3 /private/var/mobile/Library/Suggestions/significant-pseudo-contacts.bf.bf2-tail
+map 154 0x102ca8000 0x10000 0x0 3 /private/var/mobile/Library/Caches/com.apple.proactive.eventtracker/aggr_state
+map 154 0x104000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 150 FamilyControlsAg
+slide 150 0x11eec000 mh 0x100e90000
+thread 981 150 
+thread 995 150 
+thread 1106 150 
+thread 1107 150 
+map 150 0x100e90000 0x5c000 0x0 5 /System/Library/Frameworks/FamilyControls.framework/FamilyControlsAgent
+map 150 0x100ef8000 0x1c000 0x68000 1 /System/Library/Frameworks/FamilyControls.framework/FamilyControlsAgent
+map 150 0x100fd8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 150 0x100ff4000 0x8000 0x0 1 /System/Library/PrivateFrameworks/Categories.framework/Localizable.loctable
+map 150 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 150 0x10550c000 0x14000 0x0 1 /System/Library/Frameworks/CoreFoundation.framework/Error.loctable
+task 156 fmfd
+slide 156 0x11eec000 mh 0x100640000
+thread 985 156 
+thread 1000 156 
+thread 1007 156 
+thread 1020 156 
+thread 1307 156 
+thread 1734 156 
+map 156 0x100640000 0x98000 0x0 5 /usr/libexec/fmfd
+map 156 0x1006f4000 0x18000 0xb4000 1 /usr/libexec/fmfd
+map 156 0x1007d0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 156 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 157 kbd
+slide 157 0x11eec000 mh 0x100c08000
+thread 998 157 
+thread 1344 157 
+map 157 0x100c08000 0x18000 0x0 5 /System/Library/TextInput/kbd
+map 157 0x100c2c000 0x10000 0x24000 1 /System/Library/TextInput/kbd
+map 157 0x102100000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 157 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 158 ContextService
+slide 158 0x11eec000 mh 0x100874000
+thread 1063 158 
+thread 1086 158 
+thread 1140 158 
+map 158 0x100874000 0x3cc000 0x0 5 /System/Library/PrivateFrameworks/ContextKit.framework/XPCServices/ContextService.xpc/ContextService
+map 158 0x100db8000 0xf8000 0x540000 1 /System/Library/PrivateFrameworks/ContextKit.framework/XPCServices/ContextService.xpc/ContextService
+map 158 0x100f68000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 158 0x100f80000 0x4000 0x0 1 /private/var/mobile/Library/Biome/streams/restricted/UserActivityMetadata/local/814382739233182
+map 158 0x100f84000 0x68000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/_0.nvd
+map 158 0x100fec000 0x8000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/_0.tvd
+map 158 0x100ff4000 0xc000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/queries.spa
+map 158 0x101400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 158 0x10310c000 0x100000 0x0 1 /private/var/mobile/Library/Biome/streams/restricted/UserActivityMetadata/local/814382739233182
+map 158 0x10320c000 0x32c000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/bloomfilter.dat
+map 158 0x103538000 0x202c000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/_0_AAPL50_0.doc
+map 158 0x105564000 0x16c4000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/_0_AAPL50_0.tim
+map 158 0x106ca8000 0xa54000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/_0.fdt
+map 158 0x1076fc000 0xb54000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/treasuremap.dat
+map 158 0x108250000 0xbec000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/qid-to-categories.tsm
+map 158 0x108e3c000 0x140000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/categories-ancestors.dat
+map 158 0x108f7c000 0x14000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/newstopics.dat
+map 158 0x108f90000 0x15c000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/categories-titles-en.dat
+map 158 0x1090ec000 0xa8000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/categories-qids.dat
+map 158 0x109194000 0x28c000 0x0 1 /System/Library/PreinstalledAssetsV2/RequiredByOs/com_apple_MobileAsset_ContextKit/9129167f4c3a5572da875112d549748faedd26f6.asset/AssetData/lucene.tagged.53.idx/tags.tsm
+task 159 familycircled
+slide 159 0x11eec000 mh 0x1007a4000
+thread 1058 159 
+thread 2055 159 
+map 159 0x1007a4000 0x2c000 0x0 5 /System/Library/PrivateFrameworks/FamilyCircle.framework/familycircled
+map 159 0x1007e0000 0xc000 0x3c000 1 /System/Library/PrivateFrameworks/FamilyCircle.framework/familycircled
+map 159 0x1008a4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 159 0x1008f0000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.AppleAccount/Cache.db-shm
+map 159 0x100d00000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 159 0x100dd8000 0xd4000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/DafsaData.bin
+map 159 0x100eac000 0x48000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/Localizable.loctable
+map 159 0x103400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 161 sociallayerd
+slide 161 0x11eec000 mh 0x1006bc000
+thread 1035 161 
+thread 1092 161 
+thread 1251 161 
+map 161 0x1006bc000 0x4000 0x0 5 /System/Library/PrivateFrameworks/SocialLayer.framework/sociallayerd.app/sociallayerd
+map 161 0x1006c4000 0x4000 0x0 3 /System/Library/PrivateFrameworks/SocialLayer.framework/sociallayerd.app/sociallayerd
+map 161 0x1006c8000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/SocialLayer.framework/sociallayerd.app/sociallayerd
+map 161 0x10079c000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 161 0x1007b4000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 161 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 164 duetexpertd
+slide 164 0x11eec000 mh 0x101044000
+thread 1093 164 
+thread 1128 164 
+thread 1137 164 
+thread 1334 164 
+thread 1773 164 
+map 164 0x101044000 0x4000 0x0 5 /usr/libexec/duetexpertd
+map 164 0x10104c000 0x4000 0x0 3 /usr/libexec/duetexpertd
+map 164 0x101050000 0xc000 0xc000 1 /usr/libexec/duetexpertd
+map 164 0x101114000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 164 0x101128000 0x8000 0x0 3 /private/var/mobile/Library/DuetExpertCenter/_ATXDataStore.db-shm
+map 164 0x101150000 0x4000 0x0 1 /System/Library/DuetExpertCenter/Assets/TrialAssets/default_factors_180.pb
+map 164 0x101158000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 164 0x101168000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 164 0x101174000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 164 0x101198000 0x8000 0x0 3 /private/var/mobile/Library/CoreDuet/Knowledge/knowledgeC.db-shm
+map 164 0x1011c0000 0x10000 0x0 3 /private/var/mobile/Library/Caches/com.apple.proactive.eventtracker/aggr_state
+map 164 0x101600000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 164 0x10330c000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+task 165 iconservicesagen
+slide 165 0x11eec000 mh 0x100768000
+thread 1118 165 
+thread 1457 165 
+thread 2160 165 
+thread 2186 165 
+map 165 0x100768000 0x8000 0x0 5 /System/Library/CoreServices/iconservicesagent
+map 165 0x100774000 0x4000 0x0 3 /System/Library/CoreServices/iconservicesagent
+map 165 0x100778000 0x8000 0x10000 1 /System/Library/CoreServices/iconservicesagent
+map 165 0x100838000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 165 0x100d00000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 166 contactsd
+slide 166 0x11eec000 mh 0x100de0000
+thread 1125 166 
+thread 1906 166 
+map 166 0x100de0000 0x14000 0x0 5 /System/Library/Frameworks/Contacts.framework/Support/contactsd
+map 166 0x100df8000 0x4000 0x0 3 /System/Library/Frameworks/Contacts.framework/Support/contactsd
+map 166 0x100dfc000 0xc000 0x1c000 1 /System/Library/Frameworks/Contacts.framework/Support/contactsd
+map 166 0x100ec0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 166 0x101300000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 166 0x10300c000 0x3c000 0x0 1 /System/Library/Frameworks/Contacts.framework/Errors.loctable
+task 168 adid
+slide 168 0x11eec000 mh 0x100824000
+thread 1126 168 
+thread 1855 168 
+map 168 0x100824000 0x198000 0x0 5 /usr/libexec/adid
+map 168 0x1009bc000 0xc000 0x0 1 /usr/libexec/adid
+map 168 0x1009c8000 0x4000 0x0 3 /usr/libexec/adid
+map 168 0x1009cc000 0xc000 0x1a8000 1 /usr/libexec/adid
+map 168 0x100ab0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 169 appstored
+slide 169 0x11eec000 mh 0x10076c000
+thread 1127 169 
+thread 1141 169 
+map 169 0x10076c000 0x3a8000 0x0 5 /System/Library/PrivateFrameworks/AppStoreDaemon.framework/Support/appstored
+map 169 0x100bac000 0x3c000 0x438000 1 /System/Library/PrivateFrameworks/AppStoreDaemon.framework/Support/appstored
+map 169 0x100cb4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 169 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 170 triald
+slide 170 0x11eec000 mh 0x1001fc000
+thread 1148 170 
+thread 1156 170 
+thread 1323 170 
+thread 1325 170 
+map 170 0x1001fc000 0x4000 0x0 5 /usr/libexec/triald
+map 170 0x100204000 0x4000 0x0 3 /usr/libexec/triald
+map 170 0x100208000 0x8000 0xc000 1 /usr/libexec/triald
+map 170 0x1002c8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 170 0x1002e4000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 170 0x1002f0000 0x8000 0x0 3 /private/var/mobile/Library/Trial/v7/Database/triald.db-shm
+map 170 0x100700000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 170 0x10240c000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 170 0x102418000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 170 0x102440000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 170 0x102464000 0x10000 0x0 3 /private/var/mobile/Library/Caches/com.apple.proactive.eventtracker/aggr_state
+map 170 0x102474000 0x30000 0x0 3 /private/var/mobile/Library/Caches/com.apple.proactive.eventtracker/log_stores/com.apple.Trial-com.apple.triald
+task 171 geod
+slide 171 0x11eec000 mh 0x100f3c000
+thread 1198 171 
+thread 1201 171 
+thread 2169 171 
+map 171 0x100f3c000 0x70000 0x0 5 /System/Library/PrivateFrameworks/GeoServices.framework/geod
+map 171 0x100fc8000 0x18000 0x8c000 1 /System/Library/PrivateFrameworks/GeoServices.framework/geod
+map 171 0x101098000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 171 0x1010ac000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.geod/GEOConfigStore.db-shm
+map 171 0x1010d4000 0x4000 0x0 1 /System/Library/PrivateFrameworks/GeoServices.framework/InfoPlist.loctable
+map 171 0x1010d8000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.geod/MapTiles/MapTiles.sqlitedb-shm
+map 171 0x101500000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 171 0x10320c000 0xd4000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/DafsaData.bin
+map 171 0x1032e0000 0x48000 0x0 1 /System/Library/Frameworks/CFNetwork.framework/Localizable.loctable
+map 171 0x103328000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 171 0x103400000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 171 0x103424000 0x8000 0x0 3 /private/var/mobile/Library/Caches/com.apple.geod/Vault/AP.db-shm
+task 172 cdpd
+slide 172 0x11eec000 mh 0x1009a8000
+thread 1191 172 
+thread 1196 172 
+map 172 0x1009a8000 0x4000 0x0 5 /System/Library/PrivateFrameworks/CoreCDP.framework/cdpd
+map 172 0x1009b0000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreCDP.framework/cdpd
+map 172 0x1009b4000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/CoreCDP.framework/cdpd
+map 172 0x100a74000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 172 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 173 followupd
+slide 173 0x11eec000 mh 0x1008c8000
+thread 1203 173 
+thread 1206 173 
+thread 1210 173 
+map 173 0x1008c8000 0x1c000 0x0 5 /System/Library/PrivateFrameworks/CoreFollowUp.framework/followupd
+map 173 0x1008e8000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreFollowUp.framework/followupd
+map 173 0x1008ec000 0xc000 0x24000 1 /System/Library/PrivateFrameworks/CoreFollowUp.framework/followupd
+map 173 0x1009b0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 173 0x1009e8000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 173 0x100e00000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 173 0x100e0c000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+task 174 coreauthd
+slide 174 0x11eec000 mh 0x100c84000
+thread 1211 174 
+thread 1212 174 
+map 174 0x100c84000 0x2c000 0x0 5 /System/Library/Frameworks/LocalAuthentication.framework/Support/coreauthd
+map 174 0x100cbc000 0xc000 0x38000 1 /System/Library/Frameworks/LocalAuthentication.framework/Support/coreauthd
+map 174 0x100d80000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 174 0x100da0000 0xc000 0x0 1 /System/Library/Frameworks/LocalAuthentication.framework/Support/SharedUtils.framework/Shared.loctable
+map 174 0x100dc0000 0x20000 0x0 5 /System/Library/Frameworks/LocalAuthentication.framework/Support/ModulePlugins/ModuleACM.bundle/ModuleACM
+map 174 0x100de0000 0x4000 0x0 1 /System/Library/Frameworks/LocalAuthentication.framework/Support/ModulePlugins/ModuleACM.bundle/ModuleACM
+map 174 0x100de4000 0x4000 0x0 3 /System/Library/Frameworks/LocalAuthentication.framework/Support/ModulePlugins/ModuleACM.bundle/ModuleACM
+map 174 0x100de8000 0x8000 0x28000 1 /System/Library/Frameworks/LocalAuthentication.framework/Support/ModulePlugins/ModuleACM.bundle/ModuleACM
+map 174 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 176 swcd
+slide 176 0x11eec000 mh 0x1001b0000
+thread 1256 176 
+thread 1257 176 
+map 176 0x1001b0000 0x30000 0x0 5 /usr/libexec/swcd
+map 176 0x1001e4000 0x4000 0x0 3 /usr/libexec/swcd
+map 176 0x1001e8000 0xc000 0x38000 1 /usr/libexec/swcd
+map 176 0x1002ac000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 177 nearbyd
+slide 177 0x11eec000 mh 0x100690000
+thread 1268 177 com.apple.CoreMotion.MotionThread
+thread 1272 177 
+thread 1273 177 
+thread 1275 177 RoseCommunicationMgrQueue
+thread 1276 177 
+thread 1280 177 
+thread 1743 177 
+thread 2083 177 
+map 177 0x100690000 0x514000 0x0 5 /usr/libexec/nearbyd
+map 177 0x100bf0000 0x2c000 0x554000 1 /usr/libexec/nearbyd
+map 177 0x100ce0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 177 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 178 coresymbolicatio
+slide 178 0x11eec000 mh 0x100c68000
+thread 1265 178 
+thread 1867 178 
+map 178 0x100c68000 0xc000 0x0 5 /System/Library/PrivateFrameworks/CoreSymbolication.framework/coresymbolicationd
+map 178 0x100c78000 0x4000 0x0 3 /System/Library/PrivateFrameworks/CoreSymbolication.framework/coresymbolicationd
+map 178 0x100c7c000 0x8000 0x14000 1 /System/Library/PrivateFrameworks/CoreSymbolication.framework/coresymbolicationd
+map 178 0x100f00000 0x100000 0x0 3 /private/var/root/Library/Caches/com.apple.coresymbolicationd/20H392
+map 178 0x101840000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 167 localizationswit
+slide 167 0x11eec000 mh 0x100910000
+thread 1361 167 
+thread 1366 167 
+map 167 0x100910000 0x4000 0x0 5 /System/Library/PrivateFrameworks/IntlPreferences.framework/Support/localizationswitcherd
+map 167 0x100918000 0x4000 0x0 3 /System/Library/PrivateFrameworks/IntlPreferences.framework/Support/localizationswitcherd
+map 167 0x10091c000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/IntlPreferences.framework/Support/localizationswitcherd
+map 167 0x1009dc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 180 privacyaccountin
+slide 180 0x11eec000 mh 0x101220000
+thread 1385 180 
+thread 1404 180 
+map 180 0x101220000 0x18000 0x0 5 /System/Library/PrivateFrameworks/PrivacyAccounting.framework/Versions/A/Resources/privacyaccountingd
+map 180 0x10123c000 0x4000 0x0 3 /System/Library/PrivateFrameworks/PrivacyAccounting.framework/Versions/A/Resources/privacyaccountingd
+map 180 0x101240000 0xc000 0x20000 1 /System/Library/PrivateFrameworks/PrivacyAccounting.framework/Versions/A/Resources/privacyaccountingd
+map 180 0x101704000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 155 UsageTrackingAge
+slide 155 0x11eec000 mh 0x1007a8000
+thread 1337 155 
+thread 1431 155 
+thread 1458 155 
+thread 1462 155 
+map 155 0x1007a8000 0x5c000 0x0 5 /System/Library/PrivateFrameworks/UsageTracking.framework/UsageTrackingAgent
+map 155 0x100810000 0x18000 0x68000 1 /System/Library/PrivateFrameworks/UsageTracking.framework/UsageTrackingAgent
+map 155 0x1008e0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 155 0x103400000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 175 searchd
+slide 175 0x11eec000 mh 0x100bd4000
+thread 1338 175 
+thread 1389 175 
+thread 1393 175 
+thread 1412 175 
+thread 1418 175 
+thread 1421 175 
+thread 1440 175 
+thread 2013 175 
+map 175 0x100bd4000 0x84000 0x0 5 /System/Library/PrivateFrameworks/Search.framework/searchd
+map 175 0x100c74000 0x18000 0xa0000 1 /System/Library/PrivateFrameworks/Search.framework/searchd
+map 175 0x102158000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 175 0x102170000 0x10000 0x0 1 /System/Library/Frameworks/CoreSpotlight.framework/schema.mdplist
+map 175 0x1021f0000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-4.map.header
+map 175 0x1021f4000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-5.map.header
+map 175 0x1021f8000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-3.map.header
+map 175 0x102600000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-1.map.header
+map 175 0x102604000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-1.map.header
+map 175 0x102608000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-1.map.data
+map 175 0x102708000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-2.map.header
+map 175 0x10270c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-3.map.header
+map 175 0x102710000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-2.map.header
+map 175 0x102714000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-4.map.header
+map 175 0x102718000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-5.map.header
+map 175 0x10271c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-1.map.header
+map 175 0x102720000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/reverseDirectoryStore
+map 175 0x102730000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/reverseDirectoryStore
+map 175 0x102740000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-2.map.header
+map 175 0x102744000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexIds
+map 175 0x10274c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexBigDates
+map 175 0x102750000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-3.map.header
+map 175 0x102754000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexScores
+map 175 0x10275c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexGroups
+map 175 0x102760000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexIds
+map 175 0x102768000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexBigDates
+map 175 0x10276c000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexScores
+map 175 0x102774000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexGroups
+map 175 0x102778000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-4.map.header
+map 175 0x10277c000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexTermIds
+map 175 0x102780000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexTermIds
+map 175 0x102784000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexPositionTable
+map 175 0x102788000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexDirectory
+map 175 0x10278c000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexCompactDirectory
+map 175 0x102790000 0x10000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.indexArrays
+map 175 0x1027a0000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexPositionTable
+map 175 0x1027a4000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexDirectory
+map 175 0x1027a8000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexCompactDirectory
+map 175 0x1027ac000 0x10000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.indexArrays
+map 175 0x1027bc000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-5.map.header
+map 175 0x1027c0000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/0.directoryStoreFile
+map 175 0x1027d0000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexIds
+map 175 0x1027d8000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexBigDates
+map 175 0x1027dc000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexScores
+map 175 0x1027e4000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexGroups
+map 175 0x1027e8000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexTermIds
+map 175 0x1027ec000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/reverseDirectoryStore
+map 175 0x1027fc000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexPositionTable
+map 175 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+map 175 0x10550c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-1.map.offsets
+map 175 0x10560c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-1.map.buckets
+map 175 0x10570c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-1.map.data
+map 175 0x10580c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-1.map.offsets
+map 175 0x10590c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-1.map.buckets
+map 175 0x105a0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-2.map.data
+map 175 0x105b0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-2.map.offsets
+map 175 0x105c0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-2.map.buckets
+map 175 0x105d0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-3.map.data
+map 175 0x105e0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-3.map.offsets
+map 175 0x105f0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-3.map.buckets
+map 175 0x10600c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-2.map.data
+map 175 0x10610c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-2.map.offsets
+map 175 0x10620c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-2.map.buckets
+map 175 0x10630c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-4.map.data
+map 175 0x10640c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-4.map.offsets
+map 175 0x10650c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-4.map.buckets
+map 175 0x10660c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-5.map.data
+map 175 0x10670c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-5.map.offsets
+map 175 0x10680c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/dbStr-5.map.buckets
+map 175 0x10690c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-3.map.data
+map 175 0x106a0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-3.map.offsets
+map 175 0x106b0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-3.map.buckets
+map 175 0x106c0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-4.map.data
+map 175 0x106d0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-4.map.offsets
+map 175 0x106e0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-4.map.buckets
+map 175 0x106f0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-5.map.data
+map 175 0x10700c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-5.map.offsets
+map 175 0x10710c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/dbStr-5.map.buckets
+map 175 0x10720c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-1.map.data
+map 175 0x10730c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-1.map.offsets
+map 175 0x10740c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-1.map.buckets
+map 175 0x10750c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-2.map.data
+map 175 0x10760c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-2.map.offsets
+map 175 0x10770c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-2.map.buckets
+map 175 0x10780c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-3.map.data
+map 175 0x10790c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-3.map.offsets
+map 175 0x107a0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-3.map.buckets
+map 175 0x107b0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-4.map.data
+map 175 0x107c0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-4.map.offsets
+map 175 0x107d0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-4.map.buckets
+map 175 0x107e0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-5.map.data
+map 175 0x107f0c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-5.map.offsets
+map 175 0x10800c000 0x100000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/dbStr-5.map.buckets
+map 175 0x10810c000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/0.directoryStoreFile
+map 175 0x10811c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexDirectory
+map 175 0x108120000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexIds
+map 175 0x108128000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexCompactDirectory
+map 175 0x10812c000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.indexArrays
+map 175 0x10813c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexBigDates
+map 175 0x108140000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexScores
+map 175 0x108148000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexGroups
+map 175 0x10814c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexTermIds
+map 175 0x108150000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexPositionTable
+map 175 0x108154000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexDirectory
+map 175 0x108158000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexCompactDirectory
+map 175 0x10815c000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.indexArrays
+map 175 0x10816c000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/live.0.directoryStoreFile
+map 175 0x10817c000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/live.0.directoryStoreFile
+map 175 0x108194000 0x20000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUnlessOpen/index.spotlightV2/tmp.XMcGH9
+map 175 0x1081d8000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexIds
+map 175 0x1081e0000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexBigDates
+map 175 0x1081e4000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexGroups
+map 175 0x1081f8000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexScores
+map 175 0x108300000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexTermIds
+map 175 0x108310000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexPositionTable
+map 175 0x108314000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexDirectory
+map 175 0x108318000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexCompactDirectory
+map 175 0x10831c000 0x20000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionComplete/index.spotlightV2/tmp.AKhNwn
+map 175 0x10833c000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 175 0x108378000 0x10000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.indexArrays
+map 175 0x108388000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/0.directoryStoreFile
+map 175 0x108398000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.indexIds
+map 175 0x1083a0000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.indexBigDates
+map 175 0x1083a4000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.indexScores
+map 175 0x1083ac000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.indexGroups
+map 175 0x1083b0000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.indexDirectory
+map 175 0x1083b4000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.indexCompactDirectory
+map 175 0x1083b8000 0x24000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.indexArrays
+map 175 0x1083dc000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.directoryStoreFile
+map 175 0x1083ec000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.0.topK.mdplistc
+map 175 0x1083f0000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexIds
+map 175 0x1083f8000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexBigDates
+map 175 0x1083fc000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexGroups
+map 175 0x108800000 0x8000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexScores
+map 175 0x108808000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexTermIds
+map 175 0x108818000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexPositionTable
+map 175 0x108828000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexDirectory
+map 175 0x10882c000 0x4000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexCompactDirectory
+map 175 0x108830000 0x40000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.indexArrays
+map 175 0x108870000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/live.1.directoryStoreFile
+map 175 0x108880000 0x4000 0x0 1 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/topK.mdplistc
+map 175 0x1088cc000 0x20000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/tmp.frTLIv
+map 175 0x108e10000 0x8bc000 0x0 1 /usr/share/langid/langid.inv
+map 175 0x1096cc000 0x74000 0x0 1 /System/Library/PrivateFrameworks/CoreNLP.framework/tokruleLE.data
+map 175 0x109740000 0x50000 0x0 1 /System/Library/LinguisticData/en/tokcompound.dat
+map 175 0x10a14c000 0x4000 0x0 1 /usr/share/tokenizer/zh/Hant/unk.dic
+map 175 0x10a150000 0x4000 0x0 1 /usr/share/tokenizer/zh/Hans/unk.dic
+map 175 0x10a160000 0x44000 0x0 1 /usr/share/tokenizer/ko/char.bin
+map 175 0x10a1a4000 0x4000 0x0 1 /usr/share/tokenizer/ko/unk.dic
+map 175 0x10a1a8000 0x8000 0x0 1 /usr/share/tokenizer/ko/matrix.bin
+map 175 0x10a1fc000 0x4000 0x0 1 /usr/share/tokenizer/ja/unk.dic
+map 175 0x10a400000 0x44000 0x0 1 /usr/share/tokenizer/zh/Hant/char.bin
+map 175 0x10a444000 0x4c000 0x0 1 /usr/share/tokenizer/zh/Hant/matrix.bin
+map 175 0x10a498000 0x1bc000 0x0 1 /System/Library/LinguisticData/th/tokenizer.dat
+map 175 0x10a654000 0x44000 0x0 1 /usr/share/tokenizer/zh/Hans/char.bin
+map 175 0x10a698000 0x20000 0x0 1 /usr/share/tokenizer/zh/Hans/matrix.bin
+map 175 0x10a6d0000 0x44000 0x0 1 /usr/share/tokenizer/ja/char.bin
+map 175 0x10a780000 0x1c000 0x0 1 /System/Library/PrivateFrameworks/SpotlightServices.framework/appExtras.mdplist
+map 175 0x10a79c000 0x10000 0x0 3 /private/var/mobile/Library/Spotlight/CoreSpotlight/NSFileProtectionCompleteUntilFirstUserAuthentication/index.spotlightV2/reverseDirectoryStore
+map 175 0x10b000000 0x78c000 0x0 1 /usr/share/tokenizer/ko/sys.dic
+map 175 0x10c000000 0x3c0000 0x0 1 /usr/share/tokenizer/zh/Hant/sys.dic
+map 175 0x10c3c0000 0x488000 0x0 1 /usr/share/tokenizer/zh/Hans/sys.dic
+map 175 0x10c848000 0x131c000 0x0 1 /usr/share/tokenizer/ja/sys.dic
+map 175 0x10db64000 0x574000 0x0 1 /usr/share/tokenizer/ja/matrix.bin
+task 181 nanoregistrylaun
+slide 181 0x11eec000 mh 0x100cc0000
+thread 1349 181 
+thread 1369 181 
+map 181 0x100cc0000 0x8000 0x0 5 /usr/libexec/nanoregistrylaunchd
+map 181 0x100ccc000 0x4000 0x0 3 /usr/libexec/nanoregistrylaunchd
+map 181 0x100cd0000 0x8000 0x10000 1 /usr/libexec/nanoregistrylaunchd
+map 181 0x100d90000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 182 fitnesscoachingd
+slide 182 0x11eec000 mh 0x10021c000
+thread 1351 182 
+thread 1358 182 
+thread 1365 182 
+map 182 0x10021c000 0x4000 0x0 5 /System/Library/PrivateFrameworks/FitnessCoachingServices.framework/fitnesscoachingd
+map 182 0x100224000 0x4000 0x0 3 /System/Library/PrivateFrameworks/FitnessCoachingServices.framework/fitnesscoachingd
+map 182 0x100228000 0x8000 0xc000 1 /System/Library/PrivateFrameworks/FitnessCoachingServices.framework/fitnesscoachingd
+map 182 0x1002e8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 182 0x100700000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 183 com.apple.Mobile
+slide 183 0x11eec000 mh 0x1002d8000
+thread 1414 183 
+thread 1415 183 
+map 183 0x1002d8000 0x38000 0x0 5 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/XPCServices/com.apple.MobileSoftwareUpdate.CleanupPreparePathService.xpc/com.apple.MobileSoftwareUpdate.CleanupPreparePathService
+map 183 0x10031c000 0x4000 0x0 3 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/XPCServices/com.apple.MobileSoftwareUpdate.CleanupPreparePathService.xpc/com.apple.MobileSoftwareUpdate.CleanupPreparePathService
+map 183 0x100320000 0x28000 0x48000 1 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/XPCServices/com.apple.MobileSoftwareUpdate.CleanupPreparePathService.xpc/com.apple.MobileSoftwareUpdate.CleanupPreparePathService
+map 183 0x100700000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 184 networkservicepr
+slide 184 0x11eec000 mh 0x1005b8000
+thread 1410 184 
+thread 1438 184 
+thread 1460 184 
+map 184 0x1005b8000 0x3c000 0x0 5 /usr/libexec/networkserviceproxy
+map 184 0x100600000 0x10000 0x48000 1 /usr/libexec/networkserviceproxy
+map 184 0x1006c8000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 184 0x101700000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 184 0x103000000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 185 fileproviderd
+slide 185 0x11eec000 mh 0x10013c000
+thread 1430 185 
+thread 1437 185 
+map 185 0x10013c000 0x774000 0x0 5 /System/Library/Frameworks/FileProvider.framework/Support/fileproviderd
+map 185 0x10092c000 0x5c000 0x7d0000 1 /System/Library/Frameworks/FileProvider.framework/Support/fileproviderd
+map 185 0x100e40000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 185 0x100e68000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 185 0x100e78000 0xc000 0x0 5 /usr/lib/libobjc-trampolines.dylib
+map 185 0x100e84000 0x8000 0xc000 1 /usr/lib/libobjc-trampolines.dylib
+map 185 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 190 nesessionmanager
+slide 190 0x11eec000 mh 0x100418000
+thread 1436 190 
+thread 1443 190 
+map 190 0x100418000 0xa8000 0x0 5 /usr/libexec/nesessionmanager
+map 190 0x1004d4000 0x14000 0xbc000 1 /usr/libexec/nesessionmanager
+map 190 0x1005a0000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+task 191 pkd
+slide 191 0x11eec000 mh 0x1010d8000
+thread 1465 191 
+thread 1466 191 
+thread 1483 191 
+map 191 0x1010d8000 0x24000 0x0 5 /usr/libexec/pkd
+map 191 0x101100000 0x4000 0x0 3 /usr/libexec/pkd
+map 191 0x101104000 0x10000 0x2c000 1 /usr/libexec/pkd
+map 191 0x1011cc000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 191 0x101600000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 192 ProtectedCloudKe
+slide 192 0x11eec000 mh 0x100f24000
+thread 1495 192 
+thread 1497 192 
+thread 1499 192 
+thread 1500 192 
+map 192 0x100f24000 0x34000 0x0 5 /System/Library/PrivateFrameworks/ProtectedCloudStorage.framework/Helpers/ProtectedCloudKeySyncing
+map 192 0x100f64000 0x10000 0x40000 1 /System/Library/PrivateFrameworks/ProtectedCloudStorage.framework/Helpers/ProtectedCloudKeySyncing
+map 192 0x100fec000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 192 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 194 CAReportingServi
+slide 194 0x11eec000 mh 0x100998000
+thread 1564 194 
+thread 2168 194 
+map 194 0x100998000 0x60000 0x0 5 /System/Library/Frameworks/AudioToolbox.framework/XPCServices/CAReportingService.xpc/CAReportingService
+map 194 0x100a14000 0x18000 0x7c000 1 /System/Library/Frameworks/AudioToolbox.framework/XPCServices/CAReportingService.xpc/CAReportingService
+map 194 0x100ae4000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 194 0x100f00000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+task 196 parsec-fbf
+slide 196 0x11eec000 mh 0x100984000
+thread 1605 196 
+thread 1893 196 
+map 196 0x100984000 0x180000 0x0 5 /System/Library/PrivateFrameworks/CoreParsec.framework/parsec-fbf
+map 196 0x100b38000 0x44000 0x1a8000 1 /System/Library/PrivateFrameworks/CoreParsec.framework/parsec-fbf
+map 196 0x100f40000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 196 0x100f54000 0x24000 0x0 1 /private/var/db/analyticsd/events.allowlist
+map 196 0x102d00000 0xd8000 0x0 1 /System/Library/Frameworks/Foundation.framework/FoundationErrors.loctable
+map 196 0x103800000 0x1d0c000 0x0 1 /usr/share/icu/icudt70l.dat
+task 195 siriinferenced
+slide 195 0x11eec000 mh 0x100938000
+thread 1600 195 
+thread 1602 195 
+thread 1604 195 
+thread 1613 195 
+map 195 0x100938000 0x1c000 0x0 5 /System/Library/PrivateFrameworks/SiriInference.framework/Support/siriinferenced
+map 195 0x100958000 0x4000 0x0 3 /System/Library/PrivateFrameworks/SiriInference.framework/Support/siriinferenced
+map 195 0x10095c000 0x14000 0x24000 1 /System/Library/PrivateFrameworks/SiriInference.framework/Support/siriinferenced
+map 195 0x100a28000 0x10000 0x0 1 /private/var/preferences/Logging/.plist-cache.bGnsTRt2
+map 195 0x100a58000 0x4000 0x0 5 /System/Library/Assistant/Suggestions/InferenceBridge/SiriSuggestionsInferenceBridge.bundle/SiriSuggestionsInferenceBridge
+map 195 0x100a5c000 0x4000 0x0 1 /System/Library/Assistant/Suggestions/InferenceBridge/SiriSuggestionsInferenceBridge.bundle/SiriSuggestionsInferenceBridge
+map 195 0x100a60000 0x4000 0x0 3 /System/Library/Assistant/Suggestions/InferenceBridge/SiriSuggestionsInferenceBridge.bundle/SiriSuggestionsInferenceBridge
+map 195 0x100a64000 0x10000 0xc000 1 /System/Library/Assistant/Suggestions/InferenceBridge/SiriSuggestionsInferenceBridge.bundle/SiriSuggestionsInferenceBridge
+map 195 0x100a74000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/AudioSuggestionsPlugin.bundle/AudioSuggestionsPlugin
+map 195 0x100a7c000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/AudioSuggestionsPlugin.bundle/AudioSuggestionsPlugin
+map 195 0x100a80000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/AudioSuggestionsPlugin.bundle/AudioSuggestionsPlugin
+map 195 0x100a84000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/AudioSuggestionsPlugin.bundle/AudioSuggestionsPlugin
+map 195 0x100a94000 0xc000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/AppLaunchSuggestionsPlugin.bundle/AppLaunchSuggestionsPlugin
+map 195 0x100aa0000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/AppLaunchSuggestionsPlugin.bundle/AppLaunchSuggestionsPlugin
+map 195 0x100aa4000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/AppLaunchSuggestionsPlugin.bundle/AppLaunchSuggestionsPlugin
+map 195 0x100aa8000 0xc000 0x14000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/AppLaunchSuggestionsPlugin.bundle/AppLaunchSuggestionsPlugin
+map 195 0x100ab4000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/CalendarSuggestions.bundle/CalendarSuggestions
+map 195 0x100abc000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/CalendarSuggestions.bundle/CalendarSuggestions
+map 195 0x100ac0000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/CalendarSuggestions.bundle/CalendarSuggestions
+map 195 0x100ac4000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/CalendarSuggestions.bundle/CalendarSuggestions
+map 195 0x100acc000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/PlaybackControlsSuggestionsPlugin.bundle/PlaybackControlsSuggestionsPlugin
+map 195 0x100ad4000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/PlaybackControlsSuggestionsPlugin.bundle/PlaybackControlsSuggestionsPlugin
+map 195 0x100ad8000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/PlaybackControlsSuggestionsPlugin.bundle/PlaybackControlsSuggestionsPlugin
+map 195 0x100adc000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/PlaybackControlsSuggestionsPlugin.bundle/PlaybackControlsSuggestionsPlugin
+map 195 0x100ae4000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriMessagesSuggestions.bundle/SiriMessagesSuggestions
+map 195 0x100aec000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriMessagesSuggestions.bundle/SiriMessagesSuggestions
+map 195 0x100af0000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriMessagesSuggestions.bundle/SiriMessagesSuggestions
+map 195 0x100af4000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriMessagesSuggestions.bundle/SiriMessagesSuggestions
+map 195 0x100f00000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriNotebookSuggestionsPlugin.bundle/SiriNotebookSuggestionsPlugin
+map 195 0x100f08000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriNotebookSuggestionsPlugin.bundle/SiriNotebookSuggestionsPlugin
+map 195 0x100f0c000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriNotebookSuggestionsPlugin.bundle/SiriNotebookSuggestionsPlugin
+map 195 0x100f10000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriNotebookSuggestionsPlugin.bundle/SiriNotebookSuggestionsPlugin
+map 195 0x100f18000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSettingsSuggestionsPlugin.bundle/SiriSettingsSuggestionsPlugin
+map 195 0x100f20000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSettingsSuggestionsPlugin.bundle/SiriSettingsSuggestionsPlugin
+map 195 0x100f24000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSettingsSuggestionsPlugin.bundle/SiriSettingsSuggestionsPlugin
+map 195 0x100f28000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSettingsSuggestionsPlugin.bundle/SiriSettingsSuggestionsPlugin
+map 195 0x100f3c000 0xc000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/PhoneSuggestions.bundle/PhoneSuggestions
+map 195 0x100f48000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/PhoneSuggestions.bundle/PhoneSuggestions
+map 195 0x100f4c000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/PhoneSuggestions.bundle/PhoneSuggestions
+map 195 0x100f50000 0x28000 0x14000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/PhoneSuggestions.bundle/PhoneSuggestions
+map 195 0x100f78000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriInformationSuggestionsPlugin.bundle/SiriInformationSuggestionsPlugin
+map 195 0x100f80000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriInformationSuggestionsPlugin.bundle/SiriInformationSuggestionsPlugin
+map 195 0x100f84000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriInformationSuggestionsPlugin.bundle/SiriInformationSuggestionsPlugin
+map 195 0x100f88000 0x1c000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriInformationSuggestionsPlugin.bundle/SiriInformationSuggestionsPlugin
+map 195 0x100fa4000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSocialConversationSuggestionsPlugin.bundle/SiriSocialConversationSuggestionsPlugin
+map 195 0x100fac000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSocialConversationSuggestionsPlugin.bundle/SiriSocialConversationSuggestionsPlugin
+map 195 0x100fb0000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSocialConversationSuggestionsPlugin.bundle/SiriSocialConversationSuggestionsPlugin
+map 195 0x100fb4000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriSocialConversationSuggestionsPlugin.bundle/SiriSocialConversationSuggestionsPlugin
+map 195 0x100fbc000 0x8000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SystemCommandsSuggestionsPlugin.bundle/SystemCommandsSuggestionsPlugin
+map 195 0x100fc4000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SystemCommandsSuggestionsPlugin.bundle/SystemCommandsSuggestionsPlugin
+map 195 0x100fc8000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SystemCommandsSuggestionsPlugin.bundle/SystemCommandsSuggestionsPlugin
+map 195 0x100fcc000 0x8000 0x10000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SystemCommandsSuggestionsPlugin.bundle/SystemCommandsSuggestionsPlugin
+map 195 0x100fdc000 0xc000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriTimeSuggestionsPlugin.bundle/SiriTimeSuggestionsPlugin
+map 195 0x100fe8000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriTimeSuggestionsPlugin.bundle/SiriTimeSuggestionsPlugin
+map 195 0x100fec000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriTimeSuggestionsPlugin.bundle/SiriTimeSuggestionsPlugin
+map 195 0x100ff0000 0xc000 0x14000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriTimeSuggestionsPlugin.bundle/SiriTimeSuggestionsPlugin
+map 195 0x100ffc000 0x4000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/VideoSuggestionsPlugin.bundle/VideoSuggestionsPlugin
+map 195 0x101000000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/VideoSuggestionsPlugin.bundle/VideoSuggestionsPlugin
+map 195 0x101004000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/VideoSuggestionsPlugin.bundle/VideoSuggestionsPlugin
+map 195 0x101008000 0x8000 0xc000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/VideoSuggestionsPlugin.bundle/VideoSuggestionsPlugin
+map 195 0x10106c000 0x2c000 0x0 5 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriLinkSuggestionsPlugin.bundle/SiriLinkSuggestionsPlugin
+map 195 0x101098000 0x4000 0x0 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriLinkSuggestionsPlugin.bundle/SiriLinkSuggestionsPlugin
+map 195 0x10109c000 0x4000 0x0 3 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriLinkSuggestionsPlugin.bundle/SiriLinkSuggestionsPlugin
+map 195 0x1010a4000 0x94000 0x34000 1 /System/Library/Siri/DM/SiriSuggestions/Owners/SiriLinkSuggestionsPlugin.bundle/SiriLinkSuggestionsPlugin
+end

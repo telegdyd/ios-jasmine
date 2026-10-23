@@ -1,0 +1,32 @@
+
+## tid 470 "": wait in 10 records, trap 375, event 0x670ac9a41b05, block hint 16, pri 31
+  kernel: _filt_wlwait_continue
+  user:   libsystem_kernel:_kevent_id < libdispatch:non-external (was a private external) < libdispatch:___DISPATCH_WAIT_FOR_QUEUE__ < libdispatch:__dispatch_sync_f_slow < CoreServices:-[_LSInstallProgressService performJournalRecovery] < CoreServices:___43+[_LSInstallProgressService beginListening]_block_invoke < libdispatch:non-external (was a private external) < libdispatch:__dispatch_once_callout < CoreServices:__LSServerMain < dyld:non-external (was a private external) < ?:-0x1
+
+## tid 506 "": wait in 10 records, trap -36, event 0xfff0070067c8, block hint 6, pri 31
+  kernel: _semaphore_wait_continue
+  user:   libsystem_kernel:_semaphore_wait_trap < libdispatch:__dispatch_semaphore_wait_slow < libMobileGestalt:_MGSetAnswer < libMobileGestalt:_MGSetAnswer < libMobileGestalt:_MGSetAnswer < libMobileGestalt:_MGSetAnswer < libMobileGestalt:0x19c5566c7 < libMobileGestalt:_MGSetAnswer < libMobileGestalt:0x19c5566c7 < libMobileGestalt:_MGSetAnswer < libMobileGestalt:0x19c5566c7 < libMobileGestalt:_MGSetAnswer < libMobileGestalt:0x19c5566c7 < InstalledContentLibrary:__GenerateBuiltInAppInstallSessionID < InstalledContentLibrary:+[MIInstallationIdentity installationIdentityForBundle:settingIfNotSet:error:] < InstalledContentLibrary:-[MIExecutableBundle installationIdentitySettingIfNotSet:withError:] < InstalledContentLibrary:-[MIInstalledInfoGatherer _populatePlaceholderRecordValues:signingInfo:] < InstalledContentLibrary:-[MIInstalledInfoGatherer _populateBundleRecord:error:] < InstalledContentLibrary:-[MIInstalledInfoGatherer bundleRecordWithError:] < InstalledContentLibrary:+[MILaunchServicesDatabaseGatherer entryForBundle:inContainer:withError:] < InstalledContentLibrary:-[MILaunchServicesDatabaseGatherer scanExecutableBundle:inContainer:withError:] < InstalledContentLibrary:___52-[MIFilesystemScanner _scanAppsDirectory:withError:]_block_invoke < InstalledContentLibrary:___80-[MIFileManager enumerateURLsForItemsInDirectoryAtURL:ignoreSymlinks:withBlock:]_block_invoke < InstalledContentLibrary:__CallClientBlock < InstalledContentLibrary:_TraverseDirectoryWithPostTraversal < InstalledContentLibrary:-[MIFileManager enumerateURLsForItemsInDirectoryAtURL:ignoreSymlinks:withBlock:] < InstalledContentLibrary:-[MIFilesystemScanner _scanAppsDirectory:withError:] < InstalledContentLibrary:-[MIFilesystemScanner performScanWithError:] < InstalledContentLibrary:-[MILaunchServicesDatabaseGatherer performGatherWithError:] < InstalledContentLibrary:-[ICLWorkspace enumerateBuiltInSystemContentWithBlock:error:] < CoreServices:____LSServer_LSEnumerateAndRegisterAllBundles_block_invoke.766 < CoreServices:_timeWorkBlock
+
+## tid 1467 "": wait in 10 records, trap -47, event 0x0, block hint 2, pri 31
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < libMobileGestalt:_MGSetAnswer < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_root_queue_drain < libdispatch:__dispatch_worker_thread2 < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 1477 "": wait in 10 records, trap 515, event 0x670e61f59245, block hint 10, pri 47
+  kernel: _ulock_wait_continue
+  user:   libsystem_kernel:___ulock_wait < libdispatch:__dispatch_group_wait_slow < CoreServices:___LAUNCH_SERVICES_CLIENTS_ARE_WAITING_FOR_THE_DATABASE_TO_FINISH_SEEDING__ < CoreServices:-[LSDatabaseBlockingFetchClient getServerStoreBlockingWithCompletionHandler:] < Foundation:___NSXPCCONNECTION_IS_CALLING_OUT_TO_EXPORTED_OBJECT_S1__ < Foundation:-[NSXPCConnection _decodeAndInvokeMessageWithEvent:reply:flags:] < Foundation:_message_handler_message < Foundation:_message_handler < libxpc:__xpc_connection_call_event_handler < libxpc:__xpc_connection_mach_event < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 1480 "": wait in 10 records, trap 515, event 0x670e61f59245, block hint 10, pri 31
+  kernel: _ulock_wait_continue
+  user:   libsystem_kernel:___ulock_wait < libdispatch:__dispatch_group_wait_slow < CoreServices:-[_LSInstallProgressService restoreInactiveInstalls] < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 1481 "": wait in 10 records, trap 368, event 0x670c96b78a6d, block hint 15, pri 37
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 1484 "": wait in 10 records, trap 368, event 0x670c96b74a6d, block hint 15, pri 31
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 1806 "": wait in 10 records, trap 0, event 0x670c9615ca6d, block hint 15, pri 31
+  kernel: _workq_unpark_continue
+  user:   ?:0x0

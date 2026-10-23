@@ -626,6 +626,31 @@ j60b/t4d2. t14a had the same LaunchServices waits, so it was probably the same l
 it more likely is open: it was seen only at 588/647 so far, but at a low rate. Next: why lsd seeds a fresh database
 on these boots (is the LS store not kept across boots?), and what its `dispatch_sync` target queue waits for.
 
+**Boot-logo freeze solved: a deadlock inside lsd (2026-10-24 01:49, slot b `shim-boot-j69b-slotb.img` = j0069 +
+j0069b, frozen on its first boot; `logs/prof-j69b-f1*`).** j0069b adds a meta `wait` line per census thread (user
+x0-x3, the word at x1, the turnstile inheritor chain) and `prof peek PID ADDR LEN`.
+- The chains: backboardd 1049, SpringBoard 509 and mediaserverd 473 wait through IPC turnstiles (ts4 -> ts5) on
+  **lsd thread 1477**; lsd's main thread 470 waits (workloop turnstile) on **lsd thread 1480**; 1477 and 1480 both
+  sit in `__ulock_wait` compare-and-wait on the same word (0x15d0a5314, value 0), no owner.
+- Stacks:
+  - 470: `__LSServerMain` -> `dispatch_once` -> `+[_LSInstallProgressService beginListening]` ->
+    `-[_LSInstallProgressService performJournalRecovery]` -> `dispatch_sync`.
+  - 1480, on that queue: `-[_LSInstallProgressService restoreInactiveInstalls]` -> `dispatch_group_wait`.
+  - 1477: an XPC request in `__LAUNCH_SERVICES_CLIENTS_ARE_WAITING_FOR_THE_DATABASE_TO_FINISH_SEEDING__` ->
+    `dispatch_group_wait` on the same group.
+- So: journal recovery runs synchronously on the main thread and waits for `restoreInactiveInstalls`, which waits
+  for the database seeding, which the main thread does after `beginListening` returns. A cycle inside lsd.
+- `prof peek 98 0x15d0a5300 64`: the group's wait word is still 0 with one enter outstanding. Nobody ever left the
+  group; no wakeup was lost. Not our kernel.
+- t7c (01:17) was the other order of the same cycle: the main thread was already seeding (`_LSDatabaseClean` ->
+  `dispatch_sync`) behind the same install queue. t14a was probably this too.
+- Needed for it: lsd seeding its database at boot (the store missing or rejected) **and** an install journal to
+  recover; which side runs first is timing. The GPU clock is not involved, except as timing.
+- **Two different freezes, then:** (1) this lsd deadlock, the boot logo (t14a, t7c, j69b-f1); (2) the lock-screen
+  freeze with CA's thread inside SweetGPU selector 2 (j60b, t4d2), still not caught with the census.
+- Next for (1): find why lsd seeds at every boot and which install journal it recovers (in the phone's iOS root,
+  `/var/mobile/Library/...`); clearing a stale journal or keeping the LS store is a root change (the user's OK).
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock
