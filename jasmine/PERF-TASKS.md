@@ -585,6 +585,11 @@ counts the boot as frozen, takes the j0069 census and stops.
 **Freeze hunt t14j (2026-10-24 00:05 to 00:34).** 11 more clean boots at 588 (drawing 69-122 s after boot). Boot 12
 never happened: after boot 11's command-port reboot no fastboot device came (the known shutdown hang), and the phone
 stayed unreachable until power + volume-down. The script called that "frozen"; it now stops with "no boot".
+Where the shutdown stopped (`logs/netlog-t14j-11.txt`): launchd called reboot(2) (00:26:44), processes were killed, and
+`unmount(0) /` was the last shutdown line. A good shutdown logs "hfs: unmount initiated on iOSRoot" next and reboots;
+here the kernel stayed alive for minutes (charger, battery and USB lines, SMP sample 2 min later) but the root
+unmount never finished. Then the command and log ports stopped answering, and `sweetwdt=20` did not reset it.
+This is a separate shutdown bug in the HFS/UFS root unmount, not task 14.
 - j69 at 588, normal voltage: **1 freeze in 25 boots** (t14h-5, lost).
 - All boots at 588/647, normal voltage: 4 freezes in 30.
 
