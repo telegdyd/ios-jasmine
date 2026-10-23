@@ -470,6 +470,58 @@ submit (`sweet_fb_gpu_write_wait`, up to 50 ms waiting for the panel latch), wai
 (`retireJobs`) paths, and the threads that use them at startup at once: CA's display thread, Mesa's shader compile
 threads (`ir3q0`/`ir3q1` allocate buffers in `upload_shader_variant`) and backboardd's render-server thread.
 
+**Code diagnosis (2026-10-23 17:50-18:16, no phone; four read-only Codex passes + checks).** Result: the freeze is
+*located* exactly, but it is **not a lock-order inversion**, and code reading alone does not show what the kernel waits on.
+- **Where (proven from the binaries).** The frozen boots' SMP samples, symbolized against the libsweetca on the phone
+  (j60b `xnu/out-mesa-kick`, base 0x101fcc000; t4d2 `xnu/out-mesa-t4diag`, base 0x101eb0000; unique BL/BLR fit over
+  16 return addresses each), show CA's display thread in `mach_msg2_trap` <- `IOConnectCallScalarMethod` (`mov w1, #2`
+  just before the call: **SweetGPU selector 2, buffer free**) <- `darwin_bo_close_handle` <- `fd_bo_fini_common` (holds
+  Mesa's global `table_lock`) <- `fd_bo_del_list_nocache` <- `fd_bo_cache_cleanup` (expiry of cached buffers > 1 s
+  old) <- `fd_bo_cache_free` <- `fd_bo_del` <- `fd_ringbuffer_sp_destroy` <- `cleanup_submit` <- `fd_batch_flush` <-
+  `fd_draw_vbo`. Same PC, LR, SP and backtrace in all 7 j60b samples (~12 min) and both t4d2 samples. The sampler
+  reads the saved user state (`sweet_sample_task`), which changes on every interrupt while a thread runs in user
+  space, so the thread sat **inside one selector-2 call in the kernel** the whole time. It is not looping in Mesa: a
+  cyclic free list would spin in `bo_finalize`'s loop in user space first. With `table_lock` held, every other Mesa
+  thread that touches buffers stops too: no submits, GPU idle, all jobs done. A single close_handle sample is normal
+  (t4d3 has one and moves on).
+- **No other backboardd thread is in the kernel** in those samples: run loops in `mach_msg`, ir3q/traceq workers in
+  `cnd_wait`, workqueue threads parked, one `__ulock_wait` that clean boots show too. So no visible thread can own
+  a lock the free waits for.
+- **Ruled out by reading** (`research/t14/` holds the source snapshot used, gitignored):
+  - Kernel lock graph (SweetGPU.cpp, sweet_gpu.c, SweetSurface.cpp, SweetFramebuffer.cpp): edges only
+    fLock -> gpu_lock / pool / sweet_surface_lock, client lock -> surface lock / pool, framebuffer -> surface /
+    pool, gpu_lock -> rpm. No reverse edge, so **no cycle**.
+  - No lock region exits early with its lock held. `SweetSurface::free` never calls back into SweetGPU or the
+    framebuffer.
+  - Every wait in the free path is bounded: `smmu_tlb_sync` 1 ms, `poll32`, `gpu_va_release` and `pt_l3` loops.
+  - The boot clock path (`gpu_set_clock`, RPM vote) runs in `sweet_gpu_thread` without gpu_lock and finishes before
+    SweetGPU is published. The RPM, clock and framebuffer log sequence is the same in frozen and clean boots.
+  - Mesa: Darwin has no submit worker (synchronous flush), no retry loop on SweetGPU errors, and no user-space lock
+    cycle.
+  - No SMMU fault is logged in any of the five boots, and CB0 terminates faults (no stall).
+- `gpu state` takes neither gpu_lock nor fLock, so its "36 of 36" says nothing about the locks.
+- **What is left.** The display thread is blocked in the kernel on something whose owner or cause is outside the
+  state these drivers show. Candidates:
+  - (a) A lock on the last-reference destruction path under fLock, held by a thread outside backboardd that is stuck
+    itself. That path is `SweetGPUBuffer::free`: gpu_lock, the pool lock, `sweet_surface_lock`, and XNU's
+    IOMemoryDescriptor and VM locks when the descriptor, kernel mapping and surface are released.
+  - (b) A CPU wedged inside the SMMU access of the unmap (TLBIASID / TLBSYNC writes, TLBSTATUS reads). The hypervisor
+    mediates this SMMU (the `sCR0.USFCFG` note at `sweet_gpu.c:826`) and is known to hang on some MMIO
+    (`str wzr`). No software timeout can catch that, and the other 3 cores keep the phone running.
+
+  Neither is visible in user stacks.
+- **Next step (no build needed).** Reproduce at 588 and take a 2 s j0057 profile with the census
+  (`tools/g2/prof.py fetch ... --tasks backboardd`). The kernel stack of the frozen display thread decides it:
+  `lck_mtx_lock` / `IOLockLock` (and which lock) for (a); a running sample in `smmu_tlb_sync` / `gpu_pte_set` on one
+  CPU that never leaves it for (b).
+- **Side defects found on the way** (real, not shown to cause this freeze):
+  - `smmu_tlb_sync` ignores its poll timeout.
+  - `sweet_rpm.c` `RPM_POLL` drains `while (rpm_rx_one())` with no budget.
+  - Selector 6 looks up `surfaceHandle()` and then `buffer(handle)` in two separate `fLock` sections (a concurrent
+    free can slip in between).
+  - Mesa `fd_submit_sp_flush_execute` ignores the backend's submit error.
+  - SwapWait counts swap N done only once a later swap ended (strict `>`).
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock
