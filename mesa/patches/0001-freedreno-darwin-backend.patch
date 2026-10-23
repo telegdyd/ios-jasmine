@@ -1,6 +1,6 @@
-From 597cc454cb362518f2cbd036a8bb0293dbaad96e Mon Sep 17 00:00:00 2001
+From 6a02aaadbb130b79f8c10a735c69881dee385d05 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Fri, 23 Oct 2026 06:13:24 +0200
+Date: Fri, 23 Oct 2026 06:33:26 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -9,7 +9,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  meson.build                                   |    5 +
  src/freedreno/drm/darwin/darwin_bo.c          |  158 ++
  src/freedreno/drm/darwin/darwin_device.c      |  156 ++
- src/freedreno/drm/darwin/darwin_pipe.c        |  246 ++
+ src/freedreno/drm/darwin/darwin_pipe.c        |  249 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  123 +
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
@@ -27,7 +27,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 22 files changed, 5976 insertions(+), 6 deletions(-)
+ 22 files changed, 5979 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -486,10 +486,10 @@ index 0000000..21c5abe
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
 new file mode 100644
-index 0000000..0aa4e13
+index 0000000..944954d
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_pipe.c
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,249 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -613,7 +613,10 @@ index 0000000..0aa4e13
 +      for (unsigned i = 0; i < deferred_primary->u.nr_cmds; i++) {
 +         struct fd_bo *ring_bo = deferred_primary->u.cmds[i].ring_bo;
 +         fd_submit_append_bo(fd_submit, ring_bo);
-+         ibs[cmd_idx].iova = fd_bo_get_iova(ring_bo) + submit_offset(ring_bo, deferred_primary->offset);
++         /* submit_offset() is relative to the buffer the kernel sees: a suballocated
++          * ring's heap block (msm passes that block's index), not the ring itself */
++         struct fd_bo *kbo = suballoc_bo(ring_bo) ? fd_bo_heap_block(ring_bo) : ring_bo;
++         ibs[cmd_idx].iova = fd_bo_get_iova(kbo) + submit_offset(ring_bo, deferred_primary->offset);
 +         ibs[cmd_idx].dwords = deferred_primary->u.cmds[i].size / 4;
 +         cmd_idx++;
 +      }

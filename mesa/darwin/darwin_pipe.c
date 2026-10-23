@@ -121,7 +121,10 @@ flush_submit_list(struct list_head *submit_list)
       for (unsigned i = 0; i < deferred_primary->u.nr_cmds; i++) {
          struct fd_bo *ring_bo = deferred_primary->u.cmds[i].ring_bo;
          fd_submit_append_bo(fd_submit, ring_bo);
-         ibs[cmd_idx].iova = fd_bo_get_iova(ring_bo) + submit_offset(ring_bo, deferred_primary->offset);
+         /* submit_offset() is relative to the buffer the kernel sees: a suballocated
+          * ring's heap block (msm passes that block's index), not the ring itself */
+         struct fd_bo *kbo = suballoc_bo(ring_bo) ? fd_bo_heap_block(ring_bo) : ring_bo;
+         ibs[cmd_idx].iova = fd_bo_get_iova(kbo) + submit_offset(ring_bo, deferred_primary->offset);
          ibs[cmd_idx].dwords = deferred_primary->u.cmds[i].size / 4;
          cmd_idx++;
       }
