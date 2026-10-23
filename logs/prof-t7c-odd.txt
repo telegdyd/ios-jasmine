@@ -1,0 +1,6 @@
+# logs/prof-t7c-freeze: 324 census records, tasks ['SpringBoard', 'backboardd']
+# logs/prof-t7c-lsd: 180 census records, tasks ['lsd', 'mediaserverd']
+# logs/prof-t7c-w1: 105 census records, tasks ['MobileGestaltHel', 'SpringBoard', 'launchd']
+# logs/prof-t7c-w2: 80 census records, tasks ['cfprefsd', 'runningboardd', 'securityd']
+# logs/prof-t7c-w3: 50 census records, tasks ['containermanager', 'mobileassetd']
+# logs/prof-t7c-w4: 150 census records, tasks ['UserEventAgent', 'configd', 'logd']

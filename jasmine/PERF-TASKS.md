@@ -610,6 +610,17 @@ before any reboot: `prof.py fetch logs/prof-NAME --secs 3 --census 200000 --task
 - mediaserverd also waits: CoreAudio HAL plug-in activation in `dispatch_sync`, AirPlay `_carManager_copyProperty`,
   a MobileGestalt NSXPC call, PowerLog XPC.
 
+Wider census at 01:25 (`logs/prof-t7c-odd.txt`, `research/t14/odd.py`) covered 16 processes: launchd, SpringBoard,
+MobileGestaltHelper, cfprefsd, securityd, runningboardd, containermanager, mobileassetd, logd, configd,
+UserEventAgent, lsd, mediaserverd, backboardd. **No runnable thread waiting for a CPU, and no thread blocked
+mid-kernel** (a lock wait would show a real frame chain). Every thread is parked in a continuation: mach_msg
+receive, ulock, psynch cv, kevent, workq. So nothing in the kernel holds anything. Either the startup is a wait
+cycle among daemons, or a wakeup or message was lost. Lost wakeups are the one way our kernel could still cause this
+picture; to tell them apart, read the owner of lsd's `dispatch_sync` queue lock (in lsd's memory).
+
+User's point (01:30): the signs match the 588-only freezes, so it may still be our bug. True as a correlation. But
+j60b/t4d2 had a thread *inside* a SweetGPU kernel call, while here every thread is parked.
+
 So this freeze is a **userland startup deadlock around lsd's database seeding**, not the SweetGPU buffer free of
 j60b/t4d2. t14a had the same LaunchServices waits, so it was probably the same lsd hang. Whether the GPU clock makes
 it more likely is open: it was seen only at 588/647 so far, but at a low rate. Next: why lsd seeds a fresh database
