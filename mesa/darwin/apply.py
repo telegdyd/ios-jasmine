@@ -144,6 +144,106 @@ sub('src/gallium/drivers/freedreno/freedreno_resource.c',
 #endif
 
    if (rsc->layout.pitch0 < (prsc->width0 * rsc->layout.cpp) ||''')
+# PERF-TASKS task 4 diagnostic: the buffer caches' bucket counters (FD_BO_CACHE_STATS) without its
+# per-miss log lines, and why a lookup misses: a busy entry at the bucket's head (with that entry's
+# fence and its pipe's control fence) or idle entries with other flags. libsweetca logs the sums.
+sub('src/freedreno/drm/freedreno_priv.h',
+    '''   int count, hits, misses, expired;
+   struct list_head list;
+};''',
+    '''   int count, hits, misses, expired;
+#ifdef __APPLE__
+   int busy, flagskip;
+#endif
+   struct list_head list;
+};''')
+sub('src/freedreno/drm/freedreno_priv.h',
+    '''   int num_buckets;
+   time_t time;
+};''',
+    '''   int num_buckets;
+   time_t time;
+#ifdef __APPLE__
+   uint32_t diag_ufence, diag_ctrl, diag_want, diag_had;
+#endif
+};''')
+sub('src/freedreno/drm/freedreno_bo_cache.c',
+    '''#define FD_BO_CACHE_STATS 0
+
+#define BO_CACHE_LOG(cache, fmt, ...) do {                      \\
+      if (FD_BO_CACHE_STATS) {                                  \\''',
+    '''#ifdef __APPLE__
+/* ios-jasmine: counters on, log lines off (libsweetca logs the sums) */
+#define FD_BO_CACHE_STATS 1
+#define FD_BO_CACHE_LOG 0
+#else
+#define FD_BO_CACHE_STATS 0
+#define FD_BO_CACHE_LOG FD_BO_CACHE_STATS
+#endif
+
+#define BO_CACHE_LOG(cache, fmt, ...) do {                      \\
+      if (FD_BO_CACHE_LOG) {                                    \\''')
+sub('src/freedreno/drm/freedreno_bo_cache.c',
+    '''#define BO_CACHE_DEC(bucket, field) do {                        \\
+      if (FD_BO_CACHE_STATS) {                                  \\
+         (bucket)->field++;                                     \\''',
+    '''#define BO_CACHE_DEC(bucket, field) do {                        \\
+      if (FD_BO_CACHE_STATS) {                                  \\
+         (bucket)->field--;                                     \\''')
+sub('src/freedreno/drm/freedreno_bo_cache.c',
+    '''static void
+dump_cache_stats(struct fd_bo_cache *cache)
+{
+   if (!FD_BO_CACHE_STATS)
+      return;''',
+    '''static void
+dump_cache_stats(struct fd_bo_cache *cache)
+{
+   if (!FD_BO_CACHE_LOG)
+      return;''')
+sub('src/freedreno/drm/freedreno_bo_cache.c',
+    '''static struct fd_bo *
+find_in_bucket(struct fd_bo_bucket *bucket, uint32_t flags)
+{''',
+    '''static struct fd_bo *
+find_in_bucket(struct fd_bo_cache *cache, struct fd_bo_bucket *bucket, uint32_t flags)
+{''')
+sub('src/freedreno/drm/freedreno_bo_cache.c',
+    '''      if (fd_bo_state(entry) != FD_BO_STATE_IDLE) {
+         break;
+      }
+      if (entry->alloc_flags == flags) {
+         bo = entry;
+         bo_remove_from_bucket(bucket, bo);
+         break;
+      }
+   }''',
+    '''      if (fd_bo_state(entry) != FD_BO_STATE_IDLE) {
+#ifdef __APPLE__
+         bucket->busy++;
+         simple_mtx_lock(&fence_lock);
+         if (entry->nr_fences) {
+            cache->diag_ufence = entry->fences[0]->ufence;
+            cache->diag_ctrl = entry->fences[0]->pipe->control->fence;
+         }
+         simple_mtx_unlock(&fence_lock);
+#endif
+         break;
+      }
+      if (entry->alloc_flags == flags) {
+         bo = entry;
+         bo_remove_from_bucket(bucket, bo);
+         break;
+      }
+#ifdef __APPLE__
+      bucket->flagskip++;
+      cache->diag_want = flags;
+      cache->diag_had = entry->alloc_flags;
+#endif
+   }''')
+sub('src/freedreno/drm/freedreno_bo_cache.c',
+    '''      bo = find_in_bucket(bucket, flags);''',
+    '''      bo = find_in_bucket(cache, bucket, flags);''')
 # sweetgl: GL ES contexts on the freedreno screen without EGL/DRI, and its test
 sgl = root / 'src/gallium/frontends/sweetgl'
 sgl.mkdir(exist_ok=True)

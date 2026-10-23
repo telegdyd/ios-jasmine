@@ -5,6 +5,8 @@
 
 #include "darwin_priv.h"
 
+uint64_t darwin_bo_news, darwin_bo_maps, darwin_bo_frees;
+
 static int
 darwin_bo_offset(struct fd_bo *bo, uint64_t *offset)
 {
@@ -24,6 +26,7 @@ darwin_bo_map(struct fd_bo *bo)
       ERROR_MSG("map of buffer %u failed: 0x%x", bo->handle, ret);
       return NULL;
    }
+   __atomic_add_fetch(&darwin_bo_maps, 1, __ATOMIC_RELAXED);
    return (void *)(uintptr_t)addr;
 }
 
@@ -145,6 +148,7 @@ darwin_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags)
       ERROR_MSG("buffer of %u bytes not allocated: 0x%x", size, ret);
       return NULL;
    }
+   __atomic_add_fetch(&darwin_bo_news, 1, __ATOMIC_RELAXED);
 
    struct fd_bo *bo = darwin_bo_wrap(dev, size, (uint32_t)out[0], out[1]);
    if (!bo)

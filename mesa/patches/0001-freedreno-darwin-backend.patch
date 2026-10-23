@@ -1,31 +1,33 @@
-From 45af0e8cddfb7a8157a6abd2b0c38c817b6f2910 Mon Sep 17 00:00:00 2001
+From 6850438c0fd8586b43f280cb959ac1aa4df8fd6c Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 22 Oct 2026 20:35:42 +0200
+Date: Fri, 23 Oct 2026 05:44:58 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
  include/darwin-drm/xf86drm.h                  |   87 +
  meson.build                                   |    5 +
- src/freedreno/drm/darwin/darwin_bo.c          |  154 ++
- src/freedreno/drm/darwin/darwin_device.c      |   82 +
- src/freedreno/drm/darwin/darwin_pipe.c        |  231 ++
- src/freedreno/drm/darwin/darwin_priv.h        |  116 +
+ src/freedreno/drm/darwin/darwin_bo.c          |  158 ++
+ src/freedreno/drm/darwin/darwin_device.c      |  156 ++
+ src/freedreno/drm/darwin/darwin_pipe.c        |  246 ++
+ src/freedreno/drm/darwin/darwin_priv.h        |  123 +
+ src/freedreno/drm/freedreno_bo_cache.c        |   31 +-
  src/freedreno/drm/freedreno_device.c          |   15 +
+ src/freedreno/drm/freedreno_priv.h            |    6 +
  src/freedreno/drm/meson.build                 |   11 +
  src/freedreno/meson.build                     |    2 +-
  .../drivers/freedreno/freedreno_resource.c    |    7 +
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 2069 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 2072 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  451 ++++
  src/gallium/frontends/sweetgl/sweetgl.h       |   97 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 20 files changed, 5828 insertions(+), 1 deletion(-)
+ 22 files changed, 5963 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -158,16 +160,18 @@ index 5f19ef9..46c744c 100644
    with_gallium_va and with_video_encode,
 diff --git a/src/freedreno/drm/darwin/darwin_bo.c b/src/freedreno/drm/darwin/darwin_bo.c
 new file mode 100644
-index 0000000..90d06d4
+index 0000000..eb784bb
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_bo.c
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,158 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + */
 +
 +#include "darwin_priv.h"
++
++uint64_t darwin_bo_news, darwin_bo_maps, darwin_bo_frees;
 +
 +static int
 +darwin_bo_offset(struct fd_bo *bo, uint64_t *offset)
@@ -188,6 +192,7 @@ index 0000000..90d06d4
 +      ERROR_MSG("map of buffer %u failed: 0x%x", bo->handle, ret);
 +      return NULL;
 +   }
++   __atomic_add_fetch(&darwin_bo_maps, 1, __ATOMIC_RELAXED);
 +   return (void *)(uintptr_t)addr;
 +}
 +
@@ -309,6 +314,7 @@ index 0000000..90d06d4
 +      ERROR_MSG("buffer of %u bytes not allocated: 0x%x", size, ret);
 +      return NULL;
 +   }
++   __atomic_add_fetch(&darwin_bo_news, 1, __ATOMIC_RELAXED);
 +
 +   struct fd_bo *bo = darwin_bo_wrap(dev, size, (uint32_t)out[0], out[1]);
 +   if (!bo)
@@ -318,16 +324,20 @@ index 0000000..90d06d4
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_device.c b/src/freedreno/drm/darwin/darwin_device.c
 new file mode 100644
-index 0000000..81c0409
+index 0000000..21c5abe
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_device.c
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,156 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + */
 +
 +#include "darwin_priv.h"
++
++/* the last device opened and its pipes, for darwin_prof_report() */
++static struct fd_device *prof_dev;
++struct fd_pipe *darwin_pipes[DARWIN_MAX_PIPES];
 +
 +int
 +darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value)
@@ -345,6 +355,7 @@ index 0000000..81c0409
 +   uint64_t in = bo->handle;
 +   IOConnectCallScalarMethod(to_darwin_device(bo->dev)->conn, SWEETGPU_BUFFER_FREE, &in, 1,
 +                             NULL, NULL);
++   __atomic_add_fetch(&darwin_bo_frees, 1, __ATOMIC_RELAXED);
 +}
 +
 +static void
@@ -402,14 +413,83 @@ index 0000000..81c0409
 +      return NULL;
 +   }
 +
++   prof_dev = dev;
 +   return dev;
++}
++
++struct cache_sum {
++   int hits, misses, busy, flagskip, expired, count;
++};
++
++static struct cache_sum
++cache_sum(struct fd_bo_cache *cache)
++{
++   struct cache_sum s = {0};
++   for (int i = 0; i < cache->num_buckets; i++) {
++      struct fd_bo_bucket *b = &cache->cache_bucket[i];
++      s.hits += b->hits;
++      s.misses += b->misses;
++      s.busy += b->busy;
++      s.flagskip += b->flagskip;
++      s.expired += b->expired;
++      s.count += b->count;
++   }
++   return s;
++}
++
++/* one cache since the last report (bucket counters from FD_BO_CACHE_STATS) */
++static void
++cache_line(void (*log)(const char *fmt, ...), struct fd_bo_cache *cache, struct cache_sum *last)
++{
++   struct cache_sum s = cache_sum(cache);
++   log("sweetca: prof: %s: %d hits, %d misses (%d at a busy head, %d flag skips), %d expired, %d cached; "
++       "busy head ufence %u ctrl %u, flag skip wanted 0x%x had 0x%x",
++       cache->name, s.hits - last->hits, s.misses - last->misses, s.busy - last->busy,
++       s.flagskip - last->flagskip, s.expired - last->expired, s.count, cache->diag_ufence, cache->diag_ctrl,
++       cache->diag_want, cache->diag_had);
++   *last = s;
++}
++
++void
++darwin_prof_report(void (*log)(const char *fmt, ...))
++{
++   static uint64_t news0, maps0, frees0;
++   static struct cache_sum bo0, ring0;
++   struct fd_device *dev = prof_dev;
++   if (!dev)
++      return;
++
++   uint64_t news = darwin_bo_news, maps = darwin_bo_maps, frees = darwin_bo_frees;
++   log("sweetca: prof: SweetGPU buffers: %llu created, %llu mapped, %llu freed",
++       (unsigned long long)(news - news0), (unsigned long long)(maps - maps0),
++       (unsigned long long)(frees - frees0));
++   news0 = news;
++   maps0 = maps;
++   frees0 = frees;
++
++   cache_line(log, &dev->bo_cache, &bo0);
++   cache_line(log, &dev->ring_cache, &ring0);
++
++   uint64_t done = 0;
++   uint32_t nout = 1;
++   IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_COMPLETED, NULL, 0, &done, &nout);
++   char line[512];
++   int n = snprintf(line, sizeof(line), "kernel done %llu, last submit kfence %u ufence %u;",
++                    (unsigned long long)done, darwin_last_kfence, darwin_last_ufence);
++   for (int i = 0; i < DARWIN_MAX_PIPES && n < (int)sizeof(line); i++) {
++      struct fd_pipe *p = darwin_pipes[i];
++      if (p && p->control)
++         n += snprintf(line + n, sizeof(line) - n, " pipe %d: last_fence %u ctrl %u;", i, p->last_fence,
++                       p->control->fence);
++   }
++   log("sweetca: prof: fences: %s", line);
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
 new file mode 100644
-index 0000000..4dc42a1
+index 0000000..0aa4e13
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_pipe.c
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,246 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -476,6 +556,7 @@ index 0000000..4dc42a1
 +
 +/* for libsweetca's profile: kernel submits and waits, and the ticks spent in those calls */
 +uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
++uint32_t darwin_last_kfence, darwin_last_ufence;
 +
 +static int
 +darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
@@ -570,6 +651,8 @@ index 0000000..4dc42a1
 +   }
 +   fd_submit->out_fence->kfence = (uint32_t)seqno;
 +   fd_submit->out_fence->fence_fd = -1;
++   darwin_last_kfence = (uint32_t)seqno;
++   darwin_last_ufence = fd_submit->base.fence;
 +
 +   if (fd_submit->in_fence_fd != -1)
 +      close(fd_submit->in_fence_fd);
@@ -586,6 +669,11 @@ index 0000000..4dc42a1
 +static void
 +darwin_pipe_destroy(struct fd_pipe *pipe)
 +{
++   for (int i = 0; i < DARWIN_MAX_PIPES; i++) {
++      struct fd_pipe *expected = pipe;
++      __atomic_compare_exchange_n(&darwin_pipes[i], &expected, NULL, false, __ATOMIC_RELAXED,
++                                  __ATOMIC_RELAXED);
++   }
 +   fd_pipe_sp_ringpool_fini(pipe);
 +   free(to_darwin_pipe(pipe));
 +}
@@ -639,14 +727,21 @@ index 0000000..4dc42a1
 +
 +   fd_pipe_sp_ringpool_init(pipe);
 +
++   for (int i = 0; i < DARWIN_MAX_PIPES; i++) {
++      struct fd_pipe *expected = NULL;
++      if (__atomic_compare_exchange_n(&darwin_pipes[i], &expected, pipe, false, __ATOMIC_RELAXED,
++                                      __ATOMIC_RELAXED))
++         break;
++   }
++
 +   return pipe;
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_priv.h b/src/freedreno/drm/darwin/darwin_priv.h
 new file mode 100644
-index 0000000..8078e09
+index 0000000..b09d2e5
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_priv.h
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,123 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -761,8 +856,102 @@ index 0000000..8078e09
 +
 +/* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
 +extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
++/* darwin_bo.c / darwin_device.c: SweetGPU buffer creates, maps and frees (task 4) */
++extern uint64_t darwin_bo_news, darwin_bo_maps, darwin_bo_frees;
++/* darwin_device.c: buffer caches, pipe fences and the kernel's completed seqno, one log line each */
++void darwin_prof_report(void (*log)(const char *fmt, ...));
++#define DARWIN_MAX_PIPES 8
++extern struct fd_pipe *darwin_pipes[DARWIN_MAX_PIPES];
++extern uint32_t darwin_last_kfence, darwin_last_ufence;
 +
 +#endif /* DARWIN_PRIV_H_ */
+diff --git a/src/freedreno/drm/freedreno_bo_cache.c b/src/freedreno/drm/freedreno_bo_cache.c
+index fc9e35f..5040813 100644
+--- a/src/freedreno/drm/freedreno_bo_cache.c
++++ b/src/freedreno/drm/freedreno_bo_cache.c
+@@ -10,10 +10,17 @@
+ #include "freedreno_drm_perfetto.h"
+ #include "freedreno_priv.h"
+ 
++#ifdef __APPLE__
++/* ios-jasmine: counters on, log lines off (libsweetca logs the sums) */
++#define FD_BO_CACHE_STATS 1
++#define FD_BO_CACHE_LOG 0
++#else
+ #define FD_BO_CACHE_STATS 0
++#define FD_BO_CACHE_LOG FD_BO_CACHE_STATS
++#endif
+ 
+ #define BO_CACHE_LOG(cache, fmt, ...) do {                      \
+-      if (FD_BO_CACHE_STATS) {                                  \
++      if (FD_BO_CACHE_LOG) {                                    \
+          mesa_logi("%s: "fmt, (cache)->name, ##__VA_ARGS__);    \
+       }                                                         \
+    } while (0)
+@@ -26,7 +33,7 @@
+ 
+ #define BO_CACHE_DEC(bucket, field) do {                        \
+       if (FD_BO_CACHE_STATS) {                                  \
+-         (bucket)->field++;                                     \
++         (bucket)->field--;                                     \
+       }                                                         \
+    } while (0)
+ 
+@@ -40,7 +47,7 @@ bo_remove_from_bucket(struct fd_bo_bucket *bucket, struct fd_bo *bo)
+ static void
+ dump_cache_stats(struct fd_bo_cache *cache)
+ {
+-   if (!FD_BO_CACHE_STATS)
++   if (!FD_BO_CACHE_LOG)
+       return;
+ 
+    static int cnt;
+@@ -203,7 +210,7 @@ get_bucket(struct fd_bo_cache *cache, uint32_t size)
+ }
+ 
+ static struct fd_bo *
+-find_in_bucket(struct fd_bo_bucket *bucket, uint32_t flags)
++find_in_bucket(struct fd_bo_cache *cache, struct fd_bo_bucket *bucket, uint32_t flags)
+ {
+    struct fd_bo *bo = NULL;
+ 
+@@ -216,6 +223,15 @@ find_in_bucket(struct fd_bo_bucket *bucket, uint32_t flags)
+     */
+    foreach_bo (entry, &bucket->list) {
+       if (fd_bo_state(entry) != FD_BO_STATE_IDLE) {
++#ifdef __APPLE__
++         bucket->busy++;
++         simple_mtx_lock(&fence_lock);
++         if (entry->nr_fences) {
++            cache->diag_ufence = entry->fences[0]->ufence;
++            cache->diag_ctrl = entry->fences[0]->pipe->control->fence;
++         }
++         simple_mtx_unlock(&fence_lock);
++#endif
+          break;
+       }
+       if (entry->alloc_flags == flags) {
+@@ -223,6 +239,11 @@ find_in_bucket(struct fd_bo_bucket *bucket, uint32_t flags)
+          bo_remove_from_bucket(bucket, bo);
+          break;
+       }
++#ifdef __APPLE__
++      bucket->flagskip++;
++      cache->diag_want = flags;
++      cache->diag_had = entry->alloc_flags;
++#endif
+    }
+ 
+    return bo;
+@@ -247,7 +268,7 @@ retry:
+    if (bucket) {
+       *size = bucket->size;
+       simple_mtx_lock(&cache->lock);
+-      bo = find_in_bucket(bucket, flags);
++      bo = find_in_bucket(cache, bucket, flags);
+       simple_mtx_unlock(&cache->lock);
+       if (bo) {
+          VG_BO_OBTAIN(bo);
 diff --git a/src/freedreno/drm/freedreno_device.c b/src/freedreno/drm/freedreno_device.c
 index 6c64e64..2309f5f 100644
 --- a/src/freedreno/drm/freedreno_device.c
@@ -803,6 +992,30 @@ index 6c64e64..2309f5f 100644
     fd_drm_perfetto_init();
  
     fd_rd_dump_env_init();
+diff --git a/src/freedreno/drm/freedreno_priv.h b/src/freedreno/drm/freedreno_priv.h
+index 3a243b6..b4fe164 100644
+--- a/src/freedreno/drm/freedreno_priv.h
++++ b/src/freedreno/drm/freedreno_priv.h
+@@ -105,6 +105,9 @@ struct fd_device_funcs {
+ struct fd_bo_bucket {
+    uint32_t size;
+    int count, hits, misses, expired;
++#ifdef __APPLE__
++   int busy, flagskip;
++#endif
+    struct list_head list;
+ };
+ 
+@@ -114,6 +117,9 @@ struct fd_bo_cache {
+    struct fd_bo_bucket cache_bucket[14 * 4];
+    int num_buckets;
+    time_t time;
++#ifdef __APPLE__
++   uint32_t diag_ufence, diag_ctrl, diag_want, diag_had;
++#endif
+ };
+ 
+ /* Probably good for the block size to be a multiple of an available
 diff --git a/src/freedreno/drm/meson.build b/src/freedreno/drm/meson.build
 index d2baf58..445e18a 100644
 --- a/src/freedreno/drm/meson.build
@@ -1306,10 +1519,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..c9dae0e
+index 0000000..703bb1e
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,2069 @@
+@@ -0,0 +1,2072 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1472,6 +1685,8 @@ index 0000000..c9dae0e
 + * logged with the 100-flush statistics. Outermost calls only add to the total.
 + */
 +extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
++/* the darwin backend's buffer, cache and fence counters (PERF-TASKS task 4) */
++void darwin_prof_report(void (*log)(const char *fmt, ...));
 +
 +struct prof_mark {
 +   const char *fn;
@@ -1729,6 +1944,7 @@ index 0000000..c9dae0e
 +   subt0 = subt;
 +   waitt0 = waitt;
 +   waits0 = waits;
++   darwin_prof_report(sca_log);
 +   prof_gl_ticks = 0;
 +   /* the 8 slowest wrappers, then every wrapper that submitted */
 +   uint8_t shown[PROF_SLOTS] = {0};

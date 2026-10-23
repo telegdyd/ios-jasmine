@@ -160,6 +160,8 @@ bind_ctx(struct sca_ctx *c)
  * logged with the 100-flush statistics. Outermost calls only add to the total.
  */
 extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
+/* the darwin backend's buffer, cache and fence counters (PERF-TASKS task 4) */
+void darwin_prof_report(void (*log)(const char *fmt, ...));
 
 struct prof_mark {
    const char *fn;
@@ -417,6 +419,7 @@ prof_report(double wall_ms)
    subt0 = subt;
    waitt0 = waitt;
    waits0 = waits;
+   darwin_prof_report(sca_log);
    prof_gl_ticks = 0;
    /* the 8 slowest wrappers, then every wrapper that submitted */
    uint8_t shown[PROF_SLOTS] = {0};

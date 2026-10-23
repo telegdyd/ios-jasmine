@@ -5,6 +5,10 @@
 
 #include "darwin_priv.h"
 
+/* the last device opened and its pipes, for darwin_prof_report() */
+static struct fd_device *prof_dev;
+struct fd_pipe *darwin_pipes[DARWIN_MAX_PIPES];
+
 int
 darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value)
 {
@@ -21,6 +25,7 @@ darwin_bo_close_handle(struct fd_bo *bo)
    uint64_t in = bo->handle;
    IOConnectCallScalarMethod(to_darwin_device(bo->dev)->conn, SWEETGPU_BUFFER_FREE, &in, 1,
                              NULL, NULL);
+   __atomic_add_fetch(&darwin_bo_frees, 1, __ATOMIC_RELAXED);
 }
 
 static void
@@ -78,5 +83,74 @@ darwin_device_new(int fd)
       return NULL;
    }
 
+   prof_dev = dev;
    return dev;
+}
+
+struct cache_sum {
+   int hits, misses, busy, flagskip, expired, count;
+};
+
+static struct cache_sum
+cache_sum(struct fd_bo_cache *cache)
+{
+   struct cache_sum s = {0};
+   for (int i = 0; i < cache->num_buckets; i++) {
+      struct fd_bo_bucket *b = &cache->cache_bucket[i];
+      s.hits += b->hits;
+      s.misses += b->misses;
+      s.busy += b->busy;
+      s.flagskip += b->flagskip;
+      s.expired += b->expired;
+      s.count += b->count;
+   }
+   return s;
+}
+
+/* one cache since the last report (bucket counters from FD_BO_CACHE_STATS) */
+static void
+cache_line(void (*log)(const char *fmt, ...), struct fd_bo_cache *cache, struct cache_sum *last)
+{
+   struct cache_sum s = cache_sum(cache);
+   log("sweetca: prof: %s: %d hits, %d misses (%d at a busy head, %d flag skips), %d expired, %d cached; "
+       "busy head ufence %u ctrl %u, flag skip wanted 0x%x had 0x%x",
+       cache->name, s.hits - last->hits, s.misses - last->misses, s.busy - last->busy,
+       s.flagskip - last->flagskip, s.expired - last->expired, s.count, cache->diag_ufence, cache->diag_ctrl,
+       cache->diag_want, cache->diag_had);
+   *last = s;
+}
+
+void
+darwin_prof_report(void (*log)(const char *fmt, ...))
+{
+   static uint64_t news0, maps0, frees0;
+   static struct cache_sum bo0, ring0;
+   struct fd_device *dev = prof_dev;
+   if (!dev)
+      return;
+
+   uint64_t news = darwin_bo_news, maps = darwin_bo_maps, frees = darwin_bo_frees;
+   log("sweetca: prof: SweetGPU buffers: %llu created, %llu mapped, %llu freed",
+       (unsigned long long)(news - news0), (unsigned long long)(maps - maps0),
+       (unsigned long long)(frees - frees0));
+   news0 = news;
+   maps0 = maps;
+   frees0 = frees;
+
+   cache_line(log, &dev->bo_cache, &bo0);
+   cache_line(log, &dev->ring_cache, &ring0);
+
+   uint64_t done = 0;
+   uint32_t nout = 1;
+   IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_COMPLETED, NULL, 0, &done, &nout);
+   char line[512];
+   int n = snprintf(line, sizeof(line), "kernel done %llu, last submit kfence %u ufence %u;",
+                    (unsigned long long)done, darwin_last_kfence, darwin_last_ufence);
+   for (int i = 0; i < DARWIN_MAX_PIPES && n < (int)sizeof(line); i++) {
+      struct fd_pipe *p = darwin_pipes[i];
+      if (p && p->control)
+         n += snprintf(line + n, sizeof(line) - n, " pipe %d: last_fence %u ctrl %u;", i, p->last_fence,
+                       p->control->fence);
+   }
+   log("sweetca: prof: fences: %s", line);
 }

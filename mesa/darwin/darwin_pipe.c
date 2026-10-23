@@ -64,6 +64,7 @@ darwin_pipe_set_param(struct fd_pipe *pipe, enum fd_param_id param, uint64_t val
 
 /* for libsweetca's profile: kernel submits and waits, and the ticks spent in those calls */
 uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
+uint32_t darwin_last_kfence, darwin_last_ufence;
 
 static int
 darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
@@ -158,6 +159,8 @@ flush_submit_list(struct list_head *submit_list)
    }
    fd_submit->out_fence->kfence = (uint32_t)seqno;
    fd_submit->out_fence->fence_fd = -1;
+   darwin_last_kfence = (uint32_t)seqno;
+   darwin_last_ufence = fd_submit->base.fence;
 
    if (fd_submit->in_fence_fd != -1)
       close(fd_submit->in_fence_fd);
@@ -174,6 +177,11 @@ darwin_submit_sp_new(struct fd_pipe *pipe)
 static void
 darwin_pipe_destroy(struct fd_pipe *pipe)
 {
+   for (int i = 0; i < DARWIN_MAX_PIPES; i++) {
+      struct fd_pipe *expected = pipe;
+      __atomic_compare_exchange_n(&darwin_pipes[i], &expected, NULL, false, __ATOMIC_RELAXED,
+                                  __ATOMIC_RELAXED);
+   }
    fd_pipe_sp_ringpool_fini(pipe);
    free(to_darwin_pipe(pipe));
 }
@@ -226,6 +234,13 @@ darwin_pipe_new(struct fd_device *dev, enum fd_pipe_id id, uint32_t prio)
             darwin_pipe->chip_id, darwin_pipe->gmem);
 
    fd_pipe_sp_ringpool_init(pipe);
+
+   for (int i = 0; i < DARWIN_MAX_PIPES; i++) {
+      struct fd_pipe *expected = NULL;
+      if (__atomic_compare_exchange_n(&darwin_pipes[i], &expected, pipe, false, __ATOMIC_RELAXED,
+                                      __ATOMIC_RELAXED))
+         break;
+   }
 
    return pipe;
 }

@@ -112,5 +112,12 @@ int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t 
 
 /* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
 extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
+/* darwin_bo.c / darwin_device.c: SweetGPU buffer creates, maps and frees (task 4) */
+extern uint64_t darwin_bo_news, darwin_bo_maps, darwin_bo_frees;
+/* darwin_device.c: buffer caches, pipe fences and the kernel's completed seqno, one log line each */
+void darwin_prof_report(void (*log)(const char *fmt, ...));
+#define DARWIN_MAX_PIPES 8
+extern struct fd_pipe *darwin_pipes[DARWIN_MAX_PIPES];
+extern uint32_t darwin_last_kfence, darwin_last_ufence;
 
 #endif /* DARWIN_PRIV_H_ */
