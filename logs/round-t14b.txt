@@ -1,0 +1,6 @@
+shim/out/jasmine-t14b.adt: 68816 bytes
+uibench: start 22:58:26
+uibench: end 23:01:44
+logs/netlog-t14b-ui.txt:
+  frame interval while moving: median 117.7 ms, best 61.9, worst 146.3 (7 x 100 frames); glFinish 3.7 ms
+  GPU jobs drawing into a surface on the display: 41

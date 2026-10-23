@@ -539,6 +539,20 @@ threads (`ir3q0`/`ir3q1` allocate buffers in `upload_shader_variant`) and backbo
 Open: whether this is the same race showing another face, or a separate startup stall (LaunchServices) that
 happened to land on a 588 boot. One round does not tell.
 
+**User's question: not enough voltage? (2026-10-23 22:50.)** On SDM660 the GPU core has no rail of its own:
+- The stock `gfx_corner` CPR4 regulator's `vdd-supply` is a stub (`gfx_stub_corner`); the core is fed through the
+  BHS from VDD_CX (`system-supply`).
+- kgsl's only voltage control is the CX level per corner: 0x100 = NOM for 585.6 MHz, 0x140 = NOM_L1 for 647. That
+  is what j0060 votes, so by the stock tables 588 is not undervolted.
+- Against it as well: j60b froze at 647 at the stock NOM_L1 vote, and a live switch to 588/647 after startup (j60a)
+  ran clean.
+
+**Round t14b (22:53, one boot, `gpumhz=588 gpucxfloor=0x140`: CX 924 -> 816 mV, more than stock gives 588).**
+Clean: lock screen reached, the whole gesture script played (~3 min, 150-305 submits per 10-15 s window), median
+moving frame 117.7 ms, no panic. Two 1-submit windows right before and at the gesture start were idle screen, not a
+freeze: the next window had 280 submits. One clean boot does not settle a ~50 % event; it fits a voltage margin
+effect and a race equally.
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock
