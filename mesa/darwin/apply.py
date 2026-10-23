@@ -38,6 +38,14 @@ sub('src/freedreno/drm/freedreno_device.c',
    dev = darwin_device_new(fd);
    if (!dev)
       return NULL;
+   /* Sub-allocation heaps for rings and small buffers, as on a6xx+ (PERF-TASKS task 4):
+    * without them every batch's command rings and every small buffer is a SweetGPU
+    * create + map + free whenever the caches run dry. Upstream keeps a5xx off them
+    * because its userspace fences looked unreliable there; SweetGPU's are exact
+    * (pipe control fence == last_fence after every wait, round t4d3), and the bo and
+    * ring caches already rely on the same fences.
+    */
+   use_heap = true;
    goto init;
 #endif
 
@@ -230,7 +238,12 @@ sub('src/freedreno/drm/freedreno_bo_cache.c',
 #endif
          break;
       }
+#ifdef __APPLE__
+      /* the darwin backend allocates the same memory whatever the hints say */
+      if (!((entry->alloc_flags ^ flags) & ~_FD_BO_HINTS)) {
+#else
       if (entry->alloc_flags == flags) {
+#endif
          bo = entry;
          bo_remove_from_bucket(bucket, bo);
          break;

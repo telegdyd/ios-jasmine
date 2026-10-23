@@ -1,6 +1,6 @@
-From 6850438c0fd8586b43f280cb959ac1aa4df8fd6c Mon Sep 17 00:00:00 2001
+From 597cc454cb362518f2cbd036a8bb0293dbaad96e Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Fri, 23 Oct 2026 05:44:58 +0200
+Date: Fri, 23 Oct 2026 06:13:24 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -11,8 +11,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/darwin/darwin_device.c      |  156 ++
  src/freedreno/drm/darwin/darwin_pipe.c        |  246 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  123 +
- src/freedreno/drm/freedreno_bo_cache.c        |   31 +-
- src/freedreno/drm/freedreno_device.c          |   15 +
+ src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
+ src/freedreno/drm/freedreno_device.c          |   23 +
  src/freedreno/drm/freedreno_priv.h            |    6 +
  src/freedreno/drm/meson.build                 |   11 +
  src/freedreno/meson.build                     |    2 +-
@@ -27,7 +27,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 22 files changed, 5963 insertions(+), 6 deletions(-)
+ 22 files changed, 5976 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -866,7 +866,7 @@ index 0000000..b09d2e5
 +
 +#endif /* DARWIN_PRIV_H_ */
 diff --git a/src/freedreno/drm/freedreno_bo_cache.c b/src/freedreno/drm/freedreno_bo_cache.c
-index fc9e35f..5040813 100644
+index fc9e35f..196bacc 100644
 --- a/src/freedreno/drm/freedreno_bo_cache.c
 +++ b/src/freedreno/drm/freedreno_bo_cache.c
 @@ -10,10 +10,17 @@
@@ -915,7 +915,7 @@ index fc9e35f..5040813 100644
  {
     struct fd_bo *bo = NULL;
  
-@@ -216,6 +223,15 @@ find_in_bucket(struct fd_bo_bucket *bucket, uint32_t flags)
+@@ -216,13 +223,32 @@ find_in_bucket(struct fd_bo_bucket *bucket, uint32_t flags)
      */
     foreach_bo (entry, &bucket->list) {
        if (fd_bo_state(entry) != FD_BO_STATE_IDLE) {
@@ -930,8 +930,13 @@ index fc9e35f..5040813 100644
 +#endif
           break;
        }
++#ifdef __APPLE__
++      /* the darwin backend allocates the same memory whatever the hints say */
++      if (!((entry->alloc_flags ^ flags) & ~_FD_BO_HINTS)) {
++#else
        if (entry->alloc_flags == flags) {
-@@ -223,6 +239,11 @@ find_in_bucket(struct fd_bo_bucket *bucket, uint32_t flags)
++#endif
+          bo = entry;
           bo_remove_from_bucket(bucket, bo);
           break;
        }
@@ -943,7 +948,7 @@ index fc9e35f..5040813 100644
     }
  
     return bo;
-@@ -247,7 +268,7 @@ retry:
+@@ -247,7 +273,7 @@ retry:
     if (bucket) {
        *size = bucket->size;
        simple_mtx_lock(&cache->lock);
@@ -953,7 +958,7 @@ index fc9e35f..5040813 100644
        if (bo) {
           VG_BO_OBTAIN(bo);
 diff --git a/src/freedreno/drm/freedreno_device.c b/src/freedreno/drm/freedreno_device.c
-index 6c64e64..2309f5f 100644
+index 6c64e64..84b545f 100644
 --- a/src/freedreno/drm/freedreno_device.c
 +++ b/src/freedreno/drm/freedreno_device.c
 @@ -20,6 +20,10 @@
@@ -967,7 +972,7 @@ index 6c64e64..2309f5f 100644
  #ifdef HAVE_FREEDRENO_VIRTIO
  struct fd_device *virtio_device_new(int fd, drmVersionPtr version);
  #endif
-@@ -35,6 +39,14 @@ fd_device_new(int fd)
+@@ -35,6 +39,22 @@ fd_device_new(int fd)
  
     os_get_page_size(&os_page_size);
  
@@ -976,13 +981,21 @@ index 6c64e64..2309f5f 100644
 +   dev = darwin_device_new(fd);
 +   if (!dev)
 +      return NULL;
++   /* Sub-allocation heaps for rings and small buffers, as on a6xx+ (PERF-TASKS task 4):
++    * without them every batch's command rings and every small buffer is a SweetGPU
++    * create + map + free whenever the caches run dry. Upstream keeps a5xx off them
++    * because its userspace fences looked unreliable there; SweetGPU's are exact
++    * (pipe control fence == last_fence after every wait, round t4d3), and the bo and
++    * ring caches already rely on the same fences.
++    */
++   use_heap = true;
 +   goto init;
 +#endif
 +
     /* figure out if we are kgsl or msm drm driver: */
     version = drmGetVersion(fd);
     if (!version) {
-@@ -84,6 +96,9 @@ out:
+@@ -84,6 +104,9 @@ out:
     if (!dev)
        return NULL;
  
