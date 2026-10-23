@@ -24,12 +24,13 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | --- | --- | --- | --- | --- |
 | 1 | ~~Display scale off the CPU~~ **done 2026-10-23** | 8.8 | `SweetFramebuffer.cpp` (+ `SweetSurface.cpp`) | j0058 |
 | 2 | Gold clock 1747 -> 2208 MHz (voltage, DVFS) | ~7.7 | `sweet_cpuclk.c`, `sweet_osm.c`, PMIC code | j0059 |
-| 3 | GPU clock 266 -> ~650 MHz (RPM votes) | up to 7.5 | `bsd/dev/sweet_gpu.c`, new RPM client | j0060 |
+| 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top) | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
 | 4 | Reuse Mesa's batch buffers | ~5.4 | `mesa/darwin/*` (Mesa build only) | none |
 | 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
 | 7 | Stop the XPC retry loops (~2 Gold cores) | small on 4 cores; needed for 8 cores and battery | userland services, maybe kernel | j0062 |
 | 8 | Fix the pmap 32-bit page-number shift | ~0 (correctness) | `osfmk/arm/pmap/pmap.c` | j0063 |
+| 9 | DDR clock vote through the RPM (is memory the brake?) | unknown: find out first | `bsd/dev/sweet_rpm.c`, a DDR caller | j0064 |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Every other pair touches different files.
@@ -141,7 +142,14 @@ The live tool `tools/cpuclk/osmctl.py` (j0045-j0048: register reads/writes, sequ
 on all cores gives 0 errors and TSENS stays under a limit you set; the governor drops the clock when idle; and
 `uiround.sh` shows the gain. Say before each round that could hang the phone.
 
-## 3. GPU clock 266 -> ~650 MHz (saves up to 7.5 ms of GPU wait)
+## 3. GPU clock 266 -> ~650 MHz (saves up to 7.5 ms of GPU wait) -- WORKS, SMALL GAIN
+
+**Result 2026-10-23 (j0060, GPU.md "j0060").** RPM GLINK client (from ios-sailfish) + CX level votes + mem-acc +
+cx_ipeak; `gpumhz=` any stock level, `gpu clk MHZ` live. This phone's speed bin 0x87 tops out at **647 MHz**
+(measured 647). The GPU wait per flush fell only 3.5 -> 2.9 ms from 266 to 588 MHz, frames did not get visibly
+shorter: the GPU's work is bound by memory or fixed costs, the frame by the CPU (task 7's daemons take ~1.9 of 4
+cores). Images still boot `gpumhz=266`. Open: one of two 647 MHz boots (j60b) had backboardd stop after 35 GPU
+jobs; j60c did not repeat it. Not done: a clean 10-minute 647 series, the user's visual check.
 
 **Now.** `bsd/dev/sweet_gpu.c` (j0020) clocks the Adreno 512 from GPU PLL0 at 160 or 266 MHz (`gpumhz=`). Higher
 levels need a CX corner vote through Qualcomm's RPM, plus a memory-bus (bimc / DDR) vote for bandwidth. There is
@@ -212,3 +220,24 @@ without the pool (`sweetgpu_pool=0`).
 
 **Done when:** the `sweetgpu_wc=1 sweetgpu_pool=0` boot no longer panics and the UI renders; the default (pool)
 path is unchanged.
+
+## 9. DDR clock vote through the RPM (find out first whether memory is the brake)
+
+**Now.** Nothing in XNU votes for the DDR (bimc) clock, so it stays where the bootloader left it. j0060's `gpu state`
+reads `bimc_clk` through the GCC debug mux (sel 0x19d) as **647 MHz** every boot. sailfish's MSM8996 doubles that
+counter, and the CPU already reads 6.4 GB/s, so the real rate is probably ~1294 MHz; the stock bus tables
+(`qcom,gpubw` OPPs, `opp-1804`) go to 1804. Confirm the counter's factor first (a second clock, or the DDR PLL).
+Hints that memory matters: 2.2x the GPU clock cut the GPU wait by only ~15 % (j60a).
+
+**How.** The RPM client is there (`bsd/dev/sweet_rpm.c`). A rate vote is `clk2` id 0, key `KHz ` (sailfish 0146),
+but the RPM ignores rate votes until clock scaling is on (`clk0` id 2, `Enab` 1, sailfish 0147), and once it is on
+the RPM follows the AP's votes for **every** RPM clock: first vote each one at a safe rate in both sets (sailfish's
+handoff list is MSM8996's; take SDM660's from msm-4.4 `clk-smd-rpm` / `clock-rpm` for sdm660 and the stock DT),
+or the buses drop and the phone hangs. Add `sweetddr=MHZ` and a live `ddr MHZ` on the command port, like `gpu clk`.
+
+**Test (one build, one round, as clkround.sh):** step DDR down and up in one boot (e.g. 1017, now, 1555, 1804) with
+uibench at each; if frame time and GPU wait follow the DDR rate, memory is the brake; if flat, it is not, and a fresh
+j0057 profile decides the next task. Say before the round: the scaling handoff can hang the phone (`sweetwdt=20`).
+
+**Done when:** the measured DDR rate follows the vote (read back); no hang over a 10-minute uibench series at the top
+rate; the frame / GPU-wait answer above is written into GPU.md.

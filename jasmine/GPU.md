@@ -749,3 +749,51 @@ port's `r`/`w` (`tools/cpuclk/osmctl.py`) for live display register work.
 Next for the frame (PERF-TASKS.md): GPU clock (task 3) now matters more, since the display waits for the GPU's last
 job before a flip and SweetGPU waits for the latch; the CPU wait at frame end (`glClientWaitSync`, 7.5 ms) could go
 too, as the display already waits for the GPU (j0055).
+
+#### j0060: GPU levels up to the speed bin's top through RPM votes (2026-10-23 02:20 to 04:00; PERF-TASKS.md task 3)
+
+**j0060** (`xnu/patches/j0060-jasmine-gpu-clock.patch`, CI `39880355430`, 4K/8-core kernel): `gpumhz=` takes any
+stock level (160, 266, 370, 430, 465, 588, 647, 700, 750) up to the speed bin's top, and the command port line
+`gpu clk MHZ` switches at runtime (GPU idle under `gpu_lock`, then the kernel self-test); `gpu state` reads the level,
+the measured clock, the votes, the rails and the DDR clock. Defaults unchanged: images still boot `gpumhz=266`.
+
+- **RPM client** `bsd/dev/sweet_rpm.c`: ios-sailfish's polled GLINK client (Joran Vancoillie, patches
+  0100/0146/0147/0164, adapted with his consent) moved to SDM660: message RAM 0x778000 (0x7000, TOC `grt0`, both
+  FIFOs 1784 bytes), doorbell APCS 0x17911008 bit 0, every store from a register. `sweet_rpm_level(type, level)`
+  votes `swen` 1 + `vlvl` in the sleep and the active set. The link came up at the first try ("link up, version 1,
+  rcid 2"; the RPM also opens `glink_ssr`, ignored).
+- **What a level needs** (stock DT: gfx CPR `cpr4-ctrl@05061000`, gpucc `qcom,gfxfreq-corner`, kgsl pwrlevels): the
+  gfx corner's own supply is a stub (GFX runs from CX through the head switch), so a level = the **CX level vote**
+  (`rwcx`: 0x40 up to 266, SVS 0x80 at 370, SVS_L1 0xc0 at 430/465, NOM 0x100 at 588, NOM_L1 0x140 at 647, TURBO
+  0x180 at 700/750) + the **mem-acc select** (0x1fcf004 bit 0: 1 below 465 MHz, 0 from 465) + **cx_ipeak**
+  (0x1fe5040, bit 1) above 700 MHz. Order up CX, mem-acc, ipeak, clock; down the reverse (cpr3-regulator).
+  The PLL ping-pongs between GPU PLL0 (RCG source 1) and PLL1 (source 3) as `clk_gfx3d_src`; VCO band 0 above
+  1 GHz. Our CX vote is never below `gpucxfloor=` (default NOM): it replaces the bootloader's AP vote, and this
+  kernel votes for nothing else (display, buses).
+- **This phone: speed bin 0x87** (QFPROM 0x7841a0 = 0x10f80000, bits 21-28), whose top level is **647 MHz**: 700 and
+  750 are refused, so the ipeak path never runs here. CX at boot is already NOM (PM660L S3 VSET 772 before any vote,
+  unchanged by a NOM vote); the NOM_L1 vote raised it to 924, then 816 (the RPM's own CPR), MX followed
+  (864 -> 876) without a vote. DDR (GCC debug mux `bimc_clk`, 0x19d) reads **647 MHz** in every round; sailfish's
+  MSM8996 doubles this counter, and the CPU already reads 6.4 GB/s (more than a 32-bit LPDDR4 bus moves at 647 MHz),
+  so the real DDR clock is probably ~1294 MHz of the stock table's 1804.
+
+| round | what | result | log |
+|---|---|---|---|
+| j60a (03:13) | boot 266, then `gpu clk` 370 / 465 / 588 / 647 / 700 in one boot, uibench at each | every switch ok, measured 369 / 464 / 588 / 647 MHz, self-test PASS each, 0 GPU faults; 700 refused (bin) | `logs/netlog-j60a-clk.txt` |
+| j60b (03:33) | boot `gpumhz=647`, 3 uibench plays | **backboardd stopped after 35 GPU jobs** (03:34:11, render thread inside an IOKit call from Mesa; GPU idle, all jobs done, display on); kernel and phone fine | `logs/netlog-j60b-clk.txt` |
+| j60c (03:49) | boot `gpumhz=647`, uibench + 8 s profile | renders normally (300 submits / 10 s); not reproduced | `logs/netlog-j60c-ui.txt`, `logs/prof-j60c-report.txt` |
+
+Per-level numbers (j60a, `tools/g2/clksum.py`; 4-6 moving 100-flush windows each, so noisy): GPU waits per flush
+3.5 ms at 266, 2.9 at 370, 3.1 at 465, 2.9 at 588 MHz; glFinish 4.5 -> 4.2 ms; the 100-flush median did not improve
+(98 ms at 266, 118-137 ms higher, within the play-to-play spread). The 647 MHz play of j60a ran (jobs 12542 ->
+15724, self-test PASS) but fell after the log's end (round window too short, fixed in `clkround.sh`).
+
+**So the GPU clock is not what holds the frame now:** 2.2x the core clock cut the GPU wait by ~15 %. The GPU's work is
+bound by memory or fixed costs (fence polling, submit), and the frame by the CPU: in j60c's profile launchd (921
+ms/s), vmd (524) and mediaserverd (430) take ~1.9 of the 4 Gold cores (PERF-TASKS task 7), CA's frame thread got
+178 ms/s and was runnable (waiting for a CPU) 28 ms/s; SweetGPUBuffer::create is still 4.7 % of it (task 4). The
+libsweetca symbols in that report are wrong (the library in `xnu/out-mesa` is not the one on the phone); kernel
+frames are right.
+
+Open: the j60b stall (once in 3 boots of this kernel, both 647 MHz boots counted; not seen in any earlier UI round).
+Tools: `tools/g2/clkround.sh` (levels in one boot, `LEVELS=`, `PLAYS=`), `tools/g2/clksum.py` (per-level summary).
