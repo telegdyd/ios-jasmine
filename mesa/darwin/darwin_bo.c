@@ -5,7 +5,7 @@
 
 #include "darwin_priv.h"
 
-uint64_t darwin_bo_news, darwin_bo_maps, darwin_bo_frees;
+uint64_t darwin_bo_news, darwin_bo_imports, darwin_bo_maps, darwin_bo_frees;
 
 static int
 darwin_bo_offset(struct fd_bo *bo, uint64_t *offset)
@@ -111,6 +111,7 @@ darwin_bo_from_handle(struct fd_device *dev, uint32_t size, uint32_t handle)
       ERROR_MSG("no buffer %u: 0x%x", handle, ret);
       return NULL;
    }
+   __atomic_add_fetch(&darwin_bo_imports, 1, __ATOMIC_RELAXED);
    return darwin_bo_wrap(dev, (uint32_t)out[1], handle, out[0]);
 }
 

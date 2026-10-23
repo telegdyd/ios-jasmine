@@ -1,14 +1,14 @@
-From 6a02aaadbb130b79f8c10a735c69881dee385d05 Mon Sep 17 00:00:00 2001
+From 9203260a954abaf99e7713bb74f23c2e1b9cd9d3 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Fri, 23 Oct 2026 06:33:26 +0200
+Date: Fri, 23 Oct 2026 07:06:57 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
  include/darwin-drm/xf86drm.h                  |   87 +
  meson.build                                   |    5 +
- src/freedreno/drm/darwin/darwin_bo.c          |  158 ++
- src/freedreno/drm/darwin/darwin_device.c      |  156 ++
+ src/freedreno/drm/darwin/darwin_bo.c          |  159 ++
+ src/freedreno/drm/darwin/darwin_device.c      |  158 ++
  src/freedreno/drm/darwin/darwin_pipe.c        |  249 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  123 +
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
@@ -27,7 +27,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
  src/gallium/meson.build                       |    5 +
- 22 files changed, 5979 insertions(+), 6 deletions(-)
+ 22 files changed, 5982 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -160,10 +160,10 @@ index 5f19ef9..46c744c 100644
    with_gallium_va and with_video_encode,
 diff --git a/src/freedreno/drm/darwin/darwin_bo.c b/src/freedreno/drm/darwin/darwin_bo.c
 new file mode 100644
-index 0000000..eb784bb
+index 0000000..ceac756
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_bo.c
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,159 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -171,7 +171,7 @@ index 0000000..eb784bb
 +
 +#include "darwin_priv.h"
 +
-+uint64_t darwin_bo_news, darwin_bo_maps, darwin_bo_frees;
++uint64_t darwin_bo_news, darwin_bo_imports, darwin_bo_maps, darwin_bo_frees;
 +
 +static int
 +darwin_bo_offset(struct fd_bo *bo, uint64_t *offset)
@@ -277,6 +277,7 @@ index 0000000..eb784bb
 +      ERROR_MSG("no buffer %u: 0x%x", handle, ret);
 +      return NULL;
 +   }
++   __atomic_add_fetch(&darwin_bo_imports, 1, __ATOMIC_RELAXED);
 +   return darwin_bo_wrap(dev, (uint32_t)out[1], handle, out[0]);
 +}
 +
@@ -324,10 +325,10 @@ index 0000000..eb784bb
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_device.c b/src/freedreno/drm/darwin/darwin_device.c
 new file mode 100644
-index 0000000..21c5abe
+index 0000000..8325d26
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_device.c
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,158 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -453,17 +454,19 @@ index 0000000..21c5abe
 +void
 +darwin_prof_report(void (*log)(const char *fmt, ...))
 +{
-+   static uint64_t news0, maps0, frees0;
++   static uint64_t news0, imports0, maps0, frees0;
 +   static struct cache_sum bo0, ring0;
 +   struct fd_device *dev = prof_dev;
 +   if (!dev)
 +      return;
 +
-+   uint64_t news = darwin_bo_news, maps = darwin_bo_maps, frees = darwin_bo_frees;
-+   log("sweetca: prof: SweetGPU buffers: %llu created, %llu mapped, %llu freed",
++   uint64_t news = darwin_bo_news, imports = darwin_bo_imports, maps = darwin_bo_maps, frees = darwin_bo_frees;
++   log("sweetca: prof: SweetGPU buffers: %llu created, %llu mapped, %llu freed; %llu imported, %lld held",
 +       (unsigned long long)(news - news0), (unsigned long long)(maps - maps0),
-+       (unsigned long long)(frees - frees0));
++       (unsigned long long)(frees - frees0), (unsigned long long)(imports - imports0),
++       (long long)(news + imports - frees));
 +   news0 = news;
++   imports0 = imports;
 +   maps0 = maps;
 +   frees0 = frees;
 +
@@ -741,7 +744,7 @@ index 0000000..944954d
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_priv.h b/src/freedreno/drm/darwin/darwin_priv.h
 new file mode 100644
-index 0000000..b09d2e5
+index 0000000..12ea7c8
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_priv.h
 @@ -0,0 +1,123 @@
@@ -859,8 +862,8 @@ index 0000000..b09d2e5
 +
 +/* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
 +extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
-+/* darwin_bo.c / darwin_device.c: SweetGPU buffer creates, maps and frees (task 4) */
-+extern uint64_t darwin_bo_news, darwin_bo_maps, darwin_bo_frees;
++/* darwin_bo.c / darwin_device.c: SweetGPU buffer creates, imports (IOSurfaces), maps and frees (task 4) */
++extern uint64_t darwin_bo_news, darwin_bo_imports, darwin_bo_maps, darwin_bo_frees;
 +/* darwin_device.c: buffer caches, pipe fences and the kernel's completed seqno, one log line each */
 +void darwin_prof_report(void (*log)(const char *fmt, ...));
 +#define DARWIN_MAX_PIPES 8

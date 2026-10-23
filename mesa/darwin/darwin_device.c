@@ -123,17 +123,19 @@ cache_line(void (*log)(const char *fmt, ...), struct fd_bo_cache *cache, struct 
 void
 darwin_prof_report(void (*log)(const char *fmt, ...))
 {
-   static uint64_t news0, maps0, frees0;
+   static uint64_t news0, imports0, maps0, frees0;
    static struct cache_sum bo0, ring0;
    struct fd_device *dev = prof_dev;
    if (!dev)
       return;
 
-   uint64_t news = darwin_bo_news, maps = darwin_bo_maps, frees = darwin_bo_frees;
-   log("sweetca: prof: SweetGPU buffers: %llu created, %llu mapped, %llu freed",
+   uint64_t news = darwin_bo_news, imports = darwin_bo_imports, maps = darwin_bo_maps, frees = darwin_bo_frees;
+   log("sweetca: prof: SweetGPU buffers: %llu created, %llu mapped, %llu freed; %llu imported, %lld held",
        (unsigned long long)(news - news0), (unsigned long long)(maps - maps0),
-       (unsigned long long)(frees - frees0));
+       (unsigned long long)(frees - frees0), (unsigned long long)(imports - imports0),
+       (long long)(news + imports - frees));
    news0 = news;
+   imports0 = imports;
    maps0 = maps;
    frees0 = frees;
 
