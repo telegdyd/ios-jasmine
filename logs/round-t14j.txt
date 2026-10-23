@@ -1,0 +1,15 @@
+00:06:40 boot 1: clean after 94 s; backboardd: 6 submits backboardd: 29 submits 
+00:09:01 boot 2: clean after 122 s; backboardd: 3 submits backboardd: 58 submits 
+00:10:59 boot 3: clean after 69 s; backboardd: 4 submits backboardd: 33 submits 
+00:13:00 boot 4: clean after 71 s; backboardd: 5 submits backboardd: 27 submits 
+00:14:59 boot 5: clean after 100 s; backboardd: 5 submits backboardd: 31 submits 
+00:17:01 boot 6: clean after 103 s; backboardd: 4 submits backboardd: 29 submits 
+00:19:00 boot 7: clean after 100 s; backboardd: 5 submits backboardd: 32 submits 
+00:21:02 boot 8: clean after 104 s; backboardd: 5 submits backboardd: 30 submits 
+00:23:00 boot 9: clean after 100 s; backboardd: 4 submits backboardd: 33 submits 
+00:24:59 boot 10: clean after 100 s; backboardd: 5 submits backboardd: 31 submits 
+00:26:30 boot 11: clean after 72 s; backboardd: 5 submits backboardd: 31 submits 
+grep: logs/netlog-t14j-12.txt: No such file or directory
+00:34:08 boot 12: frozen after 150 s; 
+00:34:14 no command port
+None

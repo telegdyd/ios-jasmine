@@ -18,6 +18,12 @@ for n in $(seq 1 ${N:-6}); do
 	AMP=1 CPUS=4 SECS=$((${LIMIT:-150} + 120)) bash tools/cpuclk/osm-round.sh - $K "sweetosm=0 sweetcmd=1 $ARGS" "$LOG" > /dev/null 2>&1 &
 	R=$!
 	for i in $(seq 1 150); do grep -q "^# booted" "$LOG.run" 2>/dev/null && break; sleep 2; done
+	if ! grep -q "^# booted" "$LOG.run" 2>/dev/null; then
+		# the reboot into fastboot hung (a command-port reboot can hang in shutdown): power + volume-down
+		echo "$(date +%T) boot $n: no boot ($(grep -v '^#' "$LOG.run" | tail -1)); stopped"
+		kill $R 2>/dev/null
+		exit 1
+	fi
 	t0=$(date +%s)
 	verdict=frozen
 	while [ $(( $(date +%s) - t0 )) -lt ${LIMIT:-150} ]; do

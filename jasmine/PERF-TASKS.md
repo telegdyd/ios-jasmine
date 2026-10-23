@@ -582,6 +582,12 @@ counts the boot as frozen, takes the j0069 census and stops.
 - Tally at 588/647: 4 freezes (j60b, t4d2, t14a, t14h-5) in 19 boots at normal voltage, plus t14b (high voltage,
   clean). The rate is well under the ~50 % first seen.
 
+**Freeze hunt t14j (2026-10-24 00:05 to 00:34).** 11 more clean boots at 588 (drawing 69-122 s after boot). Boot 12
+never happened: after boot 11's command-port reboot no fastboot device came (the known shutdown hang), and the phone
+stayed unreachable until power + volume-down. The script called that "frozen"; it now stops with "no boot".
+- j69 at 588, normal voltage: **1 freeze in 25 boots** (t14h-5, lost).
+- All boots at 588/647, normal voltage: 4 freezes in 30.
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock
