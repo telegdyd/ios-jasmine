@@ -28,9 +28,10 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 4 | Reuse Mesa's batch buffers | ~5.4 | `mesa/darwin/*` (Mesa build only) | none |
 | 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
-| 7 | Stop the XPC retry loops (~2 Gold cores) | small on 4 cores; needed for 8 cores and battery | userland services, maybe kernel | j0062 |
+| 7 | Stop the XPC retry loops (~2 Gold cores) | CA's thread waits 45 ms/s for a CPU (~20 % on top of its 214 ms/s, j64p); needed for 8 cores and battery | userland services, maybe kernel | j0062 |
 | 8 | Fix the pmap 32-bit page-number shift | ~0 (correctness) | `osfmk/arm/pmap/pmap.c` | j0063 |
 | 9 | ~~DDR clock vote through the RPM~~ **done 2026-10-23: not the brake** (1296 -> 1804 MHz: no gain; below 1296 Mesa slows 20-60 %) | 0 measured | `bsd/dev/sweet_rpm.c`, `bsd/dev/sweet_ddr.c` | j0064 |
+| 10 | Load-based DDR governor, ceiling 1804 MHz, on by default | 1804's CPU gains when busy (latency -14 %, copy faster), power back when idle | `bsd/dev/sweet_ddr.c` (+ `sweet_gpu.c` counters) | j0065 |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Every other pair touches different files.
@@ -205,6 +206,12 @@ even with the UI idle. The likely cause is a service these daemons talk to that 
 (telephony, audio). Name the service, then give them what they wait for or stop the daemon from retrying.
 Prefer a root fix over disabling things. Changing the phone's iOS root needs the user's OK first.
 
+**Measured again 2026-10-23 05:12 (profile j64p, `logs/prof-j64p-report.txt`, 4 Gold, UI moving):** launchd 901 ms/s
+(two threads ~440 each), vmd 531, mediaserverd 435 (one thread 433), logd 130: **1.87 of the 4 Gold cores**.
+CoreAnimation's display thread was on a CPU 214 ms/s and **runnable, waiting for a CPU, 45 ms/s**, so on 4 cores
+these loops cost the frame directly, about as much as task 4's buffer churn. The loops have not changed since
+j0057 (2026-10-22), so they are steady, not boot-time.
+
 **Done when:** the three daemons use under 50 ms/s each at idle (j0052 stats or the profile census); nothing
 that worked before breaks (SpringBoard, Settings, the apps the user uses).
 
@@ -227,7 +234,7 @@ path is unchanged.
 the first try; read back 766 / 1016 / 1294 / 1804 for votes 768 / 1017 / 1296 / 1804: the debug-mux counter is half
 the DDR rate, the bootloader leaves 1296). Round j64a, one boot, 7 plays: Mesa's CPU time per flush 31.1 ms at 768,
 24.2 at 1017, 18.6-20.0 at 1296, 18.9-19.5 at 1804; GPU wait per flush flat. Memory is not the brake at the
-bootloader's rate; 1804 stays off (`sweetddr=1804` or `ddr 1804` live). Fresh profile j64p: the daemon loops (task 7,
+bootloader's rate; 1804 stays off until task 10's governor (`sweetddr=1804` or `ddr 1804` live). Fresh profile j64p: the daemon loops (task 7,
 1.87 of 4 Gold cores; CA's thread waits 45 ms/s for a CPU) and buffer churn (task 4, ~15-20 % of CA's thread) come
 next. New tools: `ddr state/MHZ/bench/bw`, raw `rpm`, CPU bwmon (1 MiB units) and GPU VBIF counters,
 `tools/g2/ddrround.sh`, `ddrsum.py`, `ddrcost.py` (per-flush GL cost, the steadier measure). Not done: a 10-minute
@@ -252,3 +259,46 @@ j0057 profile decides the next task. Say before the round: the scaling handoff c
 
 **Done when:** the measured DDR rate follows the vote (read back); no hang over a 10-minute uibench series at the top
 rate; the frame / GPU-wait answer above is written into GPU.md.
+
+## 10. Load-based DDR governor, ceiling 1804 MHz, on by default
+
+**Why.** The user wants every optimization on. 1804 MHz gives the CPU 14 % lower memory latency (320 -> 275 ns),
+faster writes and copies, and halves the GPU's RAM-starved time (task 9, round j64a). The UI frame did not measurably
+gain, but other work (app launch, decompression, anything memory-heavy) may. Fixed 1804 holds the DDR and, after
+j0064's handoff, every RPM bus at maximum even when idle. Stock Android scales instead, and so should we: full rate
+while busy, lower while idle.
+
+**Now (j0064, `bsd/dev/sweet_ddr.c`, GPU.md "j0064").** The DDR rate is fixed: the bootloader's 1296 MHz, or whatever
+the last `ddr MHZ` / `sweetddr=` vote set. The RPM does not watch load itself; it applies the highest vote of its
+masters. On stock the HLOS decides: msm-4.4 devfreq governors `bw_hwmon` (`drivers/devfreq/governor_bw_hwmon.c`, the
+CPU bwmon, DT `qcom,cpu-cpu-ddr-bw`), `bw_vbif` (`governor_bw_vbif.c`, the GPU's VBIF counters, DT `qcom,gpubw`),
+and `cpu0-cpu-ddr-latfloor` (a DDR floor from the CPU clock), aggregated by msm_bus into one bimc vote. XNU has none
+of this. What j0064 already provides: the RPM clock handoff + scaling (`sweet_rpm_clk_scaling`), the bimc vote
+(`sweet_rpm_clk`, ~23 ms per switch), the CPU bwmon4 reader (MON2 bytes, **1 MiB units**, 54.6 ms hardware window),
+GPU busy / VBIF beats / RAM-starved counters (`sweet_gpu_bus_counters`), and the stock rate table (DT
+`generic-bw-opp-table`: 547, 681, 768, 1017, 1296, 1353, 1555, 1804 MHz; lower ones exist).
+
+**How.** A kernel thread in `sweet_ddr.c`, sampling every ~50 ms, adapted closely from `governor_bw_hwmon.c` (msm-4.4
+GPL code may be adapted with credit): up fast, down slow with hysteresis; the GPU's busy and RAM-starved rates as a
+second input (as `bw_vbif`); a jump to 1804 on touch or when CA's frames start (SweetHID / the framebuffer swap can
+poke the governor), so motion never waits for a sample. Limits:
+- **Ceiling 1804.**
+- **Floor 1296 while the display is on**: below it Mesa's frame work grows 20-60 % (j64a), and a 23 ms switch on
+  every gesture would show as stutter. Lower rates only with the display off.
+- On any failed RPM vote: fall back to a fixed 1804 vote and log it; never leave scaling on without a bimc vote.
+
+On by default on jasmine, from GPU bring-up (as `sweetddr=` is now). `sweetddrgov=0` turns it off (then `sweetddr=`
+or the bootloader's rate). Command port `ddr gov`: current rate, time per rate, switches, last inputs. Live tuning of
+the thresholds through `ddr gov KEY VALUE` keeps the build-test loops down.
+
+**Test (one build, one or two rounds).**
+- UI: uibench plays with the governor against fixed 1804 in the same boot (`ddr gov off` / `on` live); Mesa's CPU time
+  per flush (`tools/g2/ddrcost.py`) equal within noise (j64a: 18.9-19.5 ms at 1804).
+- Idle: the rate drops to the floor within seconds and stays there; time-per-rate in `ddr gov`.
+- Power: battery current from the PM660 fuel gauge (j0010, `/sweet-pmic fg`), idle with the governor against fixed
+  1804, on battery (unplugged) if the user agrees; this is the number that justifies the governor.
+- No hang over a 10-minute uibench series. Say before the round: the boot-time handoff and frequent RPM switches can
+  hang the phone (`sweetwdt=20`).
+
+**Done when:** on by default; UI per-flush cost equal to fixed 1804; idle rate at the floor; the idle current saving
+measured; 10 minutes without a hang; result in GPU.md.
