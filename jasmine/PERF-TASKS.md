@@ -24,7 +24,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | --- | --- | --- | --- | --- |
 | 1 | ~~Display scale off the CPU~~ **done 2026-10-23** | 8.8 | `SweetFramebuffer.cpp` (+ `SweetSurface.cpp`) | j0058 |
 | 2 | Gold clock 1747 -> 2208 MHz (voltage, DVFS) | ~7.7 | `sweet_cpuclk.c`, `sweet_osm.c`, PMIC code | j0059 |
-| 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top); **default 588 MHz since 2026-10-23 05:45** (`mkimg.sh`; it had stayed at 266) | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
+| 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top); **default still 266**: booting at 588/647 freezes backboardd at startup in 2 of 4 boots, task 14 | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
 | 4 | Make Mesa's buffer caches hit (textures, render targets, rings) | ~17 % of CA's frame thread (j64p) | `mesa/darwin/*` (Mesa build only) | none |
 | 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
@@ -35,6 +35,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 11 | GPU power management: hardware clock gating, idle power-down, load-based clock (DCVS) | power and heat (GPU busy only ~8-25 % while the UI moves, j64a) | `bsd/dev/sweet_gpu.c` | j0066 |
 | 12 | CPU idle power: core / cluster power collapse instead of WFI, unused cores off | power and heat at idle | `osfmk/arm64` idle path, new `sweet_idle.c` | j0067 |
 | 13 | Thermal limits: TSENS-driven caps on CPU and GPU clocks | keeps the phone usable under long load | new `sweet_thermal.c` (after 2 and 11) | j0068 |
+| 14 | **Fix the startup freeze above 266 MHz GPU** (backboardd stuck in SweetGPU buffer free; 2 of 4 boots at 588/647, 0 of 54 at 266); then make 588 the default again | unblocks task 3's clock (and task 11's DCVS) | `bsd/dev/sweet_gpu.c`, `iokit/Kernel/arm/SweetGPU.cpp` | j0069 |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Tasks 10 and 11 both touch `sweet_gpu.c` (10 only
@@ -435,3 +436,30 @@ temperatures and active caps.
 UI stays usable.
 
 **Done when:** on by default; caps engage and release as above; documented limits.
+
+## 14. Fix the startup freeze above 266 MHz GPU, then default to 588 MHz
+
+**Symptom.** Booting with the GPU above 266 MHz, backboardd's UI sometimes stops right after startup: the kernel's
+10-second line shows only "backboardd: 4-5 submits in ~29000 ms" and then nothing more; the screen shows the status
+bar only. `gpu state` says the GPU is idle with every job completed (36 of 36). Seen in **j60b** (647 MHz,
+`logs/netlog-j60b-clk.txt`, "backboardd stopped after 35 GPU jobs") and **t4d2** (588 MHz, `logs/netlog-t4d2-ui.txt`);
+not in j60c (647) or t4b1 (588), which ran normally. **Never in 54 logged boots at 266 MHz.** Switching to 588 live
+*after* startup ran clean (j60a, `gpu clk 588`). So the clock changes timing, and a race at startup fires.
+
+**What was seen in t4d2 (from the task 4 session).** CoreAnimation's display thread stuck in the kernel for minutes
+in a SweetGPU buffer free: Mesa `darwin_bo_close_handle` -> `IOConnectCallScalarMethod` selector 2 -> the user client
+takes `fLock` (`iokit/Kernel/arm/SweetGPU.cpp`), then `sweet_gpu_vm_unmap` takes `gpu_lock` and runs
+`smmu_tlb_sync` (`bsd/dev/sweet_gpu.c`). `smmu_tlb_sync` polls with a timeout, so a thread blocked for minutes is
+most likely waiting for a lock: look for a lock-order inversion between `fLock` and `gpu_lock` across the free,
+submit (`sweet_fb_gpu_write_wait`, up to 50 ms waiting for the panel latch), wait (`sweet_gpu_wait`) and retire
+(`retireJobs`) paths, and the threads that use them at startup at once: CA's display thread, Mesa's shader compile
+threads (`ir3q0`/`ir3q1` allocate buffers in `upload_shader_variant`) and backboardd's render-server thread.
+
+**How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
+boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
+records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock
+order everywhere, or drop `fLock` before taking `gpu_lock`), no timeouts as workarounds.
+
+**Done when:** 10 boots in a row at 588 MHz without the freeze; `tools/g2/mkimg.sh` back to `gpumhz=588` (the top level
+at the bootloader's CX corner: no voltage increase, measured 587 MHz in t4b1); the slot b image rebuilt and flashed
+("Done means on the phone"); result in GPU.md.

@@ -871,3 +871,10 @@ whole CX rail) for 10 % more clock on a GPU that is off the frame's critical pat
 self-test PASS, UI rendering. A later `gpumhz=` in the extra boot-args overrides the default. The j0064 DDR round
 (j64a) ran at 266 MHz: its CPU-side result (Mesa CPU per flush flat 1296 -> 1804) holds; the GPU-wait part was
 measured at 266 only. Task 11 (GPU DCVS) replaces the fixed level.
+
+**Back to 266 MHz (2026-10-23 06:07).** t4d2 (the task 4 session's boot at the 588 default) froze backboardd at
+startup like j60b: the UI stops after the first 10-second line ("5 submits in 29087 ms"), GPU idle with all jobs
+done, CA's display thread blocked in a SweetGPU buffer free (fLock, then gpu_lock in `sweet_gpu_vm_unmap`). Across the
+logs this startup freeze shows in 2 of 4 boots above 266 MHz (j60b 647, t4d2 588) and in none of 54 boots at 266; a
+live switch to 588 after startup ran clean (j60a). `mkimg.sh` is back at `gpumhz=266` until PERF-TASKS task 14 fixes
+the race; then 588 becomes the default again.
