@@ -1,0 +1,152 @@
+From 75bc127ed3aa7d0fe48293652954156cb0c62802 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 23 Oct 2026 23:11:21 +0200
+Subject: [PATCH] jasmine-j0069: prof census of every thread of the named tasks
+ with the kernel stack of each blocked one (prof start ... NAME,all), for the
+ task 14 startup freeze
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/arm64/sweet_prof.c | 58 +++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 51 insertions(+), 7 deletions(-)
+
+diff --git a/osfmk/arm64/sweet_prof.c b/osfmk/arm64/sweet_prof.c
+index f7c8a18..7050d5e 100644
+--- a/osfmk/arm64/sweet_prof.c
++++ b/osfmk/arm64/sweet_prof.c
+@@ -16,13 +16,16 @@
+  *    ran in the last 500 ms: state, block hint, wait event, the trap number (x16) and the user
+  *    stack saved at its kernel entry. A thread whose saved user state is unchanged since its
+  *    last record reuses that stack (no page-table walks).
++ *  - j0069, `all` among the names: the census takes every thread of the tasks however long it
++ *    has slept, and adds the kernel stack of each blocked one, walked from the context it
++ *    switched out with (a thread stuck for minutes in a lock or a wait shows where).
+  *
+  * At the end the census thread writes a text table (meta): kernel slide, shared-cache slide,
+  * every task (pid, name), every thread (tid, pid, name) and the file mappings of every task
+  * outside the shared cache, so tools/g2/prof.py can symbolicate without the phone.
+  *
+  * Commands (one line each):
+- *   prof start SECS [PERIOD_US [CENSUS_US [NAME,NAME..]]]   default 10 s, 1000 us, 2000 us, backboardd
++ *   prof start SECS [PERIOD_US [CENSUS_US [NAME,NAME..[,all]]]]   default 10 s, 1000 us, 2000 us, backboardd
+  *   prof stat                 running, seconds, samples, bytes, dropped
+  *   prof get OFF              hex of the sample buffer from byte OFF (up to 48 KiB)
+  *   prof meta OFF             the meta text from byte OFF (up to 96 KiB)
+@@ -39,6 +42,7 @@
+ #include <kern/sched_prim.h>
+ #include <kern/timer_call.h>
+ #include <kern/backtrace.h>
++#include <kern/thread_kernel_state.h>
+ #include <kern/locks.h>
+ #include <vm/vm_kern.h>
+ #include <vm/vm_map.h>
+@@ -94,6 +98,7 @@ static uint64_t sp_epoch, sp_end, sp_period, sp_census_period, sp_period_us, sp_
+ static char sp_names[SP_TASKS][32];
+ static uint32_t sp_ntasks;
+ static int sp_census_running;
++static int sp_census_all;       /* j0069: every thread, kernel stacks of the blocked ones */
+ 
+ static void
+ sp_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const uintptr_t *uf, unsigned nu)
+@@ -246,6 +251,36 @@ sp_cache_find(uint64_t tid)
+ 	return NULL;
+ }
+ 
++/* j0069: kernel frames of a thread blocked off CPU, from the context it switched out with */
++static unsigned
++sp_kstack(thread_t th, uintptr_t *kf)
++{
++	vm_offset_t lo = th->kernel_stack, hi = lo + kernel_stack_size;
++	unsigned n = 0;
++	if (lo == 0) {
++		if (th->continuation != NULL) {
++			kf[n++] = (uintptr_t)th->continuation;  /* blocked with a continuation, no stack */
++		}
++		return n;
++	}
++	arm_kernel_saved_state_t *ks = &thread_get_kernel_state(th)->machine.ss;
++	uint64_t fp = ks->fp;
++	kf[n++] = ks->lr;
++	while (n < SP_KFRAMES && fp >= lo && fp + 16 <= hi && (fp & 7) == 0) {
++		const uint64_t *f = (const uint64_t *)fp;
++		uint64_t next = f[0], lr = f[1];
++		if (lr == 0) {
++			break;
++		}
++		kf[n++] = lr;
++		if (next <= fp) {
++			break;
++		}
++		fp = next;
++	}
++	return n;
++}
++
+ static void
+ sp_census_task(task_t task, uint64_t now)
+ {
+@@ -262,7 +297,7 @@ sp_census_task(task_t task, uint64_t now)
+ 		if (!waiting && (!(state & TH_RUN) || th->runq == PROCESSOR_NULL)) {
+ 			continue;               /* on a CPU (the running timer has it) or terminating */
+ 		}
+-		if (th->last_run_time + recent < now) {
++		if (!sp_census_all && th->last_run_time + recent < now) {
+ 			continue;               /* idle for a while: not part of a frame */
+ 		}
+ 		struct arm_saved_state *us = get_user_regs(th);
+@@ -294,14 +329,16 @@ sp_census_task(task_t task, uint64_t now)
+ 				memcpy(c->uf, uf, sizeof(uf[0]) * nu);
+ 			}
+ 		}
++		uintptr_t kf[SP_KFRAMES];
++		unsigned nk = sp_census_all && waiting ? sp_kstack(th, kf) : 0;
+ 		struct sp_rec r = {};
+-		r.hdr = sp_hdr(now, 0xff, waiting ? SP_WAIT : SP_RUNNABLE, 0, nu);
++		r.hdr = sp_hdr(now, 0xff, waiting ? SP_WAIT : SP_RUNNABLE, nk, nu);
+ 		r.tid = th->thread_id;
+ 		r.pidtrap = (uint32_t)pid | trap << 32;
+ 		r.lr = lr;
+ 		r.event = ((uint64_t)VM_KERNEL_UNSLIDE_OR_PERM((vm_offset_t)th->wait_event) & 0xffffffffffffull) |
+ 		    ((uint64_t)(th->block_hint & 0xff) << 48) | ((uint64_t)(th->sched_pri & 0xff) << 56);
+-		sp_put(&r, NULL, 0, uf, nu);
++		sp_put(&r, kf, nk, uf, nu);
+ 	}
+ 	task_unlock(task);
+ }
+@@ -461,6 +498,7 @@ sweet_prof_cmd(const char *line)
+ 		secs = secs ? (secs > 60 ? 60 : secs) : 10;
+ 		period = period ? (period < 100 ? 100 : period) : 1000;
+ 		sp_ntasks = 0;
++		sp_census_all = 0;
+ 		while (*a == ' ') {
+ 			a++;
+ 		}
+@@ -469,7 +507,12 @@ sweet_prof_cmd(const char *line)
+ 			while (*a && *a != ',' && *a != ' ' && k < sizeof(sp_names[0]) - 1) {
+ 				sp_names[sp_ntasks][k++] = *a++;
+ 			}
+-			sp_names[sp_ntasks++][k] = 0;
++			sp_names[sp_ntasks][k] = 0;
++			if (strcmp(sp_names[sp_ntasks], "all") == 0) {
++				sp_census_all = 1;
++			} else {
++				sp_ntasks++;
++			}
+ 			while (*a == ',' || *a == ' ') {
+ 				a++;
+ 			}
+@@ -512,8 +555,9 @@ sweet_prof_cmd(const char *line)
+ 			return sp_reply;
+ 		}
+ 		thread_deallocate(t);
+-		printf("SWEET PROF: start: %llu s, every %llu us on CPU, census every %llu us of %s%s%s\n",
+-		    secs, period, census, sp_names[0], sp_ntasks > 1 ? ", " : "", sp_ntasks > 1 ? sp_names[1] : "");
++		printf("SWEET PROF: start: %llu s, every %llu us on CPU, census every %llu us of %s%s%s%s\n",
++		    secs, period, census, sp_names[0], sp_ntasks > 1 ? ", " : "", sp_ntasks > 1 ? sp_names[1] : "",
++		    sp_census_all ? " (all threads, kernel stacks)" : "");
+ 		snprintf(sp_reply, sizeof(sp_reply), "prof: started %llu s, %llu us, census %llu us, %u tasks\n",
+ 		    secs, period, census, sp_ntasks);
+ 		return sp_reply;
+-- 
+2.47.3
+

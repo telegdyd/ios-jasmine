@@ -6,6 +6,9 @@
         OUT.meta (slides, task / thread names, file mappings).
     prof.py report OUT [--kernel K] [--lib PATH...] [--pid-name backboardd] [--top N]
         (WSL: needs ipsw and c++filt) symbolicates and prints where the time goes.
+    prof.py stuck OUT --kernel K [--lib PATH...] [--pid-name backboardd]
+        (WSL) every thread of the task, its last census record with the kernel stack of a
+        blocked thread (needs `fetch --tasks NAME,all`, kernel j0069).
 
 Records (osfmk/arm64/sweet_prof.c): 8-byte words hdr, tid, pid | trap << 32, lr, event, then
 nk kernel and nu user frames. hdr: us since start (0-31), cpu (32-39, 0xff = census), kind
@@ -405,6 +408,33 @@ def report(a):
                     print(f'  {c * cen / secs:7.1f}  {k} trap {trap}  {p}')
 
 
+def stuck(a):
+    """j0069 (`fetch --tasks NAME,all`): every thread of the task, its last census record:
+    state, trap, wait event and block hint, kernel stack (blocked threads), user stack."""
+    meta = Meta(a.out + '.meta')
+    recs = list(records(open(a.out + '.bin', 'rb').read()))
+    sym = Sym(meta, a.kernel, a.lib)
+    targets = [p for p, n in meta.tasks.items() if n in a.pid_name.split(',')]
+    last, seen = {}, collections.Counter()
+    for r in recs:
+        if r['pid'] in targets and r['kind'] in (2, 3):
+            last[r['tid']] = r
+            seen[r['tid']] += 1
+    rows = []
+    for tid, r in sorted(last.items()):
+        k = [sym.kernel(x) for x in r['k']]
+        u = [sym.user(r['pid'], x if i == 0 else x - 1) for i, x in enumerate(r['u'])]
+        rows.append((tid, r, k, u))
+    sym.finish()
+    N = sym.name
+    for tid, r, k, u in rows:
+        print(f'\n## tid {tid} "{meta.threads.get(tid, (0, ""))[1]}": {KIND[r["kind"]]} in {seen[tid]} records, '
+              f'trap {r["trap"]}, event 0x{r["event"]:x}, block hint {r["hint"]}, pri {r["pri"]}')
+        if k:
+            print('  kernel: ' + ' < '.join(N(x[1]) for x in k))
+        print('  user:   ' + ' < '.join(f'{x[0].replace(".dylib", "")}:{N(x[1])}' for x in u))
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -421,8 +451,13 @@ def main():
     r.add_argument('--pid-name', default='backboardd')
     r.add_argument('--top', type=int, default=15)
     r.add_argument('--threads', type=int, default=3)
+    s = sp.add_parser('stuck')
+    s.add_argument('out')
+    s.add_argument('--kernel', required=True)
+    s.add_argument('--lib', action='append', default=[])
+    s.add_argument('--pid-name', default='backboardd')
     a = ap.parse_args()
-    fetch(a) if a.cmd == 'fetch' else report(a)
+    {'fetch': fetch, 'report': report, 'stuck': stuck}[a.cmd](a)
 
 
 if __name__ == '__main__':
