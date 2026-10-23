@@ -30,7 +30,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
 | 7 | Stop the XPC retry loops (~2 Gold cores) | small on 4 cores; needed for 8 cores and battery | userland services, maybe kernel | j0062 |
 | 8 | Fix the pmap 32-bit page-number shift | ~0 (correctness) | `osfmk/arm/pmap/pmap.c` | j0063 |
-| 9 | DDR clock vote through the RPM (is memory the brake?) | unknown: find out first | `bsd/dev/sweet_rpm.c`, a DDR caller | j0064 |
+| 9 | ~~DDR clock vote through the RPM~~ **done 2026-10-23: not the brake** (1296 -> 1804 MHz: no gain; below 1296 Mesa slows 20-60 %) | 0 measured | `bsd/dev/sweet_rpm.c`, `bsd/dev/sweet_ddr.c` | j0064 |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Every other pair touches different files.
@@ -221,7 +221,18 @@ without the pool (`sweetgpu_pool=0`).
 **Done when:** the `sweetgpu_wc=1 sweetgpu_pool=0` boot no longer panics and the UI renders; the default (pool)
 path is unchanged.
 
-## 9. DDR clock vote through the RPM (find out first whether memory is the brake)
+## 9. DDR clock vote through the RPM (find out first whether memory is the brake) -- DONE, NOT THE BRAKE
+
+**Result 2026-10-23 05:10 (j0064, GPU.md "j0064").** The vote works (RPM clock handoff of 19 resources + scaling on at
+the first try; read back 766 / 1016 / 1294 / 1804 for votes 768 / 1017 / 1296 / 1804: the debug-mux counter is half
+the DDR rate, the bootloader leaves 1296). Round j64a, one boot, 7 plays: Mesa's CPU time per flush 31.1 ms at 768,
+24.2 at 1017, 18.6-20.0 at 1296, 18.9-19.5 at 1804; GPU wait per flush flat. Memory is not the brake at the
+bootloader's rate; 1804 stays off (`sweetddr=1804` or `ddr 1804` live). Fresh profile j64p: the daemon loops (task 7,
+1.87 of 4 Gold cores; CA's thread waits 45 ms/s for a CPU) and buffer churn (task 4, ~15-20 % of CA's thread) come
+next. New tools: `ddr state/MHZ/bench/bw`, raw `rpm`, CPU bwmon (1 MiB units) and GPU VBIF counters,
+`tools/g2/ddrround.sh`, `ddrsum.py`, `ddrcost.py` (per-flush GL cost, the steadier measure). Not done: a 10-minute
+series at 1804 (~8 min over two plays without a hang).
+
 
 **Now.** Nothing in XNU votes for the DDR (bimc) clock, so it stays where the bootloader left it. j0060's `gpu state`
 reads `bimc_clk` through the GCC debug mux (sel 0x19d) as **647 MHz** every boot. sailfish's MSM8996 doubles that

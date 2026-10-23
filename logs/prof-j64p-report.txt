@@ -1,0 +1,480 @@
+# 67185 records over 10.0 s, on-CPU sample every 1 ms per busy CPU, census every 2 ms; dropped 0
+
+## CPU time per process (ms per second, all CPUs)
+   900.9  launchd[1]
+   531.4  vmd[205]
+   434.6  mediaserverd[28]
+   275.1  backboardd[56]
+   230.3  SpringBoard[26]
+   130.3  logd[24]
+    91.9  kernel_task[0]
+    21.3  biomed[41]
+    19.7  contextstored[55]
+    12.3  nanotimekitcompa[249]
+     6.4  ?[248]
+     4.7  locationd[61]
+     4.7  aggregated[75]
+     3.2  cfprefsd[90]
+     2.6  ind[111]
+     1.7  thermalmonitord[54]
+     1.4  powerd[38]
+     1.3  mobileassetd[92]
+     1.3  cloudpaird[64]
+     1.2  callservicesd[105]
+     1.2  remindd[78]
+     1.1  sharingd[59]
+     1.0  configd[35]
+     0.9  notifyd[89]
+     0.8  ContextService[165]
+
+## busiest threads (ms per second)
+   440.7  launchd[1] tid 222 ""
+   433.0  launchd[1] tid 2676 ""
+   432.8  mediaserverd[28] tid 466 ""
+   397.4  vmd[205] tid 2103 ""
+   213.7  backboardd[56] tid 634 "com.apple.coreanimation.display.primary"
+   179.5  SpringBoard[26] tid 252 ""
+   133.9  vmd[205] tid 1790 ""
+    57.4  logd[24] tid 398 ""
+    35.8  logd[24] tid 391 ""
+    34.9  logd[24] tid 2166 ""
+    32.0  kernel_task[0] tid 105 "daemon.deferred-deallocation"
+    27.1  launchd[1] tid 221 ""
+    19.7  kernel_task[0] tid 202 ""
+    17.4  SpringBoard[26] tid 2227 "com.apple.UIKit.inProcessAnimationManager"
+    14.9  SpringBoard[26] tid 2709 ""
+    14.4  biomed[41] tid 2311 ""
+    10.4  kernel_task[0] tid 917 "thread call qos-ui #2"
+     9.3  nanotimekitcompa[249] tid 2702 ""
+     8.8  backboardd[56] tid 649 "backboar:ir3q0"
+     8.5  backboardd[56] tid 656 "backboar:ir3q1"
+     8.0  contextstored[55] tid 2662 ""
+     7.9  SpringBoard[26] tid 1109 ""
+     7.9  kernel_task[0] tid 1273 "thread call high #2"
+     7.7  backboardd[56] tid 620 "com.apple.coreanimation.render-server"
+     7.5  kernel_task[0] tid 168 ""
+
+## backboardd[56] threads: ms per second on CPU (user / kernel), waiting, runnable
+  213.7 ( 127.9 /   85.8)  wait  237.0  runnable   45.4  tid 634 "com.apple.coreanimation.display.primary"
+    8.8 (   6.0 /    2.8)  wait  253.4  runnable    7.0  tid 649 "backboar:ir3q0"
+    8.5 (   6.2 /    2.3)  wait  254.0  runnable    5.6  tid 656 "backboar:ir3q1"
+    7.7 (   3.3 /    4.4)  wait  550.7  runnable    0.2  tid 620 "com.apple.coreanimation.render-server"
+    7.0 (   5.0 /    2.0)  wait  486.4  runnable    4.6  tid 2665 ""
+    6.4 (   4.1 /    2.3)  wait  501.2  runnable    4.0  tid 2663 ""
+    6.1 (   0.9 /    5.2)  wait  418.4  runnable   31.6  tid 657 "backbo:traceq0"
+    5.7 (   3.6 /    2.1)  wait  345.2  runnable    4.2  tid 2664 ""
+    5.0 (   3.1 /    1.9)  wait  450.8  runnable    3.4  tid 2527 ""
+    4.7 (   3.2 /    1.5)  wait  485.6  runnable    3.0  tid 1116 ""
+    1.4 (   0.5 /    0.9)  wait  101.0  runnable    0.0  tid 1436 "IOHIDEvent Server Connection - Root"
+    0.1 (   0.1 /    0.0)  wait  104.4  runnable    0.8  tid 2705 ""
+    0.0 (   0.0 /    0.0)  wait  100.0  runnable    0.0  tid 663 "com.apple.CoreMotion.MotionThread"
+    0.0 (   0.0 /    0.0)  wait  100.0  runnable    0.0  tid 332 ""
+
+### tid 634 "com.apple.coreanimation.display.primary": 213.7 ms/s on CPU
+self time by image:
+   40.1%  kernel
+   33.5%  libsweetca.dylib
+   14.7%  QuartzCore
+    6.4%  libsystem_malloc.dylib
+    1.7%  libsystem_platform.dylib
+    1.3%  libsystem_pthread.dylib
+    0.5%  libsystem_kernel.dylib
+    0.4%  libsystem_c.dylib
+    0.4%  CoreFoundation
+    0.3%  IOKit
+    0.2%  RTCReporting
+    0.1%  libdispatch.dylib
+self time by function:
+    8.6%  kernel: _ml_set_interrupts_enabled_with_debug
+    6.2%  kernel: SweetGPUBuffer::create(unsigned long long, bool)
+    3.9%  libsystem_malloc.dylib: non-external (was a private external)
+    2.5%  kernel: _pt_l3
+    1.6%  kernel: _FlushPoC_DcacheRegion
+    1.6%  libsweetca.dylib: _fd5_program_emit
+    1.5%  kernel: OSMetaClassBase::safeMetaCast(OSMetaClassBase const*, OSMetaClass const*)
+    1.3%  QuartzCore: CA::Render::Updater::prepare_layer0(CA::Render::Updater::GlobalState&, CA::Render::Laye...
+    0.9%  libsystem_pthread.dylib: non-external (was a private external)
+    0.9%  libsweetca.dylib: _fd_submit_append_bo
+    0.9%  kernel: _ccsha256_ltc_compress
+    0.7%  libsweetca.dylib: _fd5_emit_state
+    0.7%  libsweetca.dylib: __mesa_hash_table_search_pre_hashed
+    0.7%  libsystem_platform.dylib: __platform_memmove
+    0.6%  kernel: _memcmp_zero_ptr_aligned
+    0.6%  QuartzCore: CA::Render::HitTestTree::append_layer_node(CA::Render::LayerNode const*, unsigned int, ...
+    0.6%  QuartzCore: CA::OGL::GLContext::update_shader()
+    0.6%  libsweetca.dylib: _st_update_rasterizer
+    0.6%  kernel: _fbcon_transmit_data
+    0.5%  libsweetca.dylib: _hash_table_insert
+    0.5%  libsystem_malloc.dylib: _tiny_free_list_add_ptr
+    0.5%  libsweetca.dylib: _fd5_emit_vertex_bufs
+    0.5%  libsweetca.dylib: __mesa_update_state_locked
+    0.5%  QuartzCore: CA::OGL::capture_backdrop(CA::OGL::Renderer&, CA::OGL::Layer const*)
+    0.5%  libsweetca.dylib: _emit_common_consts
+inclusive (function on the stack):
+   76.0%  QuartzCore: CA::OGL::ImagingNode::render(CA::OGL::ImagingNode::RenderClosure*, unsigned int)
+   69.6%  QuartzCore: CA::OGL::LayerNode::apply(float, CA::OGL::Surface**, float*)
+   68.7%  QuartzCore: CA::OGL::render_layers(CA::OGL::Renderer&, CA::OGL::Layer*)
+   44.7%  QuartzCore: CA::OGL::GLContext::draw_elements(CA::OGL::PrimitiveMode, unsigned int, unsigned short ...
+   38.1%  kernel: _sleh_synchronous
+   37.1%  kernel: _fleh_synchronous
+   34.3%  libsystem_kernel.dylib: _mach_msg2_trap
+   34.3%  libsweetca.dylib: _w_DrawElements
+   33.8%  kernel: _mach_syscall
+   33.2%  kernel: _mach_msg2_trap
+   32.2%  QuartzCore: CA::OGL::capture_backdrop(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   31.6%  kernel: _mach_msg_trap_send
+   30.2%  kernel: _ipc_kmsg_send
+   29.7%  kernel: _ipc_kobject_server
+   29.2%  IOKit: 0x18e553407
+   28.6%  QuartzCore: CA::OGL::Context::ClippedArray::next_rect(CA::Bounds&)
+   26.3%  QuartzCore: CA::OGL::render_contents_background(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   25.4%  kernel: __Xio_connect_method
+   25.0%  kernel: _is_io_connect_method
+   24.8%  libsweetca.dylib: __mesa_DrawElementsBaseVertex
+   24.1%  QuartzCore: CA::OGL::(anonymous namespace)::filter_backdrop(CA::OGL::Renderer&, CA::OGL::Layer cons...
+   23.8%  libsweetca.dylib: __mesa_validated_drawrangeelements
+   23.4%  QuartzCore: CA::WindowServer::Server::render_for_time(double, CVTimeStamp const*, unsigned long lon...
+   22.9%  QuartzCore: CA::WindowServer::IOMFBServer::vsync_callback(__IOMobileFramebuffer*, unsigned long lon...
+   22.7%  QuartzCore: CA::OGL::emit_filter(CA::OGL::Renderer&, CA::OGL::Filter const&, CA::OGL::Layer const&,...
+   22.3%  QuartzCore: display_timer_callback(__CFMachPort*, void*, long, void*)
+   22.0%  CoreFoundation: non-external (was a private external)
+   22.0%  libsweetca.dylib: _fd_draw_vbo
+   21.5%  CoreFoundation: ___CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__
+   21.4%  CoreFoundation: ___CFRunLoopRun
+   21.3%  CoreFoundation: ___CFRunLoopDoSource1
+   21.3%  CoreFoundation: _CFRunLoopRunSpecific
+   21.2%  CoreFoundation: _CFRunLoopRun
+   21.1%  QuartzCore: CA::WindowServer::IOMFBServer::thread_body(void*)
+   20.9%  QuartzCore: thread_fun(void*)
+   20.8%  kernel: SweetGPUUserClient::externalMethod(unsigned int, IOExternalMethodArguments*, IOExternal...
+   20.8%  IOKit: 0x18e551bbf
+   20.8%  libsystem_pthread.dylib: __pthread_start
+   20.6%  libsystem_pthread.dylib: _thread_start
+   20.2%  libsweetca.dylib: _u_vbuf_draw_vbo
+   18.9%  QuartzCore: CA::OGL::GaussianBlurFilter::render(CA::Render::Filter const*, CA::OGL::Layer const*, C...
+   18.8%  QuartzCore: CA::OGL::ImagingNode::retain_surface(float&, unsigned int)
+   18.6%  QuartzCore: CA::OGL::Context::blur_surface(float, CA::OGL::Surface*, float, CA::OGL::Context::BlurP...
+   16.7%  QuartzCore: CA::OGL::emit_one_part_rect(CA::OGL::Context&, CA::OGL::RectState const&, float const*,...
+   13.8%  QuartzCore: CA::OGL::render_background(CA::OGL::Renderer&, CA::OGL::Layer const*)
+   12.9%  QuartzCore: CA::OGL::fill_rect_tex(CA::OGL::Context&, CA::OGL::RectState const&, float const*)
+   12.0%  libsweetca.dylib: _fd_context_batch_draw
+   12.0%  libsweetca.dylib: _bo_new
+   11.7%  libsweetca.dylib: _fd_batch_from_fb
+   11.7%  QuartzCore: CA::OGL::BlurState::narrow_blur(int, float const*, float const*, bool)
+kernel stacks (leaf < callers):
+    6.2%  SweetGPUBuffer::create(unsigned long ... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    3.2%  _ml_set_interrupts_enabled_with_debug < _thread_block_reason < _delay_for_interval < _sweet_gpu_wait
+    1.9%  _ml_set_interrupts_enabled_with_debug < _thread_block_reason < _delay_for_interval < AppleCLCD::swap(unsigned char const*)
+    1.6%  _pt_l3 < _sweet_gpu_vm_map < SweetGPUBuffer::mapGPU(bool) < SweetGPUBuffer::create(unsigned long ...
+    1.0%  _ml_set_interrupts_enabled_with_debug < _thread_block_reason < _delay_for_interval < _sweet_fb_gpu_write_wait
+    0.8%  _pt_l3 < _sweet_gpu_vm_unmap < SweetGPUBuffer::free() < SweetGPUUserClient::externalMethod(un...
+    0.7%  _ml_set_interrupts_enabled_with_debug < _assert_wait_deadline < _delay_for_interval < _sweet_gpu_wait
+    0.7%  OSMetaClassBase::safeMetaCast(OSMetaC... < SweetGPUUserClient::addBuffer(SweetGP... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method
+    0.7%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _ksyn_cvsignal
+    0.6%  _fbcon_transmit_data < __cnputs < _console_ring_try_empty < _console_printbuf_putc
+    0.6%  _FlushPoC_DcacheRegion < _IOFlushProcessorCache < SweetGPUUserClient::maintain(SweetGPU... < SweetGPUUserClient::retireJobs(unsign...
+    0.5%  _FlushPoC_DcacheRegion < _sweet_gpu_vm_map < SweetGPUBuffer::mapGPU(bool) < SweetGPUBuffer::create(unsigned long ...
+    0.4%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+    0.4%  OSMetaClassBase::safeMetaCast(OSMetaC... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    0.3%  _vm_map_enter < _vm_map_enter_mem_object_helper < _vm_map_enter_mem_object < _IOMemoryDescriptorMapAlloc
+    0.3%  OSMetaClassBase::safeMetaCast(OSMetaC... < SweetGPUUserClient::bufferAt(unsigned... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method
+    0.3%  _FlushPoC_DcacheRegion < _sweet_gpu_vm_unmap < SweetGPUBuffer::free() < SweetGPUUserClient::externalMethod(un...
+    0.3%  _ccsha256_ltc_compress < _ccdigest_update < _ikm_sign < _ipc_kmsg_copyin_from_user
+    0.3%  OSArray::getObject(unsigned int) const < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    0.3%  _ipc_kmsg_copyin_from_user < _mach_msg_trap_send < _mach_msg2_trap < _mach_syscall
+    0.3%  IOGeneralMemoryDescriptor::memoryRefe... < IOGeneralMemoryDescriptor::doMap(_vm_... < IOMemoryDescriptor::makeMapping(IOMem... < IOMemoryDescriptor::createMappingInTa...
+    0.2%  _vm_fault_internal < _vm_fault$XNU_INTERNAL < _handle_user_abort < _sleh_synchronous
+    0.2%  SweetGPUUserClient::bufferAt(unsigned... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    0.2%  _vm_map_delete < _vm_map_enter < _vm_map_enter_mem_object_helper < _vm_map_enter_mem_object
+    0.2%  _ccsha256_ltc_compress < _ccdigest_update < _ikm_validate_sig_internal < _ipc_kmsg_copyout
+off CPU (census, ms per second): wait 237.0, runnable 45.4
+    115.0  wait trap -47  ___CFRunLoopServiceMachPort < ___CFRunLoopRun < _CFRunLoopRunSpecific
+     52.0  wait trap -47  0x18e553407 < 0x18e551bbf < _darwin_pipe_wait
+     36.0  wait trap -47  0x18e553407 < 0x18e55278f < 0x18e5526d7
+     20.8  runnable trap -47  0x18e553407 < 0x18e551bbf < _darwin_pipe_wait
+     19.4  wait trap -47  0x18e553407 < 0x18e55278f < _flush_submit_list
+     15.4  runnable trap -47  0x18e553407 < 0x18e55278f < 0x18e5526d7
+      9.6  wait trap 305  _u_cnd_monotonic_wait < __util_queue_fence_wait < _ir3_get_shader
+      7.6  runnable trap -47  0x18e553407 < 0x18e55278f < _flush_submit_list
+      1.2  runnable trap -47  0x18e553407 < 0x18e551bbf < _darwin_bo_new
+      0.8  wait trap -47  0x18e553407 < 0x18e551bbf < _darwin_bo_new
+      0.6  wait trap -47  0x18e55cad7 < _darwin_bo_map < _fd_bo_map
+      0.6  wait trap -47  0x18e553407 < 0x18e551bbf < _darwin_bo_close_handle
+      0.4  wait trap 4424  _fd5_pipe2color < _do_validate_attachment < __mesa_test_framebuffer_completeness
+      0.4  wait trap -409693488  CA::OGL::LayerNode::apply(float, CA::OGL::Surfa... < CA::OGL::render_layers(CA::OGL::Renderer&, CA::... < CA::OGL::LayerNode::apply(float, CA::OGL::Surfa...
+      0.4  wait trap -152192456  _fd_bc_add_flush_deps < _fd_context_flush < _draw_prep
+      0.4  wait trap -152192456  _cso_set_depth_stencil_alpha < _st_prepare_draw < __mesa_validated_drawrangeelements
+      0.4  wait trap -152192148  __mesa_hash_table_search_pre_hashed < _fd_submit_append_bo < _fd5_emit_shader_obj
+      0.2  runnable trap -152853648  _fd_context_switch_from < _st_update_framebuffer_state < _st_Clear
+      0.2  wait trap 515  non-external (was a private external) < non-external (was a private external) < _u_trace_flush
+      0.2  runnable trap -152834020  non-external (was a private external) < non-external (was a private external) < non-external (was a private external)
+      0.2  wait trap -152192148  _bind_framebuffer < _w_BindFramebuffer < CA::OGL::GLESContext::set_surface(CA::OGL::Surf...
+      0.2  wait trap 304  _cnd_signal < _util_queue_add_job_locked < _u_trace_context_process
+      0.2  wait trap -152855104  0x18e5535a8 < 0x18e5527cb < _IOSurfaceClientWrapClientImage
+      0.2  wait trap -152230096  CA::WindowServer::IOMFBDisplay::foreach_detache... < CA::OGL::capture_backdrop(CA::OGL::Renderer&, C... < CA::OGL::render_layers(CA::OGL::Renderer&, CA::...
+
+### tid 649 "backboar:ir3q0": 8.8 ms/s on CPU
+self time by image:
+   47.7%  libsweetca.dylib
+   31.8%  kernel
+   14.8%  libsystem_malloc.dylib
+    4.5%  libsystem_platform.dylib
+    1.1%  libsystem_kernel.dylib
+self time by function:
+   11.4%  kernel: _ml_set_interrupts_enabled_with_debug
+    5.7%  libsystem_malloc.dylib: non-external (was a private external)
+    3.4%  libsweetca.dylib: _nir_algebraic_impl
+    3.4%  libsystem_platform.dylib: __platform_memset
+    2.3%  libsystem_malloc.dylib: _tiny_free_list_add_ptr
+    2.3%  libsweetca.dylib: _regmask_get
+    2.3%  libsweetca.dylib: _visit_cf_list
+    2.3%  libsystem_malloc.dylib: _free
+    2.3%  libsweetca.dylib: _ir3_update_legalize_state
+    2.3%  libsweetca.dylib: _nir_opt_dead_write_vars
+    2.3%  libsweetca.dylib: __mesa_set_search
+    1.1%  libsweetca.dylib: _nir_search_op_for_nir_op
+    1.1%  libsweetca.dylib: _sync_update
+    1.1%  libsweetca.dylib: _inst_is_vector_alu
+    1.1%  libsystem_malloc.dylib: __tiny_check_and_zero_inline_meta_from_freelist
+    1.1%  libsweetca.dylib: _nir_opt_algebraic_late
+    1.1%  kernel: _unix_syscall_return
+    1.1%  libsweetca.dylib: __mesa_hash_table_search
+    1.1%  libsweetca.dylib: _ir3_context_init
+    1.1%  libsweetca.dylib: __mesa_pointer_set_create
+    1.1%  libsystem_malloc.dylib: __szone_free
+    1.1%  kernel: IOGeneralMemoryDescriptor::prepare(unsigned int)
+    1.1%  kernel: _lck_rw_grab
+    1.1%  libsweetca.dylib: _ir3_src_create
+    1.1%  libsweetca.dylib: _match_expression
+inclusive (function on the stack):
+  100.0%  libsweetca.dylib: _impl_thrd_routine
+  100.0%  libsystem_pthread.dylib: __pthread_start
+  100.0%  libsystem_pthread.dylib: _thread_start
+   98.9%  libsweetca.dylib: _util_queue_thread_func
+   95.5%  libsweetca.dylib: _create_initial_variants_async
+   94.3%  libsweetca.dylib: _ir3_shader_get_variant
+   94.3%  libsweetca.dylib: _create_initial_variants
+   84.1%  libsweetca.dylib: _create_variant
+   78.4%  libsweetca.dylib: _ir3_compile_shader_nir
+   78.4%  libsweetca.dylib: _compile_variant
+   34.1%  libsweetca.dylib: _ir3_context_init
+   23.9%  libsweetca.dylib: _ir3_nir_lower_variant
+   21.6%  libsystem_malloc.dylib: non-external (was a private external)
+   20.5%  kernel: _sleh_synchronous
+   20.5%  kernel: _fleh_synchronous
+   18.2%  libsweetca.dylib: _ir3_optimize_loop
+   12.5%  libsweetca.dylib: _ir3_postsched
+   12.5%  kernel: _mach_syscall
+   11.4%  kernel: _ml_set_interrupts_enabled_with_debug
+   11.4%  libsweetca.dylib: _ir3_sched
+   10.2%  libsweetca.dylib: _nir_algebraic_impl
+    9.1%  libsweetca.dylib: _nir_shader_clone
+    9.1%  libsweetca.dylib: _gc_alloc_size
+    9.1%  kernel: _mach_msg_trap_send
+    9.1%  kernel: _mach_msg2_trap
+    9.1%  libsystem_kernel.dylib: _mach_msg2_trap
+    9.1%  libsweetca.dylib: _upload_shader_variant
+    8.0%  libsweetca.dylib: _unsafe_free
+    8.0%  libsweetca.dylib: _gc_zalloc_size
+    8.0%  kernel: _ipc_kobject_server
+    8.0%  kernel: _ipc_kmsg_send
+    6.8%  libsweetca.dylib: _clone_cf_list
+    6.8%  libsweetca.dylib: _clone_function_impl
+    6.8%  IOKit: 0x18e553407
+    6.8%  IOKit: 0x18e551bbf
+    6.8%  libsweetca.dylib: _darwin_bo_new
+    6.8%  libsweetca.dylib: _bo_new
+    6.8%  libsweetca.dylib: __fd_bo_new
+    5.7%  libsweetca.dylib: _ralloc_size
+    5.7%  kernel: _vm_fault_internal
+    5.7%  kernel: _vm_fault$XNU_INTERNAL
+    5.7%  kernel: _handle_user_abort
+    4.5%  libsweetca.dylib: _nir_opt_algebraic_late
+    4.5%  libsweetca.dylib: _schedule
+    4.5%  libsweetca.dylib: _ir3_nir_post_finalize
+    4.5%  libsweetca.dylib: _ir3_cf
+    4.5%  libsweetca.dylib: _nir_opt_algebraic
+    4.5%  libsweetca.dylib: _ir3_ra
+    3.4%  libsweetca.dylib: __mesa_hash_table_rehash
+    3.4%  libsweetca.dylib: _hash_table_insert
+kernel stacks (leaf < callers):
+    8.0%  _ml_set_interrupts_enabled_with_debug
+    2.3%  _ml_set_interrupts_enabled_with_debug < _waitq_wakeup64_thread < _thread_wakeup_thread < _ksyn_handle_cvbroad
+    1.1%  _unix_syscall_return < _psynch_cvcontinue
+    1.1%  IOGeneralMemoryDescriptor::prepare(un... < SweetGPUBuffer::create(unsigned long ... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method
+    1.1%  _lck_rw_grab < _lck_rw_lock_shared_gen < _lck_rw_lock_shared < _vm_fault_internal
+    1.1%  _vm_page_free_list < _vm_object_reap_pages < _vm_object_reap < _vm_object_terminate
+    1.1%  _ml_set_interrupts_enabled_with_debug < _ast_taken_user < user_take_ast
+    1.1%  counter_inc(unsigned long long**) < _ipc_kobject_server < _ipc_kmsg_send < _mach_msg_trap_send
+    1.1%  _is_io_connect_map_memory_into_task < __Xio_connect_map_memory_into_task < _ipc_kobject_server < _ipc_kmsg_send
+    1.1%  _vm_map_store_entry_link < _vm_map_entry_insert < _vm_map_enter < _vm_map_enter_mem_object_helper
+    1.1%  _bzero_phys < _vm_fault_internal < _vm_fault$XNU_INTERNAL < _handle_user_abort
+    1.1%  _pmap_tt_deallocate < _pmap_remove_options < _vm_map_delete < _vm_map_remove_guard
+    1.1%  _zalloc_ext < _vm_object_allocate < _vm_map_lookup_and_lock_object < _vm_fault_internal
+    1.1%  _ipc_kmsg_alloc < _ipc_kobject_server < _ipc_kmsg_send < _mach_msg_trap_send
+    1.1%  _rb_head_RB_INSERT_COLOR < _vm_map_entry_insert < _vm_map_enter < _vm_map_enter_mem_object_helper
+    1.1%  _ipc_kmsg_copyin_from_user < _mach_msg_trap_send < _mach_msg2_trap < _mach_syscall
+    1.1%  OSMetaClassBase::safeMetaCast(OSMetaC... < SweetGPUUserClient::addBuffer(SweetGP... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method
+    1.1%  _FlushPoC_DcacheRegion < _sweet_gpu_vm_map < SweetGPUBuffer::mapGPU(bool) < SweetGPUBuffer::create(unsigned long ...
+    1.1%  _mach_vm_map_external < _mach_syscall < _sleh_synchronous < _fleh_synchronous
+    1.1%  _lck_rw_lock_shared_to_exclusive < _vm_map_lookup_and_lock_object < _vm_fault_internal < _vm_fault$XNU_INTERNAL
+    1.1%  _lck_rw_done < _vm_fault_internal < _vm_fault$XNU_INTERNAL < _handle_user_abort
+off CPU (census, ms per second): wait 253.4, runnable 7.0
+    253.4  wait trap 305  _cnd_wait < _util_queue_thread_func < _impl_thrd_routine
+      0.6  runnable trap -15  non-external (was a private external) < non-external (was a private external) < non-external (was a private external)
+      0.4  runnable trap 305  _cnd_wait < _util_queue_thread_func < _impl_thrd_routine
+      0.4  runnable trap 0  _nir_opt_algebraic < _ir3_optimize_loop < _ir3_nir_post_finalize
+      0.2  runnable trap -152853648  __platform_memcmp < _set_search_or_add < _nir_instr_set_add_or_rewrite
+      0.2  runnable trap -152853984  non-external (was a private external) < _unsafe_free < _unsafe_free
+      0.2  runnable trap 75  _small_madvise_free_range_no_lock < non-external (was a private external) < _unsafe_free
+      0.2  runnable trap -152833900  _nir_function_impl_lower_instructions < _nir_shader_lower_instructions < _nir_opt_constant_folding
+      0.2  runnable trap -152833980  non-external (was a private external) < non-external (was a private external) < non-external (was a private external)
+      0.2  runnable trap -12  non-external (was a private external) < non-external (was a private external) < __szone_free
+      0.2  runnable trap -1611932535  _small_malloc_from_free_list < non-external (was a private external) < non-external (was a private external)
+      0.2  runnable trap 1611932535  _tiny_free_list_add_ptr < non-external (was a private external) < non-external (was a private external)
+      0.2  runnable trap -152855104  _ir3_calc_liveness_for < _ir3_ra < _ir3_compile_shader_nir
+      0.2  runnable trap -152833900  _gc_sweep_end < _nir_sweep < _ir3_nir_lower_variant
+      0.2  runnable trap -152833900  __mesa_pointer_set_create < _ir3_find_ssa_uses < _ir3_lower_shared_phis
+      0.2  runnable trap -152854096  _ir3_sched < _ir3_compile_shader_nir < _compile_variant
+      0.2  runnable trap -152854096  _match_expression < _nir_opt_algebraic < _ir3_optimize_loop
+      0.2  runnable trap -152833980  non-external (was a private external) < non-external (was a private external) < _unsafe_free
+      0.2  runnable trap 3  _ir3_delayslots < _ir3_delayslots_with_repeat < _add_reg_dep
+      0.2  runnable trap -152833900  _ir3_collect_info < _ir3_shader_assemble < _compile_variant
+      0.2  runnable trap -152833900  non-external (was a private external) < _rzalloc_size < _ir3_postsched
+      0.2  runnable trap -152833900  _nir_lower_bit_size < _ir3_optimize_loop < _ir3_nir_lower_variant
+      0.2  runnable trap -152854096  _ir3_reg_interval_remove < _handle_block < _ir3_calc_pressure
+      0.2  runnable trap 1225407920  _hash_instr < __mesa_set_search_or_add < _nir_instr_set_add_or_rewrite
+      0.2  runnable trap -152854096  _ir3_calc_pressure < _ir3_ra < _ir3_compile_shader_nir
+
+### tid 656 "backboar:ir3q1": 8.5 ms/s on CPU
+self time by image:
+   58.8%  libsweetca.dylib
+   27.1%  kernel
+   12.9%  libsystem_malloc.dylib
+    1.2%  libsystem_platform.dylib
+self time by function:
+    8.2%  libsystem_malloc.dylib: non-external (was a private external)
+    4.7%  libsweetca.dylib: _match_expression
+    3.5%  kernel: _ml_set_interrupts_enabled_with_debug
+    3.5%  libsweetca.dylib: _hash_instr
+    3.5%  libsweetca.dylib: __mesa_pointer_set_create
+    3.5%  libsweetca.dylib: _regmask_get
+    3.5%  kernel: _vm_map_store_lookup_entry_rb
+    2.4%  libsweetca.dylib: __mesa_set_search_or_add
+    2.4%  libsweetca.dylib: __mesa_hash_table_search
+    2.4%  libsweetca.dylib: __mesa_set_next_entry
+    1.2%  libsweetca.dylib: _ra_reg_is_src
+    1.2%  kernel: _FlushPoC_DcacheRegion
+    1.2%  libsweetca.dylib: _nir_lower_amul
+    1.2%  libsweetca.dylib: _ir3_find_ssa_uses_for
+    1.2%  kernel: IOGeneralMemoryDescriptor::initWithOptions(void*, unsigned int, unsigned int, task*, un...
+    1.2%  libsweetca.dylib: _process_instr
+    1.2%  libsystem_platform.dylib: __platform_memset
+    1.2%  kernel: _vm_page_free_list
+    1.2%  libsystem_malloc.dylib: _small_free_list_remove_ptr_no_clear
+    1.2%  libsweetca.dylib: _gc_sweep_start
+    1.2%  libsweetca.dylib: _choose_instr_inc
+    1.2%  libsweetca.dylib: _encode__instruction
+    1.2%  libsweetca.dylib: __mesa_set_search
+    1.2%  kernel: _turnstile_prepare
+    1.2%  kernel: _pmap_clear_noencrypt
+inclusive (function on the stack):
+  100.0%  libsweetca.dylib: _util_queue_thread_func
+  100.0%  libsweetca.dylib: _impl_thrd_routine
+  100.0%  libsystem_pthread.dylib: __pthread_start
+  100.0%  libsystem_pthread.dylib: _thread_start
+   97.6%  libsweetca.dylib: _ir3_shader_get_variant
+   97.6%  libsweetca.dylib: _create_initial_variants
+   97.6%  libsweetca.dylib: _create_initial_variants_async
+   88.2%  libsweetca.dylib: _create_variant
+   84.7%  libsweetca.dylib: _compile_variant
+   80.0%  libsweetca.dylib: _ir3_compile_shader_nir
+   40.0%  libsweetca.dylib: _ir3_context_init
+   25.9%  libsweetca.dylib: _ir3_nir_lower_variant
+   23.5%  kernel: _sleh_synchronous
+   23.5%  kernel: _fleh_synchronous
+   22.4%  libsystem_malloc.dylib: non-external (was a private external)
+   16.5%  kernel: _mach_syscall
+   15.3%  libsweetca.dylib: _ir3_optimize_loop
+   11.8%  libsweetca.dylib: _nir_shader_clone
+   10.6%  libsweetca.dylib: _gc_alloc_size
+   10.6%  libsweetca.dylib: _gc_zalloc_size
+   10.6%  libsweetca.dylib: _nir_algebraic_impl
+    9.4%  libsweetca.dylib: _upload_shader_variant
+    9.4%  libsweetca.dylib: _unsafe_free
+    9.4%  libsweetca.dylib: _ir3_find_ssa_uses
+    8.2%  kernel: _ipc_kobject_server
+    8.2%  kernel: _ipc_kmsg_send
+    8.2%  kernel: _mach_msg_trap_send
+    8.2%  kernel: _mach_msg2_trap
+    8.2%  libsystem_kernel.dylib: _mach_msg2_trap
+    7.1%  kernel: _vm_map_enter_mem_object
+    7.1%  libsweetca.dylib: _ir3_sched
+    7.1%  libsweetca.dylib: _nir_opt_algebraic
+    7.1%  libsweetca.dylib: __mesa_pointer_set_create
+    5.9%  kernel: _vm_map_enter
+    5.9%  kernel: _vm_map_enter_mem_object_helper
+    5.9%  kernel: __kernelrpc_mach_vm_map_trap
+    5.9%  libsystem_kernel.dylib: __kernelrpc_mach_vm_map_trap
+    5.9%  libsweetca.dylib: _nir_variable_clone
+    5.9%  libsweetca.dylib: _ir3_ra
+    5.9%  libsweetca.dylib: _ir3_postsched
+    5.9%  libsweetca.dylib: _ir3_dce
+    4.7%  kernel: _mach_vm_map_external
+    4.7%  libsweetca.dylib: _match_expression
+    4.7%  libsweetca.dylib: _bo_new
+    4.7%  libsweetca.dylib: __fd_bo_new
+    4.7%  libsweetca.dylib: __mesa_set_search_or_add
+    4.7%  libsweetca.dylib: _nir_opt_cse
+    4.7%  libsweetca.dylib: _ir3_lower_shared_phis
+    4.7%  libsweetca.dylib: _clone_cf_list
+    4.7%  libsweetca.dylib: _clone_function_impl
+kernel stacks (leaf < callers):
+    2.4%  _vm_map_store_lookup_entry_rb < _vm_map_locate_space < _vm_map_enter < _vm_map_enter_mem_object_helper
+    1.2%  _ml_set_interrupts_enabled_with_debug < _act_set_debug_assert < _lck_rw_lock_exclusive < _vm_map_enter
+    1.2%  _FlushPoC_DcacheRegion < _sweet_gpu_vm_map < SweetGPUBuffer::mapGPU(bool) < SweetGPUBuffer::create(unsigned long ...
+    1.2%  IOGeneralMemoryDescriptor::initWithOp... < IOMemoryDescriptor::withAddressRange(... < SweetGPUBuffer::create(unsigned long ... < SweetGPUUserClient::externalMethod(un...
+    1.2%  _vm_page_free_list < _vm_object_reap_pages < _vm_object_reap < _vm_object_terminate
+    1.2%  _turnstile_prepare < _psynch_wait_wakeup < _ksyn_signal < _ksyn_mtxsignal
+    1.2%  _pmap_clear_noencrypt < _vm_page_release < _vm_object_page_remove < _vm_object_coalesce
+    1.2%  _vm_map_behavior_set < _madvise < _unix_syscall < _sleh_synchronous
+    1.2%  _vm_map_enter_mem_object < __kernelrpc_mach_vm_map_trap < _mach_syscall < _sleh_synchronous
+    1.2%  _vm_page_throttled < _vm_fault_internal < _vm_fault$XNU_INTERNAL < _handle_user_abort
+    1.2%  IOGeneralMemoryDescriptor::doMap(_vm_... < IOMemoryDescriptor::makeMapping(IOMem... < IOMemoryDescriptor::createMappingInTa... < _is_io_connect_map_memory_into_task
+    1.2%  _vm_map_store_find_space < _vm_map_locate_space < _vm_map_enter < _vm_map_enter_mem_object_helper
+    1.2%  _vm_map_zap_dispose < _vm_map_remove_guard < _mach_vm_deallocate < _mach_syscall
+    1.2%  _vm_named_entry_associate_vm_object < _mach_memory_object_memory_entry_64 < IOGeneralMemoryDescriptor::memoryRefe... < IOGeneralMemoryDescriptor::doMap(_vm_...
+    1.2%  _ml_set_interrupts_enabled_with_debug < _ast_taken_user < user_take_ast
+    1.2%  _vm_wants_task_throttled < _vm_page_throttled < _vm_fault_internal < _vm_fault$XNU_INTERNAL
+    1.2%  _vm_map_store_lookup_entry_rb < _vm_map_remove_guard < _mach_vm_deallocate < _mach_syscall
+    1.2%  _lck_rw_assert < _vm_fault_enqueue_page < _vm_fault_internal < _vm_fault$XNU_INTERNAL
+    1.2%  OSArray::setObject(unsigned int, OSMe... < IOMemoryDescriptor::makeMapping(IOMem... < IOMemoryDescriptor::createMappingInTa... < _is_io_connect_map_memory_into_task
+    1.2%  _pmap_enter_options_internal < _pmap_enter_options_addr < _vm_fault_attempt_pmap_enter < _vm_fault_pmap_enter_with_object_lock
+    1.2%  SweetGPUUserClient::addBuffer(SweetGP... < SweetGPUUserClient::externalMethod(un... < _is_io_connect_method < __Xio_connect_method
+    1.2%  _ml_set_interrupts_enabled_with_debug
+off CPU (census, ms per second): wait 254.0, runnable 5.6
+    254.0  wait trap 305  _cnd_wait < _util_queue_thread_func < _impl_thrd_routine
+      0.4  runnable trap -152854096  _match_expression < _match_expression < _nir_algebraic_impl
+      0.4  runnable trap -47  0x18e553407 < 0x18e551bbf < _darwin_bo_new
+      0.4  runnable trap 305  _cnd_wait < _util_queue_thread_func < _impl_thrd_routine
+      0.2  runnable trap -152854096  _insert_instr < _ir3_build_instr < _ir3_MUL_F_rpt
+      0.2  runnable trap -152833900  _ir3_create_alias_tex_regs < _compile_variant < _create_variant
+      0.2  runnable trap 264  __mesa_hash_table_rehash < _hash_table_insert < _perform_analysis
+      0.2  runnable trap 2023  _tiny_free_list_add_ptr < non-external (was a private external) < non-external (was a private external)
+      0.2  runnable trap 59339496  _rb_augmented_tree_insert_at < _interval_insert < _insert_dst
+      0.2  runnable trap -152833980  __tiny_check_and_zero_inline_meta_from_freelist < non-external (was a private external) < non-external (was a private external)
+      0.2  runnable trap 75  _tiny_madvise_free_range_no_lock < non-external (was a private external) < non-external (was a private external)
+      0.2  runnable trap -152854096  _construct_value < _nir_algebraic_impl < _nir_opt_algebraic
+      0.2  runnable trap -47  0x18e55cad7 < _darwin_bo_map < _fd_bo_upload
+      0.2  runnable trap -152833900  _gc_alloc_size < _gc_zalloc_size < _nir_load_const_instr_create
+      0.2  runnable trap -152833900  _rzalloc_array_size < _ir3_calc_pressure < _ir3_ra
+      0.2  runnable trap -152833900  _nir_alu_instr_src_read_mask < _nir_opt_shrink_vectors < _ir3_optimize_loop
+      0.2  runnable trap -152833900  _gc_alloc_size < _nir_tex_instr_create < _clone_instr
+      0.2  runnable trap -152833900  _ir3_find_ssa_uses < _ir3_dce < _ir3_compile_shader_nir
+      0.2  runnable trap -152833900  _set_search_or_add < __mesa_set_add < _ir3_find_ssa_uses
+      0.2  runnable trap -1182210864  non-external (was a private external) < _ir3_postsched < _ir3_compile_shader_nir
+      0.2  runnable trap -152833900  _hash_table_insert < _perform_analysis < _nir_unsigned_upper_bound
+      0.2  runnable trap -152833900  _nir_block_cf_tree_next < _ir3_optimize_loop < _ir3_nir_lower_variant
+      0.2  runnable trap -15  non-external (was a private external) < non-external (was a private external) < non-external (was a private external)
+      0.2  runnable trap -152854096  _encode__multisrc < _encode__instruction < _isa_assemble
+      0.2  runnable trap -152833900  _gc_alloc_size < _gc_zalloc_size < _nir_variable_clone

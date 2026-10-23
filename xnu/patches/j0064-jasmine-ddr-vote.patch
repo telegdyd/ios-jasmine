@@ -1,0 +1,804 @@
+From 117b5d3ec5e5b27f11fdd2bf494bd537f3cd936a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 23 Oct 2026 04:24:20 +0200
+Subject: [PATCH] jasmine-j0064: DDR clock vote through the RPM (handoff of
+ every sdm660 RPM clock, scaling on, bimc KHz vote), command port "ddr
+ state/MHZ/bench/bw" and raw "rpm", sweetddr=MHZ; CPU bwmon4 + GPU VBIF bus
+ counters; bwmon open to r/w
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/conf/files          |   1 +
+ bsd/dev/sweet_ddr.c     | 488 ++++++++++++++++++++++++++++++++++++++++
+ bsd/dev/sweet_gpu.c     |  73 ++++++
+ bsd/dev/sweet_rpm.c     | 120 ++++++++++
+ bsd/dev/sweet_usb.c     |   4 +
+ osfmk/arm64/sweet_osm.c |   2 +
+ 6 files changed, 688 insertions(+)
+ create mode 100755 bsd/dev/sweet_ddr.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 59b2805..bff32b8 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -115,6 +115,7 @@ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_pmic.c			standard
+ bsd/dev/sweet_gpu.c			standard
+ bsd/dev/sweet_rpm.c			standard
++bsd/dev/sweet_ddr.c			standard
+ bsd/dev/sweet_netfs.c			standard
+ bsd/dev/sweet_wdt.c			standard
+ bsd/dev/sweet_nvt.c			standard
+diff --git a/bsd/dev/sweet_ddr.c b/bsd/dev/sweet_ddr.c
+new file mode 100755
+index 0000000..16bfb86
+--- /dev/null
++++ b/bsd/dev/sweet_ddr.c
+@@ -0,0 +1,488 @@
++/*
++ * jasmine (SDM660) DDR clock and bus measurements (j0064, PERF-TASKS.md
++ * task 9: is memory the brake on a UI frame?). Nothing in XNU voted for the
++ * DDR (bimc) clock, so it stayed where the bootloader left it: GCC's debug
++ * mux counts half the DDR rate (sel 0x19d reads 647 = 1294 MHz; stock top
++ * 1804, DT generic-bw-opp-table). The vote goes through the RPM
++ * (bsd/dev/sweet_rpm.c): handoff of every RPM clock, scaling on, then
++ * "clk2" id 0 "KHz " (sailfish 0146/0147, Joran Vancoillie, adapted with
++ * his consent; msm-4.4 clk-smd-rpm.c for the sdm660 list).
++ * Command port lines (bsd/dev/sweet_usb.c), so one boot steps through rates:
++ *   ddr state            DDR rate, the other bus clocks, scaling, our vote
++ *   ddr MHZ              handoff + scaling the first time, bimc vote, readback
++ *   ddr bench            one core: write / read / copy GB/s over 64 MiB and a
++ *                        dependent-load latency (random chase over 64 MiB)
++ *   ddr bw [MS] [load] [bg]
++ *                        over MS ms (default 1000): CPU-side DDR traffic from
++ *                        the bimc bwmon4 (0x01008000, mport 0: the CPU
++ *                        clusters, qcom,cpu-cpu-ddr-bwmon) and the GPU's busy
++ *                        cycles, VBIF beats and RAM-starved cycles; "load"
++ *                        reads a 64 MiB buffer in a kernel thread meanwhile
++ *                        (known bytes, to calibrate the bwmon unit); "bg"
++ *                        runs it in a kernel thread and logs the result, so
++ *                        the command port stays free for uibench's gestures
++ *   rpm SETS TYPE ID KEY VALUE
++ *                        one raw RPM request: SETS a, s or as; TYPE and KEY
++ *                        4 characters, '_' for a space ("clk2 0 KHz_ 1804000")
++ * Boot-arg sweetddr=MHZ: the same vote at GPU bring-up (sweet_gpu.c).
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <machine/machine_routines.h>
++#include <vm/vm_kern.h>
++#include <pexpert/pexpert.h>
++#include <libkern/libkern.h>
++#include <stdbool.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern bool sweet_rpm_kvp(unsigned sets, uint32_t type, uint32_t id, uint32_t key, uint32_t value);
++extern bool sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz);
++extern int sweet_rpm_clk_scaling(void);
++extern uint32_t sweet_gcc_measure_mhz(uint32_t sel);
++extern bool sweet_gpu_bus_counters(uint64_t c[4]);
++void sweet_ddr_boot(void);
++const char *sweet_ddr_cmd(const char *line);
++
++#define TYPE_CLK2       0x326b6c63u     /* "clk2": memory clocks, id 0 bimc */
++
++/* GCC debug-mux selectors (gcc-sdm660.c gcc_debug_mux) */
++static const struct {
++	const char *name;
++	uint32_t sel;
++} ddr_clocks[] = {
++	{"snoc", 0x000}, {"cnoc", 0x00e}, {"cnoc_periph", 0x198},
++	{"bimc_gfx", 0x0ac}, {"bimc_hmss_axi", 0x0bb},
++};
++#define GCC_DEBUG_BIMC  0x19d           /* bimc_clk: half the DDR rate */
++
++static struct {
++	int scaling;                    /* -1 not tried, 0 on, > 0 failed requests */
++	uint32_t vote;                  /* our bimc vote, MHz (0 none) */
++} ddr = { .scaling = -1 };
++
++static uint32_t
++ddr_mhz(void)
++{
++	return 2 * sweet_gcc_measure_mhz(GCC_DEBUG_BIMC);
++}
++
++static bool
++ddr_set(uint32_t mhz)
++{
++	if (ddr.scaling != 0) {
++		ddr.scaling = sweet_rpm_clk_scaling();
++		if (ddr.scaling != 0) {
++			return false;
++		}
++	}
++	if (!sweet_rpm_clk(TYPE_CLK2, 0, mhz * 1000u)) {
++		return false;
++	}
++	ddr.vote = mhz;
++	delay(20000);
++	return true;
++}
++
++void
++sweet_ddr_boot(void)
++{
++	uint32_t mhz = 0;
++	if (!PE_parse_boot_argn("sweetddr", &mhz, sizeof(mhz)) || mhz == 0) {
++		return;
++	}
++	uint32_t before = ddr_mhz();
++	bool ok = ddr_set(mhz);
++	printf("SWEET DDR: sweetddr=%u: %s, %u -> %u MHz\n", mhz, ok ? "ok" : "FAILED", before, ddr_mhz());
++}
++
++/* Stores from a real register (no "str wzr"). */
++static inline void
++io_wr(volatile uint32_t *p, uint32_t v)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"(p) : "memory");
++	__builtin_arm_dsb(0xf);
++}
++
++static uint64_t
++ns_since(uint64_t t0)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++	return ns;
++}
++
++/* MB/s from bytes and ns, as an integer */
++static uint64_t
++mbps(uint64_t bytes, uint64_t ns)
++{
++	return ns ? bytes * 1000 / ns : 0;
++}
++
++#define BENCH_SIZE      (64u << 20)
++
++/*
++ * One core (the command thread): j0017's membench passes (sweet_cpuclk.c)
++ * and a dependent-load chase over a random single cycle (Sattolo) of the
++ * 64 MiB buffer's cache lines, so nearly every load misses L2 and the TLB
++ * as Mesa's pointer walks do at worst.
++ */
++static void
++ddr_bench(char *out, size_t len)
++{
++	vm_offset_t buf = 0;
++	if (kmem_alloc(kernel_map, &buf, BENCH_SIZE, KMA_DATA, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++		snprintf(out, len, "ddr bench: no 64 MiB buffer\n");
++		return;
++	}
++	uint8_t *b = (uint8_t *)buf;
++	volatile uint64_t sum = 0;
++	memset(b, 1, BENCH_SIZE);
++	uint64_t t0 = mach_absolute_time();
++	for (int i = 0; i < 3; i++) {
++		memset(b, i + 2, BENCH_SIZE);
++		__asm__ volatile ("" : : "r"(b) : "memory");
++	}
++	uint64_t nw = ns_since(t0);
++	t0 = mach_absolute_time();
++	for (int i = 0; i < 3; i++) {
++		const uint64_t *p = (const uint64_t *)b;
++		uint64_t s = 0;
++		for (size_t k = 0; k < BENCH_SIZE / 8; k += 4) {
++			s += p[k] + p[k + 1] + p[k + 2] + p[k + 3];
++		}
++		sum += s;
++	}
++	uint64_t nr = ns_since(t0);
++	t0 = mach_absolute_time();
++	for (int i = 0; i < 3; i++) {
++		b[i] ^= 1;
++		__asm__ volatile ("" : : "r"(b) : "memory");
++		memcpy(b + BENCH_SIZE / 2, b, BENCH_SIZE / 2);
++		__asm__ volatile ("" : : "r"(b) : "memory");
++		sum += b[BENCH_SIZE / 2 + i];
++	}
++	uint64_t nc = ns_since(t0);
++
++	/* node i at line i: a uint32 index of the next line */
++	uint32_t n = BENCH_SIZE / 64, x = 0x9e3779b9u;
++	uint32_t *line = (uint32_t *)b;
++	for (uint32_t i = 0; i < n; i++) {
++		line[i * 16] = i;
++	}
++	for (uint32_t i = n - 1; i > 0; i--) {
++		x ^= x << 13;
++		x ^= x >> 17;
++		x ^= x << 5;
++		uint32_t j = x % i, t = line[i * 16];
++		line[i * 16] = line[j * 16];
++		line[j * 16] = t;
++	}
++	uint32_t steps = 2u << 20, at = 0;
++	t0 = mach_absolute_time();
++	for (uint32_t k = 0; k < steps; k++) {
++		at = line[at * 16];
++	}
++	uint64_t nl = ns_since(t0);
++	sum += at;
++	kmem_free(kernel_map, buf, BENCH_SIZE);
++	snprintf(out, len, "ddr bench at %u MHz: write %llu read %llu copy %llu MB/s, latency %llu.%llu ns\n", ddr_mhz(),
++	    mbps(3ull * BENCH_SIZE, nw), mbps(3ull * BENCH_SIZE, nr), mbps(3ull * BENCH_SIZE, nc),
++	    nl / steps, (nl * 10 / steps) % 10);
++}
++
++/* Load thread for "ddr bw ... load": reads the buffer until told to stop. */
++static struct {
++	volatile bool run, done;
++	volatile uint64_t bytes, sink;
++	uint8_t *buf;
++} bwload;
++
++static void
++bwload_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	const uint64_t *p = (const uint64_t *)bwload.buf;
++	uint64_t s = 0;
++	while (bwload.run) {
++		for (size_t k = 0; k < BENCH_SIZE / 8; k += 4) {
++			s += p[k] + p[k + 1] + p[k + 2] + p[k + 3];
++		}
++		bwload.bytes += BENCH_SIZE;
++	}
++	bwload.sink = s;                /* keeps the loads */
++	bwload.done = true;
++}
++
++/*
++ * bimc-bwmon4 (msm-4.4 bimc-bwmon.c, spec "hw_sampling"): MON2 counts the
++ * bytes of each hardware window (MON2_SW, 19.2 MHz ticks) in MON2_BYTE_CNT
++ * and starts again at the next window; the DT's count unit is 64 KiB. One
++ * window as long as it goes (0xfffff ticks, 54.6 ms), polled every
++ * millisecond: a drop in the count is a new window. The legacy MON counter
++ * (MON_CNT, no threshold) runs alongside; both are reported raw.
++ */
++#define BWMON_PA        0x01008000u
++#define BWMON_GLB_PA    0x01001000u
++#define MON_EN          0x280
++#define MON_CLEAR       0x284
++#define MON_CNT         0x288
++#define MON_THRES       0x290
++#define MON2_EN         0x2a0
++#define MON2_CLEAR      0x2a4
++#define MON2_SW         0x2a8
++#define MON2_THRES_HI   0x2ac
++#define MON2_THRES_MED  0x2b0
++#define MON2_THRES_LO   0x2b4
++#define MON2_ZONE_ACTIONS 0x2b8
++#define MON2_BYTE_CNT   0x2d0
++#define MON2_ZONE_CNT   0x2d8
++#define MON2_ZONE_MAX0  0x2e0
++
++static void
++ddr_bw(uint32_t ms, bool load, char *out, size_t len)
++{
++	static volatile uint32_t *mon;
++	if (mon == NULL) {
++		mon = (volatile uint32_t *)ml_io_map(BWMON_PA, 0x1000);
++	}
++	if (mon == NULL) {
++		snprintf(out, len, "ddr bw: no bwmon mapping\n");
++		return;
++	}
++#define M(off) (&mon[(off) / 4])
++	vm_offset_t buf = 0;
++	if (load) {
++		if (kmem_alloc(kernel_map, &buf, BENCH_SIZE, KMA_DATA, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++			snprintf(out, len, "ddr bw: no 64 MiB buffer\n");
++			return;
++		}
++		memset((void *)buf, 3, BENCH_SIZE);
++	}
++	uint32_t en0 = *M(MON_EN), en20 = *M(MON2_EN);
++	io_wr(M(MON2_EN), en20 & ~1u);
++	io_wr(M(MON_EN), en0 & ~1u);
++	io_wr(M(MON2_CLEAR), 2);
++	io_wr(M(MON2_SW), 0xfffff);
++	io_wr(M(MON2_THRES_LO), 0x7fd);
++	io_wr(M(MON2_THRES_MED), 0x7fe);
++	io_wr(M(MON2_THRES_HI), 0x7ff);
++	io_wr(M(MON2_ZONE_ACTIONS), 0x01);      /* zone 0: count the window */
++	io_wr(M(MON_THRES), 0xffffffffu);
++	io_wr(M(MON_CLEAR), 1);
++
++	thread_t th = NULL;
++	if (load) {
++		bwload.buf = (uint8_t *)buf;
++		bwload.bytes = 0;
++		bwload.done = false;
++		bwload.run = true;
++		if (kernel_thread_start(bwload_thread, NULL, &th) != KERN_SUCCESS) {
++			bwload.run = false;
++			bwload.done = true;
++		}
++	}
++	uint64_t g0[4] = {0}, g1[4] = {0};
++	bool gpu = sweet_gpu_bus_counters(g0);
++	uint64_t lb0 = bwload.bytes, t0 = mach_absolute_time();
++	io_wr(M(MON_EN), en0 | 1u);
++	io_wr(M(MON2_EN), en20 | 1u);
++	uint64_t total = 0, windows = 0;
++	uint32_t prev = 0;
++	while (ns_since(t0) < (uint64_t)ms * 1000000ull) {
++		delay(1000);
++		uint32_t cur = *M(MON2_BYTE_CNT);
++		if (cur < prev) {
++			total += prev;
++			windows++;
++		}
++		prev = cur;
++	}
++	total += prev;
++	io_wr(M(MON2_EN), en20 & ~1u);
++	io_wr(M(MON_EN), en0 & ~1u);
++	uint64_t ns = ns_since(t0), lb = bwload.bytes - lb0;
++	gpu = gpu && sweet_gpu_bus_counters(g1);
++	uint32_t cnt = *M(MON_CNT), zcnt = *M(MON2_ZONE_CNT), zmax = *M(MON2_ZONE_MAX0);
++	io_wr(M(MON2_EN), en20);
++	io_wr(M(MON_EN), en0);
++#undef M
++	if (load) {
++		bwload.run = false;
++		while (!bwload.done) {
++			delay(1000);
++		}
++		if (th != NULL) {
++			thread_deallocate(th);
++		}
++		kmem_free(kernel_map, buf, BENCH_SIZE);
++	}
++	uint64_t us = ns / 1000;
++	int k = snprintf(out, len, "ddr bw at %u MHz over %llu ms: bwmon2 %llu units in %llu windows (%llu MB/s at 64 KiB), "
++	    "zone cnt %08x max0 %u, mon cnt %u (%llu MB/s at 64 KiB); load %llu MB/s", ddr_mhz(), us / 1000, total, windows,
++	    mbps(total << 16, ns), zcnt, zmax, cnt, mbps((uint64_t)cnt << 16, ns), load ? mbps(lb, ns) : 0);
++	if (gpu && k > 0 && (size_t)k < len) {
++		uint64_t aon = g1[3] - g0[3];
++		/* rates per second of the always-on (19.2 MHz) time */
++		snprintf(out + k, len - k, "; gpu busy %llu Mcyc/s, vbif beats %llu M/s, ram-starved %llu Mcyc/s\n",
++		    aon ? (g1[0] - g0[0]) * 192 / aon / 10 : 0, aon ? (g1[1] - g0[1]) * 192 / aon / 10 : 0,
++		    aon ? (g1[2] - g0[2]) * 192 / aon / 10 : 0);
++	} else if (k > 0 && (size_t)k < len) {
++		snprintf(out + k, len - k, "; gpu counters not available\n");
++	}
++}
++
++/* "ddr bw ... bg": the same in a kernel thread, so the command port stays free (uibench's gestures) */
++static struct {
++	volatile bool busy;
++	uint32_t ms;
++	bool load;
++	char out[1024];
++} bwbg;
++
++static void
++bwbg_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	ddr_bw(bwbg.ms, bwbg.load, bwbg.out, sizeof(bwbg.out));
++	printf("SWEET DDR: %s", bwbg.out);
++	bwbg.busy = false;
++}
++
++static uint32_t
++num(const char **pp)
++{
++	const char *p = *pp;
++	uint32_t v = 0;
++	while (*p == ' ') {
++		p++;
++	}
++	if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
++		for (p += 2;; p++) {
++			int d = *p >= '0' && *p <= '9' ? *p - '0' : *p >= 'a' && *p <= 'f' ? *p - 'a' + 10 :
++			    *p >= 'A' && *p <= 'F' ? *p - 'A' + 10 : -1;
++			if (d < 0) {
++				break;
++			}
++			v = v * 16 + (uint32_t)d;
++		}
++	} else {
++		for (; *p >= '0' && *p <= '9'; p++) {
++			v = v * 10 + (uint32_t)(*p - '0');
++		}
++	}
++	*pp = p;
++	return v;
++}
++
++/* 4 characters, '_' for a space, as a little-endian RPM word ("clk2" -> 0x326b6c63); 0 if malformed */
++static uint32_t
++word4(const char **pp)
++{
++	const char *p = *pp;
++	uint32_t v = 0;
++	while (*p == ' ') {
++		p++;
++	}
++	for (int i = 0; i < 4; i++, p++) {
++		if (*p == 0 || *p == ' ') {
++			return 0;
++		}
++		v |= (uint32_t)(uint8_t)(*p == '_' ? ' ' : *p) << (8 * i);
++	}
++	*pp = p;
++	return v;
++}
++
++const char *
++sweet_ddr_cmd(const char *line)
++{
++	static char reply[1024];
++	if (strncmp(line, "rpm ", 4) == 0) {
++		const char *p = line + 4;
++		while (*p == ' ') {
++			p++;
++		}
++		unsigned sets = 0;
++		for (; *p == 'a' || *p == 's'; p++) {
++			sets |= *p == 'a' ? 1u : 2u;
++		}
++		uint32_t type = word4(&p), id = num(&p), key = word4(&p), value = num(&p);
++		if (sets == 0 || type == 0 || key == 0) {
++			return "rpm: ? (rpm a|s|as TYPE ID KEY VALUE, '_' for a space)\n";
++		}
++		bool ok = sweet_rpm_kvp(sets, type, id, key, value);
++		snprintf(reply, sizeof(reply), "rpm %.4s %u %.4s %u: %s; DDR %u MHz\n", (const char *)&type, id,
++		    (const char *)&key, value, ok ? "ok" : "FAILED", ddr_mhz());
++		return reply;
++	}
++	if (strncmp(line, "ddr ", 4) != 0) {
++		return NULL;
++	}
++	const char *a = line + 4;
++	if (strcmp(a, "state") == 0) {
++		int k = snprintf(reply, sizeof(reply), "ddr: %u MHz (bimc counter x 2), scaling %s, vote %u;", ddr_mhz(),
++		    ddr.scaling == 0 ? "on" : ddr.scaling < 0 ? "off" : "FAILED", ddr.vote);
++		for (unsigned i = 0; i < sizeof(ddr_clocks) / sizeof(ddr_clocks[0]) && k > 0 && (size_t)k < sizeof(reply); i++) {
++			k += snprintf(reply + k, sizeof(reply) - k, " %s %u", ddr_clocks[i].name,
++			    sweet_gcc_measure_mhz(ddr_clocks[i].sel));
++		}
++		if (k > 0 && (size_t)k < sizeof(reply)) {
++			snprintf(reply + k, sizeof(reply) - k, " MHz\n");
++		}
++		return reply;
++	}
++	if (strcmp(a, "bench") == 0) {
++		ddr_bench(reply, sizeof(reply));
++		printf("SWEET DDR: %s", reply);
++		return reply;
++	}
++	if (strncmp(a, "bw", 2) == 0 && (a[2] == 0 || a[2] == ' ')) {
++		const char *p = a + 2;
++		uint32_t ms = num(&p);
++		ms = ms == 0 ? 1000 : MIN(ms, 10000u);
++		while (*p == ' ') {
++			p++;
++		}
++		bool load = strncmp(p, "load", 4) == 0;
++		if (load) {
++			p += 4;
++			while (*p == ' ') {
++				p++;
++			}
++		}
++		if (bwbg.busy) {
++			return "ddr bw: one already running\n";
++		}
++		if (strcmp(p, "bg") == 0) {
++			thread_t th;
++			bwbg.busy = true;
++			bwbg.ms = ms;
++			bwbg.load = load;
++			if (kernel_thread_start(bwbg_thread, NULL, &th) != KERN_SUCCESS) {
++				bwbg.busy = false;
++				return "ddr bw: no thread\n";
++			}
++			thread_deallocate(th);
++			snprintf(reply, sizeof(reply), "ddr bw: %u ms in the background, result in the log (SWEET DDR: ddr bw)\n", ms);
++			return reply;
++		}
++		ddr_bw(ms, load, reply, sizeof(reply));
++		printf("SWEET DDR: %s", reply);
++		return reply;
++	}
++	if (*a >= '0' && *a <= '9') {
++		const char *p = a;
++		uint32_t mhz = num(&p), before = ddr_mhz();
++		uint64_t t0 = mach_absolute_time();
++		bool ok = mhz >= 100 && mhz <= 2000 && ddr_set(mhz);
++		snprintf(reply, sizeof(reply), "ddr %u: %s in %llu us, %u -> %u MHz, scaling %s (%d)\n", mhz,
++		    ok ? "ok" : "FAILED", ns_since(t0) / 1000, before, ddr_mhz(),
++		    ddr.scaling == 0 ? "on" : ddr.scaling < 0 ? "off" : "FAILED", ddr.scaling);
++		printf("SWEET DDR: %s", reply);
++		return reply;
++	}
++	return "ddr: ? (state, MHZ, bench, bw [MS] [load])\n";
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index c1ccfb7..3ec3fc6 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -455,6 +455,7 @@ static const struct { uint8_t bin; uint16_t mhz; } gpu_bins[] = {
+ #define GCC_DEBUG_BIMC          0x19d           /* bimc_clk (DDR) */
+ 
+ extern bool sweet_rpm_level(uint32_t type, uint32_t level);
++extern void sweet_ddr_boot(void);
+ extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
+ 
+ static struct {
+@@ -1384,6 +1385,77 @@ sweet_gpu_cmd(const char *line)
+ 	return "gpu: ? (clk MHZ, state)\n";
+ }
+ 
++/*
++ * For bsd/dev/sweet_ddr.c (j0064): a GCC debug-mux clock in MHz, 0 if the
++ * GPU's GCC mapping is not there yet or the clock is off.
++ */
++uint32_t sweet_gcc_measure_mhz(uint32_t sel);
++uint32_t
++sweet_gcc_measure_mhz(uint32_t sel)
++{
++	return sg.gcc != NULL ? gcc_measure_mhz(sel) : 0;
++}
++
++/*
++ * GPU bus counters for "ddr bw" (j0064), set up at the first call as kgsl's
++ * bus DCVS does (adreno.c, adreno_perfcounter.c, a5xx_reg.h):
++ *   c[0] GPU busy cycles: RBBM_PERFCTR_RBBM_0, PERF_RBBM_STATUS_MASKED (6)
++ *        with RBBM_PERFCTR_GPU_BUSY_MASKED all ones (a5xx_start)
++ *   c[1] VBIF AXI beats to RAM: VBIF_PERF_CNT 0, VBIF_AXI_TOTAL_BEATS (85)
++ *   c[2] VBIF cycles starved for RAM: VBIF_PERF_PWR_CNT 0 (kgsl's ram_wait)
++ *   c[3] always-on counter (19.2 MHz)
++ * Free-running 64-bit counts; callers take differences. False before the
++ * GPU is up.
++ */
++#define RBBM_PERFCTR_RBBM_0_LO  0x03b0
++#define RBBM_PERFCTR_RBBM_SEL_0 0x046b
++#define RBBM_PERFCTR_GPU_BUSY_MASKED 0x046f
++#define VBIF_PERF_CNT_EN0       0x30c0
++#define VBIF_PERF_CNT_CLR0      0x30c8
++#define VBIF_PERF_CNT_SEL0      0x30d0
++#define VBIF_PERF_CNT_LOW0      0x30d8
++#define VBIF_PERF_CNT_HIGH0     0x30e0
++#define VBIF_PERF_PWR_CNT_EN0   0x3100
++#define VBIF_PERF_PWR_CNT_CLR0  0x3108
++#define VBIF_PERF_PWR_CNT_LOW0  0x3110
++#define VBIF_PERF_PWR_CNT_HIGH0 0x3118
++
++bool sweet_gpu_bus_counters(uint64_t c[4]);
++bool
++sweet_gpu_bus_counters(uint64_t c[4])
++{
++	static bool set_up;
++	if (!gpu_ready) {
++		return false;
++	}
++	if (!set_up) {
++		io_wr(&sg.gpu[RBBM_PERFCTR_CNTL], 1);
++		io_wr(&sg.gpu[RBBM_PERFCTR_GPU_BUSY_MASKED], 0xffffffffu);
++		io_wr(&sg.gpu[RBBM_PERFCTR_RBBM_SEL_0], 6);
++		io_wr(&sg.gpu[VBIF_PERF_CNT_CLR0], 1);
++		io_wr(&sg.gpu[VBIF_PERF_CNT_CLR0], 0);
++		io_wr(&sg.gpu[VBIF_PERF_CNT_SEL0], 85);
++		io_wr(&sg.gpu[VBIF_PERF_CNT_EN0], 1);
++		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_CLR0], 1);
++		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_CLR0], 0);
++		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_EN0], 1);
++		set_up = true;
++	}
++	static const uint32_t lo[4] = {RBBM_PERFCTR_RBBM_0_LO, VBIF_PERF_CNT_LOW0, VBIF_PERF_PWR_CNT_LOW0,
++		                       RBBM_ALWAYSON_COUNTER_LO};
++	static const uint32_t hi[4] = {RBBM_PERFCTR_RBBM_0_LO + 1, VBIF_PERF_CNT_HIGH0, VBIF_PERF_PWR_CNT_HIGH0,
++		                       RBBM_ALWAYSON_COUNTER_LO + 1};
++	for (int i = 0; i < 4; i++) {
++		uint32_t h = gpu_rd(hi[i]), l = gpu_rd(lo[i]);
++		if (gpu_rd(hi[i]) != h) {               /* low word wrapped between the reads */
++			h = gpu_rd(hi[i]);
++			l = gpu_rd(lo[i]);
++		}
++		c[i] = ((uint64_t)h << 32) | l;
++	}
++	return true;
++}
++
+ /* Values for userland (Mesa's MSM_PARAM_* counterparts, SweetGPU.cpp). */
+ /* sweetgpu_debug: the clock controller / LDO state (never the GPU core), for SweetGPU.cpp */
+ void sweet_gpu_debug_state(const char *when);
+@@ -1834,6 +1906,7 @@ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
+ 		gpu_pause(4, "GPU clock switch next");
+ 		(void)gpu_set_clock(mhz);
+ 	}
++	sweet_ddr_boot();                       /* sweetddr= (j0064), once the debug mux is mapped */
+ 	if (sg.level >= 2 && gpu_cp_test() == 0 && sg.level >= 3 && gpu_zap_test() == 0 && sg.level >= 4) {
+ 		sg.mem[FENCE_OFF / 4] = 0;
+ 		gpu_ready = true;
+diff --git a/bsd/dev/sweet_rpm.c b/bsd/dev/sweet_rpm.c
+index e80937c..e152251 100644
+--- a/bsd/dev/sweet_rpm.c
++++ b/bsd/dev/sweet_rpm.c
+@@ -28,6 +28,9 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ bool sweet_rpm_level(uint32_t type, uint32_t level);
++bool sweet_rpm_kvp(unsigned sets, uint32_t type, uint32_t id, uint32_t key, uint32_t value);
++bool sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz);
++int sweet_rpm_clk_scaling(void);
+ 
+ static LCK_GRP_DECLARE(sweet_rpm_grp, "sweet_rpm");
+ static LCK_MTX_DECLARE(sweet_rpm_lock, &sweet_rpm_grp);
+@@ -53,6 +56,14 @@ static LCK_MTX_DECLARE(sweet_rpm_lock, &sweet_rpm_grp);
+ 
+ #define KEY_SWEN        0x6e657773u     /* "swen" */
+ #define KEY_VLVL        0x6c766c76u     /* "vlvl" */
++#define KEY_KHZ         0x007a484bu     /* "KHz " */
++#define KEY_ENAB        0x62616e45u     /* "Enab" */
++#define KEY_STAT        0x54415453u     /* "STAT" */
++#define KEY_PCCB        0x62636370u     /* "pccb" */
++#define TYPE_CLK0       0x306b6c63u     /* misc clocks */
++#define TYPE_CLK1       0x316b6c63u     /* bus clocks */
++#define TYPE_CLK2       0x326b6c63u     /* memory clocks: bimc = DDR */
++#define TYPE_CLKA       0x616b6c63u     /* XO buffers */
+ 
+ struct rpm_fifo {
+ 	volatile uint32_t *tail, *head, *data;
+@@ -374,4 +385,113 @@ sweet_rpm_level(uint32_t type, uint32_t level)
+ 	printf("SWEET RPM: %.4s level %#x: %s\n", (const char *)&type, level, ok ? "ok" : "FAILED");
+ 	return ok;
+ }
++
++/*
++ * One raw request (j0064, command port "rpm"): sets bit 0 the active set,
++ * bit 1 the sleep set (sleep first, as Linux). For live experiments with
++ * RPM resources without a kernel build each.
++ */
++bool
++sweet_rpm_kvp(unsigned sets, uint32_t type, uint32_t id, uint32_t key, uint32_t value)
++{
++	uint32_t kv[2] = {key, value};
++	bool ok = true;
++	lck_mtx_lock(&sweet_rpm_lock);
++	if (sets & 2u) {
++		ok = rpm_request("kvp sleep", 1, type, id, kv, 1);
++	}
++	if (ok && (sets & 1u)) {
++		ok = rpm_request("kvp active", 0, type, id, kv, 1);
++	}
++	lck_mtx_unlock(&sweet_rpm_lock);
++	printf("SWEET RPM: %.4s %u %.4s %u (sets %u): %s\n", (const char *)&type, id, (const char *)&key, value, sets,
++	    ok ? "ok" : "FAILED");
++	return ok;
++}
++
++/*
++ * Clock rate vote in the sleep and the active set (clk-smd-rpm.c, a clock
++ * without an _a twin): "KHz ", rate in kHz, the RPM rounds to a supported
++ * rate. "clk2" id 0 is bimc_clk = the DDR rate (GCC's debug mux counts half
++ * of it, sel 0x19d). Takes effect only once scaling is on.
++ */
++bool
++sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz)
++{
++	uint32_t kv[2] = {KEY_KHZ, khz};
++	lck_mtx_lock(&sweet_rpm_lock);
++	bool ok = rpm_request("clk sleep", 1, type, id, kv, 1) && rpm_request("clk active", 0, type, id, kv, 1);
++	lck_mtx_unlock(&sweet_rpm_lock);
++	printf("SWEET RPM: clock %.4s id %u %u kHz: %s\n", (const char *)&type, id, khz, ok ? "ok" : "FAILED");
++	return ok;
++}
++
++/*
++ * RPM clock scaling on, as msm-4.4 clk-smd-rpm.c rpm_smd_clk_probe does for
++ * qcom,rpmcc-sdm660 (sailfish 0147 did the same for MSM8996). Until then the
++ * RPM acks rate votes and ignores them; from then on it goes by the AP's
++ * votes for every RPM clock, so first each sdm660 RPM clock is handed off
++ * at its maximum in both sets, as clk_smd_rpm_handoff does: rate clocks
++ * "KHz " DIV_ROUND_UP(INT_MAX, 1000) (the RPM clamps), qdss "STAT" the
++ * same, branches "Enab" 1, XO buffers "swen" 1, their pin-controlled twins
++ * "pccb" 1. Then "clk0" id 2 "Enab" 1 (sleep, active). Linux's keepalives
++ * (cxo_a, cnoc_periph 19.2 MHz) are covered: both stay at the handoff vote,
++ * and nothing votes any clock down later but bimc (sweet_rpm_clk). Returns
++ * the number of failed requests, 0 when scaling is on.
++ */
++#define RPM_KHZ_MAX     2147484u
++static const struct {
++	uint32_t type, id, key, value;
++} rpm_handoff_660[] = {
++	{TYPE_CLK2, 0, KEY_KHZ, RPM_KHZ_MAX},           /* bimc (first, as the probe's INT_MAX vote) */
++	{TYPE_CLK0, 0, KEY_ENAB, 1},                    /* cxo */
++	{TYPE_CLK1, 1, KEY_KHZ, RPM_KHZ_MAX},           /* snoc */
++	{TYPE_CLK0, 1, KEY_STAT, RPM_KHZ_MAX},          /* qdss */
++	{TYPE_CLKA, 4, KEY_SWEN, 1},                    /* rf_clk1 */
++	{TYPE_CLKA, 4, KEY_PCCB, 1},                    /* rf_clk1_pin */
++	{0x72676761u, 2, KEY_KHZ, RPM_KHZ_MAX},         /* aggr: aggre2_noc */
++	{TYPE_CLK1, 2, KEY_KHZ, RPM_KHZ_MAX},           /* cnoc */
++	{0x00617069u, 0, KEY_KHZ, RPM_KHZ_MAX},         /* ipa */
++	{0x00006563u, 0, KEY_KHZ, RPM_KHZ_MAX},         /* ce: ce1 */
++	{TYPE_CLKA, 0xb, KEY_SWEN, 1},                  /* div_clk1 */
++	{TYPE_CLKA, 1, KEY_SWEN, 1},                    /* ln_bb_clk1 */
++	{TYPE_CLKA, 1, KEY_PCCB, 1},                    /* ln_bb_clk1_pin */
++	{TYPE_CLKA, 2, KEY_SWEN, 1},                    /* ln_bb_clk2 */
++	{TYPE_CLKA, 2, KEY_PCCB, 1},                    /* ln_bb_clk2_pin */
++	{TYPE_CLKA, 3, KEY_SWEN, 1},                    /* ln_bb_clk3 */
++	{TYPE_CLKA, 3, KEY_PCCB, 1},                    /* ln_bb_clk3_pin */
++	{TYPE_CLK1, 0, KEY_KHZ, RPM_KHZ_MAX},           /* cnoc_periph */
++	{0x69786d6du, 0, KEY_KHZ, RPM_KHZ_MAX},         /* mmxi: mmssnoc_axi */
++};
++
++static int rpm_scaling_failed = -1;     /* -1: not tried yet */
++
++int
++sweet_rpm_clk_scaling(void)
++{
++	uint32_t en[2] = {KEY_ENAB, 1u};
++	unsigned failed = 0;
++	lck_mtx_lock(&sweet_rpm_lock);
++	if (rpm_scaling_failed == 0) {
++		lck_mtx_unlock(&sweet_rpm_lock);
++		return 0;
++	}
++	for (unsigned i = 0; i < sizeof(rpm_handoff_660) / sizeof(rpm_handoff_660[0]); i++) {
++		uint32_t kv[2] = {rpm_handoff_660[i].key, rpm_handoff_660[i].value};
++		char what[32];
++		snprintf(what, sizeof(what), "handoff %.4s %u %.4s", (const char *)&rpm_handoff_660[i].type,
++		    rpm_handoff_660[i].id, (const char *)&rpm_handoff_660[i].key);
++		failed += !rpm_request(what, 0, rpm_handoff_660[i].type, rpm_handoff_660[i].id, kv, 1);
++		failed += !rpm_request(what, 1, rpm_handoff_660[i].type, rpm_handoff_660[i].id, kv, 1);
++	}
++	if (failed == 0) {
++		failed += !rpm_request("scaling sleep", 1, TYPE_CLK0, 2, en, 1);
++		failed += !rpm_request("scaling active", 0, TYPE_CLK0, 2, en, 1);
++	}
++	rpm_scaling_failed = (int)failed;
++	lck_mtx_unlock(&sweet_rpm_lock);
++	printf("SWEET RPM: clock handoff of %u resources, scaling on: %s (%u requests failed)\n",
++	    (unsigned)(sizeof(rpm_handoff_660) / sizeof(rpm_handoff_660[0])), failed ? "FAILED" : "ok", failed);
++	return (int)failed;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 299d287..91661cf 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1460,6 +1460,7 @@ ud_panic_test_thread(void *arg, wait_result_t wr __unused)
+ extern int sweet_osm_cmd(char *line, char *out, size_t len);
+ extern const char *sweet_prof_cmd(const char *line);     /* osfmk/arm64/sweet_prof.c (j0057) */
+ extern const char *sweet_gpu_cmd(const char *line);      /* bsd/dev/sweet_gpu.c (j0060) */
++extern const char *sweet_ddr_cmd(const char *line);      /* bsd/dev/sweet_ddr.c (j0064) */
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+@@ -1523,6 +1524,9 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		if (prof == NULL && !reboot) {
+ 			prof = sweet_gpu_cmd(line);
+ 		}
++		if (prof == NULL && !reboot) {
++			prof = sweet_ddr_cmd(line);
++		}
+ 		if (prof != NULL) {
+ 			reply = prof;
+ 		} else if (!reboot && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 2b94fa8..e68a2e9 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1243,6 +1243,8 @@ osm_phase2(void)
+  */
+ static const struct { uint64_t lo, hi; } osm_ranges[] = {
+ 	{ 0x00100000, 0x001b0000 },     /* GCC */
++	{ 0x01001000, 0x01001200 },     /* bimc bwmon global (j0064) */
++	{ 0x01008000, 0x01008300 },     /* bimc bwmon4, CPU port (j0064) */
+ 	{ 0x010ac000, 0x010b0000 },     /* TSENS */
+ 	{ 0x0c901000, 0x0c90a000 },     /* MDP (j0058): top, CTL_0-4, VIG0/VIG1 with the QSEED3 scaler */
+ 	{ 0x17810000, 0x17817000 },     /* Gold: RCG, SAW4 (0x17812000), PLL */
+-- 
+2.47.3
+

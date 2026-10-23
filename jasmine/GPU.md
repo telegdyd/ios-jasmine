@@ -797,3 +797,68 @@ frames are right.
 
 Open: the j60b stall (once in 3 boots of this kernel, both 647 MHz boots counted; not seen in any earlier UI round).
 Tools: `tools/g2/clkround.sh` (levels in one boot, `LEVELS=`, `PLAYS=`), `tools/g2/clksum.py` (per-level summary).
+
+#### j0064: DDR clock vote through the RPM; memory is not the brake above 1296 MHz (2026-10-23 04:10 to 05:25; PERF-TASKS.md task 9)
+
+**j0064** (`xnu/patches/j0064-jasmine-ddr-vote.patch`, CI `39889598650`, 4K/8-core kernel, test branch `j0064-ddr`):
+the DDR rate follows our vote; nothing changes unless asked (no boot-arg = the bootloader's 1296 MHz, no RPM clock
+handoff).
+
+- **RPM** (`bsd/dev/sweet_rpm.c`): `sweet_rpm_clk` ("KHz " in sleep + active set) and `sweet_rpm_clk_scaling`:
+  every sdm660 RPM clock of msm-4.4 `clk-smd-rpm.c` handed off at its maximum in both sets (rate clocks "KHz "
+  2147484, qdss "STAT", cxo "Enab" 1, XO buffers "swen"/"pccb" 1; 19 resources), then `clk0` id 2 `Enab` 1, as
+  `rpm_smd_clk_probe` does (sailfish 0146/0147 did the MSM8996 list). The first try worked: "clock handoff of 19
+  resources, scaling on: ok (0 requests failed)", no bus dropped, no hang. `sweet_rpm_kvp` + command port
+  `rpm a|s|as TYPE ID KEY VALUE` ('_' for a space) for raw requests.
+- **`bsd/dev/sweet_ddr.c`**, command port: `ddr state` (DDR = bimc debug-mux counter x 2, snoc / cnoc / cnoc_periph /
+  bimc_gfx / bimc_hmss_axi), `ddr MHZ` (handoff + scaling the first time, then the bimc vote, ~23 ms), `ddr bench`
+  (one core: write / read / copy over 64 MiB + a random dependent-load chase over 64 MiB), `ddr bw [MS] [load] [bg]`
+  (bus counters below; `bg` in a kernel thread with the result in the log, so uibench keeps the port). Boot-arg
+  `sweetddr=MHZ` votes at GPU bring-up. The bwmon block is open to `r`/`w` (osmctl).
+- **Counter factor confirmed:** votes 768 / 1017 / 1296 / 1804 read back 766 / 1016 / 1294 / 1804: GCC's `bimc_clk`
+  (0x19d) counts half the DDR rate, so the bootloader leaves **1296 MHz** (stock top 1804).
+- **Bus counters.** CPU: bimc bwmon4 MON2 (0x01008000, mport 0), one 54.6 ms hardware window polled every ms; its
+  unit is **1 MiB**, not the DT's 64 KiB `count-unit` (a 3554 MB/s read load added 3880 MiB/s at 1296, a 3789 MB/s
+  load ~4700 MiB/s at 1804 against the idle 1.8 GiB/s: 10-25 % over the known bytes, prefetch and the rest of the
+  system); the legacy MON_CNT reads garbage. GPU (as kgsl's bus DCVS): busy cycles (RBBM_PERFCTR_RBBM_0, countable 6),
+  VBIF AXI beats (VBIF_PERF_CNT0, countable 85), VBIF RAM-starved cycles (VBIF_PERF_PWR_CNT0).
+
+**Round j64a** (`tools/g2/ddrround.sh`, 4 Gold, GPU 266 MHz, one boot, `logs/netlog-j64a-ddr.txt`; per-flush costs
+from `tools/g2/ddrcost.py`, bench and bus medians from `tools/g2/ddrsum.py`). The 100-flush "ms each" figure mostly
+measures the idle gaps of the gesture script (75-400 ms, no trend), so the comparison uses libsweetca's time inside GL
+per flush over the same gestures:
+
+| DDR MHz (order) | Mesa CPU per flush (GL - wait) | GPU wait per flush | latency (chase) | write / copy MB/s | CPU bwmon while moving | GPU RAM-starved / busy |
+|---|---|---|---|---|---|---|
+| 1296 bootloader | 22.4 ms | 7.3 ms | 318 ns | 7568 / 4014 | 1.9 GB/s | 13 / 21 Mcyc/s |
+| 1296 (1, after the handoff) | 20.0 | 4.8 | 320 | 7584 / 3979 | 1.9 | 14.5 / 22 |
+| 768 (2) | **31.1** | 6.5 | 454 | 4313 / 2661 | 1.4 | 13 / 22.5 |
+| 1804 (3) | 19.5 | 5.4 | 275 | 8300 / 7604 | 2.2 | 5 / 15 |
+| 1017 (4) | **24.2** | 5.6 | 366 | 5330 / 3333 | 1.7 | 17 / 22 |
+| 1296 (5) | 18.6 | 2.8 | 320 | 7064 / 4440 | 1.9 | 6 / 7 |
+| 1804 (6) | 18.9 | 5.3 | 276 | 9959 / 5022 | 2.2 | 7 / 22 |
+
+(read bandwidth on one core is noisy, 3.1-6.9 GB/s with no order; latency and write repeat within 1-2 %.)
+
+**So memory is not the brake at the bootloader's rate.** Below 1296 MHz Mesa's CPU work grows steeply (+21 % at
+1017, +60 % at 768), but 1296 -> 1804 changes it by nothing measurable (19.3 vs 19.2 ms per flush, spread ~1.5 ms)
+although the latency drops 14 %. The GPU spends a third to two thirds of its busy time starved for RAM (less at
+1804), yet the GPU wait per flush does not follow, and the GPU is busy only ~8-25 % of the time while the UI moves:
+not on the critical path. CPU traffic is ~2 GB/s of a bus that moves several times that. 1804 stays off by default
+(more power for no gain); `sweetddr=1804` and live `ddr 1804` are there. Keep the DDR at 1296 or more: anything
+that turns RPM clock scaling on must also vote bimc, or the RPM may pick a low rate and cost 20-60 %. No hang in ~8 min at
+1804 over two plays; no dedicated 10-minute series (not needed for an off-by-default setting).
+
+**Fresh profile j64p** (same kernel, DDR 1296, `tools/g2/profround.sh`, 10 s, `logs/prof-j64p-report.txt`; libsweetca
+symbols from `xnu/out-mesa-kick`, the newest build, plausible but not checked against the phone's copy):
+- launchd 901 + vmd 531 + mediaserverd 435 ms/s = **1.87 of the 4 Gold cores** in their retry loops (task 7);
+  CoreAnimation's display thread is on a CPU 214 ms/s and **runnable but waiting for a CPU 45 ms/s**.
+- On the display thread: kernel 40 % of its time, libsweetca 34 %, QuartzCore 15 %, malloc 6 %. Buffer churn
+  (task 4): Mesa `bo_new` 12 % inclusive, `SweetGPUBuffer::create` 6.2 % self plus GPU VM map/unmap page-table work
+  and cache flushes (~2.5 %); GPU fence waits in `sweet_gpu_wait`'s delay loop ~4 %; the backdrop blur
+  (`capture_backdrop`) 32 % inclusive.
+- `profsplit.py` finds no frames since j0058 (it counts runs inside `AppleCLCD::present`, which is microseconds
+  now); needs another frame marker.
+
+Next by this profile: task 4 (Mesa buffer reuse, Mesa build only) and task 7 (the daemon loops) before the Gold
+clock (task 2).
