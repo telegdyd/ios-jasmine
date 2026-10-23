@@ -53,6 +53,23 @@ through the command port, osmctl `tsens`) as the temperature side. Record idle a
 
 ## For every agent
 
+**Done means on the phone (the user's rule, 2026-10-23).** These tasks configure the phone to run as well as it can;
+they are not experiments. A task is done only when its result is **on by default and the phone runs it after a plain
+reboot**:
+1. the setting is the default: in the kernel, or in `tools/g2/mkimg.sh`'s boot-args (every image built from then on
+   gets it); userland pieces (libsweetca, tools) installed in the phone's root;
+2. the slot b image is rebuilt from the current kernel with those defaults:
+   `wsl env GPUDBG=0 VARIANT=slotb AMP=1 CPUS=4 EXTRA_ARGS="gpudelay=1 gpupause=0 sweetfb_sync=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib sweetcmd=1 abmark=b" bash tools/g2/mkimg.sh <ktag>`
+   from the repo root in Git Bash (writes `shim/out/shim-boot-<ktag>-slotb.img`);
+3. flashed with `bash tools/g2/flash-slotb.sh shim/out/shim-boot-<ktag>-slotb.img logs/netlog-<ktag>-slotb.txt` (it
+   waits for and takes the phone lock, runs `fastboot flash boot_b`, refuses images without `abmark=b`), booted once with
+   `fastboot reboot`, and the first boot checked from the live log (`python tools/sweet-netlog.py <log>`): the setting
+   is active, the UI comes up, no panic;
+4. NOTES.md "Slot b = iOS" updated with the image, kernel run and what it contains.
+
+A real gain that stays off by default is not done. If a setting has a real cost (heat, power, a risk), say so and let
+the user decide; never leave it off silently, and never call a task done while the phone still runs the old setting.
+
 **Project.** ios-jasmine runs iOS 16 (XNU xnu-8796, SWEET machine config from upstream topaz/sweet) on a Xiaomi Mi
 A2 (SDM660: 4 Gold Cortex-A73 + 4 Silver A53, Adreno 512). The phone boots with `fastboot boot` of a shim image.
 The UI is CoreAnimation's GLES renderer on the GPU through libsweetca (`mesa/darwin/sweetgl/sweetca.c`, injected
@@ -92,7 +109,8 @@ The new library is used from the next boot.
 own lock. While someone else's lock exists, wait.
 
 **Ground rules (the user's, always).**
-- Never flash any partition, GPT or slot b; boot with `fastboot boot` only.
+- Flash only `boot_b`, and only with a slot b image built as in "Done means on the phone" (the user's standing OK since
+  2026-10-23). Never any other partition, the GPT or slot a. Test kernels: `fastboot boot` only.
 - Ask before anything destructive, or before changing the phone's iOS root. Test binaries in `/usr/local/bin` are fine.
 - Never write outside the iOS window of the disk.
 - No launchd jobs, no remote or self-hosted runners.
