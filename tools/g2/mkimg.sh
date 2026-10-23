@@ -17,7 +17,7 @@ CPUS=${CPUS:-$([ "${AMP:-0}" = 1 ] && echo 8 || echo 4)}
 B="debug=0xc serial=3 cpus=$CPUS keepsyms=1 -noprogress rd=ufsroot0 ufsroot=userdata unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 panicwait=60 sweetfb_hz=30 ufsrw=1 rootrw=1 rtcoffset=1790955133 sweetgold=1747"
 [ "${RO:-0}" = 1 ] && B=${B/ ufsrw=1 rootrw=1/}
 python3 tools/mkadt.py shim/out/jasmine-$T.adt --highmem $([ "${AMP:-0}" = 1 ] && echo --amp) >/dev/null
-for v in ${VARIANT:-gpu}:" sweetgpu=4 gpumhz=266 sweetwdt=20 sweetgpu_debug=${GPUDBG:-1}${EXTRA_ARGS:+ $EXTRA_ARGS}"; do n=${v%%:*}; extra=${v#*:}
+for v in ${VARIANT:-gpu}:" sweetgpu=4 gpumhz=588 sweetwdt=20 sweetgpu_debug=${GPUDBG:-1}${EXTRA_ARGS:+ $EXTRA_ARGS}"; do n=${v%%:*}; extra=${v#*:}
   python3 tools/mkpayload.py $K shim/out/jasmine-$T.adt shim/out/payload-$T-$n.bin --cmdline "$B$extra" >/dev/null
   bash shim/build.sh shim/out/payload-$T-$n.bin 2>&1 | grep -E "warn|error" || true
   cp shim/out/shim-boot.img shim/out/shim-boot-$T-$n.img; ls -la shim/out/shim-boot-$T-$n.img

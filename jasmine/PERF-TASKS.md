@@ -35,7 +35,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 11 | GPU power management: hardware clock gating, idle power-down, load-based clock (DCVS) | power and heat (GPU busy only ~8-25 % while the UI moves, j64a) | `bsd/dev/sweet_gpu.c` | j0066 |
 | 12 | CPU idle power: core / cluster power collapse instead of WFI, unused cores off | power and heat at idle | `osfmk/arm64` idle path, new `sweet_idle.c` | j0067 |
 | 13 | Thermal limits: TSENS-driven caps on CPU and GPU clocks | keeps the phone usable under long load | new `sweet_thermal.c` (after 2 and 11) | j0068 |
-| 14 | **Fix the startup freeze above 266 MHz GPU** (backboardd stuck in SweetGPU buffer free; 2 of 4 boots at 588/647, 0 of 54 at 266); then make 588 the default again | unblocks task 3's clock (and task 11's DCVS) | `bsd/dev/sweet_gpu.c`, `iokit/Kernel/arm/SweetGPU.cpp` | j0069 |
+| 14 | **Fix the startup freeze above 266 MHz GPU** (588 default again since 2026-10-24 00:42, parked until a freeze is seen; j0069 census ready) (backboardd stuck in SweetGPU buffer free; 2 of 4 boots at 588/647, 0 of 54 at 266); then make 588 the default again | unblocks task 3's clock (and task 11's DCVS) | `bsd/dev/sweet_gpu.c`, `iokit/Kernel/arm/SweetGPU.cpp` | j0069 |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Tasks 10 and 11 both touch `sweet_gpu.c` (10 only
@@ -592,6 +592,11 @@ unmount never finished. Then the command and log ports stopped answering, and `s
 This is a separate shutdown bug in the HFS/UFS root unmount, not task 14.
 - j69 at 588, normal voltage: **1 freeze in 25 boots** (t14h-5, lost).
 - All boots at 588/647, normal voltage: 4 freezes in 30.
+
+**588 MHz is the default again (2026-10-24 00:42, user's call).** Slot b = `shim-boot-j69-slotb.img` (j0069 included,
+`mkimg.sh` gpumhz=588); first boot clean. The task is parked until the user sees a freeze in normal use. Then,
+before any reboot: `prof.py fetch logs/prof-NAME --secs 3 --census 200000 --tasks backboardd,SpringBoard,all` and
+`prof.py stuck` (WSL) on it; the stuck thread's kernel stack decides between a lock wait and something else.
 
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
