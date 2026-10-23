@@ -598,6 +598,23 @@ This is a separate shutdown bug in the HFS/UFS root unmount, not task 14.
 before any reboot: `prof.py fetch logs/prof-NAME --secs 3 --census 200000 --tasks backboardd,SpringBoard,all` and
 `prof.py stuck` (WSL) on it; the stuck thread's kernel stack decides between a lock wait and something else.
 
+**Boot-logo freeze in another agent's round t7c (2026-10-24 01:17, slot b j69 kernel at 588), census at 01:22**
+(`logs/prof-t7c-freeze*`, `logs/prof-t7c-lsd*`).
+- Like t14a: 4 GPU jobs done, no 10-second line, SpringBoard not in the census (not running yet), whole system idle
+  (only kernel_task on a CPU). **No thread in SweetGPU or Mesa**; CA's display and render threads idle in run loops.
+- **backboardd waits on lsd:** one thread in a synchronous NSXPC call from `_LSContextInitCommon` (LaunchServices),
+  another `__ulock_wait` inside the same `_LSContextInitCommon`; a third waits on mediaserverd (CoreMedia FigXPC).
+- **lsd is stuck seeding its database:** its main thread `__LSServerMain` -> `seedDatabase` ->
+  `-[LSDatabaseBuilder createAndSeedLocalDatabase:]` -> `_LSDatabaseClean` -> `dispatch_sync`, blocked in
+  `__ulock_wait`; no other lsd thread works on that queue.
+- mediaserverd also waits: CoreAudio HAL plug-in activation in `dispatch_sync`, AirPlay `_carManager_copyProperty`,
+  a MobileGestalt NSXPC call, PowerLog XPC.
+
+So this freeze is a **userland startup deadlock around lsd's database seeding**, not the SweetGPU buffer free of
+j60b/t4d2. t14a had the same LaunchServices waits, so it was probably the same lsd hang. Whether the GPU clock makes
+it more likely is open: it was seen only at 588/647 so far, but at a low rate. Next: why lsd seeds a fresh database
+on these boots (is the LS store not kept across boots?), and what its `dispatch_sync` target queue waits for.
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock

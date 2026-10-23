@@ -1,0 +1,73 @@
+
+## tid 312 "": wait in 15 records, trap 375, event 0x646107a5d031, block hint 16, pri 60
+  kernel: _filt_wlwait_continue
+  user:   libsystem_kernel:_kevent_id < libdispatch:non-external (was a private external) < libdispatch:___DISPATCH_WAIT_FOR_QUEUE__ < libdispatch:__dispatch_sync_f_slow < CoreMedia:_endpointCentricPlugin_GetPropertyDataSize < CoreMedia:_figHALDriver_GetPropertyDataSize < CoreAudio:HALS_UCPlugIn::ObjectGetPropertyDataSize(unsigned int, int, AudioObjectPropertyAddress const&, unsigned int, void const*) const < CoreAudio:HALS_PlugIn::RebuildDeviceList() < CoreAudio:HALS_PlugIn::Activate() < CoreAudio:HALS_System::DeviceManagerCreated(HALS_DeviceManager*) < CoreAudio:HALS_PlugInManager::CreatePlugIn(__CFURL const*, unsigned int) < CoreAudio:HALS_PlugInManager::LoadPlugIns() < CoreAudio:HALS_System::Activate() < CoreAudio:HALS_System::StartServer(HALS_System::Server_Start_Options) < CoreAudio:_AudioObjectAddPropertyListenerBlock < BluetoothAudio:-[BluetoothBridge addListeners] < libdispatch:non-external (was a private external) < libdispatch:__dispatch_once_callout < BluetoothAudio:-[BluetoothBridge setManager:] < BluetoothAudio:_BluetoothEndpointManagerCreate < MediaExperience:___FigRoutingManagerGetSharedManager_block_invoke < libdispatch:non-external (was a private external) < libdispatch:__dispatch_once_callout < MediaExperience:non-external (was a private external) < MediaExperience:non-external (was a private external) < MediaExperience:non-external (was a private external) < MediaExperience:___MXInitialize_block_invoke < libdispatch:non-external (was a private external) < libdispatch:__dispatch_once_callout < MediaToolbox:_FigMediaServerStart < mediaserverd:0xf7b7 < dyld:non-external (was a private external)
+
+## tid 433 "": wait in 15 records, trap -47, event 0x0, block hint 2, pri 37
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < libdispatch:__dispatch_mach_send_and_wait_for_reply < libdispatch:non-external (was a private external) < libxpc:_xpc_connection_send_message_with_reply_sync < PowerLog:-[PLClientLogger xpcSendMessageWithReply:withClientID:withKey:withPayload:] < PowerLog:___68-[PLClientLogger permissionForClientID:withKey:withType:completion:]_block_invoke < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 449 "": wait in 15 records, trap 515, event 0x645f3b324971, block hint 10, pri 60
+  kernel: _ulock_wait_continue
+  user:   libsystem_kernel:___ulock_wait < libdispatch:non-external (was a private external) < MediaExperience:non-external (was a private external) < MediaExperience:non-external (was a private external) < MediaExperience:_discoveryManager_registerEndpointManager < MediaExperience:___FigRouteDiscoveryManagerRegisterEndpointManager_block_invoke < MediaExperience:___MXDispatchAsync_block_invoke < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 450 "": wait in 15 records, trap 375, event 0x646107a60fb1, block hint 16, pri 60
+  kernel: _filt_wlwait_continue
+  user:   libsystem_kernel:_kevent_id < libdispatch:non-external (was a private external) < libdispatch:___DISPATCH_WAIT_FOR_QUEUE__ < libdispatch:__dispatch_sync_f_slow < AirPlaySender:_carManager_copyProperty < CoreMedia:_FigEndpointManagerCopyActivatedEndpoints < CoreMedia:_endpointCentricPlugin_PeruseActivatedEndpoints < CoreMedia:___endpointCentricPlugin_Initialize_block_invoke < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 493 "HAL Async Logger": wait in 15 records, trap -36, event 0xfff0070068a8, block hint 6, pri 31
+  kernel: _semaphore_wait_continue
+  user:   libsystem_kernel:_semaphore_wait_trap < CoreAudio:ca::concurrent::details::worker_thread::run(ca::thread::attributes) < CoreAudio:void* std::__1::__thread_proxy[abi:v15006]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thread_struct> >, void (ca::concurrent::details::worker_thread::*)(ca::thread::attributes), ca::concurrent::details::worker_thread*, ca::thread::attributes> >(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 495 "caulk.messenger.shared:17": wait in 15 records, trap -36, event 0xfff0070068a8, block hint 6, pri 19
+  kernel: _semaphore_wait_continue
+  user:   libsystem_kernel:_semaphore_wait_trap < caulk:caulk::concurrent::details::worker_thread::run() < caulk:void* caulk::thread_proxy<std::__1::tuple<caulk::thread::attributes, void (caulk::concurrent::details::worker_thread::*)(), std::__1::tuple<caulk::concurrent::details::worker_thread*> > >(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 529 "caulk.messenger.shared:21": wait in 15 records, trap -36, event 0xfff0070068a8, block hint 6, pri 31
+  kernel: _semaphore_wait_continue
+  user:   libsystem_kernel:_semaphore_wait_trap < caulk:caulk::concurrent::details::worker_thread::run() < caulk:void* caulk::thread_proxy<std::__1::tuple<caulk::thread::attributes, void (caulk::concurrent::details::worker_thread::*)(), std::__1::tuple<caulk::concurrent::details::worker_thread*> > >(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 532 "": wait in 15 records, trap 515, event 0x645f3b324df1, block hint 10, pri 37
+  kernel: _ulock_wait_continue
+  user:   libsystem_kernel:___ulock_wait < libdispatch:non-external (was a private external) < libdispatch:___DISPATCH_WAIT_FOR_QUEUE__ < libdispatch:__dispatch_sync_f_slow < CoreServices:non-external (was a private external) < CoreServices:non-external (was a private external) < CoreServices:non-external (was a private external) < CoreServices:non-external (was a private external) < CoreServices:_LSDatabaseClean(_LSDatabase* __strong*) < CoreServices:_LSDatabaseCreateFromPersistentStoreIgnoringRecoveryFile(int, bool, unsigned short*, NSError* __autoreleasing*) < CoreServices:non-external (was a private external) < CoreServices:-[LSDatabaseBuilder createAndSeedLocalDatabase:] < CoreServices:___seedDatabase_block_invoke < libdispatch:non-external (was a private external) < libdispatch:__dispatch_lane_barrier_sync_invoke_and_complete < CoreServices:__LSServerMain < dyld:non-external (was a private external) < ?:-0x1
+
+## tid 549 "": wait in 15 records, trap -47, event 0x0, block hint 2, pri 60
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < libdispatch:__dispatch_mach_send_and_wait_for_reply < libdispatch:non-external (was a private external) < libxpc:_xpc_connection_send_message_with_reply_sync < Foundation:___NSXPCCONNECTION_IS_WAITING_FOR_A_SYNCHRONOUS_REPLY__ < Foundation:-[NSXPCConnection _sendInvocation:orArguments:count:methodSignature:selector:withProxy:] < Foundation:-[NSXPCConnection _sendSelector:withProxy:arg1:arg2:] < Foundation:non-external (was a private external) < libMobileGestaltExtensions:__MGSSetLazyFuncs < libMobileGestalt:0x19c556757 < libMobileGestalt:_MGCopyAnswerWithError < libMobileGestalt:_MGSetAnswer < libMobileGestalt:0x19c5566c7 < libMobileGestalt:_MGSetAnswer < libMobileGestalt:0x19c5566c7 < AirPlaySender:___APEndpointManagerCarPlayCreate_block_invoke < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 639 "": wait in 15 records, trap 368, event 0x64610766c799, block hint 15, pri 63
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 773 "": wait in 15 records, trap 368, event 0x646107555b91, block hint 15, pri 31
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 1018 "": wait in 15 records, trap -36, event 0xfff0070068a8, block hint 6, pri 31
+  kernel: _semaphore_wait_continue
+  user:   libsystem_kernel:_semaphore_wait_trap < libdispatch:__dispatch_semaphore_wait_slow < AudioToolboxCore:_Synchronously < AudioToolboxCore:____ZN27AudioComponentRegistrarImpl21_initialExtensionScanEU13block_pointerFvvE_block_invoke < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+# 240 records over 2.9 s, on-CPU sample every 1 ms per busy CPU, census every 200 ms; dropped 0
+
+## CPU time per process (ms per second, all CPUs)
+    20.2  kernel_task[0]
+     0.3  symptomsd[126]
+
+## busiest threads (ms per second)
+     8.6  kernel_task[0] tid 196 ""
+     5.8  kernel_task[0] tid 386 "thread call qos-ui #1"
+     3.1  kernel_task[0] tid 160 ""
+     1.0  kernel_task[0] tid 187 "thread call kernel-high #1"
+     0.7  kernel_task[0] tid 159 ""
+     0.3  kernel_task[0] tid 195 "dlil_input_ue0"
+     0.3  symptomsd[126] tid 1226 ""
+     0.3  kernel_task[0] tid 1495 ""
+
+## mediaserverd[28] threads: ms per second on CPU (user / kernel), waiting, runnable
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 1018 ""
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 639 ""
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 549 ""
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 529 "caulk.messenger.shared:21"
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 495 "caulk.messenger.shared:17"
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 493 "HAL Async Logger"
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 450 ""
+    0.0 (   0.0 /    0.0)  wait 1026.7  runnable    0.0  tid 449 ""

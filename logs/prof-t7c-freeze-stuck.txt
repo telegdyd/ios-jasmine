@@ -1,0 +1,88 @@
+
+## tid 246 "": wait in 15 records, trap 515, event 0x645f3b3272b1, block hint 10, pri 47
+  kernel: _ulock_wait_continue
+  user:   libsystem_kernel:___ulock_wait < CoreServices:_LSContextInitCommon(LSContext*, _LSDServiceDomain*, unsigned long, NSError* __autoreleasing*) < CoreServices:non-external (was a private external) < CoreServices:non-external (was a private external) < CoreServices:-[LSApplicationRecord _initWithNode:bundleIdentifier:placeholderBehavior:systemPlaceholder:itemID:forceInBundleContainer:context:error:] < CoreServices:-[LSApplicationRecord initWithBundleIdentifier:allowPlaceholder:error:] < ControlCenterServices:___81-[CCSModuleRepository _queue_filterModuleMetadataByAssociatedBundleAvailability:]_block_invoke < BaseBoard:_BSCollectionFilter < ControlCenterServices:-[CCSModuleRepository _queue_filterModuleMetadataByAssociatedBundleAvailability:] < ControlCenterServices:-[CCSModuleRepository _queue_updateAvailableModuleMetadataForAllModuleMetadata:] < ControlCenterServices:-[CCSModuleRepository _queue_updateAllModuleMetadataForAllModuleMetadata:] < ControlCenterServices:-[CCSModuleRepository _queue_updateAllModuleMetadata] < ControlCenterServices:___71-[CCSModuleRepository _initWithDirectoryURLs:allowedModuleIdentifiers:]_block_invoke < libdispatch:non-external (was a private external) < libdispatch:__dispatch_lane_barrier_sync_invoke_and_complete < ControlCenterServices:-[CCSModuleRepository _initWithDirectoryURLs:allowedModuleIdentifiers:] < ControlCenterServices:+[CCSModuleRepository repositoryWithDefaults] < ControlCenterServices:-[CCSRemoteServiceProvider _init] < ControlCenterServices:___42+[CCSRemoteServiceProvider sharedInstance]_block_invoke < libdispatch:non-external (was a private external) < libdispatch:__dispatch_once_callout < ControlCenterServices:+[CCSRemoteServiceProvider sharedInstance] < SpringBoard:+[SpringBoard initializeSystemServicesBeforeApplicationDidFinishLaunching] < FrontBoard:_FBSystemShellInitialize < SpringBoard:_SBSystemAppMain < dyld:non-external (was a private external) < ?:-0x1
+
+## tid 324 "": wait in 15 records, trap -47, event 0x0, block hint 2, pri 31
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < backboardd:0x9e3f < dyld:non-external (was a private external) < ?:-0x1
+
+## tid 475 "": wait in 15 records, trap -47, event 0x0, block hint 2, pri 47
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < libdispatch:__dispatch_mach_send_and_wait_for_reply < libdispatch:non-external (was a private external) < libxpc:_xpc_connection_send_message_with_reply_sync < Foundation:___NSXPCCONNECTION_IS_WAITING_FOR_A_SYNCHRONOUS_REPLY__ < Foundation:-[NSXPCConnection _sendInvocation:orArguments:count:methodSignature:selector:withProxy:] < Foundation:-[NSXPCConnection _sendSelector:withProxy:arg1:] < Foundation:non-external (was a private external) < CoreServices:non-external (was a private external) < CoreServices:_LSContextInitCommon(LSContext*, _LSDServiceDomain*, unsigned long, NSError* __autoreleasing*) < CoreServices:non-external (was a private external) < CoreServices:non-external (was a private external) < CoreServices:non-external (was a private external) < CoreServices:-[_LSDBEnumerator countByEnumeratingWithState:objects:count:] < FrontBoard:-[FBApplicationDataStoreRepositoryManager clearExpiredUninstalledApplicationsFromStoreIfNecessary] < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 482 "": wait in 15 records, trap -47, event 0x0, block hint 2, pri 37
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < libdispatch:__dispatch_mach_send_and_wait_for_reply < libdispatch:non-external (was a private external) < libxpc:_xpc_connection_send_message_with_reply_sync < CoreMedia:_FigXPCConnectionSendSyncMessageCreatingReply < CoreMedia:_figXPCCreateXPCConnectionInternal < CoreMedia:_FigXPCRemoteClientCreateWithConnectionCreatingBlock < CoreMedia:_FigXPCRemoteClientCreate < MediaToolbox:___vfbremote_getRemoteClient_block_invoke < libdispatch:non-external (was a private external) < libdispatch:__dispatch_once_callout < MediaToolbox:_vfbremote_connect < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 503 "IOHIDService - RunLoopCompatibilityThread": wait in 15 records, trap -47, event 0x0, block hint 2, pri 63
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < CoreFoundation:_CFRunLoopRun < IOKit:0x18e5a2f6f < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 541 "com.apple.coreanimation.render-server": wait in 15 records, trap -47, event 0x0, block hint 2, pri 55
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < QuartzCore:CA::Render::Server::server_thread(void*) < QuartzCore:thread_fun(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 569 "com.apple.coreanimation.display.primary": wait in 15 records, trap -47, event 0x0, block hint 2, pri 54
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < CoreFoundation:_CFRunLoopRun < QuartzCore:CA::WindowServer::IOMFBServer::thread_body(void*) < QuartzCore:thread_fun(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 588 "backboar:ir3q0": wait in 15 records, trap 305, event 0x6461085d4cb1, block hint 14, pri 31
+  kernel: _psynch_cvcontinue
+  user:   libsystem_kernel:___psynch_cvwait < libsweetca:_cnd_wait < libsweetca:_util_queue_thread_func < libsweetca:_impl_thrd_routine < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 595 "backboar:ir3q1": wait in 15 records, trap 305, event 0x6461085d4cb1, block hint 14, pri 31
+  kernel: _psynch_cvcontinue
+  user:   libsystem_kernel:___psynch_cvwait < libsweetca:_cnd_wait < libsweetca:_util_queue_thread_func < libsweetca:_impl_thrd_routine < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 597 "backbo:traceq0": wait in 15 records, trap 305, event 0x6461085d55b1, block hint 14, pri 31
+  kernel: _psynch_cvcontinue
+  user:   libsystem_kernel:___psynch_cvwait < libsweetca:_cnd_wait < libsweetca:_util_queue_thread_func < libsweetca:_impl_thrd_routine < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 602 "com.apple.coreanimation.display.wireless0": wait in 15 records, trap -47, event 0x0, block hint 2, pri 54
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < CoreFoundation:_CFRunLoopRun < QuartzCore:CA::WindowServer::IOMFBServer::thread_body(void*) < QuartzCore:thread_fun(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 603 "com.apple.coreanimation.display.wireless1": wait in 15 records, trap -47, event 0x0, block hint 2, pri 54
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < CoreFoundation:_CFRunLoopRun < QuartzCore:CA::WindowServer::IOMFBServer::thread_body(void*) < QuartzCore:thread_fun(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 604 "com.apple.coreanimation.display.wireless2": wait in 15 records, trap -47, event 0x0, block hint 2, pri 54
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < CoreFoundation:_CFRunLoopRun < QuartzCore:CA::WindowServer::IOMFBServer::thread_body(void*) < QuartzCore:thread_fun(void*) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 606 "com.apple.CoreMotion.MotionThread": wait in 15 records, trap -47, event 0x0, block hint 2, pri 47
+  kernel: _ipc_mqueue_receive_continue
+  user:   libsystem_kernel:_mach_msg2_trap < libsystem_kernel:_mach_msg_overwrite < libsystem_kernel:_mach_msg < CoreFoundation:___CFRunLoopServiceMachPort < CoreFoundation:___CFRunLoopRun < CoreFoundation:_CFRunLoopRunSpecific < CoreFoundation:_CFRunLoopRun < CoreMotion:CLMotionActivity::isTypeInVehicle(CLMotionActivity::Type) < libsystem_pthread:__pthread_start < libsystem_pthread:_thread_start
+
+## tid 908 "": wait in 15 records, trap 515, event 0x645f3b326fb1, block hint 10, pri 37
+  kernel: _ulock_wait_continue
+  user:   libsystem_kernel:___ulock_wait < libdispatch:__dispatch_group_wait_slow < backboardd:0x18a77 < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:non-external (was a private external) < libdispatch:__dispatch_workloop_worker_thread < libsystem_pthread:__pthread_wqthread < libsystem_pthread:_start_wqthread
+
+## tid 923 "": wait in 15 records, trap 368, event 0x64610741c799, block hint 15, pri 4
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 931 "": wait in 15 records, trap 0, event 0x646107415b91, block hint 15, pri 31
+  kernel: _workq_unpark_continue
+  user:   ?:0x0
+
+## tid 1397 "": wait in 15 records, trap 368, event 0x646107664799, block hint 15, pri 63
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 1398 "": wait in 15 records, trap 368, event 0x64610779db91, block hint 15, pri 37
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 1422 "": wait in 13 records, trap 368, event 0x646107680799, block hint 15, pri 37
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 1423 "": wait in 13 records, trap 368, event 0x646107a3ef89, block hint 15, pri 31
+  kernel: _workq_unpark_continue
+  user:   libsystem_kernel:___workq_kernreturn < libsystem_pthread:_start_wqthread
+
+## tid 1424 "": wait in 13 records, trap 0, event 0x6461075eef89, block hint 15, pri 63
+  kernel: _workq_unpark_continue
+  user:   ?:0x0
