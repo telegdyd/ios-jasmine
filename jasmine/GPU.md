@@ -878,3 +878,59 @@ done, CA's display thread blocked in a SweetGPU buffer free (fLock, then gpu_loc
 logs this startup freeze shows in 2 of 4 boots above 266 MHz (j60b 647, t4d2 588) and in none of 54 boots at 266; a
 live switch to 588 after startup ran clean (j60a). `mkimg.sh` is back at `gpumhz=266` until PERF-TASKS task 14 fixes
 the race; then 588 becomes the default again.
+
+**Mesa buffer caches (PERF-TASKS task 4, 2026-10-23 05:40-07:30).** Profile j64p had put ~17.8 % of CA's display
+thread into SweetGPU buffer create + map + free behind Mesa cache misses.
+- *Diagnostic build* (e91fcb6, CI 39896710936, `xnu/out-mesa-t4diag`): bucket counters (`FD_BO_CACHE_STATS` without
+  its per-miss log lines), the reason for each miss (busy entry at the bucket head with its fence, or idle entries
+  with other flags), SweetGPU creates/maps/frees, every pipe's `control->fence` vs `last_fence` and the kernel's
+  completed seqno, all in libsweetca's `prof:` lines; `tools/g2/cachesum.py` sums them. Upstream's `BO_CACHE_DEC`
+  incremented (fixed). Round t4d3 (266 MHz, `logs/netlog-t4d3-ui.txt`):
+  - **the fences are exact**: `ctrl == last_fence` in every report (pipe 1; pipe 0, the screen's, never submits), so
+    the brief's first suspect (a control fence that never advances) is out;
+  - **2.6 SweetGPU creates per frame** over the moving windows, 2.0 of them ring-cache misses: a frame takes ~145
+    command rings from the ring cache, and when a gesture needs more rings than the last second did, the cache is
+    dry (busy head = rings still in flight, ufence 2-7 ahead of ctrl) or empty, and the surplus expires 1-2 s later;
+  - bo cache: 0.6 misses per frame, mostly empty buckets (CA's blur surfaces change size with the animating
+    layers), some hint-only mismatches (wanted `FD_BO_HINT_IMAGE`, had `FD_BO_HINT_BUFFER`).
+- *Fix* (040dc17 + 047332e): **freedreno's sub-allocation heaps on Darwin** (`use_heap`): rings and buffers under
+  4 MiB are carved from 4 MiB heap blocks, as Mesa does on a6xx+. Upstream keeps a5xx off them because "userspace
+  fences don't appear to be reliable enough" there; ours are exact (above), and the bo/ring caches already trust
+  the same per-buffer fences. The bo cache now matches entries ignoring the `_FD_BO_HINTS` bits (the darwin backend
+  allocates the same memory whatever the hint). The heaps exposed a latent darwin bug: the IB address of a
+  sub-allocated ring counted its offset in the block twice (`submit_offset()` is relative to the heap block, as msm
+  passes the block's handle); t4f1's first try stalled the GPU after 7 submits (CA in `glFinish`), fixed in 047332e.
+- *Result* (`xnu/out-mesa-t4fix2`, rounds at 266 MHz, kick library = the previous build):
+
+| round (`logs/netlog-*-ui.txt`) | library | busy windows | Mesa CPU / flush | GPU wait / flush | GL / flush | SweetGPU creates / flush |
+|---|---|---|---|---|---|---|
+| t4b2 06:15 | kick (before) | 7 | 25.9 ms | 8.7 | 34.6 | (no counters) |
+| t4d3 06:05 | diagnostic (before) | 13 | 20.7 | 5.3 | 26.0 | 2.61 |
+| t4f1 06:38 | heaps | 6 | 23.0 | 11.7 | 34.7 | 0.35 |
+| t4f2 06:43 (profile) | heaps | 6 | 22.4 | 11.5 | 33.9 | 0.34 |
+| t4f3 06:53, 12 min, gestures x3 | heaps | 27 | 19.6 | 7.6 | 27.2 | 0.11 |
+
+  (t4b1 at 588 MHz, kick: 27.6 / 6.5 / 34.1.) The one-play rounds compare directly with t4b2 (same gestures, about
+  the same draws): **Mesa CPU -3 ms per frame (-12 %)**, but the GPU wait at the frame's `glFinish` grew by the same
+  amount, so the time in GL per frame is unchanged at 266 MHz: once the CPU side is shorter the frame ends waiting
+  for the GPU's tail. t4d3 drew twice the frames of the other one-play rounds (89k draws vs 40-44k) and is a lighter
+  mix, not a baseline for the totals. With warm caches (plays 2-3 of t4f3) creates fall to ~0.1 per frame.
+- *Profile t4f2* vs j64p (CA's display thread, `logs/prof-t4f2-report-top.txt`, `--top 400`): `darwin_bo_new`
+  11.6 -> 5.7 %, `darwin_bo_map` 3.6 -> <0.1 %, frees 2.6 -> 0.3 %: **17.8 -> ~6 %**. What remains is
+  `realloc_bo` (4.5 %): CA's large offscreen blur surfaces, created when a gesture opens at a size no freed one has
+  (empty buckets, no busy heads, no flag skips). Reusing them needs a looser size match or CA keeping its surfaces
+  (sweetgl side); most of the rest is likely heap block churn (`fd_bo_new_ring` 2.9 % with the heap).
+- *On the phone* (2fc0a87, CI 39903986273, `xnu/out-mesa-t4final`: the same plus IOSurface imports and handles
+  held in the `prof:` line): installed in `/usr/local/bin` 07:11, plain slot b boot (`fastboot reboot`, boot_b =
+  j0064 image, `abmark=b gpumhz=266`) 07:23, gestures x3 for 12 min (`logs/netlog-t4slotb.txt`): UI up, no panic,
+  Mesa CPU **17.2 ms** per flush (GL 24.3, wait 7.1) over 29 busy windows, creates 0.10 per flush, SweetGPU handles
+  held 155 at startup, ~236 once the caches filled, then **flat at 265-269 through the third play** (no leak).
+- *What it buys.* The CPU side of a frame is cheaper and the kernel's buffer path is out of the frame, but at
+  266 MHz the saving reappears as GPU wait at the frame's end, so frames are not visibly faster yet. That tail is
+  probably serialization more than GPU clock (task 3: 266 -> 588 MHz cut the wait only 3.5 -> 2.9 ms): CA's frame
+  ends with `glFinish`, the last batch is sent then and the CPU idles while the GPU draws it. Overlapping frame N's
+  GPU tail with frame N+1's CPU work (no `glFinish` per frame in libsweetca, fences instead) is the next lever.
+- *Command-port reboot can hang in shutdown*: 07:11 (`logs/netlog-t4hang.txt`) the kernel logged "syncing disks...
+  Killing all processes", then nothing but the charger and USB lines for 10 min; the command port was dead, power +
+  volume-down recovered it. 05:52 (t4d1, "no fastboot device 90 s after the reboot command", black screen with only
+  the status bar) was most likely the same: the running backboardd had the kick library then.

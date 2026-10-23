@@ -25,7 +25,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 1 | ~~Display scale off the CPU~~ **done 2026-10-23** | 8.8 | `SweetFramebuffer.cpp` (+ `SweetSurface.cpp`) | j0058 |
 | 2 | Gold clock 1747 -> 2208 MHz (voltage, DVFS) | ~7.7 | `sweet_cpuclk.c`, `sweet_osm.c`, PMIC code | j0059 |
 | 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top); **default still 266**: booting at 588/647 freezes backboardd at startup in 2 of 4 boots, task 14 | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
-| 4 | Make Mesa's buffer caches hit (textures, render targets, rings) | ~17 % of CA's frame thread (j64p) | `mesa/darwin/*` (Mesa build only) | none |
+| 4 | ~~Make Mesa's buffer caches hit~~ **done 2026-10-23 07:40** (sub-allocation heaps; on the phone) | buffer path 17.8 -> ~6 % of CA's thread, Mesa CPU -3 ms/frame; frames not faster at 266 MHz (GPU-wait tail) | `mesa/darwin/*` (Mesa build only) | none |
 | 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
 | 7 | Stop the XPC retry loops (~2 Gold cores) | CA's thread waits 45 ms/s for a CPU (~20 % on top of its 214 ms/s, j64p); needed for 8 cores and battery | userland services, maybe kernel | j0062 |
@@ -196,7 +196,21 @@ The same RPM client can later raise the RAM clock.
 **Done when:** the GPU runs at its top stock level, measured with the CP cycle counter as in j0020; the GPU wait
 in the libsweetca `prof:` lines drops; there are no hangs over a 10-minute `uiround.sh` series.
 
-## 4. Make Mesa's buffer caches hit (~17 % of CA's frame thread; Mesa build only)
+## 4. Make Mesa's buffer caches hit (~17 % of CA's frame thread; Mesa build only) -- DONE
+
+**Done 2026-10-23 07:40 (GPU.md "Mesa buffer caches").** The control fence is exact (ctrl == last_fence), so the
+caches' idle checks work; the churn was the ring cache running dry (~145 rings a frame, 2.6 SweetGPU creates a
+frame). Fix: freedreno's sub-allocation heaps on Darwin (`use_heap`, as on a6xx+), the bo cache matches ignoring
+hint bits, and a darwin IB-address bug the heaps exposed (047332e). Creates 2.6 -> 0.1-0.35 per frame; profile
+share of buffer create/map/free 17.8 -> ~6 %; Mesa CPU per frame 25.9 -> 22-23 ms against the same-day baseline
+(17-20 ms in 12-minute runs); SweetGPU handles flat over 12 min. Installed in `/usr/local/bin` and checked on a
+plain slot b boot (`logs/netlog-t4slotb.txt`). At 266 MHz the saving reappears as GPU wait at the frame's
+`glFinish`, so frames are not visibly faster: the next lever is overlapping that tail with the next frame's CPU
+work (libsweetca: no per-frame `glFinish`). Left: CA's large blur surfaces still miss (`realloc_bo` 4.5 %, new
+sizes as layers animate). libsweetca's `prof:` lines keep the cache counters (`tools/g2/cachesum.py LOG`).
+Note for every round script: a command-port reboot can hang in shutdown (05:52 and 07:11 today); power +
+volume-down recovers it.
+
 
 **Measured 2026-10-23 05:12 (profile j64p, `logs/prof-j64p-report.txt`, CA's display thread, 2137 on-CPU samples).**
 The cost is the buffer *cache misses*, not a missing cache. Share of the thread's CPU time:
