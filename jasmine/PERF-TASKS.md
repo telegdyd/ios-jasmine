@@ -22,7 +22,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 
 | # | Task | Saves (ms per frame) | Touches | Patch no. |
 | --- | --- | --- | --- | --- |
-| 1 | Display scale off the CPU | 8.8 | `SweetFramebuffer.cpp` (+ `SweetSurface.cpp`) | j0058 |
+| 1 | ~~Display scale off the CPU~~ **done 2026-10-23** | 8.8 | `SweetFramebuffer.cpp` (+ `SweetSurface.cpp`) | j0058 |
 | 2 | Gold clock 1747 -> 2208 MHz (voltage, DVFS) | ~7.7 | `sweet_cpuclk.c`, `sweet_osm.c`, PMIC code | j0059 |
 | 3 | GPU clock 266 -> ~650 MHz (RPM votes) | up to 7.5 | `bsd/dev/sweet_gpu.c`, new RPM client | j0060 |
 | 4 | Reuse Mesa's batch buffers | ~5.4 | `mesa/darwin/*` (Mesa build only) | none |
@@ -89,7 +89,15 @@ own lock. While someone else's lock exists, wait.
 
 ---
 
-## 1. Move the display scale off the CPU (saves ~8.8 ms)
+## 1. Move the display scale off the CPU (saves ~8.8 ms) -- DONE
+
+**Done 2026-10-23 01:55 (j0058, option a).** VIG0's QSEED3 scaler fits the frame; backboardd's frames come from the
+GPU pool and are scanned in place (present 7-40 us, `composeFit` only for multi-layer frames). The "Catch" below
+was a wrong SwapWait: CoreAnimation reuses a swap surface when `IOMobileFramebufferSwapWait` says done, not on
+IOSurface in-use; ours said done at once. Now a swap is done once a later one ended and the GPU waits for the latch
+before drawing into a frame still on the panel. Round j58d: 48 held draws (1662 without), the user saw no flicker
+and smooth motion. Not done: a same-day baseline and a profile round (the user judged it by eye). Details:
+GPU.md "j0058".
 
 **Now.** On every swap, `AppleCLCD::swap` -> `present` -> `composeFit` (`iokit/Kernel/arm/SweetFramebuffer.cpp`)
 scales CoreAnimation's 1125x2436 surface by nearest sample into a 996x2160 window at x 40 of the 1080x2160 panel.

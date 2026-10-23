@@ -697,3 +697,55 @@ backboardd and SpringBoard: 133339 samples, 0 dropped, no panic or hang. The pro
    backend) instead of create + GPU map + free every batch; Mesa only, no kernel build.
 4. CPU clock (1747 -> 2208 MHz, OSM + CPRh): the CPU part is 37 ms of the 49.
 Together 1-3 would bring a moving frame from ~49 to ~28-30 ms.
+
+#### j0058: the MDP scales the frame, honest SwapWait (2026-10-23 00:50 to 01:55; PERF-TASKS.md task 1, done)
+
+**j0058** (`xnu/patches/j0058-jasmine-display-scale.patch`, tested build CI `39873547890`, test branch
+`j0058-display`): the CPU display copy (`composeFit`, 8.2 ms of a 49 ms moving frame) is gone. All on by default on
+jasmine, no boot-arg needed.
+
+- **VIG0's QSEED3 scaler** (pipe + 0xa00 = 0x0c905a00, stock DT `qcom,mdss-vig-scaler-off`; HW version 0x1002)
+  programmed as msm-4.4 `mdss_mdp_qseed3_setup` does for RGB without a LUT: bilinear, phase steps src/dst in 21-bit
+  fixed point (0x242503 / 0x2416c1), preload 4x3, pixel extension = source size; SSPP source 1125x2436, output
+  996x2160 at x 40 (same window as the CPU fit, so `sweet_fit_x/w` and touch are unchanged). ABL's register values
+  are saved and written back whenever VIG0 scans a panel-size buffer again (flip buffers, console, panic).
+  `sweetfb_scale=0`: CPU fit as before.
+- **backboardd's screen-sized IOSurfaces from the GPU pool** (below 4 GiB, contiguous, write-combined; topaz's
+  `gpu=1` path, now also when jasmine's scaler is on; SweetSurface takes the pool under SweetGPU's pool lock). A
+  one-layer frame (every frame after boot: mask 0x1) is scanned in place: `present` takes 7-40 us instead of ~8.8 ms,
+  597-600 of every 600 frames go to the scaler. Frames with several layers still go through `composeFit`.
+  `gpu_fbpool=0` turns the pool frames off.
+- **Why the flicker came back with in-place scanout, and the root cause of j0056's "held draws":** CoreAnimation
+  does not use IOSurface in-use for its display surfaces at all (QuartzCore calls `IOSurfaceIsInUse` only from
+  backing stores, image queues and HDR code). `IOMFBDisplay::can_update_` polls
+  `IOMobileFramebufferSwapWait(fb, swapID, 0x80000000)` for each queued swap (at most 2) and draws into a swap's
+  surface again only once that returns 0 (`kern_SwapWait` = selector 6, scalars swap ID, timeout with bit 31 for a
+  poll, 0; `finish_update` also only polls). Our selector 6 returned 0 at once.
+  - j58a (SwapWait done once the swap itself latched): very smooth, heavy flicker, **1662** GPU jobs into a
+    held surface. CoreAnimation asks for swap N before it draws into N's surface again, and N was still on the panel.
+  - j58c (`sweetfb_swapwait=2`: N done once a later swap latched): **23** held draws, but 1973 of 3030 polls "not
+    done" (664 ms per 600 frames): with two swap surfaces CoreAnimation skips vsync ticks, 11-31 frames/s.
+  - **j58d (default, `sweetfb_swapwait=1`)**: N done once a later swap *ended*, and a SweetGPU submit that writes a
+    pool frame the display still retires waits for the latch (`sweet_fb_gpu_write_wait`, up to 50 ms), so
+    CoreAnimation's CPU work overlaps the latch: **48** held draws (0 in 9 of 12 10-s windows; the rest are draws
+    into the frame on the panel, which only a later swap can free), ~50 GPU waits per 10 s of ~6 ms each. User
+    (01:55): "probably the best it has ever been. No flickers, pretty smooth."
+  - `sweetfb_swapwait=0`: done at once (the old behaviour; topaz's default).
+
+| round (4 Gold, GPU 266 MHz, uibench gestures) | held draws | libsweetca 100-flush median | SWEET FPS while moving | log |
+|---|---|---|---|---|
+| j57p (before, CPU copy) | 0 | 124.5 ms | 10-32 | `logs/netlog-j57p-ui.txt` |
+| j58a (scaler, SwapWait done when latched) | 1662 | 116.2 ms | 20-61 | `logs/netlog-j58a-ui.txt` |
+| j58c (`sweetfb_swapwait=2`) | 23 | 123.2 ms | 11-61 | `logs/netlog-j58c-ui.txt` |
+| **j58d (default)** | **48** | **78.8 ms** | 10-54 | `logs/netlog-j58d-ui.txt` |
+
+Caveats: the 100-flush figure counts flushes (~0.45 per frame), not frames, and SWEET FPS depends on where the
+gestures fall; no same-kernel baseline rounds and no new profile were taken (the user judged it by eye). No
+flicker counter on scaled frames (A-B-A checksums would read write-combined memory each frame); the held-draw
+count is the measure. Counters: `SWEET FB: 600 frames: N scaled by the MDP, M copied; SwapWait ...` and SweetGPU's
+10 s line `... N waited for the panel (M ms)`. The MDP block (0x0c901000-0x0c90a000) is now open to the command
+port's `r`/`w` (`tools/cpuclk/osmctl.py`) for live display register work.
+
+Next for the frame (PERF-TASKS.md): GPU clock (task 3) now matters more, since the display waits for the GPU's last
+job before a flip and SweetGPU waits for the latch; the CPU wait at frame end (`glClientWaitSync`, 7.5 ms) could go
+too, as the display already waits for the GPU (j0055).
