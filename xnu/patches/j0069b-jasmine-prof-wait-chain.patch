@@ -1,0 +1,211 @@
+From 7e227751fc23826bba46a8411f287fd2c14443eb Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 01:39:11 +0200
+Subject: [PATCH] jasmine-j0069b: prof meta 'wait' lines (user x0-x3, the word
+ at x1, turnstile inheritor chain of each census thread) and 'prof peek PID
+ ADDR LEN' (task memory, hex); sp_num takes 0x hex
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ osfmk/arm64/sweet_prof.c | 143 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 142 insertions(+), 1 deletion(-)
+
+diff --git a/osfmk/arm64/sweet_prof.c b/osfmk/arm64/sweet_prof.c
+index 12138df..0b320f0 100644
+--- a/osfmk/arm64/sweet_prof.c
++++ b/osfmk/arm64/sweet_prof.c
+@@ -18,7 +18,10 @@
+  *    last record reuses that stack (no page-table walks).
+  *  - j0069, `all` among the names: the census takes every thread of the tasks however long it
+  *    has slept, and adds the kernel stack of each blocked one, walked from the context it
+- *    switched out with (a thread stuck for minutes in a lock or a wait shows where).
++ *    switched out with (a thread stuck for minutes in a lock or a wait shows where). The meta then
++ *    gets a `wait` line per thread of the tasks: user x0-x3 at its kernel entry (a ulock wait's
++ *    address and value), the 8 bytes at x1, and whom it waits for: its turnstile's inheritor
++ *    chain (a thread, a workqueue, or the task holding the receive right of a sync IPC's port).
+  *
+  * At the end the census thread writes a text table (meta): kernel slide, shared-cache slide,
+  * every task (pid, name), every thread (tid, pid, name) and the file mappings of every task
+@@ -29,6 +32,8 @@
+  *   prof stat                 running, seconds, samples, bytes, dropped
+  *   prof get OFF              hex of the sample buffer from byte OFF (up to 48 KiB)
+  *   prof meta OFF             the meta text from byte OFF (up to 96 KiB)
++ *   prof peek PID ADDR LEN    hex of LEN (up to 1024) bytes of that task's memory at ADDR, "??" where not
++ *                             resident (j0069: lock words, dispatch queues of a frozen daemon)
+  */
+ 
+ #include <stdint.h>
+@@ -42,6 +47,9 @@
+ #include <kern/sched_prim.h>
+ #include <kern/timer_call.h>
+ #include <kern/backtrace.h>
++#include <kern/turnstile.h>
++#include <ipc/ipc_port.h>
++#include <ipc/ipc_space.h>
+ #include <kern/locks.h>
+ #include <vm/vm_kern.h>
+ #include <vm/vm_map.h>
+@@ -361,6 +369,83 @@ sp_meta_printf(const char *fmt, ...)
+ 
+ #define SP_ALLTASKS 768
+ 
++/*
++ * j0069: a census thread's wait, for the meta: user x0-x3, the 8 bytes at x1, and the turnstile
++ * inheritor chain, as stackshot's kdp_turnstile_traverse_inheritor_chain walks it but without its
++ * debugger-only helpers. Unlocked reads of the chain: meant for a frozen system, diagnostics only.
++ */
++/* turnstile.c turnstile_get_type() is static: the type is the low byte of ts_type_gencount */
++static unsigned
++sp_ts_type(struct turnstile *ts)
++{
++	return atomic_load_explicit(&ts->ts_type_gencount, memory_order_relaxed) & 0xff;
++}
++
++static void
++sp_meta_wait(task_t task, thread_t th)
++{
++	struct arm_saved_state *us = get_user_regs(th);
++	uint64_t x[4] = {}, word = 0;
++	char chain[192];
++	size_t n = 0;
++	int ok = -1;
++
++	if (us != NULL) {
++		for (int i = 0; i < 4; i++) {
++			x[i] = get_saved_state_reg(us, i);
++		}
++	}
++	if (task->map != VM_MAP_NULL && x[1] != 0 && (x[1] & 7) == 0) {
++		ok = (int)sp_copy_other(vm_map_pmap(task->map), &word, x[1], sizeof(word));
++	}
++	chain[0] = 0;
++	spl_t s = splsched();
++	thread_lock(th);
++	struct turnstile *ts = (th->state & TH_WAIT) ? thread_get_waiting_turnstile(th) : TURNSTILE_NULL;
++	for (int hop = 0; ts != TURNSTILE_NULL && hop < 8 && n < sizeof(chain) - 48; hop++) {
++		n += (size_t)snprintf(chain + n, sizeof(chain) - n, " ts%u", sp_ts_type(ts));
++		if (ts->ts_inheritor_flags & TURNSTILE_INHERITOR_TURNSTILE) {
++			ts = (struct turnstile *)ts->ts_inheritor;
++			continue;
++		}
++		if (ts->ts_inheritor_flags & TURNSTILE_INHERITOR_THREAD) {
++			thread_t it = (thread_t)ts->ts_inheritor;
++			task_t itask = it != THREAD_NULL ? get_threadtask(it) : TASK_NULL;
++			n += (size_t)snprintf(chain + n, sizeof(chain) - n, " -> thread %llu pid %d",
++			    it != THREAD_NULL ? it->thread_id : 0, itask != TASK_NULL ? task_pid(itask) : -1);
++		} else if (ts->ts_inheritor_flags & TURNSTILE_INHERITOR_WORKQ) {
++			n += (size_t)snprintf(chain + n, sizeof(chain) - n, " -> workq");
++		} else if (sp_ts_type(ts) == TURNSTILE_SYNC_IPC && ts->ts_proprietor != 0) {
++			ipc_port_t port = (ipc_port_t)ts->ts_proprietor;
++			if (ip_active(port) && port->ip_receiver_name != MACH_PORT_NULL && port->ip_receiver != IS_NULL &&
++			    port->ip_receiver->is_task != TASK_NULL) {
++				n += (size_t)snprintf(chain + n, sizeof(chain) - n, " -> port of pid %d",
++				    task_pid(port->ip_receiver->is_task));
++			} else {
++				n += (size_t)snprintf(chain + n, sizeof(chain) - n, " -> port (no receiver)");
++			}
++		} else {
++			n += (size_t)snprintf(chain + n, sizeof(chain) - n, " -> none");
++		}
++		break;
++	}
++	thread_unlock(th);
++	splx(s);
++	sp_meta_printf("wait %llu %d state %x x0 0x%llx x1 0x%llx x2 0x%llx x3 0x%llx word %s0x%llx%s\n",
++	    th->thread_id, task_pid(task), th->state, x[0], x[1], x[2], x[3], ok == 0 ? "" : "?", word, chain);
++}
++
++static bool
++sp_named(void *p)
++{
++	for (unsigned i = 0; p != NULL && i < sp_ntasks; i++) {
++		if (!strncmp(proc_name_address(p), sp_names[i], sizeof(sp_names[i]))) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ static void
+ sp_write_meta(void)
+ {
+@@ -402,6 +487,11 @@ sp_write_meta(void)
+ 			name[sizeof(name) - 1] = 0;
+ 			sp_meta_printf("thread %llu %d %s\n", th->thread_id, pid, name);
+ 		}
++		if (sp_census_all && sp_named(p)) {
++			queue_iterate(&task->threads, th, thread_t, task_threads) {
++				sp_meta_wait(task, th);
++			}
++		}
+ 		task_unlock(task);
+ 		if (task != kernel_task && sp_meta_used + 4096 < sp_meta_size) {
+ 			sp_meta_used += (uint64_t)sweet_prof_maps(task, sp_meta + sp_meta_used, sp_meta_size - sp_meta_used);
+@@ -463,6 +553,20 @@ sp_num(const char **s)
+ 	while (**s == ' ') {
+ 		(*s)++;
+ 	}
++	if ((*s)[0] == '0' && ((*s)[1] == 'x' || (*s)[1] == 'X')) {   /* j0069: hex (peek addresses) */
++		*s += 2;
++		for (;;) {
++			char c = **s;
++			int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
++			    c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
++			if (d < 0) {
++				break;
++			}
++			v = v * 16 + (uint64_t)d;
++			(*s)++;
++		}
++		return v;
++	}
+ 	while (**s >= '0' && **s <= '9') {
+ 		v = v * 10 + (uint64_t)(*(*s)++ - '0');
+ 	}
+@@ -571,6 +675,43 @@ sweet_prof_cmd(const char *line)
+ 		    sp_used < sp_size ? sp_used : sp_size, sp_dropped, sp_meta_used);
+ 		return sp_reply;
+ 	}
++	if (!strncmp(a, "peek", 4)) {
++		a += 4;
++		uint64_t pid = sp_num(&a), addr = sp_num(&a), len = sp_num(&a);
++		task_t task, found = TASK_NULL;
++		len = len > 1024 ? 1024 : len;
++		lck_mtx_lock(&tasks_threads_lock);
++		queue_iterate(&tasks, task, task_t, tasks) {
++			if (task != kernel_task && (uint64_t)task_pid(task) == pid) {
++				task_reference(task);
++				found = task;
++				break;
++			}
++		}
++		lck_mtx_unlock(&tasks_threads_lock);
++		if (found == TASK_NULL || found->map == VM_MAP_NULL) {
++			if (found != TASK_NULL) {
++				task_deallocate(found);
++			}
++			snprintf(sp_reply, sizeof(sp_reply), "prof: no task %llu\n", pid);
++			return sp_reply;
++		}
++		static const char hex[] = "0123456789abcdef";
++		size_t o = (size_t)snprintf(sp_reply, sizeof(sp_reply), "0x%llx", addr);
++		for (uint64_t i = 0; i < len; i += 8) {
++			uint8_t b[8];
++			bool got = sp_copy_other(vm_map_pmap(found->map), b, addr + i, 8) == 0;
++			sp_reply[o++] = ' ';
++			for (int k = 0; k < 8; k++) {
++				sp_reply[o++] = got ? hex[b[k] >> 4] : '?';
++				sp_reply[o++] = got ? hex[b[k] & 15] : '?';
++			}
++		}
++		sp_reply[o++] = '\n';
++		sp_reply[o] = 0;
++		task_deallocate(found);
++		return sp_reply;
++	}
+ 	if (!strncmp(a, "get", 3) || !strncmp(a, "meta", 4)) {
+ 		bool meta = a[0] == 'm';
+ 		a += meta ? 4 : 3;
+-- 
+2.47.3
+
