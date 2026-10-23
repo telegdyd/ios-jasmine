@@ -1,0 +1,840 @@
+From 1b56f66b5879e58bf379f811c616650d44d9d2b7 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 23 Oct 2026 02:48:41 +0200
+Subject: [PATCH] jasmine-j0060: GPU levels up to the speed bin top (750 MHz):
+ RPM GLINK client (from ios-sailfish), CX level vote, mem-acc, cx_ipeak,
+ PLL0/PLL1 ping-pong; command port "gpu clk MHZ" / "gpu state"
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/conf/files      |   1 +
+ bsd/dev/sweet_gpu.c | 349 +++++++++++++++++++++++++++++++++++-----
+ bsd/dev/sweet_rpm.c | 377 ++++++++++++++++++++++++++++++++++++++++++++
+ bsd/dev/sweet_usb.c |   7 +-
+ 4 files changed, 696 insertions(+), 38 deletions(-)
+ create mode 100644 bsd/dev/sweet_rpm.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index d2fe527..59b2805 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -114,6 +114,7 @@ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_pmic.c			standard
+ bsd/dev/sweet_gpu.c			standard
++bsd/dev/sweet_rpm.c			standard
+ bsd/dev/sweet_netfs.c			standard
+ bsd/dev/sweet_wdt.c			standard
+ bsd/dev/sweet_nvt.c			standard
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 9ddeed2..c1ccfb7 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -10,8 +10,10 @@
+  *   sweetgpu=3  + load the zap shader through TrustZone (PAS id 13) and take the
+  *               CP out of secure mode (CP_SET_SECURE_MODE 0), then one more
+  *               CP_MEM_WRITE
+- *   gpumhz=160|266 the GPU core clock from GPU PLL0 instead of XO, set right
+- *               after power-up (measured with the CP cycle counter)
++ *   gpumhz=MHZ  the GPU core clock from a GPU PLL instead of XO, set right
++ *               after power-up (measured with the CP cycle counter): a stock
++ *               level up to the speed bin's top, with the RPM CX vote above
++ *               266 MHz (j0060); command port "gpu clk MHZ" switches later
+  *   sweetgpu=4  + the driver for userland (G2): a GPU address space with 4K
+  *               page tables, buffer mapping, submission of indirect buffers
+  *               with a fence, the SweetGPU IOKit service
+@@ -417,6 +419,60 @@ gpu_power_on(void)
+ 	return 0;
+ }
+ 
++static int gpu_vm_selftest(void);
++
++/*
++ * GPU levels (j0060), from the stock DT: kgsl's qcom,gpu-pwrlevels, the gfx
++ * CPR thread (cpr4-ctrl@05061000: qcom,corner-frequencies,
++ * qcom,system-voltage, qcom,mem-acc-voltage) and gpucc's
++ * qcom,gfxfreq-corner. The gfx corner's own supply is a stub (GFX runs from
++ * CX through the head switch, LDO mode and closed loop never allowed), so a
++ * corner is two settings: its system-supply, the VDD_CX level voted through
++ * the RPM (pm660l_s3_level, "rwcx", bsd/dev/sweet_rpm.c), and the GFX memory
++ * accelerator select (regulator@01fcf004 bit 0, corner-acc-map <1 0>: 1 on
++ * corners 1-3, 0 from 465 MHz on). Above 700 MHz kgsl also votes cx_ipeak
++ * (qcom,gpu-cx-ipeak = <&cx_ipeak 1>). Order as cpr3_regulator_scale_vdd_voltage
++ * and the clock framework: up CX, mem-acc, ipeak, clock; down the reverse.
++ */
++static const struct { uint16_t mhz, cx; uint8_t acc; } gpu_levels[] = {
++	{ 160, 0x40, 1 }, { 266, 0x40, 1 }, { 370, 0x80, 1 }, { 430, 0xc0, 0 }, { 465, 0xc0, 0 },
++	{ 588, 0x100, 0 }, { 647, 0x140, 0 }, { 700, 0x180, 0 }, { 750, 0x180, 0 },
++};
++/* qcom,gpu-speed-bin = <0x41a0 0x1fe00000 21> in QFPROM 0x780000; each bin's qcom,gpu-pwrlevels top */
++static const struct { uint8_t bin; uint16_t mhz; } gpu_bins[] = {
++	{ 0x00, 750 }, { 0x9d, 750 }, { 0x92, 700 }, { 0x87, 647 }, { 0x7a, 588 }, { 0x5a, 430 }, { 0x4e, 370 },
++};
++#define RPM_RWCX                0x78637772u     /* "rwcx" */
++#define GPU_MEMACC_PA           0x01fcf004u
++#define GPU_IPEAK_PA            0x01fe5040u     /* TCSR CX ipeak limits manager (cx_ipeak.c v1) */
++#define GPU_IPEAK_BIT           (1u << 1)
++#define GPU_PLL0                0x0000
++#define GPU_PLL1                0x0040
++#define GCC_DEBUG_CLK_CTL       0x62000         /* cc-debug@62000; gcc-sdm660.c debug mux */
++#define GCC_CLOCK_FRQ_MEASURE_CTL 0x62004
++#define GCC_CLOCK_FRQ_MEASURE_STATUS 0x62008
++#define GCC_XO_DIV4_CBCR        0x43008
++#define GCC_DEBUG_BIMC          0x19d           /* bimc_clk (DDR) */
++
++extern bool sweet_rpm_level(uint32_t type, uint32_t level);
++extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
++
++static struct {
++	uint32_t mhz;           /* current level, 0 = XO */
++	uint32_t cx;            /* our CX vote, 0 = none sent */
++	uint32_t max_mhz, bin, floor;
++	bool acc_hi, ipeak;     /* mem-acc in its high-voltage setting, ipeak voted */
++	volatile uint32_t *memacc, *ipk;
++} gclk;
++
++/* Stores from a real register (no "str wzr"), as smmu_wr. */
++static inline void
++io_wr(volatile uint32_t *p, uint32_t v)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"(p) : "memory");
++	__builtin_arm_dsb(0xf);
++}
++
+ /* GPU core clock in MHz: CP cycle counter (CP_ALWAYS_COUNT) against the 19.2 MHz always-on counter */
+ static uint32_t
+ gpu_measure_mhz(void)
+@@ -429,57 +485,223 @@ gpu_measure_mhz(void)
+ 	return a1 != a0 ? (uint32_t)((uint64_t)(c1 - c0) * 192 / (a1 - a0) / 10) : 0;
+ }
+ 
++/* One GCC ring-oscillator count of ticks XO/4 cycles (clk-debug.c run_measurement); -1 on a timeout. */
++static int64_t
++gcc_count(uint32_t ticks)
++{
++	volatile uint32_t *ctl = (volatile uint32_t *)(sg.gcc + GCC_CLOCK_FRQ_MEASURE_CTL);
++	volatile uint32_t *st = (volatile uint32_t *)(sg.gcc + GCC_CLOCK_FRQ_MEASURE_STATUS);
++	io_wr(ctl, ticks);
++	if (poll32(st, 1u << 25, 0, 50000)) {
++		return -1;
++	}
++	io_wr(ctl, (1u << 20) | ticks);
++	if (poll32(st, 1u << 25, 1u << 25, 50000)) {
++		return -1;
++	}
++	return *st & 0x1ffffff;
++}
++
++/* A GCC debug-mux clock in MHz (clk_debug_mux_measure_rate), 0 if it is off. */
++static uint32_t
++gcc_measure_mhz(uint32_t sel)
++{
++	volatile uint32_t *mux = (volatile uint32_t *)(sg.gcc + GCC_DEBUG_CLK_CTL);
++	volatile uint32_t *xo4 = (volatile uint32_t *)(sg.gcc + GCC_XO_DIV4_CBCR);
++	uint32_t mux0 = *mux, xo40 = *xo4;
++	io_wr(mux, (mux0 & ~(0x3ffu | (0xfu << 12))) | sel | (1u << 16));
++	io_wr(xo4, xo40 | 1u);
++	int64_t s = gcc_count(0x1000), f = gcc_count(0x10000);
++	io_wr(xo4, xo40);
++	io_wr(mux, mux0);
++	if (s < 0 || f < 0 || s == f) {
++		return 0;
++	}
++	return (uint32_t)(((uint64_t)f * 10 + 15) * 4800000 / (0x10000 * 10 + 35) / 1000000);
++}
++
++/* PM660L S3 (VDD_CX) and S5 (VDD_MX) set points as the RPM left them: raw VSET (+0x40, 16 bit). */
++static int
++gpu_rails(char *out, size_t len)
++{
++	uint32_t cx = 0, mx = 0;
++	int a = sweet_pmic_peek(3, 0x1a40, 2, &cx), b = sweet_pmic_peek(3, 0x2040, 2, &mx);
++	return snprintf(out, len, "CX vset %u%s, MX vset %u%s", cx, a ? "?" : "", mx, b ? "?" : "");
++}
++
++static void
++gpu_clock_init(void)
++{
++	if (gclk.max_mhz != 0) {
++		return;
++	}
++	volatile uint32_t *q = (volatile uint32_t *)ml_io_map(0x00784000, 0x1000);
++	uint32_t fuse = q != NULL ? q[0x1a0 / 4] : 0;
++	gclk.bin = (fuse & 0x1fe00000u) >> 21;
++	gclk.max_mhz = 266;
++	for (unsigned i = 0; i < sizeof(gpu_bins) / sizeof(gpu_bins[0]); i++) {
++		if (gpu_bins[i].bin == gclk.bin) {
++			gclk.max_mhz = gpu_bins[i].mhz;
++		}
++	}
++	/*
++	 * CX floor for our own vote, boot-arg gpucxfloor= (default NOM): the
++	 * vote replaces the bootloader's for the whole AP, whose display and
++	 * bus clocks this kernel never votes for itself.
++	 */
++	gclk.floor = 0x100;
++	PE_parse_boot_argn("gpucxfloor", &gclk.floor, sizeof(gclk.floor));
++	gclk.memacc = (volatile uint32_t *)ml_io_map(GPU_MEMACC_PA, 4);
++	gclk.ipk = (volatile uint32_t *)ml_io_map(GPU_IPEAK_PA, 0x28);
++	gclk.acc_hi = gclk.memacc != NULL && (*gclk.memacc & 1u) == 0;
++	char r[64];
++	gpu_rails(r, sizeof(r));
++	printf("SWEET GPU: speed bin %#x (fuse %08x): top level %u MHz; mem-acc %08x, ipeak enable %08x bypass %08x; "
++	    "CX floor %#x; %s; DDR (bimc) %u MHz\n", gclk.bin, fuse, gclk.max_mhz,
++	    gclk.memacc ? *gclk.memacc : 0, gclk.ipk ? gclk.ipk[0x10 / 4] : 0, gclk.ipk ? gclk.ipk[0x04 / 4] : 0,
++	    gclk.floor, r, gcc_measure_mhz(GCC_DEBUG_BIMC));
++}
++
++/* mem-acc select: high-voltage setting (bit 0 = 0) or low (1). */
++static void
++gpu_memacc(bool hi)
++{
++	if (gclk.memacc != NULL && hi != gclk.acc_hi) {
++		io_wr(gclk.memacc, (*gclk.memacc & ~1u) | (hi ? 0u : 1u));
++		gclk.acc_hi = hi;
++	}
++}
++
++/* cx_ipeak_update for the GPU (bit 1); a vote fails while the limits manager throttles (TRS). */
++static int
++gpu_ipeak(bool on)
++{
++	volatile uint32_t *t = gclk.ipk;
++	if (t == NULL || t[0x10 / 4] == 0 || (t[0x04 / 4] & GPU_IPEAK_BIT) || on == gclk.ipeak) {
++		return 0;               /* no limits manager, GPU bypassed, or nothing to change */
++	}
++	if (!on) {
++		io_wr(&t[0x08 / 4], GPU_IPEAK_BIT);
++		gclk.ipeak = false;
++		return 0;
++	}
++	io_wr(&t[0x0c / 4], GPU_IPEAK_BIT);
++	(void)t[0x24 / 4];
++	if (poll32(&t[0x24 / 4], ~0u, 0, 50000)) {
++		io_wr(&t[0x08 / 4], GPU_IPEAK_BIT);
++		printf("SWEET GPU: cx_ipeak vote refused (TRS %08x)\n", t[0x24 / 4]);
++		return EBUSY;
++	}
++	gclk.ipeak = true;
++	return 0;
++}
++
+ /*
+- * gpumhz=: gfx3d from GPU PLL0 (gpucc-sdm660.c: alpha PLL at offset 0, 40-bit
+- * alpha, config_ctl 0x4001055b, VCO 2 for 500-1000 MHz and 3 for 250-500 MHz;
+- * clk_rcg2_gfx3d always divides the PLL by 2, source 1 = PLL0). Only the two
+- * lowest GPU levels: the GPU's voltage is the CX corner and nothing here votes
+- * for a higher one yet (mainline's sdm660 OPP table stops at 266 MHz for the
+- * same reason). Sequence of clk_alpha_pll_configure / clk_alpha_pll_enable.
++ * Configure and start the GPU PLL at off for 2 * mhz (gpucc-sdm660.c: alpha
++ * PLL, 40-bit alpha, config_ctl 0x4001055b, VCO 0 for 1000-2000 MHz, 2 for
++ * 500-1000, 3 for 250-500). Sequence of clk_alpha_pll_configure /
++ * clk_alpha_pll_enable. The PLL must not be the one the RCG runs on.
+  */
+-#define GPU_PLL0                0x0000
+ static int
+-gpu_set_clock(uint32_t mhz)
++gpu_pll_start(uint32_t off, uint32_t mhz)
+ {
+-	if (mhz != 160 && mhz != 266) {
+-		printf("SWEET GPU: gpumhz=%u not allowed (160 or 266)\n", mhz);
+-		return EINVAL;
+-	}
+-	uint32_t before = gpu_measure_mhz();
+ 	uint64_t hz = 2ull * mhz * 1000000, xo = 19200000;
+ 	uint32_t l = (uint32_t)(hz / xo);
+ 	uint64_t alpha = (((hz % xo) << 32) / xo) << 8;  /* 40-bit fraction */
+-	uint32_t vco = hz >= 500000000 ? 2 : 3;
+-	volatile uint32_t *pll = sg.gpucc + GPU_PLL0 / 4;
++	uint32_t vco = hz >= 1000000000 ? 0 : hz >= 500000000 ? 2 : 3;
++	volatile uint32_t *pll = sg.gpucc + off / 4;
+ 
+-	pll[0] = 0;                                     /* MODE: output off, reset, bypass */
+-	__builtin_arm_dsb(0xf);
++	io_wr(&pll[0], 0);                              /* MODE: output off, reset, bypass */
+ 	delay(1);
+-	pll[0x04 / 4] = l;
+-	pll[0x08 / 4] = (uint32_t)alpha;
+-	pll[0x0c / 4] = (uint32_t)(alpha >> 32);
+-	pll[0x18 / 4] = 0x4001055b;                     /* CONFIG_CTL */
+-	pll[0x10 / 4] = (pll[0x10 / 4] & ~((3u << 20) | (1u << 24) | (0xfu << 8) | 1u)) |
+-	    (vco << 20) | (1u << 24) | 1u;              /* USER_CTL: VCO, alpha on, main output, post-div 1 */
+-	__builtin_arm_dsb(0xf);
+-	pll[0] |= 2;                                    /* BYPASSNL */
+-	__builtin_arm_dsb(0xf);
++	io_wr(&pll[0x04 / 4], l);
++	io_wr(&pll[0x08 / 4], (uint32_t)alpha);
++	io_wr(&pll[0x0c / 4], (uint32_t)(alpha >> 32));
++	io_wr(&pll[0x18 / 4], 0x4001055b);              /* CONFIG_CTL */
++	io_wr(&pll[0x10 / 4], (pll[0x10 / 4] & ~((3u << 20) | (1u << 24) | (0xfu << 8) | 1u)) |
++	    (vco << 20) | (1u << 24) | 1u);             /* USER_CTL: VCO, alpha on, main output, post-div 1 */
++	io_wr(&pll[0], pll[0] | 2);                     /* BYPASSNL */
+ 	delay(5);
+-	pll[0] |= 4;                                    /* RESET_N */
++	io_wr(&pll[0], pll[0] | 4);                     /* RESET_N */
+ 	int err = poll32(&pll[0], 1u << 31, 1u << 31, 1000); /* LOCK_DET */
+ 	if (err) {
+-		printf("SWEET GPU: GPU PLL0 did not lock (mode %08x, L %x, alpha %llx), staying on XO\n", pll[0], l, alpha);
+-		pll[0] = 0;
++		printf("SWEET GPU: GPU PLL%u did not lock (mode %08x, L %u, alpha %llx, vco %u)\n",
++		    off ? 1 : 0, pll[0], l, alpha, vco);
++		io_wr(&pll[0], 0);
+ 		return err;
+ 	}
+-	pll[0] |= 1;                                    /* OUTCTRL */
+-	__builtin_arm_dsb(0xf);
+-	cc_wr(GPUCC_GFX3D_RCG + 4, (1u << 8) | 3);      /* CFG: source PLL0, divide by 2 (SRC_DIV 3) */
++	io_wr(&pll[0], pll[0] | 1);                     /* OUTCTRL */
++	return 0;
++}
++
++/*
++ * gpumhz= and "gpu clk": gfx3d at one of gpu_levels (up to the speed bin's
++ * top). Ping-pong between GPU PLL0 (RCG source 1) and PLL1 (source 3) like
++ * clk_gfx3d_src_set_rate_and_parent: the idle PLL takes the new rate, then
++ * the RCG (always / 2) moves over and the old PLL stops. CX is voted only
++ * above 266 MHz (below, the bootloader's vote stays, as before j0060), at
++ * least gpucxfloor=. Runtime callers hold gpu_lock with the GPU idle.
++ */
++static int
++gpu_set_clock(uint32_t mhz)
++{
++	gpu_clock_init();
++	unsigned li = 0;
++	while (li < sizeof(gpu_levels) / sizeof(gpu_levels[0]) && gpu_levels[li].mhz != mhz) {
++		li++;
++	}
++	if (li == sizeof(gpu_levels) / sizeof(gpu_levels[0]) || mhz > gclk.max_mhz) {
++		printf("SWEET GPU: gpumhz=%u not allowed (a stock level up to %u MHz)\n", mhz, gclk.max_mhz);
++		return EINVAL;
++	}
++	uint32_t before = gpu_measure_mhz();
++	uint32_t cx = mhz <= 266 && gclk.cx == 0 ? 0 : MAX((uint32_t)gpu_levels[li].cx, gclk.floor);
++	bool hi = gpu_levels[li].acc == 0;
++	int err = 0;
++
++	if (cx > gclk.cx) {
++		if (!sweet_rpm_level(RPM_RWCX, cx)) {
++			printf("SWEET GPU: CX vote %#x failed, clock stays at %u MHz\n", cx, gclk.mhz);
++			return EIO;
++		}
++		gclk.cx = cx;
++		delay(1000);
++	}
++	if (hi) {
++		gpu_memacc(true);
++	}
++	if (mhz > 700 && (err = gpu_ipeak(true))) {
++		return err;
++	}
++
++	uint32_t src = (cc_rd(GPUCC_GFX3D_RCG + 4) >> 8) & 7;
++	uint32_t from = src == 1 ? GPU_PLL0 : src == 3 ? GPU_PLL1 : ~0u;
++	uint32_t to = from == GPU_PLL0 ? GPU_PLL1 : GPU_PLL0;
++	if ((err = gpu_pll_start(to, mhz)) != 0) {
++		return err;
++	}
++	cc_wr(GPUCC_GFX3D_RCG + 4, ((to == GPU_PLL0 ? 1u : 3u) << 8) | 3);      /* CFG: source, divide by 2 (SRC_DIV 3) */
+ 	cc_wr(GPUCC_GFX3D_RCG, cc_rd(GPUCC_GFX3D_RCG) | RCG_UPDATE);
+ 	err = poll32(&sg.gpucc[GPUCC_GFX3D_RCG / 4], RCG_UPDATE, 0, 500);
+-	printf("SWEET GPU: gfx3d %s: PLL0 L %u alpha %llx vco %u mode %08x, rcg %08x/%08x; measured %u MHz (was %u)\n",
+-	    err ? "switch TIMED OUT" : "on PLL0", l, alpha, vco, pll[0], cc_rd(GPUCC_GFX3D_RCG),
+-	    cc_rd(GPUCC_GFX3D_RCG + 4), gpu_measure_mhz(), before);
++	if (err == 0 && from != ~0u) {
++		io_wr(&sg.gpucc[from / 4], 0);          /* the old PLL off */
++	}
++	if (err == 0) {
++		gclk.mhz = mhz;
++		if (mhz <= 700) {
++			(void)gpu_ipeak(false);
++		}
++		if (!hi) {
++			gpu_memacc(false);
++		}
++		if (cx != 0 && cx < gclk.cx && sweet_rpm_level(RPM_RWCX, cx)) {
++			gclk.cx = cx;
++		}
++	}
++	char r[64];
++	gpu_rails(r, sizeof(r));
++	printf("SWEET GPU: clock %u MHz %s: PLL%u rcg %08x/%08x, CX vote %#x, mem-acc %s, ipeak %d, %s; "
++	    "measured %u MHz (was %u)\n", mhz, err ? "switch TIMED OUT" : "set", to ? 1 : 0, cc_rd(GPUCC_GFX3D_RCG),
++	    cc_rd(GPUCC_GFX3D_RCG + 4), gclk.cx, gclk.acc_hi ? "high" : "low", gclk.ipeak, r, gpu_measure_mhz(), before);
+ 	return err;
+ }
+ 
+@@ -1109,6 +1331,59 @@ sweet_gpu_hang_check(uint32_t seqno, uint32_t timeout_ms)
+ 	return ETIMEDOUT;
+ }
+ 
++/*
++ * Command port lines "gpu ..." (bsd/dev/sweet_usb.c, j0060), so GPU levels
++ * are tried in one boot instead of one kernel build each:
++ *   gpu clk MHZ   switch to that level (GPU idle, under gpu_lock), then the
++ *                 kernel self-test
++ *   gpu state     level, measured clock, CX vote, rails, DDR (bimc) clock
++ * The reply, or NULL when the line is not ours.
++ */
++const char *sweet_gpu_cmd(const char *line);
++const char *
++sweet_gpu_cmd(const char *line)
++{
++	static char reply[512];
++	if (strncmp(line, "gpu ", 4) != 0) {
++		return NULL;
++	}
++	if (!gpu_ready) {
++		return "gpu: not ready\n";
++	}
++	char r[64];
++	if (strncmp(line + 4, "clk ", 4) == 0) {
++		uint32_t mhz = 0;
++		for (const char *p = line + 8; *p >= '0' && *p <= '9'; p++) {
++			mhz = mhz * 10 + (uint32_t)(*p - '0');
++		}
++		uint64_t t0 = mach_absolute_time(), ns = 0;
++		lck_mtx_lock(gpu_lock);
++		int err = sweet_gpu_wait(gpu_seqno, 1000);
++		if (err == 0) {
++			err = gpu_set_clock(mhz);
++		}
++		lck_mtx_unlock(gpu_lock);
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		int st = err ? -1 : gpu_vm_selftest();
++		gpu_rails(r, sizeof(r));
++		snprintf(reply, sizeof(reply), "gpu clk %u: %s (%d) in %llu us, now %u MHz, measured %u MHz, CX vote %#x, "
++		    "mem-acc %s, ipeak %d, %s, self-test %s\n", mhz, err ? "FAILED" : "ok", err, ns / 1000, gclk.mhz,
++		    gpu_measure_mhz(), gclk.cx, gclk.acc_hi ? "high" : "low", gclk.ipeak, r,
++		    st == 0 ? "PASS" : st < 0 ? "skipped" : "FAIL");
++		printf("SWEET GPU: %s", reply);
++		return reply;
++	}
++	if (strcmp(line + 4, "state") == 0) {
++		gpu_rails(r, sizeof(r));
++		snprintf(reply, sizeof(reply), "gpu: %u MHz (measured %u, top %u, bin %#x), CX vote %#x floor %#x, mem-acc %s, "
++		    "ipeak %d, %s, DDR (bimc) %u MHz, completed %u of %u\n", gclk.mhz, gpu_measure_mhz(), gclk.max_mhz,
++		    gclk.bin, gclk.cx, gclk.floor, gclk.acc_hi ? "high" : "low", gclk.ipeak, r,
++		    gcc_measure_mhz(GCC_DEBUG_BIMC), sweet_gpu_completed(), gpu_seqno);
++		return reply;
++	}
++	return "gpu: ? (clk MHZ, state)\n";
++}
++
+ /* Values for userland (Mesa's MSM_PARAM_* counterparts, SweetGPU.cpp). */
+ /* sweetgpu_debug: the clock controller / LDO state (never the GPU core), for SweetGPU.cpp */
+ void sweet_gpu_debug_state(const char *when);
+diff --git a/bsd/dev/sweet_rpm.c b/bsd/dev/sweet_rpm.c
+new file mode 100644
+index 0000000..e80937c
+--- /dev/null
++++ b/bsd/dev/sweet_rpm.c
+@@ -0,0 +1,377 @@
++/*
++ * jasmine (SDM660) RPM requests over GLINK, polled (j0060). Rail levels and
++ * clocks shared with the other subsystems belong to the RPM: the GPU's rail
++ * is VDD_CX (GFX through a head switch, jasmine/GPU.md), and a GPU clock
++ * above 266 MHz needs a higher CX level than the bootloader leaves.
++ * Ported from ios-sailfish (Joran Vancoillie, github.com/joranv1/ios-sailfish,
++ * patches 0100, 0146, 0147, 0164: MSM8996), adapted with his consent.
++ *   transport  DT rpm-glink (qcom,glink-rpm, as mainline sdm660.dtsi): RPM
++ *              message RAM 0x778000 (28 KiB, TOC "grt0" in its last 256
++ *              bytes naming the ap2r and r2ap FIFOs: tail, head, data),
++ *              doorbell APCS HMSS global 0x17911000 + 8 bit 0
++ *              (qcom-apcs-ipc-mailbox.c sdm660). Intentless edge, features 0.
++ *   protocol   mainline Linux qcom_glink_rpm.c / qcom_glink_native.c:
++ *              VERSION -> VERSION_ACK, OPEN "rpm_requests" both ways + OPEN_ACK,
++ *              TX_DATA {cmd, lcid, 0, chunk, left} + payload, 8-byte aligned.
++ *   requests   smd-rpm.c: "req" header, {msg_id, set (0 active, 1 sleep),
++ *              type, id, len} + {key, 4, value} records; the answer carries
++ *              "msg#" and, on failure, "err" + text.
++ * Callers are serialized by sweet_rpm_lock; message RAM only 32-bit accesses,
++ * every store from a real register (no "str wzr", NOTES.md ground rules).
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/locks.h>
++#include <machine/machine_routines.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++bool sweet_rpm_level(uint32_t type, uint32_t level);
++
++static LCK_GRP_DECLARE(sweet_rpm_grp, "sweet_rpm");
++static LCK_MTX_DECLARE(sweet_rpm_lock, &sweet_rpm_grp);
++
++#define RPM_MSGRAM_PA   0x00778000u
++#define RPM_MSGRAM_SIZE 0x7000u
++#define RPM_IPC_PA      0x17911000u     /* APCS HMSS global, +8 IPC */
++#define RPM_IPC_OFF     0x8u
++#define RPM_TOC_MAGIC   0x67727430u     /* grt0 */
++#define RPM_FIFO_AP2R   0x61703272u
++#define RPM_FIFO_R2AP   0x72326170u
++#define RPM_LCID        1u
++
++#define CMD_VERSION       0u
++#define CMD_VERSION_ACK   1u
++#define CMD_OPEN          2u
++#define CMD_CLOSE         3u
++#define CMD_OPEN_ACK      4u
++#define CMD_TX_DATA       9u
++#define CMD_CLOSE_ACK     11u
++#define CMD_TX_DATA_CONT  12u
++#define CMD_READ_NOTIF    13u
++
++#define KEY_SWEN        0x6e657773u     /* "swen" */
++#define KEY_VLVL        0x6c766c76u     /* "vlvl" */
++
++struct rpm_fifo {
++	volatile uint32_t *tail, *head, *data;
++	uint32_t len;
++};
++
++static struct {
++	struct rpm_fifo tx, rx;
++	vm_offset_t ipc;
++	bool mapped, up, remote_open, open_acked;
++	uint32_t rcid, msg_id;
++	uint32_t resp[64];              /* last complete TX_DATA payload */
++	uint32_t resp_len;
++	bool resp_ready;
++} rpm;
++
++static inline void
++rpm_w32(volatile uint32_t *p, uint32_t v)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"(p) : "memory");
++}
++
++static uint32_t
++fifo_avail_rx(void)
++{
++	uint32_t head = *rpm.rx.head, tail = *rpm.rx.tail;
++	return head >= tail ? head - tail : rpm.rx.len - tail + head;
++}
++
++static void
++fifo_peek(uint32_t off, uint32_t *buf, uint32_t n)
++{
++	uint32_t pos = (*rpm.rx.tail + off) % rpm.rx.len;
++	for (uint32_t i = 0; i < n / 4; i++) {
++		buf[i] = rpm.rx.data[pos / 4];
++		pos = (pos + 4) % rpm.rx.len;
++	}
++}
++
++static void
++fifo_advance(uint32_t n)
++{
++	__asm__ volatile ("dsb sy" ::: "memory");
++	rpm_w32(rpm.rx.tail, (*rpm.rx.tail + n) % rpm.rx.len);
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++static void
++rpm_kick(void)
++{
++	__asm__ volatile ("dsb sy" ::: "memory");
++	rpm_w32((volatile uint32_t *)(rpm.ipc + RPM_IPC_OFF), 1u);
++}
++
++/* n is a multiple of 4; the message is padded to 8 bytes. */
++static bool
++rpm_send(const uint32_t *w, uint32_t n)
++{
++	uint32_t total = (n + 7u) & ~7u;
++	for (unsigned tries = 0;; tries++) {
++		uint32_t head = *rpm.tx.head, tail = *rpm.tx.tail;
++		uint32_t avail = tail <= head ? rpm.tx.len - head + tail : tail - head;
++		if (avail > total) {
++			break;
++		}
++		if (tries == 100) {
++			printf("SWEET RPM: tx fifo full (head %u tail %u)\n", head, tail);
++			return false;
++		}
++		delay(1000);
++	}
++	uint32_t pos = *rpm.tx.head;
++	for (uint32_t i = 0; i < total / 4; i++) {
++		rpm_w32(&rpm.tx.data[pos / 4], i < n / 4 ? w[i] : 0u);
++		pos = (pos + 4) % rpm.tx.len;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	rpm_w32(rpm.tx.head, pos);
++	rpm_kick();
++	return true;
++}
++
++static bool
++rpm_send_cmd(uint32_t cmd, uint32_t param1, uint32_t param2)
++{
++	uint32_t w[2] = {cmd | (param1 << 16), param2};
++	return rpm_send(w, sizeof(w));
++}
++
++static bool
++rpm_send_open(void)
++{
++	static const char name[] = "rpm_requests";
++	uint32_t w[2 + 4] = {CMD_OPEN | (RPM_LCID << 16), sizeof(name)};
++	memcpy(&w[2], name, sizeof(name));
++	return rpm_send(w, 8u + ((sizeof(name) + 3u) & ~3u));
++}
++
++/* Handle one incoming message; false when nothing (complete) is there. */
++static bool
++rpm_rx_one(void)
++{
++	uint32_t avail = fifo_avail_rx(), h[4];
++	if (avail < 8) {
++		return false;
++	}
++	fifo_peek(0, h, 8);
++	uint32_t cmd = h[0] & 0xffffu, p1 = h[0] >> 16, p2 = h[1];
++	switch (cmd) {
++	case CMD_VERSION:
++		fifo_advance(8);
++		(void)rpm_send_cmd(CMD_VERSION_ACK, 1, 0);
++		break;
++	case CMD_VERSION_ACK:
++		fifo_advance(8);
++		if (p1 != 1) {
++			printf("SWEET RPM: version ack %u features %#x\n", p1, p2);
++		} else if (p2 != 0) {
++			(void)rpm_send_cmd(CMD_VERSION, 1, 0);
++		} else if (!rpm.up) {
++			rpm.up = true;
++			(void)rpm_send_open();
++		}
++		break;
++	case CMD_OPEN: {
++		uint32_t len = 8u + ((p2 + 7u) & ~7u), name[8] = {0};
++		if (avail < len) {
++			return false;
++		}
++		fifo_peek(8, name, MIN(p2 + 3u, 31u) & ~3u);
++		fifo_advance(len);
++		if (strncmp((const char *)name, "rpm_requests", 13) == 0) {
++			rpm.rcid = p1;
++			rpm.remote_open = true;
++			(void)rpm_send_cmd(CMD_OPEN_ACK, p1, 0);
++		} else {
++			printf("SWEET RPM: ignoring remote open of '%.24s'\n", (const char *)name);
++		}
++		break;
++	}
++	case CMD_OPEN_ACK:
++		fifo_advance(8);
++		if (p1 == RPM_LCID) {
++			rpm.open_acked = true;
++		}
++		break;
++	case CMD_CLOSE:
++		fifo_advance(8);
++		(void)rpm_send_cmd(CMD_CLOSE_ACK, p1, 0);
++		if (p1 == rpm.rcid) {
++			rpm.remote_open = false;
++		}
++		break;
++	case CMD_TX_DATA:
++	case CMD_TX_DATA_CONT: {
++		if (avail < 16) {
++			return false;
++		}
++		fifo_peek(0, h, 16);
++		uint32_t chunk = h[2], left = h[3];
++		if (avail < 16 + chunk) {
++			return false;
++		}
++		if (cmd == CMD_TX_DATA) {
++			rpm.resp_len = 0;
++		}
++		uint32_t take = MIN(chunk, sizeof(rpm.resp) - rpm.resp_len) & ~3u;
++		fifo_peek(16, (uint32_t *)((uint8_t *)rpm.resp + rpm.resp_len), take);
++		rpm.resp_len += take;
++		fifo_advance((16u + chunk + 7u) & ~7u);
++		if (left == 0) {
++			rpm.resp_ready = true;
++		}
++		break;
++	}
++	case CMD_READ_NOTIF:
++		fifo_advance(8);
++		rpm_kick();
++		break;
++	default:
++		/* intent/rx-done/signals: not used on this intentless edge */
++		printf("SWEET RPM: rx cmd %u p1 %u p2 %#x dropped\n", cmd, p1, p2);
++		fifo_advance(8);
++		break;
++	}
++	return true;
++}
++
++/* Poll up to ms for cond. */
++#define RPM_POLL(ms, cond) ({                                   \
++	unsigned _i;                                            \
++	for (_i = 0; _i < (ms) && !(cond); _i++) {              \
++	        while (rpm_rx_one()) {                          \
++	        }                                               \
++	        if (!(cond)) {                                  \
++	                delay(1000);                            \
++	        }                                               \
++	}                                                       \
++	(cond);                                                 \
++})
++
++static bool
++rpm_open(void)
++{
++	if (rpm.up && rpm.remote_open && rpm.open_acked) {
++		return true;
++	}
++	if (!rpm.mapped) {
++		vm_offset_t ram = ml_io_map(RPM_MSGRAM_PA, RPM_MSGRAM_SIZE);
++		rpm.ipc = ml_io_map(RPM_IPC_PA, 0x1000);
++		if (!ram || !rpm.ipc) {
++			printf("SWEET RPM: MMIO mapping failed\n");
++			return false;
++		}
++		volatile uint32_t *toc = (volatile uint32_t *)(ram + RPM_MSGRAM_SIZE - 256);
++		uint32_t count = toc[1];
++		if (toc[0] != RPM_TOC_MAGIC || count > 20) {
++			printf("SWEET RPM: bad TOC magic %#x count %u\n", toc[0], count);
++			return false;
++		}
++		for (uint32_t i = 0; i < count; i++) {
++			uint32_t id = toc[2 + 3 * i], off = toc[3 + 3 * i], size = toc[4 + 3 * i];
++			struct rpm_fifo *f = id == RPM_FIFO_AP2R ? &rpm.tx : id == RPM_FIFO_R2AP ? &rpm.rx : NULL;
++			if (f == NULL || off + size > RPM_MSGRAM_SIZE || (size & 3u)) {
++				continue;
++			}
++			f->tail = (volatile uint32_t *)(ram + off);
++			f->head = f->tail + 1;
++			f->data = f->tail + 2;
++			f->len = size;          /* as qcom_glink_rpm.c parse_toc */
++		}
++		if (!rpm.tx.data || !rpm.rx.data) {
++			printf("SWEET RPM: TOC has no ap2r/r2ap fifo\n");
++			return false;
++		}
++		printf("SWEET RPM: tx len %u head %u tail %u, rx len %u head %u tail %u\n",
++		    rpm.tx.len, *rpm.tx.head, *rpm.tx.tail, rpm.rx.len, *rpm.rx.head, *rpm.rx.tail);
++		rpm.mapped = true;
++	}
++	/* As Linux: our write index and read index start over, then negotiate. */
++	rpm.up = rpm.remote_open = rpm.open_acked = false;
++	rpm_w32(rpm.tx.head, 0u);
++	rpm_w32(rpm.rx.tail, 0u);
++	(void)rpm_send_cmd(CMD_VERSION, 1, 0);
++	bool ok = RPM_POLL(1000u, rpm.up && rpm.remote_open && rpm.open_acked);
++	printf("SWEET RPM: link %s (version %d, remote open %d rcid %u, open ack %d)\n",
++	    ok ? "up" : "FAILED", rpm.up, rpm.remote_open, rpm.rcid, rpm.open_acked);
++	return ok;
++}
++
++/*
++ * One request in set `set` (0 active, 1 sleep): type, id and nkvp {key, 4,
++ * value} records. Lock held. True if the RPM acked it ("msg#" = our id)
++ * without "err".
++ */
++static bool
++rpm_request(const char *what, uint32_t set, uint32_t type, uint32_t id, const uint32_t *kv, unsigned nkvp)
++{
++	if (!rpm_open()) {
++		return false;
++	}
++	uint32_t msg = ++rpm.msg_id;
++	uint32_t w[11 + 3 * 4] = {
++		CMD_TX_DATA | (RPM_LCID << 16), 0, 0, 0,        /* chunk set below */
++		0x00716572u, 20u + 12u * nkvp,                  /* "req", length */
++		msg, set, type, id, 12u * nkvp,
++	};
++	if (nkvp > 4) {
++		return false;
++	}
++	for (unsigned k = 0; k < nkvp; k++) {
++		w[11 + 3 * k] = kv[2 * k];
++		w[12 + 3 * k] = 4u;
++		w[13 + 3 * k] = kv[2 * k + 1];
++	}
++	uint32_t bytes = (11u + 3u * nkvp) * 4u;
++	w[2] = bytes - 16u;
++	rpm.resp_ready = false;
++	if (!rpm_send(w, bytes)) {
++		return false;
++	}
++	if (!RPM_POLL(1000u, rpm.resp_ready)) {
++		printf("SWEET RPM: %s: no answer\n", what);
++		return false;
++	}
++	/* "req", length, then {type, length, data} records */
++	bool acked = false, err = false;
++	uint32_t words = MIN(rpm.resp_len / 4, 2u + rpm.resp[1] / 4), i = 2;
++	while (i + 2 <= words) {
++		uint32_t rtype = rpm.resp[i], len = rpm.resp[i + 1];
++		if (rtype == 0x2367736du && rpm.resp[i + 2] == msg) {
++			acked = true;
++		} else if (rtype == 0x00727265u) {
++			char text[32] = {0};
++			memcpy(text, &rpm.resp[i + 2], MIN(len, sizeof(text) - 1));
++			printf("SWEET RPM: %s: error '%s'\n", what, text);
++			err = true;
++		}
++		i += 2 + (len + 3) / 4;
++	}
++	return acked && !err;
++}
++
++/*
++ * Rail level vote (rpm-smd-regulator "qcom,use-voltage-level", mainline
++ * qcom rpmpd): type e.g. "rwcx" (VDD_CX, PM660L S3) or "rwmx", id 0, "swen"
++ * 1 and "vlvl" = RPM_SMD_LEVEL_* (0x40 LOW_SVS .. 0x180 TURBO), sleep then
++ * active set like the stock DT's qcom,set = 3. The RPM takes the highest of
++ * all masters' votes; this one replaces the AP's earlier one (the
++ * bootloader's).
++ */
++bool
++sweet_rpm_level(uint32_t type, uint32_t level)
++{
++	uint32_t kv[4] = {KEY_SWEN, 1u, KEY_VLVL, level};
++	lck_mtx_lock(&sweet_rpm_lock);
++	bool ok = rpm_request("level sleep", 1, type, 0, kv, 2) && rpm_request("level active", 0, type, 0, kv, 2);
++	lck_mtx_unlock(&sweet_rpm_lock);
++	printf("SWEET RPM: %.4s level %#x: %s\n", (const char *)&type, level, ok ? "ok" : "FAILED");
++	return ok;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 4ce8bd5..299d287 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1453,11 +1453,13 @@ ud_panic_test_thread(void *arg, wait_result_t wr __unused)
+  *            next test image without anyone touching the phone
+  * With sweetosm= set, every other line goes to sweet_osm_cmd() (osfmk/arm64/
+  * sweet_osm.c: live register access for the CPU clock work, commands separated
+- * by ';', tools/cpuclk/osmctl.py). Anything else is answered with "?".
++ * by ';', tools/cpuclk/osmctl.py). Lines "prof ..." go to sweet_prof.c (j0057),
++ * "gpu ..." to sweet_gpu.c (j0060). Anything else is answered with "?".
+  * Boot-arg sweetusbcmd=0 disables the port.
+  */
+ extern int sweet_osm_cmd(char *line, char *out, size_t len);
+ extern const char *sweet_prof_cmd(const char *line);     /* osfmk/arm64/sweet_prof.c (j0057) */
++extern const char *sweet_gpu_cmd(const char *line);      /* bsd/dev/sweet_gpu.c (j0060) */
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+@@ -1518,6 +1520,9 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		bool reboot = strcmp(line, "reboot") == 0;
+ 		const char *reply = reboot ? "rebooting\n" : "?\n";
+ 		const char *prof = reboot ? NULL : sweet_prof_cmd(line);
++		if (prof == NULL && !reboot) {
++			prof = sweet_gpu_cmd(line);
++		}
+ 		if (prof != NULL) {
+ 			reply = prof;
+ 		} else if (!reboot && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
+-- 
+2.47.3
+
