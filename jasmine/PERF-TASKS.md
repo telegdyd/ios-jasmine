@@ -579,7 +579,7 @@ counts the boot as frozen, takes the j0069 census and stops.
     binary, so the loop called the boot clean and the next boot's launcher rebooted the phone (the user saw it
     freeze).
   - Fixed with `grep -a` and a numeric check.
-- Tally at 588/647: 5 freezes (j60b, t4d2, t14a, t14h-5) in 20 boots at normal voltage, plus t14b (high voltage,
+- Tally at 588/647: 4 freezes (j60b, t4d2, t14a, t14h-5) in 19 boots at normal voltage, plus t14b (high voltage,
   clean). The rate is well under the ~50 % first seen.
 
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
