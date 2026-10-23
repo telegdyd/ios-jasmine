@@ -1,0 +1,194 @@
+# 3520 records over 2.0 s, on-CPU sample every 1 ms per busy CPU, census every 2 ms; dropped 0
+
+## CPU time per process (ms per second, all CPUs)
+   711.4  launchd[1]
+   463.2  mediaserverd[28]
+    69.5  lsd[108]
+    47.0  kernel_task[0]
+    23.5  usermanagerd[84]
+    21.5  logd[24]
+    14.0  containermanager[63]
+     5.5  backboardd[56]
+     5.0  thermalmonitord[54]
+     4.0  aggregated[75]
+     3.0  notifyd[89]
+     2.5  powerd[38]
+     2.0  MobileGestaltHel[96]
+     1.5  symptomsd[131]
+     1.5  mobileactivation[137]
+     1.0  UserEventAgent[23]
+     0.5  askpermissiond[57]
+     0.5  remindd[78]
+     0.5  locationd[61]
+     0.5  searchd[179]
+
+## busiest threads (ms per second)
+   462.7  mediaserverd[28] tid 512 ""
+   357.7  launchd[1] tid 1857 ""
+   353.7  launchd[1] tid 1912 ""
+    49.0  lsd[108] tid 716 ""
+    16.5  lsd[108] tid 1288 ""
+    15.5  kernel_task[0] tid 105 "daemon.deferred-deallocation"
+    14.5  logd[24] tid 397 ""
+    13.0  containermanager[63] tid 477 ""
+    12.0  usermanagerd[84] tid 2106 ""
+    11.5  kernel_task[0] tid 202 ""
+    11.5  usermanagerd[84] tid 2061 ""
+     7.0  logd[24] tid 1798 ""
+     6.0  kernel_task[0] tid 416 "thread call qos-ui #1"
+     5.5  kernel_task[0] tid 169 ""
+     3.5  thermalmonitord[54] tid 328 ""
+     3.5  aggregated[75] tid 2084 ""
+     3.0  backboardd[56] tid 2085 ""
+     3.0  notifyd[89] tid 385 ""
+     2.5  kernel_task[0] tid 190 "thread call kernel-high #1"
+     2.5  backboardd[56] tid 973 "IOHIDEvent Server Connection - Root"
+     2.0  kernel_task[0] tid 168 ""
+     2.0  lsd[108] tid 1294 ""
+     2.0  lsd[108] tid 1289 ""
+     2.0  MobileGestaltHel[96] tid 2111 ""
+     2.0  powerd[38] tid 2083 ""
+
+## backboardd[56] threads: ms per second on CPU (user / kernel), waiting, runnable
+    3.0 (   0.5 /    2.5)  wait  256.1  runnable    0.0  tid 2085 ""
+    2.5 (   1.5 /    1.0)  wait  252.1  runnable    0.0  tid 973 "IOHIDEvent Server Connection - Root"
+    0.0 (   0.0 /    0.0)  wait  257.1  runnable    0.0  tid 1801 ""
+
+### tid 2085 "": 3.0 ms/s on CPU
+self time by image:
+   83.3%  kernel
+   16.7%  libxpc.dylib
+self time by function:
+   16.7%  libxpc.dylib: __manufacturingCallback
+   16.7%  kernel: _ml_set_interrupts_enabled_with_debug
+   16.7%  kernel: _mach_syscall
+   16.7%  kernel: _vm_map_entry_insert
+   16.7%  kernel: _workq_schedule_creator
+   16.7%  kernel: _ipc_kmsg_get_from_user
+inclusive (function on the stack):
+  100.0%  libsystem_pthread.dylib: _start_wqthread
+   66.7%  libdispatch.dylib: non-external (was a private external)
+   66.7%  libsystem_pthread.dylib: __pthread_wqthread
+   50.0%  kernel: _sleh_synchronous
+   50.0%  kernel: _fleh_synchronous
+   50.0%  libdispatch.dylib: __dispatch_kevent_worker_thread
+   33.3%  libsystem_kernel.dylib: _semaphore_signal_trap
+   33.3%  libdispatch.dylib: __dispatch_root_queue_poke_slow
+   33.3%  kernel: _mach_syscall
+   33.3%  kernel: _workq_select_threadreq_or_park_and_unlock
+   33.3%  kernel: _workq_unpark_select_threadreq_or_park_and_unlock
+   33.3%  kernel: _workq_unpark_continue
+   33.3%  libsystem_kernel.dylib: ___workq_kernreturn
+   16.7%  libxpc.dylib: __manufacturingCallback
+   16.7%  libxpc.dylib: non-external (was a private external)
+   16.7%  libxpc.dylib: __objectForActiveContext
+   16.7%  libxpc.dylib: ___der_vm_iterate_block_invoke
+   16.7%  libxpc.dylib: __der_vm_context_to_xpc
+   16.7%  libxpc.dylib: _xpc_create_from_ce_der
+   16.7%  libxpc.dylib: _xpc_copy_entitlement_for_token
+   16.7%  IOKit: 0x18e561d2f
+   16.7%  IOKit: 0x18e5613a7
+   16.7%  IOKit: 0x18e56ea73
+   16.7%  IOKit: 0x18e55580f
+   16.7%  IOKit: 0x18e566923
+   16.7%  IOKit: 0x18e555403
+   16.7%  IOKit: 0x18e554e57
+   16.7%  libdispatch.dylib: __dispatch_workloop_worker_thread
+   16.7%  kernel: _ml_set_interrupts_enabled_with_debug
+   16.7%  kernel: _vm_map_entry_insert
+   16.7%  kernel: _vm_map_enter
+   16.7%  kernel: _vm_map_copyout_kernel_buffer
+   16.7%  kernel: _ipc_kmsg_copyout_body
+   16.7%  kernel: _ipc_kmsg_copyout
+   16.7%  kernel: _mach_msg_receive_results_kevent
+   16.7%  kernel: _filt_machportprocess
+   16.7%  kernel: _kqueue_scan
+   16.7%  kernel: _kevent_modern_internal
+   16.7%  kernel: _workq_setup_thread
+   16.7%  kernel: _workq_setup_and_run
+   16.7%  kernel: _workq_schedule_creator
+   16.7%  kernel: _ipc_kmsg_get_from_user
+   16.7%  kernel: _mach_msg_trap_send
+   16.7%  kernel: _mach_msg2_trap
+   16.7%  libsystem_kernel.dylib: _mach_msg2_trap
+   16.7%  libsystem_kernel.dylib: __kernelrpc_mach_port_request_notification
+   16.7%  libdispatch.dylib: __dispatch_kevent_mach_notify_resume
+   16.7%  libdispatch.dylib: __dispatch_source_refs_unregister
+kernel stacks (leaf < callers):
+   16.7%  _ml_set_interrupts_enabled_with_debug < _sleh_synchronous < _fleh_synchronous
+   16.7%  _mach_syscall < _sleh_synchronous < _fleh_synchronous
+   16.7%  _vm_map_entry_insert < _vm_map_enter < _vm_map_copyout_kernel_buffer < _ipc_kmsg_copyout_body
+   16.7%  _workq_schedule_creator < _workq_select_threadreq_or_park_and_u... < _workq_unpark_select_threadreq_or_par... < _workq_unpark_continue
+   16.7%  _ipc_kmsg_get_from_user < _mach_msg_trap_send < _mach_msg2_trap < _mach_syscall
+off CPU (census, ms per second): wait 256.1, runnable 0.0
+    256.1  wait trap 368  _start_wqthread
+
+### tid 973 "IOHIDEvent Server Connection - Root": 2.5 ms/s on CPU
+self time by image:
+   40.0%  CoreFoundation
+   40.0%  kernel
+   20.0%  libsystem_malloc.dylib
+self time by function:
+   20.0%  CoreFoundation: ___CFPropertyListIsArrayPlistAux
+   20.0%  CoreFoundation: __flattenPlist
+   20.0%  kernel: _ml_set_interrupts_enabled_with_debug
+   20.0%  libsystem_malloc.dylib: __malloc_zone_malloc
+   20.0%  kernel: _waitq_unlock
+inclusive (function on the stack):
+  100.0%  libdispatch.dylib: __dispatch_worker_thread
+  100.0%  libsystem_pthread.dylib: __pthread_start
+  100.0%  libsystem_pthread.dylib: _thread_start
+   80.0%  libdispatch.dylib: non-external (was a private external)
+   80.0%  libdispatch.dylib: __dispatch_root_queue_drain
+   60.0%  IOKit: 0x18e55580f
+   60.0%  IOKit: 0x18e553c17
+   60.0%  IOKit: 0x18e55b877
+   60.0%  IOKit: 0x18e555403
+   60.0%  IOKit: 0x18e554e57
+   40.0%  CoreFoundation: _CFPropertyListWrite
+   40.0%  CoreFoundation: _CFPropertyListWriteToStream
+   40.0%  IOKit: 0x18e555963
+   40.0%  IOKit: 0x18e559dc3
+   40.0%  IOKit: 0x18e5637ab
+   20.0%  CoreFoundation: ___CFPropertyListIsArrayPlistAux
+   20.0%  CoreFoundation: ___CFPropertyListIsValidAux
+   20.0%  CoreFoundation: ___CFPropertyListIsDictPlistAux
+   20.0%  CoreFoundation: -[__NSDictionaryM __apply:context:]
+   20.0%  CoreFoundation: _CFArrayApplyFunction
+   20.0%  IOKit: 0x18e561a47
+   20.0%  CoreFoundation: __flattenPlist
+   20.0%  IOKit: 0x18e561a13
+   20.0%  kernel: _ml_set_interrupts_enabled_with_debug
+   20.0%  libsystem_kernel.dylib: _semaphore_timedwait_trap
+   20.0%  libdispatch.dylib: __dispatch_semaphore_wait_slow
+   20.0%  libsystem_malloc.dylib: __malloc_zone_malloc
+   20.0%  CoreFoundation: non-external (was a private external)
+   20.0%  CoreFoundation: _CFReadStreamCreateWithBytesNoCopy
+   20.0%  IOKit: 0x18e555893
+   20.0%  IOKit: 0x18e57acc7
+   20.0%  IOKit: 0x18e5741e7
+   20.0%  kernel: _waitq_unlock
+   20.0%  kernel: _ipc_right_copyin
+   20.0%  kernel: _ipc_kmsg_copyin_from_user
+   20.0%  kernel: _mach_msg_trap_send
+   20.0%  kernel: _mach_msg2_trap
+   20.0%  kernel: _mach_syscall
+   20.0%  kernel: _sleh_synchronous
+   20.0%  kernel: _fleh_synchronous
+   20.0%  libsystem_kernel.dylib: _mach_msg2_trap
+   20.0%  libsystem_kernel.dylib: __kernelrpc_mach_port_request_notification
+   20.0%  IOKit: 0x18e56be2f
+   20.0%  IOKit: 0x18e56eab3
+   20.0%  libdispatch.dylib: __dispatch_source_cancel_callout
+kernel stacks (leaf < callers):
+   20.0%  _ml_set_interrupts_enabled_with_debug
+   20.0%  _waitq_unlock < _ipc_right_copyin < _ipc_kmsg_copyin_from_user < _mach_msg_trap_send
+off CPU (census, ms per second): wait 252.1, runnable 0.0
+    252.1  wait trap -38  __dispatch_semaphore_wait_slow < __dispatch_worker_thread < __pthread_start
+
+### tid 1801 "": 0.0 ms/s on CPU
+self time by image:
+self time by function:
+inclusive (function on the stack):
+off CPU (census, ms per second): wait 257.1, runnable 0.0
+    257.1  wait trap 368  _start_wqthread

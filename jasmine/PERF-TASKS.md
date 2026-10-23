@@ -522,6 +522,23 @@ threads (`ir3q0`/`ir3q1` allocate buffers in `upload_shader_variant`) and backbo
   - Mesa `fd_submit_sp_flush_execute` ignores the backend's submit error.
   - SwapWait counts swap N done only once a later swap ended (strict `>`).
 
+**Round t14a (2026-10-23 22:43, one boot, j64 kernel, `gpumhz=588`, Mesa t4final; `logs/netlog-t14a-ui.txt`,
+`logs/prof-t14a*`, symbolized with `research/t14/smpsym.py`).** It froze, but **not the way j60b/t4d2 did**:
+- `gpu state`: 588 MHz, **completed 5 of 5**. No 10-second stats line ever printed, and uibench found no moving
+  frame.
+- No backboardd thread is inside SweetGPU or libsweetca. The ir3 queues wait in `cnd_wait`; the four IOMFBServer
+  threads, the render server and the main thread sit idle in run loops.
+- backboardd **and** SpringBoard each have a thread blocked in a synchronous NSXPC call
+  (`xpc_connection_send_message_with_reply_sync` <- `__LAUNCH_SERVICE...`, CoreServices), i.e. waiting on lsd.
+  lsd ran 69 ms/s; launchd took 711 ms/s and mediaserverd 463 ms/s (task 7's loops).
+- The display never went off and on again as in every earlier boot.
+- **The census misses a thread that never runs:** it records only threads that ran in the last 500 ms, so a thread
+  blocked for minutes never appears. The "next step" above needs a census of every thread of the task (kernel
+  change) or a command-port stack dump.
+
+Open: whether this is the same race showing another face, or a separate startup stall (LaunchServices) that
+happened to land on a 588 boot. One round does not tell.
+
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
 records kernel stacks of every waiting backboardd thread, which shows who holds which lock. Fix the order (one lock
