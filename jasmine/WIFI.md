@@ -204,3 +204,11 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   The round's reboot could not reach the command port; the user's reset, parked 63%.
 - j0088: a DHCP server on ue0 (UDP 67 bound to ue0) gives the PC 192.168.7.1/24 (no router, no DNS, lease
   7 days, NAK for other addresses); the tools already try 192.168.7.2 first. 169.254.7.2 stays as a fallback.
+- j88-wlan (00:13): the PC's DHCP DISCOVERs reached the server, but every OFFER failed `sock_send` 51
+  (ENETUNREACH: nothing routes 255.255.255.255 out of ue0); no join, the reboot worked (j0086 unjoined:
+  vdev stopped + deleted, WLAN_MODE OFF ok in 225 ms, stop-ack 50 ms, then `halt modem port: ack 0 idle 0`
+  and the new fallback left mss_restart alone), parked 68%.
+- j0089: a ue0-scoped host route for 255.255.255.255. **j89-wlan (00:22) and j89b (00:29)**: the PC's USB
+  adapter got **192.168.7.1/24 by DHCP** (offer + ack, send 0), the log connected over 192.168.7.2 and ran the
+  whole 300 s, the reboot over the command port and the park worked (69%, 70%). No Wi-Fi join happened in
+  either round, so the link with Wi-Fi up is still to be seen. The modem port never halts, Wi-Fi or not.
