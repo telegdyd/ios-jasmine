@@ -1,6 +1,47 @@
 # jasmine (Mi A2) working notes
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
+**2026-10-24 05:05-05:45: why there are no wallpapers (and no widgets/app extensions) — cause found, fix j0070 building.**
+- Observed (slot b j69b, `logs/netlog-wp1-slotb.txt`): PosterBoard runs, but no poster extension
+  (CollectionsPoster, Gradient, Emoji, ... 10 on the root) is ever started. The stock wallpaper data is on the root
+  (`/Library/Wallpaper/Collections`: iOS 16 WWDC_2022 in 375w-812h, Stripes, Bokeh, Desert, ...; iOS 14/15 sets are
+  plists whose images come from MobileAsset).
+- `ios/sweet_extq` (new, through sweetd): LaunchServices has **1 plugin in all** (an ExtensionKit `.appexpt` one);
+  every poster extension `-10814` "Unable to find this application extension record"; ExtensionKit and NSExtension
+  queries for `com.apple.posterkit.provider` return 0. `--sync` (lsd syncs with installd) changes nothing.
+- `ios/sweet_oslog` (new, reads the unified log on the phone through LoggingSupport's OSLogEventStore; OSLogStore's
+  system store returns nil on iOS): lsd at "Registering extension points" logs ExtensionKit
+  `Failed to read extension point cache ... Unable to find AMFI` (error 12). The NSExtensionSDK extension points
+  (PosterKit.framework etc.) come only from that signed cache, so every extension using them is rejected.
+- ExtensionFoundation (disassembly, `~/ios-work/lsd/ExtensionFoundation.s`): `IOServiceMatching("AppleMobileFileIntegrity")`
+  -> none -> "Unable to find AMFI"; else `IOServiceOpen` type 0, `IOConnectCallMethod` selector 6 (scalar 1 + cdhash);
+  0 = trusted, 0xe00002f0 = not in trust cache. topaz 0151 publishes exactly this service, but j0001's board guard put
+  `sweet_amfi_service_init()` under `if (topaz)` ("not yet tried on jasmine"), so jasmine never had it.
+- Fix **j0070** (`xnu/patches/j0070-jasmine-amfi-service-all-boards.patch`): call it on every board. Kernel CI
+  `40059091430` (topaz_4k=1, `xnu/out-jasmine-j70`). Earlier "no -10814 lines" checks (j51) meant nothing: the netlog
+  carries no userland log; use `sweet_oslog SECONDS proc[,proc] [substring]` now.
+- **Result (test image `shim-boot-j70-amfi.img`, 05:49):** "AppleMobileFileIntegrity service published", lsd calls
+  selector 6 (1 scalar, 20-byte cdhash), lsd logs 133 "Registering extension point". The stored LS database
+  (it *is* kept across boots, in `/private/var/mobile/Containers/Data/InternalDaemon/D7413A5E-.../Library/Caches`;
+  task 15's premise looked at another container) still had the old bundles without plugins, so one
+  `sweet_extq --rebuild` (needs `com.apple.lsapplicationworkspace.rebuildappdatabases`, now in
+  `ios/entitlements.plist`) was run at 05:53: **413 plugins** (was 1), 9 of 10 poster providers (Weather placeholder
+  missing). Persisted after a reboot (05:57). A fresh root seeding with j0070 should get them directly (not tested).
+- **Slot b = j0070 since 05:58** (`shim/out/shim-boot-j70-slotb.img`, `flash-slotb.sh`, cmdline identical to j69b,
+  first boot `logs/netlog-j70-slotb.txt`: boot_b marked successful, no panic, GPU self-test OK). PosterBoard starts
+  Gradient/Collections/Extragalactic/Emoji/Pride/Unity/Photos/Aegir posters at boot; CollectionsPoster renders
+  7400 (WWDC_2022) and PosterBoard saves gallery snapshots (`research/wp-j70-posters.txt`).
+- **OPEN, new on j0070: Settings > Wallpaper freezes the phone** (user, ~06:01). `logs/netlog-j70-freeze2.txt`:
+  PosterBoard[188] and AegirPoster abort (SIGABRT, uncaught ObjC exception on the main queue: `_objc_terminate`
+  <- `_dispatch_client_callout` <- `FBSSerialQueue`); AegirPoster respawns and aborts 5x, then jetsam-style SIGKILLs;
+  assetsd aborts 4x; "Failed to open swap file 2"; backboardd "caches of 4914 MB maintained ... 822 whole-cache
+  flushes", then "3 submits in 76585 ms". Later the command port, sweetd and the netlog server stopped answering
+  (netlog accepts and closes with 0 bytes): looks like memory exhaustion (guess, not proven). User recovered with
+  Power+VolDown 06:17. Next: on a fresh boot *before* opening Settings, `sweet_oslog` over the frozen boot's window
+  for the exception text ("Terminating app due to uncaught exception") and memorystatus/jetsam lines; then likely
+  keep AegirPoster (Astronomy; Metal/SceneKit?) from respawning, and see what grows backboardd's cache maintenance.
+- 06:18 I ran `fastboot reboot` after the WiFi session had taken the phone lock (06:16:53; my lock check did not
+  gate the command); told that session. Phone left to it, booting slot b. Not parked (user: not needed now).
 **2026-10-24 task 5 step 2 in progress (user authorized):** gate the wrapper's texture
 barrier on Mesa's active graphics-program 2D sampler units, rather than stale bindings
 (especially the reserved framebuffer-fetch unit). Mesa updates linked sampler maps on

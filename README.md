@@ -37,7 +37,7 @@ As of **2026-10-21** the phone **boots iOS by itself** (power on, reboot or char
 - **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, fingerprint, GPS, SEP.** `bluetoothd` relaunches every few seconds because its hardware is missing.
 - **Only 4 of 8 cores**, at a fixed clock: no frequency scaling and no thermal throttling yet.
 - **Some apps and panels crash**: some Settings panels and Photos.
-- **Wallpaper and widgets**: LaunchServices registers apps but no app extensions on this root, so PosterBoard finds no wallpaper provider (the same in topaz).
+- **Wallpaper gallery**: app extensions are registered since j0070 (the kernel's AppleMobileFileIntegrity service lets ExtensionKit read its signed extension point cache), so PosterBoard's wallpaper providers run, but opening Settings > Wallpaper freezes the phone (PosterBoard and the Astronomy poster abort, memory runs out; being investigated).
 - **Brightness**: the backlight is only switched on and off.
 - **Security is off**: permissive AMFI and sandbox, stub AppleKeyStore, no data protection.
 
