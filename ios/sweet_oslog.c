@@ -3,8 +3,10 @@
  *   sweet_oslog SECONDS [PROCESS[,PROCESS...]|-] [SUBSTRING]
  * prints the entries of the last SECONDS seconds, only from the named processes (- = all)
  * and only those containing SUBSTRING. Needs the logging entitlements in ios/entitlements.plist.
- * Plain C over the ObjC runtime as sweet_extq.c. Run it through sweetd.
+ * OSLogStore's system store is refused on iOS; then it reads through LoggingSupport's
+ * OSLogEventStore, as `log show` does. Plain C over the ObjC runtime as sweet_extq.c. Run it through sweetd.
  */
+#include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -116,6 +118,102 @@ open_store(void)
 	return NULL;
 }
 
+/* filters and counters shared by both readers */
+static double t0;
+static const char *procs, *needle;
+static unsigned long seen, shown;
+
+static void
+show_entry(id e)
+{
+	seen++;
+	const char *proc = can(e, "process") ? cstr(M0(e, "process")) : "";
+	if (procs && !proc_wanted(procs, proc)) {
+		return;
+	}
+	const char *msg = cstr(M0(e, "composedMessage"));
+	if (needle && !strstr(msg, needle)) {
+		return;
+	}
+	double t = MF(M0(e, "date"), "timeIntervalSince1970") - t0;
+	const char *sub = can(e, "subsystem") ? cstr(M0(e, "subsystem")) : "";
+	const char *cat = can(e, "category") ? cstr(M0(e, "category")) : "";
+	long pid = can(e, "processIdentifier") ? (long)(int)MU(e, "processIdentifier") : -1;
+	printf("%8.3f %s[%ld] %s:%s: %s\n", t, proc, pid, sub, cat, msg);
+	shown++;
+}
+
+/*
+ * The route `log show` takes on iOS: LoggingSupport's OSLogEventStore (local store) ->
+ * prepare -> OSLogEventSource -> OSLogEventStream with an event handler, from a date.
+ */
+static int
+read_loggingsupport(id since)
+{
+	id cls = getclass("OSLogEventStore");
+	dispatch_semaphore_t done = dispatch_semaphore_create(0);
+	__block id source = NULL;
+	__block id perr = NULL;
+
+	if (cls == NULL) {
+		printf("no OSLogEventStore class\n");
+		return 1;
+	}
+	if (!responds(objclass(cls), selname("localStore"))) {
+		dump_methods("OSLogEventStore", 1, "tore");
+		return 1;
+	}
+	id store = M0(cls, "localStore");
+	if (!can(store, "prepareWithCompletionHandler:")) {
+		dump_methods("OSLogEventStore", 0, "repare");
+		return 1;
+	}
+	void (^prepared)(id, id) = ^(id src, id err) {
+		source = src ? M0(src, "retain") : NULL;
+		perr = err ? M0(err, "retain") : NULL;
+		dispatch_semaphore_signal(done);
+	};
+	M1(store, "prepareWithCompletionHandler:", prepared);
+	if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC))) {
+		printf("prepare timed out\n");
+		return 1;
+	}
+	if (source == NULL) {
+		printf("prepare: %s\n", cstr(perr));
+		return 1;
+	}
+	id scls = getclass("OSLogEventStream");
+	id stream = scls ? M0(scls, "alloc") : NULL;
+	if (!can(stream, "initWithSource:")) {
+		dump_methods("OSLogEventStream", 0, "");
+		return 1;
+	}
+	stream = M1(stream, "initWithSource:", source);
+	void (^onevent)(id) = ^(id ev) {
+		void *inner = poolpush();
+		show_entry(ev);
+		poolpop(inner);
+	};
+	void (^oninvalid)(long, id) = ^(long reason, id pos) {
+		(void)pos;
+		printf("# stream ended (reason %ld)\n", reason);
+		dispatch_semaphore_signal(done);
+	};
+	M1(stream, "setEventHandler:", onevent);
+	if (can(stream, "setInvalidationHandler:")) {
+		M1(stream, "setInvalidationHandler:", oninvalid);
+	}
+	if (!can(stream, "activateStreamFromDate:")) {
+		dump_methods("OSLogEventStream", 0, "activate");
+		return 1;
+	}
+	M1(stream, "activateStreamFromDate:", since);
+	if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 240 * NSEC_PER_SEC))) {
+		printf("# stream still running after 240 s\n");
+	}
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -123,11 +221,11 @@ main(int argc, char **argv)
 		"/usr/lib/libobjc.A.dylib",
 		"/System/Library/Frameworks/Foundation.framework/Foundation",
 		"/System/Library/Frameworks/OSLog.framework/OSLog",
+		"/System/Library/PrivateFrameworks/LoggingSupport.framework/LoggingSupport",
 	};
 	double secs = argc > 1 ? atof(argv[1]) : 600;
-	const char *procs = argc > 2 && strcmp(argv[2], "-") != 0 ? argv[2] : NULL;
-	const char *needle = argc > 3 ? argv[3] : NULL;
-	unsigned long seen = 0, shown = 0;
+	procs = argc > 2 && strcmp(argv[2], "-") != 0 ? argv[2] : NULL;
+	needle = argc > 3 ? argv[3] : NULL;
 
 	for (size_t i = 0; i < sizeof(libs) / sizeof(libs[0]); i++) {
 		if (dlopen(libs[i], RTLD_NOW | RTLD_GLOBAL) == NULL) {
@@ -151,12 +249,15 @@ main(int argc, char **argv)
 	}
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	void *pool = poolpush();
+	id since = MD(getclass("NSDate"), "dateWithTimeIntervalSinceNow:", -secs);
+	t0 = MF(since, "timeIntervalSince1970");
 	id store = open_store();
 	if (store == NULL) {
+		int rc = read_loggingsupport(since);
+		printf("# %lu entries read, %lu shown\n", seen, shown);
 		poolpop(pool);
-		return 1;
+		return rc;
 	}
-	id since = MD(getclass("NSDate"), "dateWithTimeIntervalSinceNow:", -secs);
 	id pos = M1(store, "positionWithDate:", since), err = NULL;
 	id en = ((id(*)(id, SEL, unsigned long, id, id, id *))msgsend)(store,
 	    selname("entriesEnumeratorWithOptions:position:predicate:error:"), 0, pos, NULL, &err);
@@ -165,7 +266,6 @@ main(int argc, char **argv)
 		poolpop(pool);
 		return 1;
 	}
-	double t0 = MF(since, "timeIntervalSince1970");
 	for (;;) {
 		void *inner = poolpush();
 		id e = M0(en, "nextObject");
@@ -173,24 +273,7 @@ main(int argc, char **argv)
 			poolpop(inner);
 			break;
 		}
-		seen++;
-		const char *proc = can(e, "process") ? cstr(M0(e, "process")) : "";
-		if (procs && !proc_wanted(procs, proc)) {
-			poolpop(inner);
-			continue;
-		}
-		const char *msg = cstr(M0(e, "composedMessage"));
-		if (needle && !strstr(msg, needle)) {
-			poolpop(inner);
-			continue;
-		}
-		double t = MF(M0(e, "date"), "timeIntervalSince1970") - t0;
-		const char *sub = can(e, "subsystem") ? cstr(M0(e, "subsystem")) : "";
-		const char *cat = can(e, "category") ? cstr(M0(e, "category")) : "";
-		long pid = can(e, "processIdentifier") ? (long)(int)MU(e, "processIdentifier") : -1;
-		long level = can(e, "level") ? (long)MU(e, "level") : -1;
-		printf("%8.3f %s[%ld] L%ld %s:%s: %s\n", t, proc, pid, level, sub, cat, msg);
-		shown++;
+		show_entry(e);
 		poolpop(inner);
 	}
 	printf("# %lu entries read, %lu shown\n", seen, shown);
