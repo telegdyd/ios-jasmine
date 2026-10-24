@@ -169,7 +169,8 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 - j0085: Wi-Fi off before the modem stop, as Linux (ath10k leaves the AP and sends WLFW WLAN_MODE OFF, then
   remoteproc stops the modem): `topaz_modem_stop` (not on a panic) asks the modem thread for `w_teardown()`
   and WLAN_MODE OFF (mode 4), waits up to 1.5 s for the answer, then the stop handshake as before.
-- **j85-wlan (23:13, 420 s)**: wifid rejoined TelekNet by itself (keys in 51 ms). j0084's counters: rx works
+- **j85-wlan (23:13, 420 s)**: TelekNet joined again (keys in 51 ms; the user tapped it: wifid does not
+  auto-join on boot, see the handoff). j0084's counters: rx works
   (478 frames up to en0: ARP, IGMP, SSDP/WS-Discovery multicast), but **`tx queued 0`**: iOS never sent a
   frame (redwood_net: `0 frames sent`). Cause: configd had **no network service at all** —
   `/private/var/preferences/SystemConfiguration/preferences.plist` held only the host names (no Sets, no
@@ -192,3 +193,14 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   DHCP exchange (t=33.7 s) the USB log stopped and the command port was gone at the end, while iOS stayed
   responsive (user): the USB link lost its path once en0 was configured (handoff task 1). The reboot test of
   j0086 did not run; the phone was left in iOS.
+- j0087: scoped routes for ue0 (192.168.7/24, 169.254/16) and the 5140/5141/5142 listeners bound to ue0
+  (IP_BOUND_IF, inherited by accepted connections; also keeps them off the Wi-Fi network).
+  **j87-wlan (23:59)**: both scoped routes added (0), the user tapped TelekNet at ~00:02, joined, DHCP
+  DISCOVERs out, and the USB log stopped at 00:02:06 again. From the PC, 169.254.7.2 did not even answer
+  ARP (neighbour state Probe; the PC's adapter "ios-sweet Sweet iOS (USB Ethernet)" had 169.254.218.81).
+  Cause, in XNU: `arp_lookup_route()` never scopes a 169.254 lookup ("don't constrain the lookup"), so IPv4
+  link-local lives on one interface, the one holding the unscoped 169.254/16 route, which configd gives the
+  primary interface (en0 once it has an address). Nothing scoped can keep a 169.254 USB link alive.
+  The round's reboot could not reach the command port; the user's reset, parked 63%.
+- j0088: a DHCP server on ue0 (UDP 67 bound to ue0) gives the PC 192.168.7.1/24 (no router, no DNS, lease
+  7 days, NAK for other addresses); the tools already try 192.168.7.2 first. 169.254.7.2 stays as a fallback.
