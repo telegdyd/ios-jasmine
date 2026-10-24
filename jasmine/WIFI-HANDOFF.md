@@ -3,9 +3,9 @@
 Status: **Wi-Fi works under iOS: joined, DHCP address, internet (round j86-wlan, 23:35, user-confirmed).**
 wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms, it rejoins by itself on boot),
 configd runs DHCP on en0, traffic both ways. The factory MAC comes from persist. Still test images only
-(`wifi=1` boot arg, nothing flashed). The USB link now runs on 192.168.7.0/24 (j0088/j0089: the phone
-hands the PC 192.168.7.1 over DHCP), which should survive Wi-Fi; **not yet tested with a join** (2026-10-25
-00:36). The reboot path (j0086) works unjoined.
+(`wifi=1` boot arg, nothing flashed). The USB link runs on 192.168.7.0/24 (j0088/j0089: the phone hands
+the PC 192.168.7.1 over DHCP) and **survives Wi-Fi** (j89c, 01:02); the reboot while joined works (the
+j0086 fallback), but our teardown while joined crashes the WLAN firmware (task 1).
 Details of every round are in `jasmine/WIFI.md`; this file is the summary plus what is left.
 
 ## Where things are
@@ -143,21 +143,24 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 
 ## Next tasks, in order
 
-1. **USB link with Wi-Fi joined: test it.** Cause found (j87): XNU keeps IPv4 link-local on one interface
-   (`arp_lookup_route()` never scopes a 169.254 lookup) and configd gives 169.254/16 to the primary
-   interface, so a PC on a 169.254 address lost the phone once en0 had its DHCP address (not even ARP was
-   answered). j0088/j0089 move the link to 192.168.7/24: in j89 (00:22, 00:29) the PC got 192.168.7.1 by
-   DHCP, the log and the command port ran over 192.168.7.2, rebooted and parked fine, but nobody joined
-   Wi-Fi in those rounds. Next round: boot j89 (`shim/out/shim-boot-j89-wlan.img`), tap TelekNet in Settings
-   ~1 min after boot, and check the log keeps going past `joined TelekNet` and the DHCP lines, then the
-   reboot. sweetd (5143, userland `ios/sweetd.c`) is not bound to ue0: it only serves USB-subnet peers, so
-   192.168.7.1 works; bind it too when it is next rebuilt.
-2. **Reboot while joined, and the modem port halt.** j0086 works unjoined (j88/j89: vdev stopped + deleted,
+1. **Teardown while joined crashes the WLAN firmware** (j89c, 01:05): `w_teardown()` sends VDEV_DOWN,
+   PEER_DELETE and VDEV_STOP back to back; with a peer up the firmware asserts at once
+   (`err_qdi.c:459:EF:wlan_process:1:cmnos_thread.c:3285:Asserted in wlan_vdev.c`), the modem goes FATAL, and
+   WLAN_MODE OFF is never answered (j85 was the same: the teardown, not mode OFF). Unjoined (j88/j89) the
+   sequence is clean. The same teardown runs on wifid's DISASSOCIATE, so leaving or forgetting a network
+   while joined probably crashes the modem too (untested). Fix: ath10k's order with waits: VDEV_DOWN, then
+   PEER_DELETE and wait for HTT peer unmap / WMI peer delete response, then VDEV_STOP and wait for
+   VDEV_STOPPED; compare `ath10k_bss_disassoc` / `ath10k_sta_state` (ASSOC -> NONE -> NOTEXIST) and
+   `ath10k_vdev_stop`; maybe send a deauth to the AP first as mac80211 does.
+   (Done 2026-10-25: the USB link with Wi-Fi joined. XNU keeps IPv4 link-local on the primary interface,
+   so the link moved to 192.168.7/24 with a DHCP server on ue0, j0087-j0089; j89c: log over 192.168.7.2 ran
+   on after the join with 1805 frames sent all ok, and the command-port reboot while joined worked.)
+2. **The modem port halt.** j0086 works unjoined (j88/j89: vdev stopped + deleted,
    WLAN_MODE OFF answered in ~225 ms, stop-ack in 50 ms). The modem's AXI port never halts (`ack 0 idle 0`)
    even with Wi-Fi off, so the j0086 fallback (no mss_restart) is what makes every reboot work now; find out
    why the port does not halt (compare Linux `q6v5proc_halt_axi_port` and the halt register offsets on
-   sdm660) before the default build. Untested while joined (the j83/j85 hangs were with a reset under the
-   unhalted port, which j0086 no longer does).
+   sdm660) before the default build. While joined (j89c) the reboot worked too, with the firmware crashed by
+   task 1 and the fallback; the j83/j85 hangs were a reset under the unhalted port, which j0086 no longer does.
 3. **Gray Wi-Fi icon** in the status bar (user, j86): probably the signal bars. Apple80211 RSSI (16) is answered
    from the scan result and never updated, NOISE (17) is refused, no link-quality / RSSI-changed events are sent.
    Keep RSSI current from received frames (or WMI peer stats), answer NOISE (firmware value or ~-95 dBm), send the

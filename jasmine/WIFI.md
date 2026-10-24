@@ -212,3 +212,9 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   adapter got **192.168.7.1/24 by DHCP** (offer + ack, send 0), the log connected over 192.168.7.2 and ran the
   whole 300 s, the reboot over the command port and the park worked (69%, 70%). No Wi-Fi join happened in
   either round, so the link with Wi-Fi up is still to be seen. The modem port never halts, Wi-Fi or not.
+- **j89c-wlan (01:02, 360 s): the USB link survives Wi-Fi.** PC on 192.168.7.1 by DHCP, log over
+  192.168.7.2; the user joined TelekNet at t=26 s; the log ran on (`wifi data` at 36/46/56 s: 1805 frames sent,
+  all completed ok, 0 drops; 2720 received up to en0). Reboot over the command port while joined at 01:05:53:
+  the j0086 teardown made the WLAN firmware assert at once (`Asserted in wlan_vdev.c`, modem FATAL),
+  WLAN_MODE OFF unanswered (2.5 s), no stop handshake, modem port not halted -> mss_restart left alone ->
+  the phone rebooted to fastboot normally; parked 84%. So j85's assert was the teardown while joined too.
