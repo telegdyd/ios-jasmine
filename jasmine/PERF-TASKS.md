@@ -36,6 +36,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 12 | CPU idle power: core / cluster power collapse instead of WFI, unused cores off | power and heat at idle | `osfmk/arm64` idle path, new `sweet_idle.c` | j0067 |
 | 13 | Thermal limits: TSENS-driven caps on CPU and GPU clocks | keeps the phone usable under long load | new `sweet_thermal.c` (after 2 and 11) | j0068 |
 | 14 | **Fix the startup freeze above 266 MHz GPU** (588 default again since 2026-10-24 00:42). **Boot-logo freeze fixed 2026-10-24 02:45** (lsd seed waited 5 s per built-in app for a Wi-Fi MAC; MACs now in the ADT `/chosen`; 12/12 clean boots). Open: lock-screen freeze (backboardd stuck in SweetGPU buffer free, j60b/t4d2) | unblocks task 3's clock (and task 11's DCVS) | `bsd/dev/sweet_gpu.c`, `iokit/Kernel/arm/SweetGPU.cpp` | j0069 |
+| 15 | Make lsd keep its LaunchServices store across boots (it rebuilds its database at every boot; task 14) | boot time, and no seed window at startup | phone iOS root (ownership / protection of lsd's directories), maybe a kernel trace | none (j0070 if a trace is needed) |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Tasks 10 and 11 both touch `sweet_gpu.c` (10 only
@@ -717,3 +718,60 @@ order everywhere, or drop `fLock` before taking `gpu_lock`), no timeouts as work
 **Done when:** 10 boots in a row at 588 MHz without the freeze; `tools/g2/mkimg.sh` back to `gpumhz=588` (the top level
 at the bootloader's CX corner: no voltage increase, measured 587 MHz in t4b1); the slot b image rebuilt and flashed
 ("Done means on the phone"); result in GPU.md.
+
+## 15. Make lsd keep its LaunchServices store across boots
+
+**Now (found 2026-10-24 during task 14).** lsd never has a store on disk, so it builds its database from scratch
+at every boot:
+- No `com.apple.LaunchServices-NNN-v2.csstore` (name pattern `%s-%03llu-v2.csstore` under `Library/Caches`, from
+  CoreServices' strings) in lsd's data container `/private/var/containers/Data/System/D4CD3628-6EE5-4032-90C0-BB7818F0299A/`
+  (`.com.apple.mobile_container_manager.metadata.plist` says `com.apple.lsd`). Its `Library/Caches` and
+  `Library/Preferences` are empty, also long after a seed finished (checked 02:16 in the recovered j69b-f1 boot,
+  after the clean t14k / t14m boots).
+- `/private/var/db/lsd` is empty: no `com.apple.lsdidentifiers.plist` (vendor IDs, `LSVendorSeed`), no
+  `com.apple.lsdschemes.plist`.
+- `/private/var/tmp` holds one empty `NSIRD_lsd_*` directory per boot (175 on 2026-10-24 02:20). These are
+  NSFileManager item-replacement directories: lsd starts an atomic write every boot, and the result never lands.
+- Not in `/private/var/mobile/Library/Caches` or `/private/var/root/Library/Caches` either.
+- Two lsd jobs: `com.apple.lsd` (UserName `mobile`, the one that runs at boot, one `exec lsd` per boot) and
+  `com.apple.lsd.system` (root, `systemSessionDaemon runAsRoot`, on demand). The census pid 98 is the mobile one.
+- lsd reports its failures only via os_log, which the netlog does not carry: "Failed to save database to %{public}@:
+  %{public}@", "%{public}s: error saving database for session %@: %{public}@", "Failed to write database header",
+  "Failed to write plist data for identifiers: %@".
+
+**Why it matters.** Every boot pays a full seed while backboardd, SpringBoard and mediaserverd wait on lsd through
+XPC. Task 14's 14-minute stall needed a seed through the per-bundle scan. The MAC fix made that scan cheap but does
+not stop the seed. Which state sends a seed down that path is not known: journal recovery and
+`restoreInactiveInstalls` were also waiting in the frozen census, and installd started only after the stall.
+
+**Leads, in order.**
+1. Ownership and mode of lsd's directories in our root build. `tools/mkiosroot.sh` makes `/private/var` by hand
+   (only logd's directories get owners; `sweet-root-tweaks.py` makes the containers). On iOS the restore makes them.
+   lsd runs as `mobile` (501): check owner and mode of `/private/var/db/lsd`, `/private/var/tmp`, the container and
+   its `Library/Caches` (Linux shell: `fastboot boot shim/out/nura-r109-boot_a.img`, `tools/pmos-shell.py`,
+   read-only mount; or extend `sweet-fs.py ls` to print mode and uid). Compare with a real iOS 16 device's
+   values if known (`/private/var/db/lsd` is `mobile` there, unverified).
+2. Data protection: the store may be written with a protection class that our AppleKeyStore stub
+   (`SWEET AKS` lines) cannot serve, so the open or rename fails. Look for lsd's AKS calls around the save.
+3. If 1-2 show nothing: see the errno. Either a kernel trace of failed `open` / `rename` / `renamex_np` / `mkdir`
+   by process name (like `sweetiolog`, e.g. `sweetfslog=lsd`, new patch), or read logd's persisted logs
+   (`/private/var/db/diagnostics/*.tracev3` + `uuidtext`) with a tracev3 parser (download needs the user's OK).
+4. Then: why a seed sometimes goes through the per-bundle scan (`-[ICLWorkspace enumerateBuiltInSystemContentWithBlock:]`
+   -> `_populatePlaceholderRecordValues`) instead of the normal path. With a kept store this may not happen at all.
+
+**Rules.** Changing ownership or files in the iOS root needs the user's OK first (also a fix in `mkiosroot.sh` /
+`sweet-root-tweaks.py` that is then applied to the phone). Read-only checks are fine.
+
+**Related, not this task.** MobileGestalt's sysconfig fallback waits 5 s per uncached lookup. It reads `/chosen`
+`syscfg-v2-data`, then an `AppleDiagnosticDataSysCfg` service, then waits for `AppleDiagnosticDataAccessReadOnly`;
+we provide none of them (t7c: MobileGestaltHelper in that wait, serving mediaserverd). That is a separate ADT task:
+syscfg data with serial and region. Also open from task 14: the t7c lsd variant (main thread in `_LSDatabaseClean` ->
+`dispatch_sync` onto a CoreServices object's queue, function 0x181cd6ed8, no other lsd thread).
+
+**Tools from task 14.** Unslid census addresses: scratch `raw.py`. Shared cache disassembly per image:
+`ipsw dyld disass $D --image NAME -q`, dumps in WSL `~/ios-work/lsd` (CoreServices strings, InstalledContentLibrary.s,
+libMobileGestalt.dylib.s). Obfuscated MG keys: base64(MD5("MGCopyAnswer" + name))[:22].
+
+**Done when:** after one boot a `com.apple.LaunchServices-*-v2.csstore` exists in lsd's container and
+`/var/db/lsd/com.apple.lsdidentifiers.plist` exists; the next boot loads the store instead of seeding (no new
+`NSIRD_lsd_*`; lsd's census shows no `seedDatabase`); on the phone by default ("Done means on the phone").
