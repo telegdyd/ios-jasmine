@@ -1,0 +1,27 @@
+From 5c945c8ea31183836eebb93bfe6e637bac52dc4f Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 20:27:56 +0200
+Subject: [PATCH] jasmine-j0080w: one modem-alive line a minute (slave-kernel,
+ glink rx, diag cntl)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 6f57f7e..99d24fb 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6862,6 +6862,9 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 		if (glink && (ms == 3000 || ms == 20000)) {
+ 			glink_summary();                /* early, before the iOS UI covers the console */
+ 		}
++		if (glink && ms % 60000 == 0 && ms != 0) {
++			LOG("t=%u ms: modem alive: slave-kernel %08x, glink rx %u msgs, diag cntl %u", ms, sk_last, g_rx_msgs, diag_q_cntl);
++		}
+ 		if (in == NULL) {
+ 			uint32_t sz = 0;
+ 			in = (struct smp2p_hdr *)smem_get(part, ITEM_SMP2P_IN, &sz);
+-- 
+2.47.3
+
