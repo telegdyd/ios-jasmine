@@ -1,0 +1,66 @@
+From bdfe7e4ad81762dc19a86573ed21fe9fc5e43849 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 01:49:48 +0200
+Subject: [PATCH] jasmine-j0092: leave in mac80211 order: peer delete (wait
+ unmap/resp) before VDEV_DOWN, then VDEV_STOP (j91: VDEV_DOWN + PEER_DELETE
+ asserted in wlan_vdev.c with no scan)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 26 ++++++++++++++------------
+ 1 file changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index e60ba10..cc30af6 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6530,11 +6530,13 @@ w_eapol_rx(const uint8_t *e, size_t elen)
+  * j0090: leaving in ath10k's order, each step after the firmware answered the last (j89c: VDEV_DOWN,
+  * PEER_DELETE and VDEV_STOP back to back with the peer up asserted in wlan_vdev.c): a running scan
+  * stopped first (j90: the leave during wifid's scan on the same vdev asserted the same way), a deauth
+- * to the AP and the frames in flight out (mac80211 flushes around its deauth), VDEV_DOWN
+- * (ath10k_bss_disassoc), PEER_DELETE until the HTT peer unmap / PEER_DELETE_RESP (ath10k_peer_delete),
+- * VDEV_STOP until VDEV_STOPPED (ath10k_vdev_stop). A step machine in S_LEAVE, run by w_leave_poll after
+- * the CE poll: started from rx and event handlers too, it never polls the copy engines itself. No
+- * scan, join or wlan off step runs before it is back in S_IDLE. One line per step.
++ * to the AP and the frames in flight out (mac80211 flushes around its deauth), PEER_DELETE until the
++ * HTT peer unmap / PEER_DELETE_RESP (sta_info_flush -> ath10k_peer_delete), only then VDEV_DOWN
++ * (BSS_CHANGED_ASSOC -> ath10k_bss_disassoc) and VDEV_STOP until VDEV_STOPPED (channel release ->
++ * ath10k_vdev_stop): ieee80211_set_disassoc's order (j91: VDEV_DOWN before PEER_DELETE asserted). A
++ * step machine in S_LEAVE, run by w_leave_poll after the CE poll: started from rx and event handlers
++ * too, it never polls the copy engines itself. No scan, join or wlan off step runs before it is back
++ * in S_IDLE. One line per step.
+  */
+ static enum sta_state l_from;
+ static uint32_t l_step, l_ms, l_t0;
+@@ -6598,11 +6600,8 @@ w_leave_poll(void)
+ 			return;
+ 		}
+ 		w_peer_unmapped = w_peer_deleted = false;
+-		LOG("t=%u ms: leave: tx %s after %u ms (sent %u done %u)%s%s", g_ms, tx_done < tx_sent ? "NOT OUT" : "out", dt,
+-		    tx_sent, tx_done, l_from >= S_4WAY ? ", vdev down" : "", l_from >= S_AUTH ? ", peer delete" : "");
+-		if (l_from >= S_4WAY) {                 /* VDEV_UP was sent */
+-			w_vdev_simple(CMD_VDEV_DOWN, TAG_VDEV_DOWN);
+-		}
++		LOG("t=%u ms: leave: tx %s after %u ms (sent %u done %u)%s", g_ms, tx_done < tx_sent ? "NOT OUT" : "out", dt,
++		    tx_sent, tx_done, l_from >= S_AUTH ? ", peer delete" : "");
+ 		if (l_from >= S_AUTH) {                 /* the peer exists */
+ 			w_peer(CMD_PEER_DELETE, TAG_PEER_DELETE, false);
+ 		}
+@@ -6612,9 +6611,12 @@ w_leave_poll(void)
+ 		if (l_from >= S_AUTH && !w_peer_deleted && !(w_peer_unmapped && dt >= 100) && dt < 1000) {
+ 			return;
+ 		}
+-		LOG("t=%u ms: leave: peer %s after %u ms (unmap %u, delete resp %u), vdev stop", g_ms,
++		LOG("t=%u ms: leave: peer %s after %u ms (unmap %u, delete resp %u),%s vdev stop", g_ms,
+ 		    l_from < S_AUTH ? "none" : w_peer_deleted || w_peer_unmapped ? "gone" : "NOT GONE", dt, w_peer_unmapped,
+-		    w_peer_deleted);
++		    w_peer_deleted, l_from >= S_4WAY ? " vdev down," : "");
++		if (l_from >= S_4WAY) {                 /* VDEV_UP was sent */
++			w_vdev_simple(CMD_VDEV_DOWN, TAG_VDEV_DOWN);
++		}
+ 		w_vdev_stopped = false;
+ 		w_vdev_simple(CMD_VDEV_STOP, TAG_VDEV_STOP);
+ 		l_step = 4;
+-- 
+2.47.3
+
