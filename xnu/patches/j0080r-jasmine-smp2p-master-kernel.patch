@@ -1,0 +1,53 @@
+From 07e7aa192a1a4ad4b6fcb5ea8bba2ebc75534f20 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 18:37:30 +0200
+Subject: [PATCH] jasmine-j0080r: AP SMP2P item with master-kernel as in the
+ jasmine DT (no ipa entry); no modem stop on FATAL (SError)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index c4384a2..3cae1ba 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6433,7 +6433,6 @@ svc_summary(void)
+  */
+ static void mba_started(void);
+ static void mba_handover(void);
+-static void mss_reclaim(void);
+ 
+ static void
+ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+@@ -6447,7 +6446,12 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 		LOG("cannot create SMP2P item %u", ITEM_SMP2P_OUT);
+ 		return;
+ 	}
+-	ipa_out = smp2p_add_out(out, "ipa", 0);
++	if (soc.jasmine) {
++		/* jasmine DT smp2p-mpss: the AP's item holds "master-kernel" (the stop bit), no IPA entries */
++		(void)smp2p_add_out(out, "master-kernel", 0);
++	} else {
++		ipa_out = smp2p_add_out(out, "ipa", 0);
++	}
+ 	bool glink = false;
+ 	for (unsigned ms = 0; seconds == 0 || ms < seconds * 1000; ms++) {
+ 		if (ready && !glink) {
+@@ -6504,11 +6508,8 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 				if (glink) {
+ 					glink_summary();
+ 				}
+-				if (soc.jasmine) {
+-					/* rproc crash handling, q6v5_stop without the restart (j0080q): a crashed modem with the
+-					 * WLAN firmware in mission mode froze the next reboot (j0080p) */
+-					mss_reclaim();
+-				}
++				/* no mss_reclaim here: after a crash the modem AXI port does not halt and the clock/reset
++				 * steps then took an SError (j0080q) */
+ 				return;
+ 			}
+ 		}
+-- 
+2.47.3
+
