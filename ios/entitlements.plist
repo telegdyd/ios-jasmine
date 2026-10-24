@@ -12,5 +12,7 @@
 	<true/>
 	<key>com.apple.logging.local-store</key>
 	<true/>
+	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
+	<true/>
 </dict>
 </plist>
