@@ -171,6 +171,8 @@ def d22ap_product(path=D22AP_ADT):
 u32 = lambda *v: struct.pack('<%dI' % len(v), *v)
 u64 = lambda *v: struct.pack('<%dQ' % len(v), *v)
 cstr = lambda s: s.encode() + b'\0'
+# MAC address n from the synthetic ECID's top bytes, locally administered unicast
+mac = lambda n: bytes([(SWEET_ECID >> 56 | 2) & ~1]) + struct.pack('>Q', SWEET_ECID)[1:5] + bytes([n])
 
 
 def node(name, props=(), children=()):
@@ -216,6 +218,15 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, amp=
         # of the A11 that the iPhone X userland expects.
         ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
         ('chip-id', u32(0x8015)),
+        # iBoot puts the radios' MAC addresses here. MobileGestalt's
+        # UniqueDeviceID is SHA-1 over serial, ECID, Wi-Fi and Bluetooth MAC;
+        # without mac-address-wifi0 (and no wlan/sdio service) every request
+        # waits 5 s for an IONetworkController, and the NULL answer is not
+        # cached. lsd's database seed asks once per built-in app (install
+        # session ID), ~14 min in all: the boot-logo freeze of PERF-TASKS
+        # task 14. Synthetic, locally administered (no radio uses them).
+        ('mac-address-wifi0', mac(1)),
+        ('mac-address-bluetooth0', mac(2)),
         # Security status as on a dev-fused, undemoted board (tuple 0,0,1,1):
         # MobileGestalt reads these from /chosen, and mobileactivationd's
         # DeviceType then takes its native "Hactivation" branch (state

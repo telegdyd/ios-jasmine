@@ -35,7 +35,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 11 | GPU power management: hardware clock gating, idle power-down, load-based clock (DCVS) | power and heat (GPU busy only ~8-25 % while the UI moves, j64a) | `bsd/dev/sweet_gpu.c` | j0066 |
 | 12 | CPU idle power: core / cluster power collapse instead of WFI, unused cores off | power and heat at idle | `osfmk/arm64` idle path, new `sweet_idle.c` | j0067 |
 | 13 | Thermal limits: TSENS-driven caps on CPU and GPU clocks | keeps the phone usable under long load | new `sweet_thermal.c` (after 2 and 11) | j0068 |
-| 14 | **Fix the startup freeze above 266 MHz GPU** (588 default again since 2026-10-24 00:42, parked until a freeze is seen; j0069 census ready) (backboardd stuck in SweetGPU buffer free; 2 of 4 boots at 588/647, 0 of 54 at 266); then make 588 the default again | unblocks task 3's clock (and task 11's DCVS) | `bsd/dev/sweet_gpu.c`, `iokit/Kernel/arm/SweetGPU.cpp` | j0069 |
+| 14 | **Fix the startup freeze above 266 MHz GPU** (588 default again since 2026-10-24 00:42). **Boot-logo freeze fixed 2026-10-24 02:45** (lsd seed waited 5 s per built-in app for a Wi-Fi MAC; MACs now in the ADT `/chosen`; 12/12 clean boots). Open: lock-screen freeze (backboardd stuck in SweetGPU buffer free, j60b/t4d2) | unblocks task 3's clock (and task 11's DCVS) | `bsd/dev/sweet_gpu.c`, `iokit/Kernel/arm/SweetGPU.cpp` | j0069 |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Tasks 10 and 11 both touch `sweet_gpu.c` (10 only
@@ -650,6 +650,64 @@ x0-x3, the word at x1, the turnstile inheritor chain) and `prof peek PID ADDR LE
   freeze with CA's thread inside SweetGPU selector 2 (j60b, t4d2), still not caught with the census.
 - Next for (1): find why lsd seeds at every boot and which install journal it recovers (in the phone's iOS root,
   `/var/mobile/Library/...`); clearing a stale journal or keeping the LS store is a root change (the user's OK).
+
+**Boot-logo freeze, corrected: not a deadlock but a 14-minute lsd seed waiting for a Wi-Fi MAC (2026-10-24 01:57-02:50;
+fix in `tools/mkadt.py`, on slot b since 02:45).**
+- **The j69b-f1 boot recovered by itself.** At 02:09 lsd's main thread idled in `_runServerMainRunLoop`
+  (`logs/prof-j69b-f1b*`), `gpu state` read 1949 of 1949 jobs, and the first kernel stats line after the freeze reads
+  "backboardd: 5 submits in **832233 ms**". So the cycle above is wrong: the seed does not wait on the main thread.
+- **The seeder is lsd thread 506**, overlooked at 01:49: `_LSServer_LSEnumerateAndRegisterAllBundles` ->
+  `-[ICLWorkspace enumerateBuiltInSystemContentWithBlock:]` -> `MIFilesystemScanner` scanning the apps ->
+  `-[MIInstalledInfoGatherer _populatePlaceholderRecordValues:signingInfo:]` ->
+  `+[MIInstallationIdentity installationIdentityForBundle:settingIfNotSet:error:]` ->
+  `__GenerateBuiltInAppInstallSessionID` -> `MGCopyAnswer("re6Zb+zwFKJNlkQTUeT+/w")` = **UniqueDeviceID** ->
+  MobileGestalt's IOKit helper (`MGIOKitSupport.c`) in `dispatch_semaphore_wait`; its run-loop thread 1467 sat in
+  `CFRunLoopRunInMode("MobileGestaltRunLoopMode", 5 s)`. (Obfuscated MG keys are base64(MD5("MGCopyAnswer" + name)),
+  22 characters.)
+- **What MobileGestalt does (libMobileGestalt disassembly, iOS 16.7.16):**
+  - UniqueDeviceID = SHA-1 of serial number, ECID, WifiAddress and BluetoothAddress (format `%@%@%@%@%@`).
+  - WifiAddressData reads `IODeviceTree:/chosen` `mac-address-wifi0`, then IORegistry services `sdio`, `wlan`,
+    `marconi-wifi`. Failing those (and not a VM: `kern.hv_vmm_present`), it **waits 5 s for an `IONetworkController`**
+    (IOServiceMatched), then falls back to syscfg `WMac`.
+  - BluetoothAddressData reads `/chosen` `mac-address-bluetooth0`, then a `bluetooth` service; no wait.
+  - Our ADT had neither MAC, and our kernel has no IONetworkController (the USB Ethernet is a plain ifnet). So every
+    UDID request waited 5 s and returned NULL, and MG does not cache a NULL answer.
+- **InstalledContentLibrary:** for a built-in app or app extension, `installationIdentityForBundle:` always generates
+  the install session ID (it reads the `com.apple.install_uuid` xattrs only for other bundles), so a scan asks for
+  the UDID once per bundle. 141 apps in `/Applications` + 32 in `/System/Library/AppPlaceholders` = 173 x 5 s =
+  14.4 min, the stall measured.
+- **Why only some boots.** lsd keeps no LaunchServices store: no `com.apple.LaunchServices-*-v2.csstore` in its
+  container's `Library/Caches` (`/private/var/containers/Data/System/D4CD3628-...`), `/var/db/lsd` empty, one empty
+  `/private/var/tmp/NSIRD_lsd_*` per boot (175 so far). So it builds its database at every boot, but a normal build
+  does not take this path: boot t14k (02:20, `sweetiolog=lsd,SpringBoard`) was clean and lsd made **no**
+  IONetworkController wait (SpringBoard makes one on every boot). Which state sends a build through the per-bundle
+  scan is not known (the frozen census also had journal recovery and `restoreInactiveInstalls` waiting on it).
+- **The GPU clock** only shifts timing; it is not involved.
+- **Fix (real-hardware behaviour, no iOS root change):** `tools/mkadt.py` puts `mac-address-wifi0` and
+  `mac-address-bluetooth0` into `/chosen`, as iBoot does. The values are synthetic, locally administered, made from the
+  synthetic ECID: `4a:41:53:4d:49:01` / `:02`. Every image `mkimg.sh` builds gets them (the ADT is rebuilt each time;
+  no kernel change).
+  - The phone now has a UniqueDeviceID; before, every caller got NULL.
+  - Check t14m (02:25, one boot): SpringBoard's IONetworkController wait is gone, the UI drew 46 s after boot, no panic.
+- **Not explained by this:** t7c's lsd (01:17) had only its main thread, in `_LSDatabaseClean` -> `dispatch_sync`
+  onto a queue in a CoreServices object (`[obj+0x18]`, function 0x181cd6ed8), with no other lsd thread. Its
+  MobileGestaltHelper was in the same 5-second IOKit helper for another key: the sysconfig fallback reads `/chosen`
+  `syscfg-v2-data`, then the `AppleDiagnosticDataSysCfg` service, then waits 5 s for `AppleDiagnosticDataAccessReadOnly`,
+  serving mediaserverd. So keys that come from syscfg also cost 5 s per uncached lookup.
+- **Verified (02:28-02:44, `freezehunt.sh j69b t14n "sweetiolog=lsd,SpringBoard"`, 588 MHz, no gestures): 12 of 12
+  boots clean**, drawing 44-88 s after boot (60-122 s in the earlier 588 hunts), no IONetworkController wait in any
+  boot (`logs/netlog-t14n-*.txt`), no panic. With the 1-in-10 to 1-in-25 rate seen before, 12 boots alone are not
+  proof; the measured mechanism is: the 5-second wait is gone.
+- **On the phone:** slot b = `shim/out/shim-boot-j69b-slotb.img` rebuilt at 02:45 (same j69b kernel, ADT with the
+  MACs; the previous image is kept as `shim-boot-j69b-slotb-nomac.img`), flashed with `flash-slotb.sh`; first boot
+  `logs/netlog-j69m-slotb.txt`: GPU 587 MHz, self-test PASS, UI drawn, no panic.
+- **Open:**
+  - Why lsd never writes its store (seeds every boot; `com.apple.lsd` runs as mobile; its errors go to os_log only,
+    which the netlog does not carry).
+  - What sends a seed through the per-bundle scan.
+  - The t7c variant above.
+  - The syscfg 5-second waits: no `syscfg-v2-data` in `/chosen`.
+  - The lock-screen freeze (2), SweetGPU selector 2.
 
 **How.** Reproduce: boot at `gpumhz=588` repeatedly (`uiround.sh` with `ARGS=gpumhz=588`; ~50 % freeze, so a few
 boots). In a frozen boot, take a 2 s j0057 profile (`tools/g2/prof.py fetch ... --tasks backboardd`): its census
