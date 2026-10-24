@@ -2,7 +2,8 @@
  * What LaunchServices and ExtensionKit know about an extension point: are its app extensions
  * registered, and does a query for the point find them? Written for PosterBoard's wallpaper
  * providers (com.apple.posterkit.provider), which never start on jasmine.
- *   sweet_extq [EXTENSION_POINT [BUNDLE_ID...]]
+ *   sweet_extq [--sync|--rebuild] [EXTENSION_POINT [BUNDLE_ID...]]
+ * --sync / --rebuild first ask lsd to sync with MobileInstallation / rebuild its database.
  * Plain C over the ObjC runtime (the CI build links nothing but libSystem), everything looked
  * up with dlsym, so a missing class or selector is printed instead of crashing. Run it through
  * sweetd.
@@ -113,6 +114,28 @@ ls_plugins(const char *point)
 	printf("LS installedPlugins for %s or named *oster*: %lu\n", point, hits);
 }
 
+/*
+ * Ask lsd to bring its database up to date with MobileInstallation (installd): "sync" is the
+ * path that registers the extension points frameworks define (NSExtensionSDK), "rebuild" a full
+ * rebuild of the system app database.
+ */
+static void
+ls_refresh(const char *how)
+{
+	id ws = getclass("LSApplicationWorkspace") ? M0(getclass("LSApplicationWorkspace"), "defaultWorkspace") : NULL;
+	const char *s = strcmp(how, "sync") == 0 ? "_LSPrivateSyncWithMobileInstallation" :
+	    "_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:";
+	if (!can(ws, s)) {
+		printf("%s: not available\n", s);
+		dump_methods("LSApplicationWorkspace", 0, "_LSPrivate");
+		return;
+	}
+	printf("%s ...\n", s);
+	unsigned long ok = strcmp(how, "sync") == 0 ? MU(ws, s) :
+	    ((unsigned long (*)(id, SEL, int, int, int))msgsend)(ws, selname(s), 1, 1, 1);
+	printf("%s returned %lu\n", s, ok & 0xff);
+}
+
 /* LSApplicationExtensionRecord for one bundle id: registered at all, and under which point */
 static void
 ls_record(const char *bundle)
@@ -187,6 +210,12 @@ main(int argc, char **argv)
 		"com.apple.GradientPoster.GradientPosterExtension",
 		"com.apple.EmojiPoster.EmojiPosterExtension",
 	};
+	const char *refresh = NULL;
+	if (argc > 1 && (strcmp(argv[1], "--sync") == 0 || strcmp(argv[1], "--rebuild") == 0)) {
+		refresh = argv[1] + 2;
+		argc--;
+		argv++;
+	}
 	const char *point = argc > 1 ? argv[1] : "com.apple.posterkit.provider";
 	static const char *const libs[] = {
 		"/usr/lib/libobjc.A.dylib",
@@ -221,6 +250,9 @@ main(int argc, char **argv)
 	void *pool = poolpush();
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	printf("extension point %s\n", point);
+	if (refresh) {
+		ls_refresh(refresh);
+	}
 	ls_plugins(point);
 	if (argc > 2) {
 		for (int i = 2; i < argc; i++) {
