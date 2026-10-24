@@ -989,3 +989,33 @@ swap/latch timing, because flushes are not frames and sampled `present()` counts
 when j0058 made it microsecond-fast. Raw data stays ignored in
 `research/perf-firstpass-20261024/`. Final 03:24 check: GPU 12516/12516 jobs completed,
 clocks unchanged, profiler idle; our log collector stopped and phone lock released.
+
+#### Task 5 step 1: barrier-driven batch churn (2026-10-24 03:55–04:08)
+
+[Draw-path report](PERF-TASK5-DIAGNOSTICS-20261024.md). Diagnostic commit `8a3ed2b`,
+Mesa CI `40051205502` passed. Opt-in nested elapsed-time scopes and batch/flush-reason
+counters, no rendering or synchronization change. A separate diagnostic dylib was
+tested in two RAM boots of the existing j69b kernel (Gold1747/GPU588/DDR1296),
+profiling on and off; production library and slot b unchanged. Two ~30 s home and
+Control Center repeats per variant, four six-second CPU profiles, 227328 records,
+zero dropped. Matching off samples: display thread ~77%/89% on CPU; Mesa/wrapper
+user plus support calls ~65.5% of that CPU.
+
+Of actual finalized batches, **80.3% home / 76.3% Control Center contain one draw**.
+Texture barriers cause 74.5%/59.7% of finalizations; resource dependencies another
+18.8%/32.0%. Program-cache hits 100% in warmed selected windows, uploads/uniforms
+smaller. Batch create and finalize exclusive elapsed costs ~1.77+1.85 ms/flush home,
+3.95+4.09 Control Center; state emission repeats. These are elapsed costs, not
+additive CPU/frame saving estimates. Counter-on GL elapsed +0.9%/+5.1% vs off,
+so later gains must be confirmed with diagnostics off. Swap arrivals measured,
+distinct latch FPS/latency still unmeasured.
+
+Next: explain which barriers current program sampler use actually requires,
+preserve framebuffer-fetch dependencies, then test reducing unnecessary batch breaks.
+Task 5 remains open. Surface-fence pipelining recorded separately as task 16.
+Fresh and exact task-4 `sweetgpu_gltest` both expose a pre-existing stride/offset
+argument swap in the IOSurface test helper (other five cases pass); CA does not
+use that helper. Not fixed in this measurement step. Raw data in `research/t5/`.
+On->off reboot hung at root unmount and needed user buttons; off->charging reboot
+succeeded, r109 temporary charging image booted at ~04:08:30. See NOTES for final
+charging verification and lock state.

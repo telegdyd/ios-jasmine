@@ -26,7 +26,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 2 | Gold clock 1747 -> 2208 MHz (voltage, DVFS) | ~7.7 | `sweet_cpuclk.c`, `sweet_osm.c`, PMIC code | j0059 |
 | 3 | ~~GPU clock 266 -> ~650 MHz (RPM votes)~~ **works 2026-10-23, gain ~0.5 ms** (647 MHz is this chip's top); **default still 266**: booting at 588/647 freezes backboardd at startup in 2 of 4 boots, task 14 | 0.5 measured | `bsd/dev/sweet_gpu.c`, `bsd/dev/sweet_rpm.c` | j0060 |
 | 4 | ~~Make Mesa's buffer caches hit~~ **done 2026-10-23 07:40** (sub-allocation heaps; on the phone) | buffer path 17.8 -> ~6 % of CA's thread, Mesa CPU -3 ms/frame; frames not faster at 266 MHz (GPU-wait tail) | `mesa/darwin/*` (Mesa build only) | none |
-| 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
+| 5 | Cut Mesa's per-draw CPU cost — diagnostics complete 2026-10-24; barrier/dependency batch churn leads | current saving unmeasured | `mesa/` (+ Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
 | 7 | ~~Stop the XPC retry loops (~2 Gold cores)~~ **done 2026-10-24 01:12** (BTAudioHALPlugin disabled, vmd job removed; on the phone's root) | idle daemons 2.16 cores -> ~0.003, TSENS ~8 C lower; moving-frame gain not yet measured | phone iOS root, `tools/sweet-root-tweaks.py` | none |
 | 8 | Fix the pmap 32-bit page-number shift | ~0 (correctness) | `osfmk/arm/pmap/pmap.c` | j0063 |
@@ -262,6 +262,17 @@ the profile's `darwin_bo_new` / `darwin_bo_map` / `close_handle` share drops fro
 per flush drops against a same-day baseline; no leak over a 10-minute run (SweetGPU per-client buffer count flat).
 
 ## 5. Cut Mesa's per-draw CPU cost (part of 14.6 ms)
+
+**Step 1 measured 2026-10-24:** [draw-path report](PERF-TASK5-DIAGNOSTICS-20261024.md).
+Opt-in Mesa diagnostics (`SWEETCA_DRAWPROF=1`), CI `40051205502`, same j69b kernel;
+matching on/off home and Control Center workloads. About 76-80% of actual finalized
+batches have one draw; texture barriers cause 60-74% of finalizations, resource
+dependencies another 19-32%. Batch creation/finalization and repeated state setup are
+the next targets. Warm program lookup hits 100%; uploads/uniform updates are smaller.
+Timers are nested **elapsed** time, not CPU or frame time. The old 14.6 ms/frame is
+historical; no new removable-ms/frame estimate yet. No optimization or sync change,
+and task 5 remains open. Next: trace active sampler use and required dependencies
+before reducing barrier-driven batch breaks. Pipelining is the separate task 16.
 
 **Re-profiled 2026-10-24 03:14-03:22, no changes to installed software or clocks:**
 [Current baseline](PERF-BASELINE-20261024.md). At GPU 588 MHz with task 4/7 fixes, CA's

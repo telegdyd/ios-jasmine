@@ -1,19 +1,42 @@
 # jasmine (Mi A2) working notes
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
-**2026-10-24 task 5 step 1 in progress:** pipelining is now task 16 in PERF-TASKS.md.
-Opt-in (`SWEETCA_DRAWPROF=1`) nested elapsed-time/call diagnostics in Mesa patch 0002
-and the Darwin backend: wrapper preparation/barriers, validation, batch setup/flush
-causes, uploads, shader lookups/variants, submits/waits. No optimization or sync change.
-13 changed Mesa TUs pass host syntax checks; nested/early-return, 4-thread counters,
-exclusive-time accounting and disabled-mode checks pass. Fresh Mesa patch order verified.
-Next: one Mesa CI build, temporary diagnostic-library boot, home/Control Center measurements.
+**2026-10-24 task 5 step 1 complete:** [draw-path diagnostics](PERF-TASK5-DIAGNOSTICS-20261024.md).
+Pipelining is now task 16 in PERF-TASKS.md. No optimization or sync change yet;
+task 5 overall remains open. Next: trace active sampler use and required dependencies,
+then reduce unnecessary barrier-driven batch breaks while preserving framebuffer fetch.
+Measured: 76-80% one-draw batches; texture barriers cause 60-74% of finalizations,
+resource dependencies another 19-32%. Warm program-cache hits 100%; uploads smaller.
+Timers are elapsed incl/excl, not CPU/frame time. Independent display CPU ~77% home,
+~89% Control Center, Mesa/wrapper user + support ~65.5% of its CPU (off samples).
+Counter-on GL elapsed +0.9% home / +5.1% Control Center vs off; approximate, not a
+precise overhead calibration. Four six-second profiles, 227328 records, zero dropped;
+two ~30 s repeats per workload/variant. Raw logs/profiles/scripts in `research/t5/`.
+Opt-in `SWEETCA_DRAWPROF=1`; parser `tools/g2/drawsum.py`. All 13 changed Mesa TUs
+pass host syntax; nested/early-return, four-thread counters, exclusive time and disabled
+mode checks pass; fresh patch order verified. Diagnostic commit `8a3ed2b`,
+Mesa CI `40051205502` PASSED; downloaded under
+`xnu/out-mesa-t5diag/`, dylib SHA256 `7df9e5224e25d87da68a2a1adb732291f8ebfbe1a0be8ab992d94b598447e5fd`.
+Uploaded separate `/usr/local/bin/libsweetca-t5diag.dylib` and test binaries; production
+library untouched. Temporary `shim/out/shim-boot-j69b-t5on.img` booted 03:55:13,
+`...-t5off.img` 04:04:33; same j69b kernel (CI 40040874776), Gold1747/GPU588/DDR1296,
+adds diagnostic env and `sweetfps=1` (swap arrivals, not confirmed latch FPS). No flash.
+On->off reboot hung at root unmount; user Power+VolDown recovered fastboot. Off->r109
+reboot succeeded normally; r109 RAM boot at ~04:08:30. At ~04:10 qcom-battery reports
+Charging, +709960 uA, 3983144 uV, 58%; backlight 0, charge voltage 3950000.
+Regression-test caveat: fresh diagnostic and exact task-4 `sweetgpu_gltest` both fail
+the IOSurface target helper with row stride 0 (other five cases pass); the much older
+installed test passes. Root cause found: `sgl_surface_create_iosurface()` passes 0 as
+stride and `bytes_per_row` as offset to `sgl_import_iosurface()`. Pre-existing since
+offset support was added, and only used by the test, not CA; no fix included in diagnostics.
 **User's standing request (2026-10-24): park in the charging console whenever the phone
-is not needed.** Currently r109 Linux charging shell, temporarily booted from
-`shim/out/nura-r109-boot_a.img`, backlight 0, charge voltage 3950000; qcom-battery reports
-Charging, +722655 uA, 3835927 uV, 34%. USB shell took a few minutes after the Nura logo.
+is not needed.** Park in r109 Linux charging shell, temporarily booted from
+`shim/out/nura-r109-boot_a.img`, backlight 0, charge voltage 3950000. Earlier verified
+Charging, +722655 uA at 34%, later +402831 uA at 38%. USB shell takes a few minutes
+after the Nura logo; a 90 s connection timeout does not prove failure.
 Use `tools/pmos-shell.py`; its network is 172.16.42.1, host Ethernet 172.16.42.2/24.
-Our phone lock was released while it charges. Do not use the older `nura-debugshell.img`
+Final charging check passed; our phone lock released and own collectors stopped.
+Do not use the older `nura-debugshell.img`
 for parking (its kernel discharges). Existing unstaged CPU-clock notes below belong to
 earlier work; preserve them.
 **2026-10-24 03:22: current bottleneck first pass complete**: [baseline report](PERF-BASELINE-20261024.md).
