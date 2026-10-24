@@ -1,6 +1,17 @@
 # jasmine (Mi A2) working notes
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
+**2026-10-24 03:22: current bottleneck first pass complete**: [baseline report](PERF-BASELINE-20261024.md).
+Nine 6-second profiles (0 dropped), repeated home/Control Center/Spotlight and lower-rate checks;
+separate GPU counters. Same running j69b slot-b boot, 4 Gold at 1747, GPU 587-588, DDR ~1296,
+installed dylib exactly matches `out-mesa-t4final`. CA display thread on CPU ~75% home,
+82-85% Control Center; Mesa/wrapper + support ~63-66% of its CPU. GPU busy averages 34-46%,
+with RAM stalls; first Spotlight has ~276 ms shader-worker wait, absent in repeat.
+No software/clock change, reboot, flash, new build or CI run. Raw artifacts/scripts ignored in
+`research/perf-firstpass-20261024/`. Task 5 remains next; current FPS/ms-frame still unmeasured.
+Final 03:24 check: profiler idle, GPU 12516/12516 completed, clocks unchanged;
+our console collector stopped and phone lock released. No new CI run.
+Report and GPU/task references committed as `b031eac`; no implementation change yet.
 **2026-10-24 02:45: boot-logo freeze fixed (PERF-TASKS task 14)**: not a deadlock: lsd's database seed waited 5 s per built-in app (173 bundles, ~14 min) because MobileGestalt's UniqueDeviceID needs a Wi-Fi MAC; with none in `/chosen` and no IONetworkController it waits 5 s for one and returns NULL (not cached). `tools/mkadt.py` now puts synthetic `mac-address-wifi0` / `mac-address-bluetooth0` into `/chosen` as iBoot does (the phone now has a UDID); 12/12 clean boots at 588 MHz, on slot b. Open: lsd never saves its store (seeds every boot; [PERF-TASKS.md](PERF-TASKS.md) task 15), syscfg 5-second waits (no `syscfg-v2-data`).
 **2026-10-24 01:12: daemon retry loops gone (PERF-TASKS task 7)**: mediaserverd's BTAudioHALPlugin reconnected to bluetoothd's removed service and vmd retried CoreTelephony without CommCenter; launchd and logd served them. On the phone's root: `BTAudioHALPlugin.driver` in `/System/Library/Audio/Plug-Ins/HAL.disabled/`, vmd job out of the launchd cache (originals in `research/t7/`); `tools/sweet-root-tweaks.py` does both for new roots. Idle: 2.16 cores -> ~0.003 (launchd 966 -> 1.7 ms/s, vmd 644 -> 0, mediaserverd 412 -> 1.3, logd 139 -> 0.3), TSENS ~8 C lower. GPU.md "Task 7".
 **2026-10-23 01:55: j0058, the MDP scales the frame (PERF-TASKS task 1 done)**: no CPU display copy any more (VIG0 QSEED3 + GPU-pool frames scanned in place), honest SwapWait + GPU wait for the latch; no flicker, smooth (user). On by default, kernel CI `39873547890` (`xnu/out-jasmine-j58`), on `jasmine-merge` as `90c3934`. Next frame-rate tasks: [PERF-TASKS.md](PERF-TASKS.md) 2-8; GPU.md "j0058".
