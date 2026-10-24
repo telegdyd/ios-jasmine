@@ -2,6 +2,7 @@
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
 **2026-10-24 task 5 step 1 complete:** [draw-path diagnostics](PERF-TASK5-DIAGNOSTICS-20261024.md).
+Results, parser and GPU/PERF references committed and pushed as `91c2346`.
 Pipelining is now task 16 in PERF-TASKS.md. No optimization or sync change yet;
 task 5 overall remains open. Next: trace active sampler use and required dependencies,
 then reduce unnecessary barrier-driven batch breaks while preserving framebuffer fetch.
