@@ -1,0 +1,50 @@
+From 92869aa3be7989530a118f29f060afa28cde4f22 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 07:26:20 +0200
+Subject: [PATCH] jasmine-j0080g: MSS AXI halt port state logged before the
+ modem boot; modem_pulse=1 (MSS_RESTART pulse first); TCSR halt ports, QDSP6SS
+ and RMB open to the command port r/w
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 10 ++++++++++
+ osfmk/arm64/sweet_osm.c         |  3 +++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index f4ebd76..2b1b227 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -7029,6 +7029,16 @@ modem_boot_mba(void)
+ 		}
+ 		bool rom = mss_poll(mss_gcc, GCC_BOOT_ROM_HALT, Q6SS_CBCR_CLKOFF, 0, 200);
+ 		LOG("mba: clock mem (boot_rom_ahb): %08x%s", r32(mss_gcc, GCC_BOOT_ROM_HALT), rom ? "" : " STILL OFF");
++		LOG("mba: halt ports (req ack idle): q6 %x %x %x, modem %x %x %x, nc %x %x %x", r32(mss_halt, MSS_HALT_Q6),
++		    r32(mss_halt, MSS_HALT_Q6 + 4), r32(mss_halt, MSS_HALT_Q6 + 8), r32(mss_halt, MSS_HALT_MODEM),
++		    r32(mss_halt, MSS_HALT_MODEM + 4), r32(mss_halt, MSS_HALT_MODEM + 8), r32(mss_halt, MSS_HALT_NC),
++		    r32(mss_halt, MSS_HALT_NC + 4), r32(mss_halt, MSS_HALT_NC + 8));
++		uint32_t pulse = 0;                         /* modem_pulse=1: MSS block reset pulse first (clears halted ports) */
++		if (PE_parse_boot_argn("modem_pulse", &pulse, sizeof(pulse)) && pulse != 0) {
++			w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) | 1u);
++			IODelay(10);
++			LOG("mba: modem_pulse: MSS_RESTART asserted (%08x)", r32(mss_gcc, GCC_MSS_RESTART));
++		}
+ 		w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) & ~1u);                /* reset deassert */
+ 		IODelay(10);
+ 		bool clks = rom;
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index e68a2e9..540d27b 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1253,6 +1253,9 @@ static const struct { uint64_t lo, hi; } osm_ranges[] = {
+ 	{ 0x179c8000, 0x179cc000 },     /* CPRh apc0 */
+ 	{ 0x179cc000, 0x179d0000 },     /* LMh */
+ 	{ 0x179d0000, 0x179d2000 },     /* APM, APCS common */
++	{ 0x01f63000, 0x01f66000 },     /* TCSR: MSS AXI halt ports q6/nc/modem (j0080g) */
++	{ 0x04080000, 0x04081000 },     /* MSS QDSP6SS (j0080g) */
++	{ 0x04180000, 0x04180040 },     /* MSS RMB (j0080g) */
+ };
+ 
+ static int
+-- 
+2.47.3
+
