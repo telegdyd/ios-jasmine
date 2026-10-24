@@ -1,0 +1,88 @@
+From a51cf75871618fa3a646b14cd1bedbd843277e6a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 23:04:45 +0200
+Subject: [PATCH] jasmine-j0085: Wi-Fi off before the modem stop (leave the AP,
+ WLFW WLAN_MODE OFF), as ath10k before remoteproc stop; j83-wlan hung on the
+ reboot with the modem AXI port unhalted
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 42 +++++++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index b91b573..5fc340f 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3837,6 +3837,13 @@ rmtfs_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t
+ static uint32_t w_node, w_port, w_board = 0xFF, w_bdf_seg;
+ static uint16_t w_txn = 1;
+ static bool w_msa_ind, w_cap_done, w_bdf_started, w_fw_ready, w_mission;
++/*
++ * j0085: Wi-Fi off before the modem stops, as Linux (ath10k leaves the AP and sends WLAN_MODE OFF,
++ * then remoteproc stops the modem). Stopping it under live Wi-Fi traffic left the modem's AXI port
++ * unhalted (j83-wlan: "halt modem port: ack 0 idle 0") and the reboot hung.
++ */
++static volatile bool w_off_asked, w_off_done;
++static uint32_t w_off_ms;
+ static int w_bdf_fi = -1;
+ static uint32_t w_bdf_len, w_bdf_off;
+ static const char *w_step = "not started";
+@@ -4236,6 +4243,11 @@ wlfw_rx(const uint8_t *d, uint32_t len)
+ 		}
+ 		break;
+ 	case WLFW_WLAN_MODE:
++		if (w_off_asked) {
++			LOG("t=%u ms: wlfw: wlan_mode off %s err %u", g_ms, ok ? "ok" : "FAILED", err);
++			w_off_done = true;
++			break;
++		}
+ 		LOG("t=%u ms: wlfw: wlan_mode mission %s err %u", g_ms, ok ? "ok" : "FAILED", err);
+ 		if (ok) {
+ 			w_mission = true;
+@@ -6969,6 +6981,27 @@ radio_poll(unsigned ms)
+ 		w_cap_retry_ms = 0;
+ 		w_simple(WLFW_CAP, "cap sent again");
+ 	}
++	if (w_off_asked && w_off_ms == 0) {
++		struct wmsg m;
++		w_off_ms = g_ms;
++		if (ce_up) {
++			w_teardown();                       /* leave the AP: vdev down, peer delete, vdev stop */
++			IOSleep(20);
++			(void)ce_poll();
++			htt_poll();
++			ce_up = false;                      /* no CE access from here on */
++		}
++		if (wm_new(&m, WLFW_WLAN_MODE)) {
++			wm_u32(&m, 0x01, 4);                /* QMI_WLFW_OFF_V01 */
++			wm_u8(&m, 0x10, 0);
++			wm_send(&m);
++			w_step = "wlan_mode off sent";
++		}
++	}
++	if (w_off_asked && !w_off_done && g_ms - w_off_ms > 1000) {
++		LOG("t=%u ms: wlfw: no answer to wlan_mode off", g_ms);
++		w_off_done = true;
++	}
+ 	if (!ce_up) {
+ 		return;
+ 	}
+@@ -8060,6 +8093,15 @@ topaz_modem_stop(bool panic)
+ 		return;
+ 	}
+ 	mss_up = false;
++	if (!panic && w_mission) {
++		unsigned ms = 0;
++		w_off_asked = true;                     /* the modem thread does it (it owns the CE and QMI) */
++		while (!w_off_done && ms < 1500) {
++			IODelay(1000);
++			ms++;
++		}
++		LOG("stop: wlan off %s after %u ms", w_off_done ? "done" : "not answered", ms);
++	}
+ 	mss_stopping = true;
+ 	uint32_t sk = mss_sk != NULL ? *mss_sk : 0;
+ 	if (mss_mk != NULL && mss_sk != NULL && !(sk & 1)) {
+-- 
+2.47.3
+
