@@ -1,9 +1,9 @@
-From f18eb6dbb64f0f074c96367e18d8d083918ca450 Mon Sep 17 00:00:00 2001
+From 34cafd8fa671c9c8cff5ed1fd8e1b6e900683ddd Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Sun, 25 Oct 2026 01:36:08 +0200
 Subject: [PATCH] jasmine-j0091: the leave stops a running scan first and waits
  for it (j90: the leave during wifid scan asserted in wlan_vdev.c), one log
- line per leave step
+ line per leave step; no wlan off wait on a crashed modem
 
 ---
  iokit/Kernel/arm/TopazModem.cpp | 81 +++++++++++++++++++++------------
