@@ -1,9 +1,10 @@
-# Wi-Fi on jasmine: handoff (2026-10-24, 22:15)
+# Wi-Fi on jasmine: handoff (2026-10-24, 23:45)
 
-Status: **Wi-Fi scans under iOS (j0081, round j81-wifi at 22:06).** The modem boots and stays up with the WLAN PD
-on, the WLAN firmware reaches mission mode, and with `wifi=1` the radio path runs: anoc2 SMMU identity bank,
-copy engines, HTC, WMI READY and passive scans (5-6 networks every 15 s). Not done yet: a MAC address for the
-firmware (it reports 00:00:00:00:00:00), the iOS glue (en0 / Apple80211 for wifid), making it the default.
+Status: **Wi-Fi works under iOS: joined, DHCP address, internet (round j86-wlan, 23:35, user-confirmed).**
+wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms, it rejoins by itself on boot),
+configd runs DHCP on en0, traffic both ways. The factory MAC comes from persist. Still test images only
+(`wifi=1` boot arg, nothing flashed). Open: the USB log/command port dies once en0 has an address (j86), so
+the reboot while joined (j0086) is still untested.
 Details of every round are in `jasmine/WIFI.md`; this file is the summary plus what is left.
 
 ## Where things are
@@ -63,6 +64,13 @@ Details of every round are in `jasmine/WIFI.md`; this file is the summary plus w
 | j0080y | step lines in `smmu_identity`; anoc2 SMMU on the command port (`r 0x16c0000`) |
 | j0080z | WCN3990 rails before the SMMU setup; the `rpm` command takes short keys (`KHz`, `uv`) |
 | j0081 | **no global TLB sync after the WLAN stream setup on jasmine** (it never returned; Linux does none there) |
+| j0082 | **factory MAC** from persist `/wlan_mac.bin` (read-only ext4 root-dir lookup over sweet_ufs); fixed address as fallback |
+| j0083 | en0 + Apple80211 (`topaz_sta_init`) on jasmine with `wifi=1` |
+| j0084 | data path diagnostics after a join: `wifi data:` every 10 s, the first 12 frames each way (drop or gate before default) |
+| j0085 | Wi-Fi off before the modem stop (superseded by j0086: its WLAN_MODE OFF asserted the firmware in wlan_vdev.c) |
+| j0086 | Wi-Fi off in ath10k order (teardown, VDEV_STOPPED, VDEV_DELETE, WLAN_MODE OFF); no mss_restart under an unhalted modem port |
+| tools (branch `jasmine`, 8fda077) | `mkadt.py --wlan`: the `/arm-io/wlan` node launchd needs to start wifid; `mkimg.sh` passes it when EXTRA_ARGS has `wifi=1` |
+| phone rootfs (23:19) | configd's default network configuration written to `/private/var/preferences/SystemConfiguration/preferences.plist` (Set "Automatic", service "Wi-Fi" on en0, DHCP + IPv6 automatic); configd never made it because it starts before en0 exists |
 
 Working sequence (j0080t log): MBA booted, metadata + MPSS authenticated, READY + HANDOVER at ~114 ms, GLINK
 IPCRTR + glink_ssr up, 40-42 QRTR services, rmtfs (modemst1/2, fsg, fsc), tftp (mcfg, wlanmdsp), pd-mapper,
@@ -131,12 +139,34 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 
 ## Next tasks, in order
 
-1. **MAC address**: WMI READY reports 00:00:00:00:00:00. Find where Linux/Android gets it on jasmine (ath10k
-   `mac-address` DT property / WLFW, Android's `wlan_mac.bin` / persist) and pass it (WMI pdev set base macaddr or
-   the vdev create address).
-2. **ath10k TxBF-on-disassoc fix** (Nura `kernel/0005`): do not reset the TxBF vdev param after the peer is gone,
-   or the HL.1.0 firmware asserts on disassociation.
-3. **iOS glue**: `topaz_sta_init()` (en0 + Apple80211 for wifid) is skipped on jasmine in `topaz_modem_init()`;
-   enable it now that scans work, then association.
-4. **Done means on the phone**: make it default (no boot args) and flash slot b with the user's OK; drop the
-   diagnostics (j0080o trace, j0080y SMMU step lines, step logs) or put them behind a boot arg.
+1. **USB log and command port die once Wi-Fi has an address** (j86-wlan, 23:35). The last radio line is the
+   DHCP exchange at t=33.7 s after the modem start; the USB log (169.254.7.2:5140) stopped ~1 s later, the
+   command port (5141) was unreachable at the end, yet iOS stayed responsive with internet over Wi-Fi (user).
+   So not a hang: the USB link `ue0` (192.168.7.2/24 + 169.254.7.2/16, set by the kernel) lost its routes or
+   addresses when en0 came up. Suspects: en0's IPv4 link-local / 169.254/16 route taking the 169.254.7.2 path,
+   the primary-interface change, or configd, now with a current Set (j85 wrote it) that has no service for
+   ue0, deconfiguring it. Check `ifconfig`/routes over the Wi-Fi address (sweetd 5143 listens on all
+   addresses?) or log route changes in the kernel; a fix is a configd service for ue0 (manual IPv4) in the Set,
+   or ordering ue0 below en0 without removing its routes. **Until fixed, a Wi-Fi round ends with the phone in
+   iOS and needs Power + Volume down for fastboot.**
+2. **Reboot while joined**, untested since j0086 (the j86 reboot never got a command port). j83 and j85 hung on the reboot after `halt modem port: ack 0 idle 0`
+   (j85 also: WLAN_MODE OFF -> firmware assert in wlan_vdev.c). j0086 orders the Wi-Fi off like ath10k and skips
+   mss_restart when a port does not halt. If it still hangs: log each step's WMI answers, compare with ath10k
+   `ath10k_core_stop` / `ath10k_snoc_wlan_disable`, and consider qcom_sysmon's SSCTL shutdown request (Linux sends
+   it before remoteproc stop; we do only the SMP2P stop bit).
+3. **Gray Wi-Fi icon** in the status bar (user, j86): probably the signal bars. Apple80211 RSSI (16) is answered
+   from the scan result and never updated, NOISE (17) is refused, no link-quality / RSSI-changed events are sent.
+   Keep RSSI current from received frames (or WMI peer stats), answer NOISE (firmware value or ~-95 dBm), send the
+   link-quality event on change. Less likely: iOS dims it when Wi-Fi is not the primary interface (ue0 is up too).
+4. **configd's default configuration on a fresh rootfs**: the live write (23:19) fixed this phone. For other
+   installs either put the same `preferences.plist` into the rootfs setup (`tools/sweet-root-tweaks.py` or the
+   install script), or make en0 exist before configd starts. Both versions are kept in
+   `ios-jasmine/research/wifi/` (gitignored): `configd-preferences-wifi.plist` (written, binary plist) and
+   `configd-preferences-orig.plist` (before: only System/HostNames + ComputerName "iPhone").
+5. Other Apple80211 requests wifid gets REFUSED for: PHY_MODE (14), RATE (8), MCS (57), PROTMODE (6), POWERSAVE (5),
+   INT_MIT (18), COUNTRY_CODE (51 get/set), 383, 386, 353, 346, 419, 422, HOST_AP_MODE (25). Answer the ones that
+   matter for the UI (rate, phy mode) once task 2 is done.
+6. Cosmetic: en0's link is named `wcn3988` (topaz's chip) and the ADT node says `jasmine,wcn3990`; name it per board.
+7. **Done means on the phone**: make Wi-Fi the default (no `wifi=1`, ADT wlan node always on jasmine), drop or gate
+   the diagnostics (j0080o trace, j0080y SMMU step lines, j0084 frame lines), build, and flash slot b **with the
+   user's OK**. Only after tasks 1 and 2 are solid: a reboot hang on the default image would need a button reset every time.

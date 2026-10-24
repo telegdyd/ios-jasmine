@@ -186,3 +186,9 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   delete, vdev stop), wait for WMI VDEV_STOPPED (0x5002, 400 ms at most), VDEV_DELETE (0x5002, tag 0x57),
   200 ms, CE off, WLAN_MODE OFF; stop waits up to 2.5 s. And when a modem port does not halt, mss_restart is
   not asserted (the board reset follows anyway): the two hangs both came after an unhalted modem port.
+- **j86-wlan (23:35): IP address and internet over Wi-Fi (user-confirmed in Settings and with a page).**
+  configd read the written Set: right after the join (t=30.1 s) en0 sent IPv6 ND and a DHCP DISCOVER
+  (`UDP 68 -> 67`); the address came. The user saw a **gray Wi-Fi icon** in the status bar. ~1 s after the
+  DHCP exchange (t=33.7 s) the USB log stopped and the command port was gone at the end, while iOS stayed
+  responsive (user): the USB link lost its path once en0 was configured (handoff task 1). The reboot test of
+  j0086 did not run; the phone was left in iOS.
