@@ -1,0 +1,270 @@
+From 519b198692def3e2016793b0bf385775a33e8c67 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 01:20:17 +0200
+Subject: [PATCH] jasmine-j0090: leave the AP in ath10k order with waits
+ (deauth + tx drain, VDEV_DOWN, PEER_DELETE until unmap/PEER_DELETE_RESP,
+ VDEV_STOP until VDEV_STOPPED) as a step machine; no scan/join during it; stop
+ scan before wlan off (j89c: back-to-back teardown while joined asserted in
+ wlan_vdev.c)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 135 ++++++++++++++++++++++++++------
+ 1 file changed, 110 insertions(+), 25 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 6b26ea5..ea0b1f9 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3845,6 +3845,7 @@ static bool w_msa_ind, w_cap_done, w_bdf_started, w_fw_ready, w_mission;
+ static volatile bool w_off_asked, w_off_done;
+ static uint32_t w_off_ms, w_off_step;
+ static bool w_vdev_stopped;                     /* WMI VDEV_STOPPED seen (j0086) */
++static bool w_peer_unmapped, w_peer_deleted;    /* HTT PEER_UNMAP, WMI PEER_DELETE_RESP seen (j0090) */
+ static int w_bdf_fi = -1;
+ static uint32_t w_bdf_len, w_bdf_off;
+ static const char *w_step = "not started";
+@@ -5461,6 +5462,10 @@ htt_rx(const uint8_t *p, uint32_t len)
+ 		htt_tx_compl(p, len);
+ 		return;
+ 	}
++	if (type == 0x04) {                         /* PEER_UNMAP (j0090: the leave waits for it) */
++		w_peer_unmapped = true;
++		return;
++	}
+ 	if (type == T2H_RX_IN_ORD_PADDR_IND && len >= 8) {
+ 		uint16_t n;
+ 		memcpy(&n, p + 6, 2);
+@@ -5971,6 +5976,8 @@ w_crypto_selftest(void)
+  * VDEV_INSTALL_KEY. Frames to and from the rest of the kernel are Ethernet; the radio's are
+  * native wifi (802.11 header without QoS + LLC/SNAP).
+  */
++#define CMD_STOP_SCAN           0x3002
++#define TAG_STOP_SCAN           0x4e
+ #define CMD_VDEV_START          0x5003
+ #define CMD_VDEV_UP             0x5005
+ #define CMD_VDEV_STOP           0x5006
+@@ -6005,7 +6012,7 @@ w_crypto_selftest(void)
+ #define FC_AUTH                 0xB0
+ #define FC_DEAUTH               0xC0
+ 
+-enum sta_state { S_IDLE, S_START, S_AUTH, S_ASSOC, S_4WAY, S_UP };
++enum sta_state { S_IDLE, S_START, S_AUTH, S_ASSOC, S_4WAY, S_UP, S_LEAVE };
+ static volatile enum sta_state s_state;
+ static volatile int s_result;                   /* of the last join: 0 joined, else an errno (EAUTH: passphrase) */
+ static volatile bool s_join_asked, s_leave_asked;
+@@ -6518,23 +6525,84 @@ w_eapol_rx(const uint8_t *e, size_t elen)
+ }
+ 
+ /* ---- the join, step by step from the modem thread */
++
++/*
++ * j0090: leaving in ath10k's order, each step after the firmware answered the last (j89c: VDEV_DOWN,
++ * PEER_DELETE and VDEV_STOP back to back with the peer up asserted in wlan_vdev.c): a deauth to the AP
++ * and the frames in flight out (mac80211 flushes around its deauth), VDEV_DOWN (ath10k_bss_disassoc),
++ * PEER_DELETE until the HTT peer unmap / PEER_DELETE_RESP (ath10k_peer_delete), VDEV_STOP until
++ * VDEV_STOPPED (ath10k_vdev_stop). A step machine in S_LEAVE, run by w_leave_poll after the CE poll:
++ * started from rx and event handlers too, it never polls the copy engines itself. No scan, join or
++ * wlan off step runs before it is back in S_IDLE.
++ */
++static enum sta_state l_from;
++static uint32_t l_step, l_ms, l_t0, l_tx_ms, l_peer_ms;
++static bool l_deauth;
++
+ static void
+ w_teardown(void)
+ {
+-	if (s_state >= S_START) {
+-		if (s_state >= S_4WAY) {
++	if (s_state == S_IDLE || s_state == S_LEAVE) {
++		return;
++	}
++	l_from = s_state;
++	s_state = S_LEAVE;
++	s_ptk_set = false;
++	if (l_from == S_UP) {
++		w_link(false);
++	}
++	l_deauth = false;
++	if (l_from >= S_ASSOC) {                    /* authenticated: tell the AP (reason 3, leaving) */
++		uint8_t f[26], *b = w_mgmt_hdr(f, FC_DEAUTH);
++		b[0] = 3;
++		b[1] = 0;
++		l_deauth = w_mgmt_tx(f, sizeof(f));
++	}
++	l_step = 1;
++	l_ms = l_t0 = g_ms;
++}
++
++static void
++w_leave_poll(void)
++{
++	if (s_state != S_LEAVE) {
++		return;
++	}
++	uint32_t dt = g_ms - l_ms;
++	if (l_step == 1) {
++		if ((tx_done < tx_sent || (l_deauth && dt < 20)) && dt < 200) {
++			return;
++		}
++		l_tx_ms = dt;
++		if (l_from >= S_4WAY) {                 /* VDEV_UP was sent */
+ 			w_vdev_simple(CMD_VDEV_DOWN, TAG_VDEV_DOWN);
+ 		}
+-		if (s_state >= S_AUTH) {
++		w_peer_unmapped = w_peer_deleted = false;
++		if (l_from >= S_AUTH) {                 /* the peer exists */
+ 			w_peer(CMD_PEER_DELETE, TAG_PEER_DELETE, false);
+ 		}
++		l_step = 2;
++		l_ms = g_ms;
++	} else if (l_step == 2) {
++		if (l_from >= S_AUTH && !w_peer_deleted && !(w_peer_unmapped && dt >= 100) && dt < 1000) {
++			return;
++		}
++		l_peer_ms = dt;
++		w_vdev_stopped = false;
+ 		w_vdev_simple(CMD_VDEV_STOP, TAG_VDEV_STOP);
++		l_step = 3;
++		l_ms = g_ms;
++	} else if (l_step == 3) {
++		if (!w_vdev_stopped && dt < 1000) {
++			return;
++		}
++		LOG("t=%u ms: leave from state %u in %u ms: tx out %u ms%s, peer %s %u ms, vdev %s %u ms", g_ms, l_from,
++		    g_ms - l_t0, l_tx_ms, l_deauth ? " (deauth sent)" : "",
++		    l_from < S_AUTH ? "none" : w_peer_deleted ? "deleted in" : w_peer_unmapped ? "unmapped in" : "NOT GONE after",
++		    l_peer_ms, w_vdev_stopped ? "stopped in" : "NOT STOPPED after", dt);
++		l_step = 0;
++		s_state = S_IDLE;
+ 	}
+-	if (s_state == S_UP) {
+-		w_link(false);
+-	}
+-	s_state = S_IDLE;
+-	s_ptk_set = false;
+ }
+ 
+ static void
+@@ -6615,7 +6683,7 @@ w_join_begin(void)
+ static void
+ w_assoc_mgmt_rx(const uint8_t *f, uint32_t len)
+ {
+-	if (len < 26 || s_state == S_IDLE || memcmp(f + 10, s_bssid, 6) != 0) {
++	if (len < 26 || s_state == S_IDLE || s_state == S_LEAVE || memcmp(f + 10, s_bssid, 6) != 0) {
+ 		return;
+ 	}
+ 	uint8_t fc = f[0];
+@@ -6695,8 +6763,11 @@ w_join_poll(void)
+ 		w_teardown();
+ 	}
+ 	if (s_join_asked && !scanning) {
++		if (s_state != S_IDLE) {
++			w_teardown();                       /* the old link first; the join once back in S_IDLE */
++			return;
++		}
+ 		s_join_asked = false;
+-		w_teardown();
+ 		w_join_begin();
+ 		return;
+ 	}
+@@ -6970,6 +7041,9 @@ wmi_rx(const uint8_t *d, uint32_t len)
+ 		w_vdev_stopped = true;
+ 		LOG("t=%u ms: wmi: vdev stopped", g_ms);
+ 		break;
++	case 0x6007:                                /* PEER_DELETE_RESP (j0090) */
++		w_peer_deleted = true;
++		break;
+ 	case 0x5001:                                /* VDEV_START_RESP */
+ 	case 0x6001:                                /* PEER_STA_KICKOUT */
+ 		w_join_event(id, d + 4, len - 4);
+@@ -6989,23 +7063,30 @@ radio_poll(unsigned ms)
+ 		w_simple(WLFW_CAP, "cap sent again");
+ 	}
+ 	/*
+-	 * j0086: in ath10k's order, each step after the firmware had its time: leave the AP (vdev down,
+-	 * peer delete, vdev stop) and wait for VDEV_STOPPED, delete the vdev (j85: WLAN_MODE OFF with the
+-	 * vdev still there asserted in wlan_vdev.c), then no more CE access and WLAN_MODE OFF.
++	 * j0086: in ath10k's order, each step after the firmware had its time: leave the AP (j0090: the
++	 * w_leave_poll steps) and stop a running scan (ath10k_scan_abort; j89c: wifid's next scan went out
++	 * between the vdev stop and the delete), delete the vdev (j85: WLAN_MODE OFF with the vdev still
++	 * there asserted in wlan_vdev.c), then no more CE access and WLAN_MODE OFF.
+ 	 */
+ 	if (w_off_asked && w_off_step == 0) {
+ 		w_off_step = 1;
+ 		w_off_ms = g_ms;
+-		w_vdev_stopped = false;
+-		if (ce_up && s_state >= S_START) {
+-			w_teardown();
+-		} else {
+-			w_vdev_stopped = true;              /* never started: nothing to stop */
++		if (ce_up) {
++			if (scanning) {
++				uint8_t m[4 + 16] = {}, *c = wmi_put_tlv(m, TAG_STOP_SCAN, 16);
++				c = put32(c, 0xA000 | 1);       /* requestor, as in the start */
++				c = put32(c, 0);
++				put32(c, 0x04000000);           /* WMI_SCAN_STOP_ALL */
++				(void)wmi_send(CMD_STOP_SCAN, m, sizeof(m));
++			}
++			w_teardown();                       /* (nothing when not joined) */
+ 		}
+ 	}
+-	if (w_off_step == 1 && (w_vdev_stopped || g_ms - w_off_ms > 400)) {
++	bool off_clear = !ce_up || (s_state == S_IDLE && !scanning);
++	if (w_off_step == 1 && (off_clear || g_ms - w_off_ms > 3000)) {
+ 		w_off_step = 2;
+-		LOG("t=%u ms: wlan off: vdev %s, deleting it", g_ms, w_vdev_stopped ? "stopped" : "not stopped in 400 ms");
++		LOG("t=%u ms: wlan off: %s, deleting the vdev", g_ms, off_clear ? "not joined (or left), no scan" :
++		    s_state != S_IDLE ? "the leave NOT DONE in 3 s" : "the scan NOT STOPPED in 3 s");
+ 		if (ce_up) {
+ 			(void)w_vdev_simple(CMD_VDEV_DELETE, TAG_VDEV_DELETE_CMD);
+ 		}
+@@ -7032,6 +7113,7 @@ radio_poll(unsigned ms)
+ 	}
+ 	(void)ce_poll();
+ 	htt_poll();
++	w_leave_poll();
+ 	if (scan_started && !api_ready) {
+ 		if (etxq_lock == NULL) {
+ 			etxq_lock = IOSimpleLockAlloc();
+@@ -7043,7 +7125,9 @@ radio_poll(unsigned ms)
+ 		}
+ 	}
+ 	if (api_ready) {
+-		w_join_poll();
++		if (!w_off_asked) {
++			w_join_poll();
++		}
+ 		w_tx_pump();
+ 	}
+ 	if (s_state == S_UP && g_ms >= data_stat_ms) {
+@@ -7053,7 +7137,8 @@ radio_poll(unsigned ms)
+ 		    tx_st[1], tx_st[2], tx_st[3], tx_st[4] + tx_st[5] + tx_st[6] + tx_st[7], tx_drop, htt_msdus, rx_data,
+ 		    rx_eapol, rx_up, rx_down, rx_nonllc);
+ 	}
+-	if (scan_started && !scanning && api_scan_asked && (s_state == S_IDLE || s_state == S_UP)) {
++	bool scan_ok = scan_started && !scanning && !w_off_asked && (s_state == S_IDLE || s_state == S_UP);
++	if (scan_ok && api_scan_asked) {
+ 		api_scan_asked = false;
+ 		next_scan_ms = 0;
+ 		scanning = scan_send_start();
+@@ -7061,7 +7146,7 @@ radio_poll(unsigned ms)
+ 			api_scans_done++;
+ 		}
+ 	}
+-	if (scan_started && !scanning && next_scan_ms != 0 && g_ms >= next_scan_ms) {
++	if (scan_ok && !scanning && next_scan_ms != 0 && g_ms >= next_scan_ms) {
+ 		next_scan_ms = 0;
+ 		scanning = scan_send_start();
+ 		LOG("t=%u ms: scan: passive scan %u %s", g_ms, scans + 1, scanning ? "requested" : "FAILED");
+@@ -8122,7 +8207,7 @@ topaz_modem_stop(bool panic)
+ 	if (!panic && w_mission) {
+ 		unsigned ms = 0;
+ 		w_off_asked = true;                     /* the modem thread does it (it owns the CE and QMI) */
+-		while (!w_off_done && ms < 2500) {
++		while (!w_off_done && ms < 6000) {      /* j0090: the leave's own waits come first (<= 2.2 s) */
+ 			IODelay(1000);
+ 			ms++;
+ 		}
+-- 
+2.47.3
+
