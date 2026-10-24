@@ -1,0 +1,162 @@
+From 346427e3abdbaeaab3b3a15461c4b36939f3d6d5 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 20:54:58 +0200
+Subject: [PATCH] jasmine-j0080x: q6v5_stop before reboot and panic reset
+ (SMP2P stop handshake, port halts, mss_restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/sweet_usb.c                      |  2 +
+ iokit/Kernel/arm/SweetPlatformExpert.cpp |  3 ++
+ iokit/Kernel/arm/TopazModem.cpp          | 52 +++++++++++++++++++++++-
+ 3 files changed, 56 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 91661cf..e4936f2 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1461,6 +1461,7 @@ extern int sweet_osm_cmd(char *line, char *out, size_t len);
+ extern const char *sweet_prof_cmd(const char *line);     /* osfmk/arm64/sweet_prof.c (j0057) */
+ extern const char *sweet_gpu_cmd(const char *line);      /* bsd/dev/sweet_gpu.c (j0060) */
+ extern const char *sweet_ddr_cmd(const char *line);      /* bsd/dev/sweet_ddr.c (j0064) */
++extern void topaz_modem_stop(bool panic);                /* iokit/Kernel/arm/TopazModem.cpp (j0080x) */
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+@@ -1544,6 +1545,7 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		sock_close(cs);
+ 		if (reboot) {
+ 			printf("SWEET USB: reboot requested over the command port\n");
++			topaz_modem_stop(false);        /* here, while the log still goes out; once */
+ 			ud_sleep_ms(300);       /* let the reply and the log line out */
+ 			reboot_kernel(RB_AUTOBOOT, NULL);
+ 		}
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 3974e2f..3aba724 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -26,6 +26,7 @@ extern "C" void sweet_gpu_start(void);
+ extern "C" void sweet_wdt_start(void);
+ extern "C" int sweet_pon_bootloader(void);
+ extern "C" uint32_t sweet_gold_clock(void);
++extern "C" void topaz_modem_stop(bool panic);
+ /* osfmk/arm64/sweet_osm.c: Gold clock via OSM + CPRh (sweetosm=) */
+ extern "C" void sweet_osm_init(void);
+ 
+@@ -206,10 +207,12 @@ SweetPlatformExpert::haltRestart(unsigned int type)
+ 		uint64_t end = mach_absolute_time() + (uint64_t)wait * 19200000ull;  /* 19.2 MHz timebase */
+ 		while (mach_absolute_time() < end) {
+ 		}
++		topaz_modem_stop(true);
+ 		sweet_reset_now();
+ 	}
+ 	case kPERestartCPU:
+ 	case kPEHaltCPU:
++		topaz_modem_stop(false);        /* q6v5_stop first: the reboots after j0080p/t froze */
+ 		sweet_reset_now();
+ 	default:
+ 		return IODTPlatformExpert::haltRestart(type);
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 99d24fb..4d60375 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6829,6 +6829,10 @@ svc_summary(void)
+ static void mba_started(void);
+ static void mba_handover(void);
+ 
++/* for topaz_modem_stop: the AP's master-kernel entry (bit 0 stop), the modem's slave-kernel (bit 3 stop-ack) */
++static volatile uint32_t *mss_mk, *mss_sk;
++static volatile bool mss_up, mss_stopping;
++
+ static void
+ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ {
+@@ -6843,12 +6847,15 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 	}
+ 	if (soc.jasmine) {
+ 		/* jasmine DT smp2p-mpss: the AP's item holds "master-kernel" (the stop bit), no IPA entries */
+-		(void)smp2p_add_out(out, "master-kernel", 0);
++		mss_mk = smp2p_add_out(out, "master-kernel", 0);
+ 	} else {
+ 		ipa_out = smp2p_add_out(out, "ipa", 0);
+ 	}
+ 	bool glink = false;
+ 	for (unsigned ms = 0; seconds == 0 || ms < seconds * 1000; ms++) {
++		if (mss_stopping) {
++			break;                          /* topaz_modem_stop: the reboot takes it from here */
++		}
+ 		if (ready && !glink) {
+ 			glink = glink_start(part);
+ 			if (!glink) {
+@@ -6877,6 +6884,7 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 		}
+ 		if (in != NULL && sk == NULL) {
+ 			sk = smp2p_find(in, "slave-kernel");
++			mss_sk = sk;
+ 		}
+ 		if (in != NULL && ipa_in == NULL) {
+ 			ipa_in = smp2p_find(in, "ipa");
+@@ -6890,6 +6898,7 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 				LOG("modem is up (MODEM READY)");
+ 				if (soc.jasmine) {
+ 					mba_started();
++					mss_up = true;
+ 				}
+ 			}
+ 			if ((sk_last & 4) && soc.jasmine) {
+@@ -7771,6 +7780,46 @@ mba_handover(void)
+ 	}
+ }
+ 
++/*
++ * q6v5_stop before a reboot or panic reset (jasmine): the SMP2P stop handshake as
++ * qcom_q6v5_request_stop (master-kernel bit 0 up, stop-ack on slave-kernel bit 3, 5 s; 200 ms on a
++ * panic as qcom_q6v5_panic), then q6v5_mba_reclaim's port halts and mss_restart. A crashed modem
++ * (FATAL) gets no handshake, as Linux skips it for a crashed remote. No clock or memory steps: the
++ * reset takes those back, and straight after a crash they took an SError (j0080q).
++ */
++extern "C" void
++topaz_modem_stop(bool panic)
++{
++	if (!soc.jasmine || !mss_up || mss_halt == NULL || mss_gcc == NULL) {
++		return;
++	}
++	mss_up = false;
++	mss_stopping = true;
++	uint32_t sk = mss_sk != NULL ? *mss_sk : 0;
++	if (mss_mk != NULL && mss_sk != NULL && !(sk & 1)) {
++		unsigned ms = 0, limit = panic ? 200 : 5000;
++		*mss_mk |= 1u;
++		mb();
++		smp2p_kick();
++		while (!(*mss_sk & 8) && ms < limit) {
++			IODelay(1000);
++			ms++;
++		}
++		sk = *mss_sk;
++		*mss_mk &= ~1u;
++		mb();
++		smp2p_kick();
++		LOG("stop: slave-kernel %08x after %u ms (%s)", sk, ms, (sk & 8) ? "stop-ack" : "no stop-ack");
++	} else {
++		LOG("stop: slave-kernel %08x%s, no stop handshake", sk, (sk & 1) ? " FATAL" : "");
++	}
++	mss_halt_port(MSS_HALT_Q6, "q6");
++	mss_halt_port(MSS_HALT_MODEM, "modem");
++	mss_halt_port(MSS_HALT_NC, "nc");
++	w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) | 1u);
++	LOG("stop: modem ports halted, mss_restart held");
++}
++
+ /*
+  * Wait for the firmware partition (sweet_ufs comes up with the root device) and map SMEM, the
+  * pool, APCS and the TCSR mutex. Once, for whichever of TopazModem / TopazAudio comes first;
+@@ -7944,4 +7993,5 @@ topaz_modem_init(void)
+ 
+ #else
+ extern "C" void topaz_modem_init(void) {}
++extern "C" void topaz_modem_stop(bool) {}
+ #endif
+-- 
+2.47.3
+
