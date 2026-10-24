@@ -102,3 +102,40 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 - The modem's diag is a QRTR client (service 4097), not GLINK `DIAG*` channels. j0080u publishes the diag
   servers, j0080v answers its 3-byte feature mask, j0080w logs `modem alive` each minute. j80w: alive to t=480000,
   no FATAL. Details and findings: `jasmine/WIFI-HANDOFF.md`.
+
+## 2026-10-24 20:49-21:30 (j0080x-y): WLAN PD back on, safe stop, wifi=1 hangs in the SMMU setup
+
+- j80w-modem1 (20:50, `modem=1 modem_delay=45`, WLAN PD on): chip 140, BDF (end-segment CRC rejected, not
+  fatal, as ath10k), FW_READY, **mission mode at 2.5 s, modem alive to t=180000** (end of the 300 s log), no
+  FATAL. The 13-17 s deaths with the WLAN firmware waiting were the diag starvation too. Reboot and park fine.
+- j0080x `topaz_modem_stop(panic)`: q6v5_stop on the reboot (command-port reboot, `haltRestart` restart/halt)
+  and panic paths: master-kernel bit 0, wait for slave-kernel bit 3 (5 s, 200 ms on a panic), clear, halt
+  q6/modem/nc ports, assert mss_restart. No handshake after a FATAL (as Linux for a crashed remote), no clock or
+  memory steps. Not yet exercised on the phone (the j80x round never booted the modem, below).
+- j80x-wifi (21:02, `wifi=1`): `smmu: sCR0 00200626 ID0 48017a06 ID1 40008015: 6 SMRs, 21 CBs, page 1000 x32`,
+  then nothing more from the modem thread for 5 min; no panic, the rest of iOS ran, the command-port reboot
+  worked. So one access in `smmu_identity` after the ID reads never completes. Not writeback addressing (the
+  disassembly has plain `ldr/str [x, #imm]` only). Linux on Nura sees the same SMMU (6 groups, 21 CBs).
+- j0080y: a log line after each step of `smmu_identity`, and 0x16c0000-0x1700000 on the command port (`r`).
+- j80y-wifi (21:21): every step lands and reads back (CB4 SCTLR e0, S2CR0 4, SMR0 80011a00), then the
+  **global TLB sync** (sTLBGSYNC 0x70 / sTLBGSTATUS 0x74) never returns. The rest of iOS keeps running.
+- j80y-aggr (21:30, `modem_delay=90`): the live aggre2 NoC vote could not be sent (the `rpm` parser wanted
+  4-char keys, `KHz` is 3: fixed in j0080z). It would not have mattered: aggre2 (downstream anoc2 SMMU clock
+  `AGGR2_NOC_SMMU_CLK`) is in the RPM scaling handoff, and before scaling is on the RPM ignores AP rate votes
+  (UFS and USB run over aggre2 anyway). Same sync hang; this time the phone went down by itself ~45 s later
+  and came back in fastboot (watchdog reset, probably); parked fine.
+- j0080z: WCN3990 rails before the SMMU setup. j80z-wifi (21:40): rails on, **sync still hangs**. Not power.
+- j0080aa: no global sync on jasmine. Linux's `arm_smmu_write_sme` does none after SMR/S2CR writes; the global
+  sync only follows TLB maintenance (none issued, the bank does not translate) or the SMMU reset. If the WLAN
+  TBU itself is unreachable, CE DMA will show it (no HTC READY) without a CPU hang, since CE is polled in memory.
+- The CI applies `xnu/patches/*.patch` in glob order and **skips a patch that fails with only a warning**
+  (`Skipping patch ... already upstream, previously applied, or malformed`): `j0080aa` sorted after `j0080`
+  and was skipped, so j80aa (21:53) ran the j0080z kernel (same hang). Renamed `j0081`. Check the build log
+  for `Skipping patch` (4 blacktop patches for other macOS versions are always skipped, that is normal).
+- **j81-wifi (22:06): Wi-Fi scans under iOS.** SMMU `WLAN identity ... CB4 SMR0 -> OK`, modem READY at 108 ms,
+  FW_READY 2.5 s, mission, CE 12 rings, HTC READY (2 credits x 2184, 22 endpoints), HTT/WMI connected, WMI
+  SERVICE_READY + INIT + READY (fw MAC 00:00:00:00:00:00: no MAC given yet), chan list 37, passive scan:
+  scan 1 at 7.3 s 5 networks, scan 2 6 networks, every 15 s after.
+  Modem alive to t=180000 with the radio running. **Safe stop on the reboot**: `stop: slave-kernel 0000000e
+  after 207 ms (stop-ack)`, `modem ports halted, mss_restart held`; fastboot and park fine (80%, charging).
+  `modem-round.sh` now also records the log across the reboot (`<log>-reboot.txt`).
