@@ -169,3 +169,20 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 - j0085: Wi-Fi off before the modem stop, as Linux (ath10k leaves the AP and sends WLFW WLAN_MODE OFF, then
   remoteproc stops the modem): `topaz_modem_stop` (not on a panic) asks the modem thread for `w_teardown()`
   and WLAN_MODE OFF (mode 4), waits up to 1.5 s for the answer, then the stop handshake as before.
+- **j85-wlan (23:13, 420 s)**: wifid rejoined TelekNet by itself (keys in 51 ms). j0084's counters: rx works
+  (478 frames up to en0: ARP, IGMP, SSDP/WS-Discovery multicast), but **`tx queued 0`**: iOS never sent a
+  frame (redwood_net: `0 frames sent`). Cause: configd had **no network service at all** —
+  `/private/var/preferences/SystemConfiguration/preferences.plist` held only the host names (no Sets, no
+  NetworkServices, no CurrentSet), while `NetworkInterfaces.plist` already named en0 (IEEE80211, builtin,
+  `IOPathMatch .../RedwoodWLANController/RedwoodWLAN`). configd starts ~45 s before en0 exists
+  (`modem_delay`), so it never made the default configuration. Written live over sweet_netfs (23:19, the
+  original kept in the session scratchpad): one Set "Automatic" (CurrentSet) with a "Wi-Fi" service for en0
+  (Interface DeviceName en0 / Hardware AirPort / Type Ethernet, IPv4 DHCP, IPv6 Automatic, ServiceOrder).
+  Read by configd on the next boot; not yet tested. No kill/launchctl/scutil on the phone to restart configd.
+- j85 reboot: j0085 sent WLAN_MODE OFF 20 ms after the teardown; the WLAN firmware asserted at once
+  (`err_qdi.c:459:EF:wlan_process:1:cmnos_thread.c:3285:Asserted in wlan_vdev.c`), modem FATAL, no
+  answer, `halt modem port: ack 0 idle 0` again, hang; the user's reset at ~23:25, parked 67%.
+- j0086: Wi-Fi off in ath10k's order, one step per poll with the firmware's time: teardown (vdev down, peer
+  delete, vdev stop), wait for WMI VDEV_STOPPED (0x5002, 400 ms at most), VDEV_DELETE (0x5002, tag 0x57),
+  200 ms, CE off, WLAN_MODE OFF; stop waits up to 2.5 s. And when a modem port does not halt, mss_restart is
+  not asserted (the board reset follows anyway): the two hangs both came after an unhalted modem port.
