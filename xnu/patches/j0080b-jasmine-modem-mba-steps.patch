@@ -1,0 +1,95 @@
+From dd2f19020ee2c2a580d49439ce8abf233b04f1bc Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 06:26:57 +0200
+Subject: [PATCH] jasmine-j0080b: modem MBA boot diagnostics: a log line per
+ QDSP6 power-up step, modem_delay=S (start after the USB log is up),
+ modem_stop=1 (stop before the power-up)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 83fb666..998f680 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6807,14 +6807,19 @@ q6_power_up(void)
+ {
+ 	uint32_t val;
+ 
++	/* a line per step (j0080b): the SError of the first test came somewhere in here */
++	LOG("mba: q6 1 strap/reset: STRAP_ACC %08x RESET %08x XO_CBCR %08x", r32(q6ss, Q6SS_STRAP_ACC), r32(q6ss, Q6SS_RESET),
++	    r32(q6ss, Q6SS_XO_CBCR));
+ 	w32(q6ss, Q6SS_STRAP_ACC, Q6SS_ACC_OVERRIDE);
+ 	val = r32(q6ss, Q6SS_RESET) | Q6SS_CORE_ARES | Q6SS_BUS_ARES_EN | Q6SS_STOP_CORE;
+ 	w32(q6ss, Q6SS_RESET, val);
++	LOG("mba: q6 2 xo cbcr");
+ 	w32(q6ss, Q6SS_XO_CBCR, r32(q6ss, Q6SS_XO_CBCR) | 1u);
+ 	if (!mss_poll(q6ss, Q6SS_XO_CBCR, Q6SS_CBCR_CLKOFF, 0, 200)) {
+ 		LOG("mba: QDSP6 xo cbcr stays off (%08x)", r32(q6ss, Q6SS_XO_CBCR));
+ 		return false;
+ 	}
++	LOG("mba: q6 3 BHS on (XO_CBCR %08x)", r32(q6ss, Q6SS_XO_CBCR));
+ 	val = r32(q6ss, Q6SS_PWR_CTL) | Q6SS_BHS_ON;
+ 	w32(q6ss, Q6SS_PWR_CTL, val);
+ 	val |= r32(q6ss, Q6SS_PWR_CTL);
+@@ -6823,12 +6828,14 @@ q6_power_up(void)
+ 		LOG("mba: BHS_EN_REST_ACK not set (%08x)", r32(q6ss, Q6SS_BHS_STATUS));
+ 		return false;
+ 	}
++	LOG("mba: q6 4 LDO bypass, QMC clamp off (BHS_STATUS %08x)", r32(q6ss, Q6SS_BHS_STATUS));
+ 	val |= Q6SS_LDO_BYP;
+ 	w32(q6ss, Q6SS_PWR_CTL, val);
+ 	val = r32(q6ss, Q6SS_PWR_CTL) & ~Q6SS_CLAMP_QMC_MEM;
+ 	w32(q6ss, Q6SS_PWR_CTL, val);
+ 	val |= Q6SS_L2DATA_STBY_N | Q6SS_SLP_RET_N;
+ 	w32(q6ss, Q6SS_PWR_CTL, val);
++	LOG("mba: q6 5 memories (PWR_CTL %08x)", r32(q6ss, Q6SS_PWR_CTL));
+ 	val = r32(q6ss, Q6SS_MEM_PWR_CTL);
+ 	for (int i = 28; i >= 0; i--) {             /* L1, L2, ETB and JU memories one at a time */
+ 		val |= 1u << i;
+@@ -6836,13 +6843,17 @@ q6_power_up(void)
+ 		val |= r32(q6ss, Q6SS_MEM_PWR_CTL);
+ 		IODelay(1);
+ 	}
++	LOG("mba: q6 6 clamps off (MEM_PWR_CTL %08x)", r32(q6ss, Q6SS_MEM_PWR_CTL));
+ 	val = r32(q6ss, Q6SS_PWR_CTL) & ~Q6SS_CLAMP_WL;
+ 	w32(q6ss, Q6SS_PWR_CTL, val);
+ 	val &= ~Q6SS_CLAMP_IO;
+ 	w32(q6ss, Q6SS_PWR_CTL, val);
++	LOG("mba: q6 7 core out of reset, clock on");
+ 	w32(q6ss, Q6SS_RESET, r32(q6ss, Q6SS_RESET) & ~Q6SS_CORE_ARES);
+ 	w32(q6ss, Q6SS_GFMUX_CTL, r32(q6ss, Q6SS_GFMUX_CTL) | Q6SS_CLK_ENABLE);
++	LOG("mba: q6 8 start core (GFMUX %08x RESET %08x)", r32(q6ss, Q6SS_GFMUX_CTL), r32(q6ss, Q6SS_RESET));
+ 	w32(q6ss, Q6SS_RESET, r32(q6ss, Q6SS_RESET) & ~Q6SS_STOP_CORE);
++	LOG("mba: q6 9 core running, waiting for the PBL");
+ 
+ 	uint32_t pbl = 0;
+ 	for (unsigned n = 0; n <= 1000 && pbl == 0; n++) {
+@@ -7006,6 +7017,11 @@ modem_boot_mba(void)
+ 			goto fail;
+ 		}
+ 		w32(rmb, RMB_MBA_IMAGE, (uint32_t)MBA_PA);
++		uint32_t stop = 0;
++		if (PE_parse_boot_argn("modem_stop", &stop, sizeof(stop)) && stop == 1) {
++			LOG("mba: modem_stop=1: stopping before the QDSP6 power-up");
++			goto fail;
++		}
+ 		if (!q6_power_up()) {
+ 			goto fail;
+ 		}
+@@ -7234,6 +7250,11 @@ topaz_modem_thread(void *arg __unused, wait_result_t wr __unused)
+ 	unsigned watch = 0;                         /* 0: serve the modem for the whole session */
+ 
+ 	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
++	unsigned delay = 0;                         /* modem_delay=S: start late, e.g. once the USB log is connected */
++	if (PE_parse_boot_argn("modem_delay", &delay, sizeof(delay)) && delay != 0) {
++		LOG("modem_delay=%u: waiting", delay);
++		IOSleep(delay * 1000);
++	}
+ 	(void)smem_map;
+ 	(void)pool_map;
+ 	if (!topaz_soc_map()) {
+-- 
+2.47.3
+
