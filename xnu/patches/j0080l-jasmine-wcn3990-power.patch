@@ -1,0 +1,61 @@
+From baeda1cc1a659f48567530d044a1730092f56c8f Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 17:29:18 +0200
+Subject: [PATCH] jasmine-j0080l: WCN3990 powered before the modem boot (pm660
+ RPM L5/L9/L6/L19, ath10k snoc order)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 2649d4c..96d9cef 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6662,6 +6662,33 @@ extern "C" uint32_t sweet_gcc_measure_mhz(uint32_t sel);
+ #define RPM_LEVEL_TURBO     0x180
+ #define RPM_CLIENT_MODEM    1
+ 
++/*
++ * WCN3990 power (DT wifi@18800000 supplies, ath10k snoc wcn3990 vreg table and order): pm660 RPM LDOs,
++ * microvolts then enable, active set as qcom_smd-regulator. The RF reference clock (rf_clk1_pin) is
++ * already on from the RPM clock handoff. The modem's WLAN PD starts with the modem: unpowered, it hogs
++ * the modem until dog_hb fires (j0080j/k).
++ */
++extern "C" bool sweet_rpm_kvp(unsigned sets, uint32_t type, uint32_t id, uint32_t key, uint32_t value);
++#define RPM_LDOA            0x616f646cu         /* "ldoa" */
++#define RPM_KEY_SWEN        0x6e657773u         /* "swen" */
++#define RPM_KEY_UV          0x00007675u         /* "uv" */
++
++static bool
++wcn_power_on(void)
++{
++	static const struct { uint32_t ldo, uv; const char *name; } vreg[] = {
++		{5, 800000, "vdd-0.8-cx-mx"}, {9, 1800000, "vdd-1.8-xo"}, {6, 1300000, "vdd-1.3-rfa"}, {19, 3300000, "vdd-3.3-ch0"},
++	};
++	bool ok = true;
++	for (unsigned i = 0; i < sizeof(vreg) / sizeof(vreg[0]); i++) {
++		bool v = sweet_rpm_kvp(1, RPM_LDOA, vreg[i].ldo, RPM_KEY_UV, vreg[i].uv) &&
++		    sweet_rpm_kvp(1, RPM_LDOA, vreg[i].ldo, RPM_KEY_SWEN, 1);
++		LOG("wcn3990: %s (pm660 L%u) %u uV: %s", vreg[i].name, vreg[i].ldo, vreg[i].uv, v ? "on" : "FAILED");
++		ok = ok && v;
++	}
++	return ok;
++}
++
+ #define MSS_QDSP6_PA        0x04080000ull
+ #define MSS_RMB_PA          0x04180000ull
+ #define MSS_HALT_PA         0x01F60000ull
+@@ -7435,6 +7462,9 @@ topaz_modem_thread(void *arg __unused, wait_result_t wr __unused)
+ 		LOG("wifi: no SMMU stream for WLAN, the radio stays off");
+ 		wifi_on = 0;
+ 	}
++	if (soc.jasmine) {
++		(void)wcn_power_on();
++	}
+ 	if (soc.jasmine ? modem_boot_mba() : modem_boot()) {
+ 		modem_watch(smem_partition(0, 1), watch);
+ 	}
+-- 
+2.47.3
+

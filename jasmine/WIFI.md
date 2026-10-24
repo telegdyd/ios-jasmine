@@ -19,6 +19,21 @@ Test images only: nothing flashed, slot b unchanged. Phone lock: the usual `phon
 - j0080g halt-port log, `modem_pulse=1`, TCSR halt/QDSP6SS/RMB open to the command port `r`/`w` (with `sweetosm=1`).
 - j0080h MBA bytes in DRAM checked (uncached read-back + crc32).
 
+## 2026-10-24 afternoon: the modem boots, GLINK and the QMI services come up
+
+- **j0080i** (the SError): the "QDSP6 started" log line read QDSP6SS PWR_CTL/MEM_PWR_CTL/RESET after STOP_CORE
+  was cleared, and the SError was taken in the next IOLog. Only RMB is read after the start now. MBA boots, metadata
+  and all MPSS segments authenticate, READY + HANDOVER 114 ms after the start, proxy votes dropped.
+- **j0080j**: the modem's GLINK TX FIFO (SMEM item 480) is in the partition's *cached* list, which our `smem_get`
+  never searched (mainline `qcom_smem_get_private` does). With it: IPCRTR up, qrtr HELLO, 42 services, pd-mapper,
+  tftp (modem_pr/mcfg, wlanmdsp.mbn), rmtfs (modemst1/2, fsg, fsc), WLFW 0x45 at ~840 ms: chip_id 140, fw
+  WLAN.HL.1.0.1.c2-00811. host_cap is rejected (err 1, the `snoc-host-cap-8bit-quirk`), then "waiting MSA_READY ind"
+  (the `no-msa-ready-indicator` quirk).
+- The modem then goes FATAL: `dog_hb.c:266: Task starvation: diag, ping: 4` at 13 s with our WLFW handshake
+  (WCN3990 unpowered), at 101 s without it (**j0080k**: no WLFW handshake on jasmine while the radio is off).
+  Nothing happens on GLINK after 8.8 s. Next: does Linux's modem (r109 shell, no rmtfs/tftp/diag) live longer?
+- WCN3990 power for the radio step (pm660 RPM LDOs): L5 0.8 V cx/mx, L9 1.8 V xo, L6 1.3 V rfa, L19 3.3 V ch0.
+
 ## Result so far (2026-10-24 06:20-08:20): the PBL kills the MSS register bus
 
 Every step works up to the core start: FAT index (429 files), MBA copy (DRAM crc = file crc), cx/mx votes, all MSS
