@@ -1,0 +1,151 @@
+From 07af8223f5f4281ca90e80e764066acd6e66fad0 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 23:27:54 +0200
+Subject: [PATCH] jasmine-j0086: Wi-Fi off in ath10k order (teardown, wait
+ VDEV_STOPPED, vdev delete, then WLAN_MODE OFF; j85 asserted in wlan_vdev.c);
+ no mss_restart under a port that did not halt (j83/j85 reboot hangs)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 65 +++++++++++++++++++++++++--------
+ 1 file changed, 50 insertions(+), 15 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 5fc340f..6b26ea5 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3843,7 +3843,8 @@ static bool w_msa_ind, w_cap_done, w_bdf_started, w_fw_ready, w_mission;
+  * unhalted (j83-wlan: "halt modem port: ack 0 idle 0") and the reboot hung.
+  */
+ static volatile bool w_off_asked, w_off_done;
+-static uint32_t w_off_ms;
++static uint32_t w_off_ms, w_off_step;
++static bool w_vdev_stopped;                     /* WMI VDEV_STOPPED seen (j0086) */
+ static int w_bdf_fi = -1;
+ static uint32_t w_bdf_len, w_bdf_off;
+ static const char *w_step = "not started";
+@@ -4793,6 +4794,8 @@ htc_rx(uint32_t c, const uint8_t *d, uint32_t len)
+ #define CMD_START_SCAN      0x3001
+ #define CMD_SCAN_CHAN_LIST  0x3003
+ #define CMD_VDEV_CREATE     0x5001
++#define CMD_VDEV_DELETE     0x5002
++#define TAG_VDEV_DELETE_CMD 0x57
+ #define TAG_ARRAY_UINT32    0x10
+ #define TAG_ARRAY_BYTE      0x11
+ #define TAG_ARRAY_STRUCT    0x12
+@@ -6963,6 +6966,10 @@ wmi_rx(const uint8_t *d, uint32_t len)
+ 	case WMI_EV_MGMT_RX:
+ 		scan_mgmt_rx(d + 4, len - 4);
+ 		break;
++	case 0x5002:                                /* VDEV_STOPPED */
++		w_vdev_stopped = true;
++		LOG("t=%u ms: wmi: vdev stopped", g_ms);
++		break;
+ 	case 0x5001:                                /* VDEV_START_RESP */
+ 	case 0x6001:                                /* PEER_STA_KICKOUT */
+ 		w_join_event(id, d + 4, len - 4);
+@@ -6981,24 +6988,42 @@ radio_poll(unsigned ms)
+ 		w_cap_retry_ms = 0;
+ 		w_simple(WLFW_CAP, "cap sent again");
+ 	}
+-	if (w_off_asked && w_off_ms == 0) {
+-		struct wmsg m;
++	/*
++	 * j0086: in ath10k's order, each step after the firmware had its time: leave the AP (vdev down,
++	 * peer delete, vdev stop) and wait for VDEV_STOPPED, delete the vdev (j85: WLAN_MODE OFF with the
++	 * vdev still there asserted in wlan_vdev.c), then no more CE access and WLAN_MODE OFF.
++	 */
++	if (w_off_asked && w_off_step == 0) {
++		w_off_step = 1;
+ 		w_off_ms = g_ms;
++		w_vdev_stopped = false;
++		if (ce_up && s_state >= S_START) {
++			w_teardown();
++		} else {
++			w_vdev_stopped = true;              /* never started: nothing to stop */
++		}
++	}
++	if (w_off_step == 1 && (w_vdev_stopped || g_ms - w_off_ms > 400)) {
++		w_off_step = 2;
++		LOG("t=%u ms: wlan off: vdev %s, deleting it", g_ms, w_vdev_stopped ? "stopped" : "not stopped in 400 ms");
+ 		if (ce_up) {
+-			w_teardown();                       /* leave the AP: vdev down, peer delete, vdev stop */
+-			IOSleep(20);
+-			(void)ce_poll();
+-			htt_poll();
+-			ce_up = false;                      /* no CE access from here on */
++			(void)w_vdev_simple(CMD_VDEV_DELETE, TAG_VDEV_DELETE_CMD);
+ 		}
++		w_off_ms = g_ms;
++	}
++	if (w_off_step == 2 && g_ms - w_off_ms > 200) {
++		struct wmsg m;
++		w_off_step = 3;
++		ce_up = false;                          /* no CE access from here on */
+ 		if (wm_new(&m, WLFW_WLAN_MODE)) {
+ 			wm_u32(&m, 0x01, 4);                /* QMI_WLFW_OFF_V01 */
+ 			wm_u8(&m, 0x10, 0);
+ 			wm_send(&m);
+ 			w_step = "wlan_mode off sent";
+ 		}
++		w_off_ms = g_ms;
+ 	}
+-	if (w_off_asked && !w_off_done && g_ms - w_off_ms > 1000) {
++	if (w_off_step == 3 && !w_off_done && g_ms - w_off_ms > 1000) {
+ 		LOG("t=%u ms: wlfw: no answer to wlan_mode off", g_ms);
+ 		w_off_done = true;
+ 	}
+@@ -7639,17 +7664,18 @@ mss_votes(bool on)
+ }
+ 
+ /* q6v5proc_halt_axi_port */
+-static void
++static bool
+ mss_halt_port(uint32_t off, const char *name)
+ {
+ 	if (r32(mss_halt, off + 8) != 0) {
+-		return;                                 /* already idle */
++		return true;                            /* already idle */
+ 	}
+ 	w32(mss_halt, off, 1);
+ 	bool ack = mss_poll(mss_halt, off + 4, 1, 1, 100000);
+ 	uint32_t idle = r32(mss_halt, off + 8);
+ 	w32(mss_halt, off, 0);
+ 	LOG("mba: halt %s port: ack %u idle %u", name, ack, idle);
++	return ack || idle != 0;
+ }
+ 
+ /* q6v5_mba_reclaim after a failed boot: ports halted, modem in reset, clocks off, memory back */
+@@ -8096,7 +8122,7 @@ topaz_modem_stop(bool panic)
+ 	if (!panic && w_mission) {
+ 		unsigned ms = 0;
+ 		w_off_asked = true;                     /* the modem thread does it (it owns the CE and QMI) */
+-		while (!w_off_done && ms < 1500) {
++		while (!w_off_done && ms < 2500) {
+ 			IODelay(1000);
+ 			ms++;
+ 		}
+@@ -8121,9 +8147,18 @@ topaz_modem_stop(bool panic)
+ 	} else {
+ 		LOG("stop: slave-kernel %08x%s, no stop handshake", sk, (sk & 1) ? " FATAL" : "");
+ 	}
+-	mss_halt_port(MSS_HALT_Q6, "q6");
+-	mss_halt_port(MSS_HALT_MODEM, "modem");
+-	mss_halt_port(MSS_HALT_NC, "nc");
++	bool halted = mss_halt_port(MSS_HALT_Q6, "q6");
++	halted = mss_halt_port(MSS_HALT_MODEM, "modem") && halted;
++	halted = mss_halt_port(MSS_HALT_NC, "nc") && halted;
++	if (!halted) {
++		/*
++		 * j0086: a reset under a bus port with transfers outstanding wedged the bus (j83/j85-wlan: the
++		 * reboot hung after "halt modem port: ack 0 idle 0"); the board reset that follows resets the
++		 * modem too
++		 */
++		LOG("stop: a modem port did not halt, mss_restart left alone");
++		return;
++	}
+ 	w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) | 1u);
+ 	LOG("stop: modem ports halted, mss_restart held");
+ }
+-- 
+2.47.3
+
