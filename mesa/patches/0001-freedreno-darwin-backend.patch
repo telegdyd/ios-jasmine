@@ -1,6 +1,6 @@
-From c5cb1ff78898fd4c8c0d8fa039a489a17ff9bc50 Mon Sep 17 00:00:00 2001
+From de5e6a0ed28a0d7c72c8c4db8ac24600c42268ea Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Sat, 24 Oct 2026 03:44:41 +0200
+Date: Sat, 24 Oct 2026 04:16:41 +0200
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -11,7 +11,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/darwin/darwin_device.c      |  158 ++
  src/freedreno/drm/darwin/darwin_pipe.c        |  252 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  123 +
- src/freedreno/drm/darwin/sweet_profile.c      |  138 ++
+ src/freedreno/drm/darwin/sweet_profile.c      |  139 ++
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
  src/freedreno/drm/freedreno_priv.h            |    6 +
@@ -21,15 +21,15 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 2093 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 2108 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++
- src/gallium/frontends/sweetgl/sweetgl.c       |  451 ++++
- src/gallium/frontends/sweetgl/sweetgl.h       |   97 +
+ src/gallium/frontends/sweetgl/sweetgl.c       |  475 ++++
+ src/gallium/frontends/sweetgl/sweetgl.h       |  101 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
- .../frontends/sweetgl/sweetgpu_gltest.c       |  602 +++++
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  663 ++++++
  src/gallium/meson.build                       |    5 +
- src/util/sweet_profile.h                      |   62 +
- 24 files changed, 6207 insertions(+), 6 deletions(-)
+ src/util/sweet_profile.h                      |   63 +
+ 24 files changed, 6313 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -880,10 +880,10 @@ index 0000000..12ea7c8
 +#endif /* DARWIN_PRIV_H_ */
 diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
 new file mode 100644
-index 0000000..9d123ba
+index 0000000..292ed2d
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/sweet_profile.c
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,139 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT */
 +#include "util/sweet_profile.h"
@@ -913,7 +913,8 @@ index 0000000..9d123ba
 +   "program-hit", "program-miss", "upload-requested-bytes", "batch-draws",
 +   "batch-0", "batch-1", "batch-2-4", "batch-5+",
 +   "flush-barrier", "flush-kick", "flush-frame", "flush-resource-dependency",
-+   "flush-capacity", "flush-context", "flush-other"
++   "flush-capacity", "flush-context", "flush-other",
++   "barrier-needed", "barrier-skipped"
 +};
 +
 +__attribute__((constructor)) static void
@@ -1690,10 +1691,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..92a594d
+index 0000000..a3cf99e
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,2093 @@
+@@ -0,0 +1,2108 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1765,6 +1766,7 @@ index 0000000..92a594d
 +#define MAX_CTX 32
 +
 +static int trace_on;
++static bool active_barriers = true; /* SWEETCA_ACTIVE_BARRIERS=0: comparison only */
 +
 +static void
 +sca_log(const char *fmt, ...)
@@ -2845,11 +2847,22 @@ index 0000000..92a594d
 +         texel_scale(c, fbtex, p->fb_scale_loc);
 +   }
 +   if (fbtex) {
++      uint32_t bound_feedback = 0;
 +      for (int u = 0; u < UNITS; u++) {
-+         if (c->held[u] == fbtex) {
++         if (c->held[u] == fbtex)
++            bound_feedback |= UINT32_C(1) << u;
++      }
++      if (bound_feedback) {
++         /* The reserved fetch unit stays bound between programs. A binding
++          * alone does not mean this draw reads it. Mesa tracks active samplers
++          * across program switches, relinks, arrays and uniform-unit changes.
++          * Keep the barrier for any active feedback, including non-fetch reads.
++          */
++         bool needed = (bound_feedback & sgl_sampled_2d_units(c->gl)) != 0;
++         SWEET_EVENT(needed ? SPE_BARRIER_NEEDED : SPE_BARRIER_SKIPPED, 1);
++         if (needed || !active_barriers) {
 +            SWEET_SCOPE(sp_barrier, SP_PREP_BARRIER);
 +            sgl_texture_barrier();
-+            break;
 +         }
 +      }
 +   }
@@ -3760,6 +3773,9 @@ index 0000000..92a594d
 +sweetca_init(void)
 +{
 +   const char *t = getenv("SWEETCA_TRACE");
++   const char *b = getenv("SWEETCA_ACTIVE_BARRIERS");
++   active_barriers = !b || strcmp(b, "0") != 0;
++   sca_log("sweetca: active sampler barriers %s", active_barriers ? "enabled" : "legacy");
 +   trace_on = t && t[0] == '1' ? 1 : t && t[0] == '2' ? 2 : 0;
 +   const char *k = getenv("SWEETCA_KICK");
 +   if (k)
@@ -5248,10 +5264,10 @@ index 0000000..2c17092
 +	T(1035)
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
 new file mode 100644
-index 0000000..34ed13f
+index 0000000..401f8be
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.c
-@@ -0,0 +1,451 @@
+@@ -0,0 +1,475 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -5273,6 +5289,7 @@ index 0000000..34ed13f
 +#include "frontend/winsys_handle.h"
 +#include "drm-uapi/drm_fourcc.h"
 +#include "state_tracker/st_context.h"
++#include "main/mtypes.h"
 +#include "util/driconf.h"
 +#include "util/simple_mtx.h"
 +#include "util/format/u_format.h"
@@ -5552,8 +5569,8 @@ index 0000000..34ed13f
 +      fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
 +      return NULL;
 +   }
-+   struct pipe_resource *color = sgl_import_iosurface(dpy, iosurface_id, width, height, 0,
-+                                                      bytes_per_row, format,
++   struct pipe_resource *color = sgl_import_iosurface(dpy, iosurface_id, width, height,
++                                                      bytes_per_row, 0, format,
 +                                                      PIPE_BIND_RENDER_TARGET |
 +                                                      PIPE_BIND_SAMPLER_VIEW);
 +   if (!color)
@@ -5686,6 +5703,29 @@ index 0000000..34ed13f
 +   _mesa_TextureBarrierNV();
 +}
 +
++uint32_t
++sgl_sampled_2d_units(struct sgl_context *ctx)
++{
++   uint32_t units = 0;
++   /* sweetgl dispatches GL synchronously (no GLThread). UseProgram and sampler
++    * uniforms update these linked programs immediately, before draw validation.
++    * Do not use Texture.Unit[]._Current: it can still describe the last draw.
++    */
++   for (unsigned stage = MESA_SHADER_VERTEX; stage <= MESA_SHADER_FRAGMENT; stage++) {
++      const struct gl_program *p = ctx->st->ctx->_Shader->CurrentProgram[stage];
++      if (!p)
++         continue;
++      GLbitfield samplers = p->SamplersUsed;
++      while (samplers) {
++         unsigned s = u_bit_scan(&samplers);
++         unsigned unit = p->SamplerUnits[s];
++         if (unit < 32 && (p->TexturesUsed[unit] & TEXTURE_2D_BIT))
++            units |= UINT32_C(1) << unit;
++      }
++   }
++   return units;
++}
++
 +void
 +sgl_surface_destroy(struct sgl_surface *surf)
 +{
@@ -5705,10 +5745,10 @@ index 0000000..34ed13f
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
 new file mode 100644
-index 0000000..55386fd
+index 0000000..23b2f6c
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,101 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -5798,6 +5838,10 @@ index 0000000..55386fd
 +/* GL_NV_texture_barrier on the current context: later draws see earlier draws' pixels */
 +void sgl_texture_barrier(void);
 +
++/* Units whose 2D binding is sampled by a current graphics program. Uses Mesa's
++ * linked-program state, including sampler arrays and glUniform changes. */
++uint32_t sgl_sampled_2d_units(struct sgl_context *ctx);
++
 +/* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 +bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
 +
@@ -5828,10 +5872,10 @@ index 0000000..2bc8126
 +#include "es2_glapi_mapi_tmp.h"
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 new file mode 100644
-index 0000000..e914ff2
+index 0000000..a4fd842
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
-@@ -0,0 +1,602 @@
+@@ -0,0 +1,663 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -6373,6 +6417,64 @@ index 0000000..e914ff2
 +}
 +#endif
 +
++/* Active sampler state must describe the next draw, even before validation.
++ * An unused bound texture must not turn a non-feedback draw into a barrier.
++ */
++static bool
++sampled_units_are(struct sgl_context *ctx, const char *phase, uint32_t expected)
++{
++   uint32_t got = sgl_sampled_2d_units(ctx);
++   GLenum error = glGetError();
++   bool ok = got == expected && error == GL_NO_ERROR;
++   printf("%s sampler units %s: 0x%x expected 0x%x, GL error 0x%x\n",
++          ok ? "PASS:" : "FAIL:", phase, got, expected, error);
++   return ok;
++}
++
++static bool
++sampler_units(struct sgl_context *ctx)
++{
++   const char *vs = "attribute vec2 pos; void main() { gl_Position=vec4(pos,0.,1.); }";
++   const char *fs = "precision mediump float; uniform sampler2D tex[2];"
++                    "void main() { gl_FragColor=texture2D(tex[0],vec2(.5))"
++                    "+texture2D(tex[1],vec2(.5)); }";
++   GLuint p = program(vs, fs);
++   glUseProgram(p);
++   bool ok = sampled_units_are(ctx, "link defaults", 1);
++   GLint loc = glGetUniformLocation(p, "tex[0]");
++   GLint units[] = {1, 3};
++   glUniform1iv(loc, 2, units);
++   ok &= sampled_units_are(ctx, "array remap", (1u << 1) | (1u << 3));
++   glUniform1i(glGetUniformLocation(p, "tex[1]"), 5);
++   ok &= sampled_units_are(ctx, "element remap", (1u << 1) | (1u << 5));
++   GLuint stale;
++   glGenTextures(1, &stale);
++   glActiveTexture(GL_TEXTURE7);
++   glBindTexture(GL_TEXTURE_2D, stale);
++   ok &= sampled_units_are(ctx, "unused binding", (1u << 1) | (1u << 5));
++   GLuint plain = program(vs, "precision mediump float; void main() { gl_FragColor=vec4(1.); }");
++   glUseProgram(plain);
++   ok &= sampled_units_are(ctx, "no samplers", 0);
++   glUseProgram(p);
++   ok &= sampled_units_are(ctx, "program switch", (1u << 1) | (1u << 5));
++   glLinkProgram(p);
++   ok &= sampled_units_are(ctx, "relink resets units", 1);
++   GLuint vertex = program("attribute vec2 pos; uniform sampler2D vtex;"
++                           "void main() { gl_Position=vec4(pos,texture2DLod(vtex,vec2(.5),0.).r,1.); }",
++                           fs);
++   glUseProgram(vertex);
++   glUniform1i(glGetUniformLocation(vertex, "vtex"), 2);
++   ok &= sampled_units_are(ctx, "vertex and fragment", 1u | (1u << 2));
++   glUseProgram(0);
++   ok &= sampled_units_are(ctx, "unbound program", 0);
++   glDeleteProgram(p);
++   glDeleteProgram(plain);
++   glDeleteProgram(vertex);
++   glDeleteTextures(1, &stale);
++   glActiveTexture(GL_TEXTURE0);
++   return ok;
++}
++
 +int
 +main(void)
 +{
@@ -6418,6 +6520,9 @@ index 0000000..e914ff2
 +   printf("step: depth\n");
 +   ok &= depth();
 +   unsigned steps = 4;
++   printf("step: active sampler units\n");
++   ok &= sampler_units(ctx);
++   steps++;
 +#ifdef __APPLE__
 +   printf("step: iosurface target\n");
 +   ok &= iosurface_target(dpy, ctx, surf);
@@ -6449,10 +6554,10 @@ index 67011f5..05a144b 100644
 +endif
 diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
 new file mode 100644
-index 0000000..3fbf905
+index 0000000..166fe6f
 --- /dev/null
 +++ b/src/util/sweet_profile.h
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,63 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + *
@@ -6481,7 +6586,8 @@ index 0000000..3fbf905
 +   SPE_PROGRAM_HIT, SPE_PROGRAM_MISS, SPE_UPLOAD_BYTES, SPE_BATCH_DRAWS,
 +   SPE_BATCH_ZERO, SPE_BATCH_ONE, SPE_BATCH_TWO_FOUR, SPE_BATCH_FIVE_PLUS,
 +   SPE_FLUSH_BARRIER, SPE_FLUSH_KICK, SPE_FLUSH_FRAME, SPE_FLUSH_DEPENDENCY,
-+   SPE_FLUSH_CAPACITY, SPE_FLUSH_CONTEXT, SPE_FLUSH_OTHER, SPE_COUNT
++   SPE_FLUSH_CAPACITY, SPE_FLUSH_CONTEXT, SPE_FLUSH_OTHER,
++   SPE_BARRIER_NEEDED, SPE_BARRIER_SKIPPED, SPE_COUNT
 +};
 +
 +#ifdef __APPLE__

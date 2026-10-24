@@ -27,7 +27,8 @@ static const char *const event_names[SPE_COUNT] = {
    "program-hit", "program-miss", "upload-requested-bytes", "batch-draws",
    "batch-0", "batch-1", "batch-2-4", "batch-5+",
    "flush-barrier", "flush-kick", "flush-frame", "flush-resource-dependency",
-   "flush-capacity", "flush-context", "flush-other"
+   "flush-capacity", "flush-context", "flush-other",
+   "barrier-needed", "barrier-skipped"
 };
 
 __attribute__((constructor)) static void

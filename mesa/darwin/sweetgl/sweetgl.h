@@ -87,6 +87,10 @@ bool sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint3
 /* GL_NV_texture_barrier on the current context: later draws see earlier draws' pixels */
 void sgl_texture_barrier(void);
 
+/* Units whose 2D binding is sampled by a current graphics program. Uses Mesa's
+ * linked-program state, including sampler arrays and glUniform changes. */
+uint32_t sgl_sampled_2d_units(struct sgl_context *ctx);
+
 /* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
 

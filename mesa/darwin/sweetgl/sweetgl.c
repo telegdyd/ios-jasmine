@@ -19,6 +19,7 @@
 #include "frontend/winsys_handle.h"
 #include "drm-uapi/drm_fourcc.h"
 #include "state_tracker/st_context.h"
+#include "main/mtypes.h"
 #include "util/driconf.h"
 #include "util/simple_mtx.h"
 #include "util/format/u_format.h"
@@ -298,8 +299,8 @@ sgl_surface_create_iosurface(struct sgl_display *dpy, uint32_t iosurface_id, uns
       fprintf(stderr, "sweetgl: IOSurface pixel format 0x%08x not supported\n", pixel_format);
       return NULL;
    }
-   struct pipe_resource *color = sgl_import_iosurface(dpy, iosurface_id, width, height, 0,
-                                                      bytes_per_row, format,
+   struct pipe_resource *color = sgl_import_iosurface(dpy, iosurface_id, width, height,
+                                                      bytes_per_row, 0, format,
                                                       PIPE_BIND_RENDER_TARGET |
                                                       PIPE_BIND_SAMPLER_VIEW);
    if (!color)
@@ -430,6 +431,29 @@ void
 sgl_texture_barrier(void)
 {
    _mesa_TextureBarrierNV();
+}
+
+uint32_t
+sgl_sampled_2d_units(struct sgl_context *ctx)
+{
+   uint32_t units = 0;
+   /* sweetgl dispatches GL synchronously (no GLThread). UseProgram and sampler
+    * uniforms update these linked programs immediately, before draw validation.
+    * Do not use Texture.Unit[]._Current: it can still describe the last draw.
+    */
+   for (unsigned stage = MESA_SHADER_VERTEX; stage <= MESA_SHADER_FRAGMENT; stage++) {
+      const struct gl_program *p = ctx->st->ctx->_Shader->CurrentProgram[stage];
+      if (!p)
+         continue;
+      GLbitfield samplers = p->SamplersUsed;
+      while (samplers) {
+         unsigned s = u_bit_scan(&samplers);
+         unsigned unit = p->SamplerUnits[s];
+         if (unit < 32 && (p->TexturesUsed[unit] & TEXTURE_2D_BIT))
+            units |= UINT32_C(1) << unit;
+      }
+   }
+   return units;
 }
 
 void

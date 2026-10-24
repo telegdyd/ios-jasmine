@@ -1,6 +1,17 @@
 # jasmine (Mi A2) working notes
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
+**2026-10-24 task 5 step 2 in progress (user authorized):** gate the wrapper's texture
+barrier on Mesa's active graphics-program 2D sampler units, rather than stale bindings
+(especially the reserved framebuffer-fetch unit). Mesa updates linked sampler maps on
+UseProgram/Uniform/relink; no per-draw uniform queries or duplicate sampler cache.
+`SWEETCA_ACTIVE_BARRIERS=0` retains legacy behavior for comparison; default is active
+sampler gating. Opt-in counters distinguish needed/skipped barriers. Added actual GL
+sampler-state regression cases; corrected the known IOSurface helper stride/offset
+swap to restore render-target test coverage. Local helper/test syntax passes and
+patches apply in order. Next: Mesa CI, separate test dylib and temporary RAM boots,
+pixel checks and repeated profiling-off comparison. Phone remains in r109 charging
+console while building; no lock held, production dylib/slot b unchanged.
 **2026-10-24 task 5 step 1 complete:** [draw-path diagnostics](PERF-TASK5-DIAGNOSTICS-20261024.md).
 Results, parser and GPU/PERF references committed and pushed as `91c2346`.
 Pipelining is now task 16 in PERF-TASKS.md. No optimization or sync change yet;

@@ -69,6 +69,7 @@
 #define MAX_CTX 32
 
 static int trace_on;
+static bool active_barriers = true; /* SWEETCA_ACTIVE_BARRIERS=0: comparison only */
 
 static void
 sca_log(const char *fmt, ...)
@@ -1149,11 +1150,22 @@ draw_prep(struct sca_ctx *c)
          texel_scale(c, fbtex, p->fb_scale_loc);
    }
    if (fbtex) {
+      uint32_t bound_feedback = 0;
       for (int u = 0; u < UNITS; u++) {
-         if (c->held[u] == fbtex) {
+         if (c->held[u] == fbtex)
+            bound_feedback |= UINT32_C(1) << u;
+      }
+      if (bound_feedback) {
+         /* The reserved fetch unit stays bound between programs. A binding
+          * alone does not mean this draw reads it. Mesa tracks active samplers
+          * across program switches, relinks, arrays and uniform-unit changes.
+          * Keep the barrier for any active feedback, including non-fetch reads.
+          */
+         bool needed = (bound_feedback & sgl_sampled_2d_units(c->gl)) != 0;
+         SWEET_EVENT(needed ? SPE_BARRIER_NEEDED : SPE_BARRIER_SKIPPED, 1);
+         if (needed || !active_barriers) {
             SWEET_SCOPE(sp_barrier, SP_PREP_BARRIER);
             sgl_texture_barrier();
-            break;
          }
       }
    }
@@ -2064,6 +2076,9 @@ __attribute__((constructor)) static void
 sweetca_init(void)
 {
    const char *t = getenv("SWEETCA_TRACE");
+   const char *b = getenv("SWEETCA_ACTIVE_BARRIERS");
+   active_barriers = !b || strcmp(b, "0") != 0;
+   sca_log("sweetca: active sampler barriers %s", active_barriers ? "enabled" : "legacy");
    trace_on = t && t[0] == '1' ? 1 : t && t[0] == '2' ? 2 : 0;
    const char *k = getenv("SWEETCA_KICK");
    if (k)

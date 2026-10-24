@@ -539,6 +539,64 @@ iosurface_texture(struct sgl_context *ctx)
 }
 #endif
 
+/* Active sampler state must describe the next draw, even before validation.
+ * An unused bound texture must not turn a non-feedback draw into a barrier.
+ */
+static bool
+sampled_units_are(struct sgl_context *ctx, const char *phase, uint32_t expected)
+{
+   uint32_t got = sgl_sampled_2d_units(ctx);
+   GLenum error = glGetError();
+   bool ok = got == expected && error == GL_NO_ERROR;
+   printf("%s sampler units %s: 0x%x expected 0x%x, GL error 0x%x\n",
+          ok ? "PASS:" : "FAIL:", phase, got, expected, error);
+   return ok;
+}
+
+static bool
+sampler_units(struct sgl_context *ctx)
+{
+   const char *vs = "attribute vec2 pos; void main() { gl_Position=vec4(pos,0.,1.); }";
+   const char *fs = "precision mediump float; uniform sampler2D tex[2];"
+                    "void main() { gl_FragColor=texture2D(tex[0],vec2(.5))"
+                    "+texture2D(tex[1],vec2(.5)); }";
+   GLuint p = program(vs, fs);
+   glUseProgram(p);
+   bool ok = sampled_units_are(ctx, "link defaults", 1);
+   GLint loc = glGetUniformLocation(p, "tex[0]");
+   GLint units[] = {1, 3};
+   glUniform1iv(loc, 2, units);
+   ok &= sampled_units_are(ctx, "array remap", (1u << 1) | (1u << 3));
+   glUniform1i(glGetUniformLocation(p, "tex[1]"), 5);
+   ok &= sampled_units_are(ctx, "element remap", (1u << 1) | (1u << 5));
+   GLuint stale;
+   glGenTextures(1, &stale);
+   glActiveTexture(GL_TEXTURE7);
+   glBindTexture(GL_TEXTURE_2D, stale);
+   ok &= sampled_units_are(ctx, "unused binding", (1u << 1) | (1u << 5));
+   GLuint plain = program(vs, "precision mediump float; void main() { gl_FragColor=vec4(1.); }");
+   glUseProgram(plain);
+   ok &= sampled_units_are(ctx, "no samplers", 0);
+   glUseProgram(p);
+   ok &= sampled_units_are(ctx, "program switch", (1u << 1) | (1u << 5));
+   glLinkProgram(p);
+   ok &= sampled_units_are(ctx, "relink resets units", 1);
+   GLuint vertex = program("attribute vec2 pos; uniform sampler2D vtex;"
+                           "void main() { gl_Position=vec4(pos,texture2DLod(vtex,vec2(.5),0.).r,1.); }",
+                           fs);
+   glUseProgram(vertex);
+   glUniform1i(glGetUniformLocation(vertex, "vtex"), 2);
+   ok &= sampled_units_are(ctx, "vertex and fragment", 1u | (1u << 2));
+   glUseProgram(0);
+   ok &= sampled_units_are(ctx, "unbound program", 0);
+   glDeleteProgram(p);
+   glDeleteProgram(plain);
+   glDeleteProgram(vertex);
+   glDeleteTextures(1, &stale);
+   glActiveTexture(GL_TEXTURE0);
+   return ok;
+}
+
 int
 main(void)
 {
@@ -584,6 +642,9 @@ main(void)
    printf("step: depth\n");
    ok &= depth();
    unsigned steps = 4;
+   printf("step: active sampler units\n");
+   ok &= sampler_units(ctx);
+   steps++;
 #ifdef __APPLE__
    printf("step: iosurface target\n");
    ok &= iosurface_target(dpy, ctx, surf);
