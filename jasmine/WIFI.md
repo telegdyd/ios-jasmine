@@ -33,6 +33,19 @@ Test images only: nothing flashed, slot b unchanged. Phone lock: the usual `phon
   (WCN3990 unpowered), at 101 s without it (**j0080k**: no WLFW handshake on jasmine while the radio is off).
   Nothing happens on GLINK after 8.8 s. Next: does Linux's modem (r109 shell, no rmtfs/tftp/diag) live longer?
 - WCN3990 power for the radio step (pm660 RPM LDOs): L5 0.8 V cx/mx, L9 1.8 V xo, L6 1.3 V rfa, L19 3.3 V ch0.
+- Linux reference (r109 shell, 17:22): its modem crashes every **40 s** ("fatal error without message", 5 recoveries
+  in 210 s): the shell has no rmtfs/tftp/pd-mapper, so it is no lifetime reference. Ours lived 101 s.
+- **j0080l** WCN3990 LDOs on before the modem boot (`wcn_power_on`): all four on, still FATAL at 101.2 s (j0080k
+  101.4 s): deterministic, not the chip power.
+- **j0080m** WLFW handshake once the chip is powered (`wlfw=0` skips), jasmine quirks: host_cap `daemon_support` as
+  a u8 (answer err 94 NOT_SUPPORTED, not fatal as in ath10k), the msa_ready response taken as MSA_READY.
+  **j0080n** `wifi=1` allowed on jasmine (anoc2 SMMU identity bank, CE after mission; untested), SHADOW_PA per board.
+  **j0080o** GLINK/qrtr trace after 3 s: nothing at all from the modem between 8.6 s (mcfg tftp) and the crash.
+- j0080o round: handshake to the board data (`image/bdwlan.bin`, board_id ff, 19152 B); the end segment answered
+  err 1 (firmware CRC check of the BDF; ath10k ignores it and the firmware uses its built-in BDF), we stopped, FATAL
+  at 17 s. The earlier the WLAN PD stalls waiting for the host, the sooner the starvation (13 s / 17 s / 101 s).
+  **j0080p** goes on to cal_report like ath10k.
+- CI: `xnu.yml` has `cancel-in-progress`: a new dispatch on the branch cancels the running build.
 
 ## Result so far (2026-10-24 06:20-08:20): the PBL kills the MSS register bus
 
