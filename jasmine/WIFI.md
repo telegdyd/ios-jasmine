@@ -87,3 +87,12 @@ The state and the sequence match Linux; the difference is in how XNU touches the
    reaction; check the early V=P blocks and every mapping.
 4. Port the rest only after the MBA boots: WLFW quirks (`snoc-host-cap-8bit-quirk`, `no-msa-ready-indicator`),
    WLAN SMMU on anoc2 behind the hypervisor, TxBF-on-disassoc fix (kernel/0005).
+
+## 2026-10-24 evening (j0080q-t), handoff
+
+- j0080q `modem_nowlan=1`: no WLAN PD, FATAL still at 101.1 s. Its stop-on-FATAL took an SError (reverted in j0080r).
+- j0080r `master-kernel` SMP2P entry: 101.1 s. qdss RPM vote dropped live after handover: 101.4 s.
+- Nura journal (backup rootfs): diag-router talked to the modem over DIAG_CNTL on every boot; no diag starvation.
+- j0080s pd-mapper from the jasmine jsn files; j0080t glink_ssr + DIAG channels: glink_ssr up, the modem still never
+  opened DIAG, FATAL at 100.95 s; the reboot after the round froze the phone.
+- Summary and next tasks: `jasmine/WIFI-HANDOFF.md`.
