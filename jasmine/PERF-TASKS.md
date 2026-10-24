@@ -28,7 +28,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 4 | ~~Make Mesa's buffer caches hit~~ **done 2026-10-23 07:40** (sub-allocation heaps; on the phone) | buffer path 17.8 -> ~6 % of CA's thread, Mesa CPU -3 ms/frame; frames not faster at 266 MHz (GPU-wait tail) | `mesa/darwin/*` (Mesa build only) | none |
 | 5 | Cut Mesa's per-draw CPU cost | part of 14.6 | `mesa/` (+ a Mesa patch 0002) | none |
 | 6 | Make 8 cores beat 4 (tune j0052) | 8 cores 96-128 ms vs 4 Gold 81 ms | `sched_clutch.c` / j0052 code | j0061 |
-| 7 | Stop the XPC retry loops (~2 Gold cores) | CA's thread waits 45 ms/s for a CPU (~20 % on top of its 214 ms/s, j64p); needed for 8 cores and battery | userland services, maybe kernel | j0062 |
+| 7 | ~~Stop the XPC retry loops (~2 Gold cores)~~ **done 2026-10-24 01:12** (BTAudioHALPlugin disabled, vmd job removed; on the phone's root) | idle daemons 2.16 cores -> ~0.003, TSENS ~8 C lower; moving-frame gain not yet measured | phone iOS root, `tools/sweet-root-tweaks.py` | none |
 | 8 | Fix the pmap 32-bit page-number shift | ~0 (correctness) | `osfmk/arm/pmap/pmap.c` | j0063 |
 | 9 | ~~DDR clock vote through the RPM~~ **done 2026-10-23: not the brake** (1296 -> 1804 MHz: no gain; below 1296 Mesa slows 20-60 %) | 0 measured | `bsd/dev/sweet_rpm.c`, `bsd/dev/sweet_ddr.c` | j0064 |
 | 10 | Load-based DDR governor, ceiling 1804 MHz, on by default | 1804's CPU gains when busy (latency -14 %, copy faster), power back when idle | `bsd/dev/sweet_ddr.c` (+ `sweet_gpu.c` counters) | j0065 |
@@ -48,7 +48,7 @@ fixed at 1747 MHz on XBL's voltage and Silver at XBL's 1382 MHz (no DVFS, no the
 `HANDOFF-CPUCLK.md`); CPU idle is XNU's WFI only, no PSCI CPU_SUSPEND or cluster power collapse; the GPU is fixed at
 266 MHz, never powered down after bring-up (`gpu_power_off` only on failures) and runs without hardware clock gating
 (`sweet_gpu.c`: "a5xx_hw_init without clock gating"); the DDR is fixed at 1296 MHz. On top, task 7's daemon loops
-keep ~1.9 of the 4 Gold cores at 100 % all the time, probably the largest heat source by itself: do task 7 early.
+kept ~1.9 of the 4 Gold cores at 100 % all the time (fixed 2026-10-24: idle TSENS ~8 C lower).
 These tasks need a power reading: the PM660 fuel gauge's battery current (j0010 reads the FG; add the current if it
 is missing; on battery, unplugged, with the user's OK) or a USB power meter reading from the user; TSENS (readable
 through the command port, osmctl `tsens`) as the temperature side. Record idle and moving power before and after.
@@ -283,9 +283,18 @@ Silver. Use j0052's per-cluster stats and the j0057 profile.
 **Done when:** 8 cores are at least as fast as `cpus=4` in 2+2 scripted rounds, and the 8-core image becomes the
 default.
 
-## 7. Stop the XPC retry loops (~2 Gold cores busy all the time)
+## 7. Stop the XPC retry loops (~2 Gold cores busy all the time) -- DONE
 
-**Now.** The j0057 profile found launchd ~901 ms/s (XPC / kqueue, ~65 % in the kernel), vmd ~561 ms/s (a
+**Done 2026-10-24 01:12 (GPU.md "Task 7").** The loops were clients of daemons we had removed: mediaserverd's
+`BTAudioHALPlugin` reconnecting to bluetoothd's `com.apple.BTAudioHALPlugin.xpc` (bluetoothd's MachServices emptied
+2026-10-21), vmd retrying CoreTelephony without CommCenter (no baseband); launchd and logd only served their
+lookups and error logs. Fix on the phone's root: `BTAudioHALPlugin.driver` moved to `HAL.disabled/`, the vmd job
+removed from the launchd cache; `tools/sweet-root-tweaks.py` does both for new roots. Idle census: launchd 966 ->
+1.7 ms/s, vmd 644 -> gone, mediaserverd 412 -> 1.3, logd 139 -> 0.3 (2.16 cores -> ~0.003); still so at 02:55 after
+the task 14 fix (launchd 16.7, mostly nanotimekitcompaniond launches). Not done: an after-figure for CA's runnable
+wait while moving (the t7c round hit task 14's boot-logo freeze), the user's check of Settings and sounds.
+
+**Before.** The j0057 profile found launchd ~901 ms/s (XPC / kqueue, ~65 % in the kernel), vmd ~561 ms/s (a
 CoreTelephony retry loop) and mediaserverd ~423 ms/s (an XPC connection cancelled and reconnected over and over),
 even with the UI idle. The likely cause is a service these daemons talk to that never comes up on jasmine
 (telephony, audio). Name the service, then give them what they wait for or stop the daemon from retrying.

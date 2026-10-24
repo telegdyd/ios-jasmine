@@ -13,12 +13,15 @@ screen (image versions v8-v14 in NOTES.md):
                   panic the system); CommCenter jobs removed (no baseband: it
                   crash-loops and Setup blocks on its CoreTelephony XPC)
                   bluetoothd and fairplayd.H2 removed too (no hardware: on-demand
-                  relaunch every ~10 s)
+                  relaunch every ~10 s); vmd removed (Visual Voicemail: without
+                  CommCenter it retries CoreTelephony XPC in a tight loop)
   containers      /private/var/containers/{Bundle,Data/System,Shared/SystemGroup,Temp}
                   (on iOS they live on the data volume)
   migration       LastSystemVersion so DataMigration does not run for an hour
                   on every boot
-  audio           VirtualAudio HAL plug-in disabled (mediaserverd crash)
+  audio           VirtualAudio HAL plug-in disabled (mediaserverd crash);
+                  BTAudioHALPlugin disabled (its bluetoothd service is gone, so
+                  mediaserverd reconnected in a tight loop, ~0.4 of a core)
   MediaToolbox    StartRecorderServer=false (camera filter prewarm calls a
                   NULL OpenGL function without a GPU -> mediaserverd crash loop)
   SpringBoard     BKNoWatchdogs (one slow CPU path, no scene-create watchdog
@@ -68,14 +71,17 @@ def launchd(root):
             renamed += 1
     # CommCenter: no baseband. bluetoothd, fairplayd.H2: no hardware; they exit
     # at once and were started again on demand about every 10 s (jasmine,
-    # 2026-10-21; KeepAlive off alone did not stop it).
-    gone = ('com.apple.CommCenter', 'com.apple.bluetoothd', 'com.apple.fairplayd.H2')
+    # 2026-10-21; KeepAlive off alone did not stop it). vmd: with no CommCenter
+    # its CoreTelephony calls fail and it retried at once, ~0.6 of a core
+    # (2026-10-24, PERF-TASKS task 7).
+    gone = ('com.apple.CommCenter', 'com.apple.bluetoothd', 'com.apple.fairplayd.H2',
+            'com.apple.voicemail.vmd')
     removed = [k for k, j in jobs.items() if j.get('Label') in gone]
     for k in removed:
         del jobs[k]
     save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     print(f'launchd.plist: {renamed} _PanicOnCrash renamed, {len(removed)} jobs removed '
-          f'(CommCenter, bluetoothd, fairplayd.H2)')
+          f'(CommCenter, bluetoothd, fairplayd.H2, vmd)')
 
 
 def containers(root):
@@ -121,6 +127,14 @@ def audio(root):
         os.makedirs(dst_dir, exist_ok=True)
         shutil.move(src, dst_dir)
         print('VirtualAudio.plugin disabled')
+    # BTAudioHALPlugin looks up com.apple.BTAudioHALPlugin.xpc (bluetoothd's,
+    # removed above) and reconnects as soon as that fails.
+    src = os.path.join(root, 'System/Library/Audio/Plug-Ins/HAL/BTAudioHALPlugin.driver')
+    dst_dir = os.path.join(root, 'System/Library/Audio/Plug-Ins/HAL.disabled')
+    if os.path.exists(src):
+        os.makedirs(dst_dir, exist_ok=True)
+        shutil.move(src, dst_dir)
+        print('BTAudioHALPlugin.driver disabled')
     for conf in glob.glob(os.path.join(root, 'System/Library/Frameworks/MediaToolbox.framework/*/SubServerConfiguration.plist')):
         st = os.stat(conf)
         data = load(conf)

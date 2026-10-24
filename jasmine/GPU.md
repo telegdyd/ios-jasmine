@@ -934,3 +934,38 @@ thread into SweetGPU buffer create + map + free behind Mesa cache misses.
   Killing all processes", then nothing but the charger and USB lines for 10 min; the command port was dead, power +
   volume-down recovered it. 05:52 (t4d1, "no fastboot device 90 s after the reboot command", black screen with only
   the status bar) was most likely the same: the running backboardd had the kick library then.
+
+#### Task 7: the XPC retry loops were our own removed daemons (2026-10-24 00:56 to 02:56; PERF-TASKS.md task 7, done)
+
+Two of the earlier "no hardware" root changes left clients that retry at once, without backoff
+(`logs/prof-j57p-report-others.txt`, confirmed on the phone):
+- **mediaserverd** (one workqueue thread, 79 % inside `BTAudioHALPlugin`): XPC connection cancelled ->
+  `xpc_connection_resume` -> `bootstrap_look_up_slow` -> fails -> again. The plug-in's service is
+  `com.apple.BTAudioHALPlugin.xpc`; no job in the launchd cache serves it since bluetoothd's MachServices were
+  emptied (2026-10-21, `tools/launchd-disable-inplace.py`).
+- **vmd** (Visual Voicemail): `-[CoreTelephonyClient getActiveContexts:]` -> sync proxy -> error block
+  (`_computeNotificationSetForced_sync`, an `os_log_error` each time) -> again. CommCenter is not there (no baseband,
+  `tools/sweet-root-tweaks.py`).
+- **launchd** (two workqueue threads, 66 % in the kernel) served those failed lookups; **logd** took the error
+  logs. Neither had a loop of its own.
+
+Fix on the phone's iOS root (no kernel change, j0062 unused): `BTAudioHALPlugin.driver` moved from
+`/System/Library/Audio/Plug-Ins/HAL/` to `HAL.disabled/` (file by file through `sweet-fs.py`, which cannot rename
+or remove directories: an empty `BTAudioHALPlugin.driver` folder stays in `HAL/`, harmless), and
+`com.apple.voicemail.vmd` removed from `/System/Library/xpc/launchd.plist` (`tools/sweet-launchd.py remove`).
+Originals in `research/t7/` (not in git). `tools/sweet-root-tweaks.py` does both for new roots.
+
+| ms/s at idle (census, 3 s) | t7a, before (00:56) | t7b, after (01:12 boot) | t7d (02:55, after the task 14 fix) |
+| --- | --- | --- | --- |
+| launchd | 966 | 1.7 | 16.7 |
+| vmd | 644 | - (not started) | - |
+| mediaserverd | 412 | 1.3 | < 1.3 |
+| logd | 139 | 0.3 | 5.7 |
+| sum | **2.16 cores** | **~0.003 cores** | ~0.02 cores |
+| TSENS | 51-59 C | 45-50 C | 46-51 C |
+
+t7d's launchd is mostly the launch of nanotimekitcompaniond (fresh pids 361/362, ~70 ms/s while starting; it is
+exec'd ~14 times per boot): not a steady loop, not looked at further. bluetoothd is still exec'd about every 10 s
+(~20 per 4 min) from its emptied job, < 2 ms/s of launchd. Not measured: the moving frame. The one gesture round
+(t7c, 01:17) hit the boot-logo freeze (task 14, lsd seeding without a Wi-Fi MAC, fixed since), so CA's runnable wait
+(45 ms/s in j64p) has no after-figure yet. Not checked by the user yet: Settings, Control Center, system sounds.
