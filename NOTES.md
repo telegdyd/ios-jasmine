@@ -2,10 +2,11 @@
 
 ### 2026-10-24 jasmine documentation handoff
 
-Mi A2 task-list cleanup is recorded in [jasmine/NOTES.md](jasmine/NOTES.md) and
-[jasmine/PERF-TASKS.md](jasmine/PERF-TASKS.md). Existing tasks regrouped; no new tasks
-added. Documentation-only; no CI/build/boot/device changes. Commit subject:
-`docs: group performance tasks and separate completed work`.
+Mi A2 performance work is tracked in [jasmine/NOTES.md](jasmine/NOTES.md) and
+[jasmine/PERF-TASKS.md](jasmine/PERF-TASKS.md). Cleanup committed as `2c62869`.
+User subsequently approved the benefit/effort ranking and new tasks 17-21, including
+a separate diagnostics group. Documentation-only; no CI/build/boot/device changes.
+This milestone's commit subject: `docs: rank performance work and add diagnostic tasks`.
 
 ### >>> UPDATE 2026-10-21: sweetd works over USB Ethernet <<<
 

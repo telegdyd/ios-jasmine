@@ -1,15 +1,16 @@
-# Performance and bug-fix tasks
+# Performance, bug-fix and diagnostic tasks
 
 Reviewed 2026-10-24 against [NOTES.md](NOTES.md) and the measurement reports.
 Task numbers stay unchanged so existing handoffs and logs still refer to the same work.
-Tasks are grouped by purpose and status; their order is not a predicted ranking of gains.
-No new tasks were added during this cleanup.
+Tasks are grouped by purpose and status. The recommended order below ranks benefit
+versus effort; category tables keep stable task-number order. New tasks 17-21 were
+approved by the user on 2026-10-24; implementation has not started.
 
 ## Current state and priorities
 
 - Sustained UI motion is still mainly limited by CPU rendering work. Continue **task 5**;
   its first optimization is installed, but the remaining work is open. Investigate
-  **task 16** after measuring the linked CPU/GPU/swap/latch timeline.
+  **task 16** after task 18 measures the linked CPU/GPU/swap/latch timeline.
 - The latest documented default is **4 Gold cores at 1747 MHz, GPU 588 MHz,
   DDR about 1296 MHz**. Slot b is j0070 since 05:58 (kernel CI `40059091430`);
   installed Mesa is `8877ff1` / CI `40053566696`. Earlier profiles use j69b;
@@ -25,6 +26,41 @@ Read [For every agent](#for-every-agent) before implementing a task. Latest meas
 [whole-system baseline](PERF-BASELINE-20261024.md),
 [task-5 diagnostics](PERF-TASK5-DIAGNOSTICS-20261024.md).
 The latest installed task-5 result is summarized below.
+
+## Recommended order: benefit versus effort
+
+User approved this ranking and the new tasks on 2026-10-24. It prioritizes visible
+responsiveness relative to implementation effort, not maximum theoretical savings.
+Effort is a planning judgment, not a measured implementation result. Keep a small,
+repeatable baseline throughout using existing tools; task 18's full instrumentation
+does not need to block the first focused Mesa optimization.
+
+| Order | Work | Type | Effort | Why / decision point |
+| --- | --- | --- | --- | --- |
+| 1 | **Task 5: Mesa draw preparation, state and batch costs** | Performance | Medium | Strongest measured opportunity for sustained animation. Confirm one avoidable cost, then make one focused optimization. |
+| 2 | **Task 17: persistent shader cache** | Performance, feasibility first | Low-medium if supported; otherwise higher | Candidate for fewer first-use compilation hitches. Not necessarily a one-flag fix; expect little warmed-scrolling gain. |
+| 3 | **Task 6: repeat 4-core versus 8-core comparison** | Diagnostic stage of a performance task | Low for comparison | Old timings predate major fixes. Continue scheduler changes only if the current comparison identifies a fixable problem. |
+| 4 | **Task 11: hardware clock gating only** | Performance: power/heat | Low-medium | Smallest GPU power-management part, with an A512 reference. No immediate FPS gain established. |
+| 5 | **Task 19: SpringBoard CPU profiling** | Diagnostics | Low-medium for diagnosis | Check the other substantial CPU consumer for cheaper opportunities before large architecture changes. |
+| 6 | **Task 16: presentation pipelining** | Performance | High | Task 18 must establish useful overlap first. Fence ordering and surface reuse make implementation delicate. |
+| 7 | **Tasks 2 + 13: CPU DVFS with thermal limits** | Performance: speed/power/heat | High; voltage path blocked | A faster CPU fits the bottleneck, but hardware voltage work is not low-hanging fruit. Thermal limits should accompany higher clocks. |
+| 8 | **Task 10: DDR governor** | Performance: power/latency | Medium | Raising fixed DDR already showed no measurable UI gain. Calibrate load counters before using them as policy inputs. |
+| 9 | **Remaining task 11, then task 12** | Performance: power/heat | High | GPU power-down/DCVS and CPU power collapse involve substantial transition and resume work. |
+
+**Alongside this order:**
+
+- **Task 18:** build measurement coverage incrementally; use existing matched timing/CPU
+  comparisons immediately, then add actual swap/latch and input latency measurement.
+- **Task 3:** finish chosen-clock validation alongside normal rounds. The 588 MHz default
+  is already installed; trying 647 MHz is not a leading new speed opportunity.
+- **Task 8:** a relatively small correctness fix, with no demonstrated speed gain;
+  handle before relying on the affected write-combined/non-pool memory path.
+- **Task 14:** take a census whenever the freeze occurs; move the fix ahead of optimization
+  if it repeatedly interrupts normal use or benchmarking.
+- **Task 20:** investigate memory/cache growth when reproducing the Wallpaper freeze
+  or other degradation; escalate if it prevents representative performance tests.
+- **Task 21:** investigate startup/storage/service waits when boot or app-launch latency
+  is the priority. Separate it from warmed animation and task 17's compilation work.
 
 ## Open performance improvements
 
@@ -42,6 +78,7 @@ stays here until its remaining scope is finished and the result is on by default
 | [12](#12-cpu-idle-power-power-collapse-instead-of-wfi-unused-cores-off) | CPU/cluster power collapse; unused cores off | Open; idle power target. | j0067 reserved |
 | [13](#13-thermal-limits-tsens-driven-caps-on-cpu-and-gpu-clocks) | Thermal clock limits | Open; sustained performance and heat; depends on tasks 2 and 11. | j0068 reserved |
 | [16](#16-pipeline-rendering-and-presentation-using-surface-completion-fences) | Pipeline rendering and presentation | Open; benefit unmeasured. Measure the critical path first; preserve fences and scanout lifetime. | Reserve when scoped |
+| [17](#17-persistent-shader-cache) | Persistent shader cache | New, unstarted; target first-use/reboot compilation hitches, not warm lookup. Feasibility and gain unvalidated. | Mesa/build; no reservation |
 
 ## Open bug fixes
 
@@ -51,6 +88,23 @@ Correctness and reliability work, even where fixing a bug may also improve perfo
 | --- | --- | --- | --- |
 | [8](#8-fix-the-pmap-32-bit-page-number-shift-correctness) | Fix the pmap 32-bit page-number shift | Open; incorrect physical address above 4 GiB, not a measured frame-time optimization. | j0063 reserved |
 | [14](#14-fix-the-sweetgpu-buffer-free-freeze) | Fix the SweetGPU buffer-free freeze | Partial: MAC-related boot-logo stall fixed; selector-2 freeze still needs a kernel census. | j0069 + j0069b diagnostics |
+
+## Open diagnostics
+
+These tasks produce measurements and a scoped next action. They do not claim a speed
+gain by themselves. A discovered defect becomes bug-fix work; an avoidable cost becomes
+performance work, with its own implementation and validation.
+
+| # | Task | Evidence / deliverable |
+| --- | --- | --- |
+| [18](#18-displayed-frame-and-input-latency-benchmarks) | Displayed-frame and input-latency benchmarks | Actual presentation intervals, slow-frame percentiles, missed refreshes and correlated input latency; shared measurement prerequisite for task 16. |
+| [19](#19-profile-springboards-cpu-work) | Profile SpringBoard CPU work | Home-swipe main-thread load ~711-743 ms/s in the earlier baseline; identify layout/animation/IPC costs and whether they delay output. |
+| [20](#20-investigate-memory-and-cache-growth) | Investigate memory and cache growth | Buffer/surface/memory high-water marks, allocation stalls and pressure across repeated transitions; Wallpaper exhaustion remains a hypothesis. |
+| [21](#21-profile-cold-start-boot-and-storage-waits) | Profile cold-start, boot and storage waits | Separate storage, service/IOKit waits and compilation; five-second syscfg fallback waits are an existing lead. |
+
+Task 6's initial 4/8-core comparison is also diagnostic, but its scheduler implementation
+remains under performance. Task 16's shared timeline measurement is tracked in task 18;
+task 16 retains the pipelining implementation and its acceptance criteria.
 
 ## Completed work and closed investigations
 
@@ -69,7 +123,10 @@ Outstanding validation is called out in the detailed results below.
 
 - Task 5 and completed task 4 share Mesa code. Retain task 4 and the installed first task-5 fix in new baselines.
 - Tasks 10 and 11 both touch `sweet_gpu.c`; coordinate changes or run sequentially.
-- Task 13 needs the clock controls from tasks 2 and 11.
+- Task 13 needs the clock controls from tasks 2 and 11; implement thermal limits alongside higher CPU clocks.
+- Task 18 owns the shared render/GPU/swap/latch measurements required to justify task 16.
+- Tasks 17 and 21 share cold-start evidence; keep shader-cache effects separate from storage/service waits.
+- Diagnostic tasks 19/20 may reveal work related to task 5 or a bug; cross-reference evidence instead of duplicating fixes.
 - Task 14 is a reliability concern for tasks 3 and 11; 588 MHz is already the default by the user's decision.
 - Historical patch reservations are retained above. **j0070 is already used by the AMFI service fix**;
   check the patch directory before assigning any new kernel number.
@@ -87,9 +144,13 @@ by the user. Use `osmctl tsens` for temperature. Temperature alone is not a powe
 
 ## For every agent
 
-**Done means on the phone (the user's rule, 2026-10-23).** These tasks configure the phone to run as well as it can;
-they are not experiments. A task is done only when its result is **on by default and the phone runs it after a plain
-reboot**:
+**Completion by task type.** Diagnostics finish with reproducible evidence and their
+stated report/tooling deliverables; they do not need to invent or install a speed gain.
+Completed experiments and disproved premises are labelled separately below.
+
+**Done means on the phone for implementation tasks (the user's rule, 2026-10-23).**
+A performance improvement or bug fix is done only when its result is **on by default
+and the phone runs it after a plain reboot**:
 
 1. the setting is the default: in the kernel, or in `tools/g2/mkimg.sh`'s boot-args (every image built from then on
    gets it); userland pieces (libsweetca, tools) installed in the phone's root;
@@ -131,7 +192,7 @@ The new library is used from the next boot.
 - `AMP=1 CPUS=4 bash tools/g2/uiround.sh <ktag> <tag> "<boot-args>"` boots `xnu/out-jasmine-<ktag>` and plays a fixed
   gesture script (`tools/g2/uibench.py`): home pages, Control Center, Notification Center, Spotlight. It prints
   legacy 100-GL-flush interval summaries, GPU wait, flicker checks, and GPU draws into held surfaces.
-  These averages are not distinct displayed-frame intervals or FPS; see task 16 for latch measurement.
+  These averages are not distinct displayed-frame intervals or FPS; see task 18 for latch measurement.
 - `bash tools/g2/profround.sh <ktag> <tag> "<boot-args>"` does the same with the j0057 sampling profile; the report
   is `tools/g2/prof.py` / `profsplit.py`. Keep profile windows short: the download runs at about 20 KB/s.
 - Compare against a baseline round from the same script on the same day. Rounds vary: use 2 rounds per variant.
@@ -297,7 +358,7 @@ measured; 10 minutes without a hang; result in GPU.md.
 **Now.** `bsd/dev/sweet_gpu.c` powers the Adreno 512 up once at boot (GFX head switch, GDSCs, clocks, j0018-j0020) and
 never down again except on a failure. `a5xx_hw_init` runs **without hardware clock gating** (HWCG), so every GPU
 block keeps its clock running whether it works or not. The core clock is fixed (`gpumhz=`, 588 MHz by default since 2026-10-24; j0060
-added every stock level up to this chip's 647 MHz and the live `gpu clk MHZ`). While the UI moves the historical j64a counters at 266 MHz showed ~8-25% busy. The later baseline at
+added every stock level up to this chip's 647 MHz and the live `gpu clk MHZ`). Historical j64a counters at 266 MHz showed ~8-25% busy during UI motion. The later baseline at
 588 MHz measured ~34-46% busy during home/Control Center motion; collect a current
 idle/moving baseline before setting policy.
 
@@ -378,18 +439,47 @@ surface the panel still reads. Preserve j0058's SwapWait/latch protections. Boun
 to avoid turning throughput gains into extra touch latency. Earlier overlap experiments
 exposed flicker from premature surface reuse (GPU.md, "The flicker found").
 
-**Measure first.** Add timestamps/IDs for CPU render/flush, GPU submission/completion,
-swap queueing and actual observed latch, linked by surface/swap/fence. Identify the critical
-path and available CPU/GPU overlap; distinguish panel waits from GPU execution. The current
-[first pass](PERF-BASELINE-20261024.md) finds explicit GPU-fence sleeping around 5-6% of the
-home capture and 1% in Control Center; submission waits add more but include other causes.
-These are not removable frame-time estimates. Run task 5 first; revisit overlap after its
-CPU cost changes. Do not infer FPS from GL flushes or the old sampled-present detector.
+**Measurement dependency: task 18.** Use its linked CPU/GPU/swap/latch timeline to
+identify the critical path and available overlap before implementing pipelining; keep
+panel waits distinct from GPU execution. The [first pass](PERF-BASELINE-20261024.md)
+found explicit GPU-fence sleeping around 5-6% of the home capture and 1% in Control
+Center; submission waits add more but include other causes. These are not removable
+frame-time estimates. Run task 5 first and re-evaluate overlap after CPU cost changes.
+Shared measurement tooling belongs to task 18; task 16 owns queued presentation and
+fence/surface-lifetime changes. Do not infer displayed FPS from GL flushes.
 
 **Done when:** matched home/Control Center runs show shorter measured presentation
 intervals or lower end-to-end latency, bounded queue depth and correct fence/surface
 lifetime; no new corruption, tearing, flicker, held-surface writes or hangs in a sustained
 UI run; the result is on by default on the phone, with the baseline and result in GPU.md.
+
+### 17. Persistent shader cache
+
+**Type: performance improvement; feasibility and benefit not yet validated.** CI builds
+Mesa with `-Dshader-cache=disabled` (`.github/workflows/xnu.yml`). The earlier
+[baseline](PERF-BASELINE-20261024.md) captured about 276 ms of shader-worker waiting
+on the first measured Spotlight opening, absent in the repeat. This was not guaranteed
+to be a cold boot. Warm program-cache hits are already 100%; target first-use/reboot
+hitches, not steady-state shader lookup or a promised scrolling-FPS gain.
+
+**Approach:**
+
+1. Check the exact Mesa version's disk-cache support on this Darwin backend, required
+   file/locking/hash facilities and a writable cache location for backboardd. Establish
+   whether it caches the shader work seen in the profile; a build flag alone proves nothing.
+2. Enable a separate test build with proper cache keys/invalidation for GPU, shader,
+   compiler version and options. Check successful writes, subsequent reads and bounded
+   storage use. Keep disabled-cache comparisons available; respect root-change rules.
+3. Compare repeated first-use workloads with an empty cache, populated cache and after
+   reboot, with identical software, clocks and settling. Separate shader-worker wait
+   from filesystem/cache I/O and other startup waits (task 21). Use task 18's displayed
+   frame metrics as they become available; label earlier proxies accurately.
+
+**Done when:** the cache demonstrably persists and hits after reboot, matched repeats
+show fewer relevant first-use stalls without new rendering/invalidation regressions,
+and the validated configuration is on by default on the phone. If support or benefit
+is absent, record the result and revisit scope rather than claiming an improvement.
+No kernel patch reserved; likely Mesa/build configuration, with userland path setup if needed.
 
 ## Bug-fix task details
 
@@ -462,6 +552,95 @@ The latest documented slot-b kernel is now j0070; GPU default remains 588 MHz.
 the fix is on by default on slot b and documented in GPU.md. Clean boots of the MAC fix
 alone do not close the buffer-free bug. Preserve current 588 MHz defaults unless the user
 agrees a change.
+
+## Diagnostic task details
+
+### 18. Displayed-frame and input-latency benchmarks
+
+**Type: diagnostics.** Existing 100-GL-flush averages and swap arrivals do not establish
+distinct displayed FPS, slow-frame percentiles or touch-to-display latency. The old
+sampled-present detector stopped working when present became microseconds long.
+
+**Approach, in stages:**
+
+1. Retain existing reproducible home/Control Center workloads and matched CPU/elapsed
+   comparisons. Record kernel/library identity, clocks, core count, temperatures and
+   startup/warmup state. Keep cold/warm and home/blur-heavy workloads separate.
+2. Correlate monotonic timestamps and surface/swap/fence IDs across CPU rendering,
+   GPU submission/completion, presentation queueing and actual observed display latch.
+   Distinguish attempted/dropped/replaced swaps, repeats and newly latched surfaces;
+   validate the latch signal rather than assuming a timer or register write is scanout.
+3. Report displayed update intervals, median/p95/p99, stalls and missed refresh
+   opportunities against the measured refresh period. Define which intervals are active
+   animation; do not mix scripted rests into motion statistics. Measure collection overhead.
+4. Correlate injected input receipt with the first causally responding latched update.
+   Distinguish this software latency from physical touch-to-photon latency; document
+   sensor/input and panel scanout components not measured by the software trace.
+
+**Done when:** reusable collection/analysis commands and a baseline report reproduce
+the above metrics on matched runs, explain event loss/clock alignment/measurement limits,
+and quantify overhead. Deliver the stage-2 timeline before task 16 implementation;
+full input instrumentation need not delay the first task-5 improvement. This task
+establishes evidence, not an optimized renderer. Do not duplicate the shared timeline in task 16.
+
+### 19. Profile SpringBoard's CPU work
+
+**Type: diagnostics.** The earlier [baseline](PERF-BASELINE-20261024.md) found
+SpringBoard's main thread at 711-743 ms/s during home swipes, 428-473 during Control
+Center. High CPU use alone does not prove it delays the display critical path.
+
+**Approach:** capture symbolized current-baseline samples and runnable/waiting state
+through matched home and Control Center motion. Split layout/animation preparation,
+transaction production, IPC, allocations and background callbacks. Correlate production
+with task 18's render/latch events to distinguish necessary work from repeated work
+or blocking that starves rendering. Avoid disabling visual effects as an assumed solution.
+
+**Done when:** a reproducible report quantifies the main costs and their relationship
+to visible stalls, with either a specific justified optimization/bug-fix proposal or
+evidence that another path should take priority. No speed gain is required to close
+the diagnostic task; do not bundle an unmeasured broad SpringBoard rewrite into it.
+
+### 20. Investigate memory and cache growth
+
+**Type: diagnostics; may lead to bug fixes or performance improvements.** The j0070
+Wallpaper freeze showed repeated poster/asset crashes, a swap-file error and large
+cache-maintenance totals. Memory exhaustion is a hypothesis, not a demonstrated leak.
+Cumulative maintained bytes are not necessarily resident or retained memory.
+
+**Approach:**
+
+1. Establish idle and moving memory baselines, then repeat bounded app transitions,
+   home/Control Center gestures and, with normal hang precautions, wallpaper activity.
+   Record actual resident/wired/free memory, process footprints, GPU buffer/surface
+   counts and bytes, cache sizes, allocation latency/failures and memory-pressure events.
+2. Compare high-water marks and post-idle recovery; distinguish bounded cache warming,
+   still-in-flight/scanout surfaces, leaks and crash/respawn churn. Read unified-log
+   exception/pressure messages and attribute growth before imposing a cache budget.
+3. If growth or allocation stalls are proven, scope a targeted lifetime/eviction/error
+   fix. Preserve fence and scanout retention; do not free live surfaces to reduce a counter.
+
+**Done when:** repeatable before/during/after evidence identifies or rules out memory
+pressure for the reproduced slowdown, localizes any unbounded growth, and proposes a
+specific next action. The separate Wallpaper crash need not be repaired to complete
+the measurement report; observed crash causes and pressure remain distinct findings.
+
+### 21. Profile cold-start, boot and storage waits
+
+**Type: diagnostics; may lead to bug fixes or performance improvements.** Steady motion
+does not cover boot/app-launch latency. Task 14 documented five-second MobileGestalt
+syscfg fallback waits; these are a lead, not proof of every slow launch. Task 15's
+LaunchServices-persistence premise was disproved and must not be reused.
+
+**Approach:** timestamp boot to first usable UI and representative app launches, with
+explicit cold/warm definitions and repeats. Separate actual storage I/O/metadata waits,
+CPU work, shader compilation (task 17), IPC service availability and IOKit timeouts.
+Use kernel/user stacks and unified logs to attribute long waits; distinguish normal
+initialization, unavailable-hardware retry behavior and filesystem defects. Compare
+read-only root/ADT facts before proposing root changes; preserve existing permission rules.
+
+**Done when:** a report ranks measured boot/launch delays by cause and reproducibility,
+with one scoped highest-value next action or evidence to deprioritize the path. No
+storage rewrite, fabricated identity data or indiscriminate cache prewarming is implied.
 
 ## Completed task details
 

@@ -1,15 +1,17 @@
 # jasmine (Mi A2) working notes
 
-**2026-10-24: PERF-TASKS.md editorial cleanup.** Existing tasks grouped into open performance
-improvements (2/3/5/6/10/11/12/13/16), open bugs (8/14), completed work (1/4/7/9),
-and closed investigation (15, persistence premise disproved by the later wallpaper investigation).
-Numbers preserved; completed briefs condensed; obsolete 266-MHz default and deadlock/persistence
-claims corrected. Historical timings and outstanding validation remain labelled. No new tasks
-added; performance blind spots are recommendations in the chat awaiting the user's decision.
-Documentation-only: no build, CI run, boot, flash, root change or phone access. Existing
-task-5/GPU/CPU-clock working edits preserved. Next: user's choice of proposed additions;
-task 5 remains the measured steady-rendering lead. Commit: see git log for
-`docs: group performance tasks and separate completed work`.
+**2026-10-24: performance ranking and new tasks approved.** Updated PERF-TASKS.md
+with the nine-step benefit/effort order: task 5, shader cache (17), task 6 comparison,
+task 11 clock gating, SpringBoard profiling (19), task 16, tasks 2+13, task 10,
+then remaining task 11 and task 12. Added shader caching (17) under performance;
+separate diagnostics: displayed-frame/input latency (18), SpringBoard (19),
+memory/cache growth (20), cold-start/boot/storage waits (21). Task 18 owns the shared
+timeline prerequisite for task 16. Existing IDs and task-5 working brief preserved.
+Diagnostics close with evidence; implementation tasks still require on-phone defaults.
+Documentation-only: no implementation, CI run, build, boot, flash, root change or phone
+access. Earlier cleanup commit `2c62869`; this milestone's commit subject:
+`docs: rank performance work and add diagnostic tasks`. Existing unrelated working
+edits remain uncommitted. Next implementation priority: task 5; tasks 17-21 unstarted.
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
 **2026-10-24 05:05-05:45: why there are no wallpapers (and no widgets/app extensions) — cause found, fix j0070 building.**
