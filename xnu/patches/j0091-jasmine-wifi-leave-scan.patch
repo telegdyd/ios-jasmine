@@ -1,0 +1,152 @@
+From f18eb6dbb64f0f074c96367e18d8d083918ca450 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 01:36:08 +0200
+Subject: [PATCH] jasmine-j0091: the leave stops a running scan first and waits
+ for it (j90: the leave during wifid scan asserted in wlan_vdev.c), one log
+ line per leave step
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 81 +++++++++++++++++++++------------
+ 1 file changed, 51 insertions(+), 30 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index ea0b1f9..47665be 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6528,17 +6528,29 @@ w_eapol_rx(const uint8_t *e, size_t elen)
+ 
+ /*
+  * j0090: leaving in ath10k's order, each step after the firmware answered the last (j89c: VDEV_DOWN,
+- * PEER_DELETE and VDEV_STOP back to back with the peer up asserted in wlan_vdev.c): a deauth to the AP
+- * and the frames in flight out (mac80211 flushes around its deauth), VDEV_DOWN (ath10k_bss_disassoc),
+- * PEER_DELETE until the HTT peer unmap / PEER_DELETE_RESP (ath10k_peer_delete), VDEV_STOP until
+- * VDEV_STOPPED (ath10k_vdev_stop). A step machine in S_LEAVE, run by w_leave_poll after the CE poll:
+- * started from rx and event handlers too, it never polls the copy engines itself. No scan, join or
+- * wlan off step runs before it is back in S_IDLE.
++ * PEER_DELETE and VDEV_STOP back to back with the peer up asserted in wlan_vdev.c): a running scan
++ * stopped first (j90: the leave during wifid's scan on the same vdev asserted the same way), a deauth
++ * to the AP and the frames in flight out (mac80211 flushes around its deauth), VDEV_DOWN
++ * (ath10k_bss_disassoc), PEER_DELETE until the HTT peer unmap / PEER_DELETE_RESP (ath10k_peer_delete),
++ * VDEV_STOP until VDEV_STOPPED (ath10k_vdev_stop). A step machine in S_LEAVE, run by w_leave_poll after
++ * the CE poll: started from rx and event handlers too, it never polls the copy engines itself. No
++ * scan, join or wlan off step runs before it is back in S_IDLE. One line per step.
+  */
+ static enum sta_state l_from;
+-static uint32_t l_step, l_ms, l_t0, l_tx_ms, l_peer_ms;
++static uint32_t l_step, l_ms, l_t0;
+ static bool l_deauth;
+ 
++/* WMI STOP_SCAN for every scan (ath10k_scan_abort); scan_event clears scanning on the COMPLETED event */
++static bool
++scan_send_stop(void)
++{
++	uint8_t m[4 + 16] = {}, *c = wmi_put_tlv(m, TAG_STOP_SCAN, 16);
++	c = put32(c, 0xA000 | 1);                   /* requestor, as in the start */
++	c = put32(c, 0);
++	put32(c, 0x04000000);                       /* WMI_SCAN_STOP_ALL */
++	return wmi_send(CMD_STOP_SCAN, m, sizeof(m));
++}
++
+ static void
+ w_teardown(void)
+ {
+@@ -6552,14 +6564,12 @@ w_teardown(void)
+ 		w_link(false);
+ 	}
+ 	l_deauth = false;
+-	if (l_from >= S_ASSOC) {                    /* authenticated: tell the AP (reason 3, leaving) */
+-		uint8_t f[26], *b = w_mgmt_hdr(f, FC_DEAUTH);
+-		b[0] = 3;
+-		b[1] = 0;
+-		l_deauth = w_mgmt_tx(f, sizeof(f));
+-	}
+ 	l_step = 1;
+ 	l_ms = l_t0 = g_ms;
++	LOG("t=%u ms: leave from state %u: %s", g_ms, l_from, scanning ? "stopping the scan" : "no scan");
++	if (scanning) {
++		(void)scan_send_stop();
++	}
+ }
+ 
+ static void
+@@ -6570,36 +6580,51 @@ w_leave_poll(void)
+ 	}
+ 	uint32_t dt = g_ms - l_ms;
+ 	if (l_step == 1) {
++		if (scanning && dt < 1000) {
++			return;
++		}
++		if (l_from >= S_ASSOC) {                /* authenticated: tell the AP (reason 3, leaving) */
++			uint8_t f[26], *b = w_mgmt_hdr(f, FC_DEAUTH);
++			b[0] = 3;
++			b[1] = 0;
++			l_deauth = w_mgmt_tx(f, sizeof(f));
++		}
++		LOG("t=%u ms: leave: scan %s after %u ms%s", g_ms, scanning ? "NOT STOPPED" : "over", dt,
++		    l_deauth ? ", deauth sent" : "");
++		l_step = 2;
++		l_ms = g_ms;
++	} else if (l_step == 2) {
+ 		if ((tx_done < tx_sent || (l_deauth && dt < 20)) && dt < 200) {
+ 			return;
+ 		}
+-		l_tx_ms = dt;
++		w_peer_unmapped = w_peer_deleted = false;
++		LOG("t=%u ms: leave: tx %s after %u ms (sent %u done %u)%s%s", g_ms, tx_done < tx_sent ? "NOT OUT" : "out", dt,
++		    tx_sent, tx_done, l_from >= S_4WAY ? ", vdev down" : "", l_from >= S_AUTH ? ", peer delete" : "");
+ 		if (l_from >= S_4WAY) {                 /* VDEV_UP was sent */
+ 			w_vdev_simple(CMD_VDEV_DOWN, TAG_VDEV_DOWN);
+ 		}
+-		w_peer_unmapped = w_peer_deleted = false;
+ 		if (l_from >= S_AUTH) {                 /* the peer exists */
+ 			w_peer(CMD_PEER_DELETE, TAG_PEER_DELETE, false);
+ 		}
+-		l_step = 2;
++		l_step = 3;
+ 		l_ms = g_ms;
+-	} else if (l_step == 2) {
++	} else if (l_step == 3) {
+ 		if (l_from >= S_AUTH && !w_peer_deleted && !(w_peer_unmapped && dt >= 100) && dt < 1000) {
+ 			return;
+ 		}
+-		l_peer_ms = dt;
++		LOG("t=%u ms: leave: peer %s after %u ms (unmap %u, delete resp %u), vdev stop", g_ms,
++		    l_from < S_AUTH ? "none" : w_peer_deleted || w_peer_unmapped ? "gone" : "NOT GONE", dt, w_peer_unmapped,
++		    w_peer_deleted);
+ 		w_vdev_stopped = false;
+ 		w_vdev_simple(CMD_VDEV_STOP, TAG_VDEV_STOP);
+-		l_step = 3;
++		l_step = 4;
+ 		l_ms = g_ms;
+-	} else if (l_step == 3) {
++	} else if (l_step == 4) {
+ 		if (!w_vdev_stopped && dt < 1000) {
+ 			return;
+ 		}
+-		LOG("t=%u ms: leave from state %u in %u ms: tx out %u ms%s, peer %s %u ms, vdev %s %u ms", g_ms, l_from,
+-		    g_ms - l_t0, l_tx_ms, l_deauth ? " (deauth sent)" : "",
+-		    l_from < S_AUTH ? "none" : w_peer_deleted ? "deleted in" : w_peer_unmapped ? "unmapped in" : "NOT GONE after",
+-		    l_peer_ms, w_vdev_stopped ? "stopped in" : "NOT STOPPED after", dt);
++		LOG("t=%u ms: leave: vdev %s after %u ms; left in %u ms", g_ms, w_vdev_stopped ? "stopped" : "NOT STOPPED", dt,
++		    g_ms - l_t0);
+ 		l_step = 0;
+ 		s_state = S_IDLE;
+ 	}
+@@ -7072,12 +7097,8 @@ radio_poll(unsigned ms)
+ 		w_off_step = 1;
+ 		w_off_ms = g_ms;
+ 		if (ce_up) {
+-			if (scanning) {
+-				uint8_t m[4 + 16] = {}, *c = wmi_put_tlv(m, TAG_STOP_SCAN, 16);
+-				c = put32(c, 0xA000 | 1);       /* requestor, as in the start */
+-				c = put32(c, 0);
+-				put32(c, 0x04000000);           /* WMI_SCAN_STOP_ALL */
+-				(void)wmi_send(CMD_STOP_SCAN, m, sizeof(m));
++			if (scanning && s_state == S_IDLE) {
++				(void)scan_send_stop();         /* (a leave stops it itself) */
+ 			}
+ 			w_teardown();                       /* (nothing when not joined) */
+ 		}
+-- 
+2.47.3
+
