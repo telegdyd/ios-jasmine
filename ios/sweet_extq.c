@@ -105,7 +105,7 @@ ls_plugins(const char *point)
 		id p = MI(all, "objectAtIndex:", i);
 		const char *proto = can(p, "protocol") ? desc(M0(p, "protocol")) : "?";
 		const char *ident = can(p, "pluginIdentifier") ? desc(M0(p, "pluginIdentifier")) : "?";
-		if (strcmp(proto, point) == 0 || strstr(ident, "oster")) {
+		if (n <= 10 || strcmp(proto, point) == 0 || strstr(ident, "oster")) {
 			printf("  %s (%s)\n", ident, proto);
 			hits++;
 		}

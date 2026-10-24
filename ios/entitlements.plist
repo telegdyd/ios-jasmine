@@ -8,5 +8,9 @@
 	<true/>
 	<key>com.apple.private.skip-library-validation</key>
 	<true/>
+	<key>com.apple.private.logging.admin</key>
+	<true/>
+	<key>com.apple.logging.local-store</key>
+	<true/>
 </dict>
 </plist>
