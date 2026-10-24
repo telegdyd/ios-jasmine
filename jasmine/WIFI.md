@@ -139,3 +139,33 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   Modem alive to t=180000 with the radio running. **Safe stop on the reboot**: `stop: slave-kernel 0000000e
   after 207 ms (stop-ack)`, `modem ports halted, mss_restart held`; fastboot and park fine (80%, charging).
   `modem-round.sh` now also records the log across the reboot (`<log>-reboot.txt`).
+
+## 2026-10-24 22:15-23:05 (j0082-j0085): factory MAC, en0 + wifid, first join
+
+- j0082: the Wi-Fi MAC from the persist partition's `/wlan_mac.bin` (`Intf0MacAddress=<12 hex>\nEND`, as
+  Android's cnss-daemon), read in the kernel with a read-only ext4 root-directory lookup over `sweet_ufs`
+  (tested on the host against both persist backups, byte-exact). The fixed 02:54:4f:50:41:5a stays as the
+  fallback. The firmware still reports 00:..:00 in WMI READY; the vdev is created with our address (as ath10k).
+  Linux/Nura never used it: ath10k picked a random MAC and pmOS `bootmac` set a made-up 02:00:... one.
+  **j82-wifi (22:35)**: `wifi: MAC 94:87:e0:**:**:** from persist/wlan_mac.bin`, scans as before, clean stop
+  (206 ms), parked 80%. Only 3 automatic scans is by design (`scans < 3`); later scans are on request.
+- The ath10k TxBF-on-disassoc fix (Nura `kernel/0005`) does not apply: our WMI code sends no vdev TxBF param.
+- j0083: `topaz_sta_init()` (en0 + Apple80211) on jasmine when `wifi=1`. j83-wifi (22:43): en0 attached once
+  WMI was ready, but **wifid never ran**: launchd starts it only when the ADT has a `wlan` node
+  (`_LimitLoadToDeviceTree`), which `tools/mkadt.py` made only for topaz. Fixed on branch `jasmine`
+  (8fda077): `mkadt.py --wlan`, passed by `mkimg.sh` when EXTRA_ARGS has `wifi=1` (other images unchanged).
+- **j83-wlan (22:52): wifid scans, networks show in Settings (user saw them), and the first join works at
+  the 802.11 level**: wifid ASSOCIATE (TelekNet, WPA2, passphrase) -> `join: TelekNet 2472 MHz WPA2`, auth
+  status 0, assoc status 0 aid 7, 4-way handshake, `WPA2 keys installed (group key yes, idx 2)`,
+  `joined TelekNet` in 56 ms; wifid reads CURRENT_NETWORK/SSID/BSSID fine after it, link stays up.
+  **No IP address** (Settings spins, no address under the network's info): DHCP never completes; the data
+  path after the keys has no log (counters existed, never printed) -> j0084.
+  The **reboot afterwards hung**: modem stop-ack after 128 ms, then `mba: halt modem port: ack 0 idle 0`
+  (every earlier reboot halted it), mss_restart asserted, launchd quiesced, then nothing; the round script
+  gave up, the user's Power + Volume down brought fastboot back at ~23:00; parked 71%.
+- j0084: data path diagnostics while joined: a `wifi data:` line every 10 s (tx queued/sent/done by
+  completion status/drops, rx msdus/data/eapol/up/not up/no SNAP) and the first 12 frames each way
+  (IPv4 UDP ports: DHCP is 68 <-> 67).
+- j0085: Wi-Fi off before the modem stop, as Linux (ath10k leaves the AP and sends WLFW WLAN_MODE OFF, then
+  remoteproc stops the modem): `topaz_modem_stop` (not on a panic) asks the modem thread for `w_teardown()`
+  and WLAN_MODE OFF (mode 4), waits up to 1.5 s for the answer, then the stop handshake as before.
