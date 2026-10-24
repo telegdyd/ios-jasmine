@@ -969,3 +969,23 @@ exec'd ~14 times per boot): not a steady loop, not looked at further. bluetoothd
 (~20 per 4 min) from its emptied job, < 2 ms/s of launchd. Not measured: the moving frame. The one gesture round
 (t7c, 01:17) hit the boot-logo freeze (task 14, lsd seeding without a Wi-Fi MAC, fixed since), so CA's runnable wait
 (45 ms/s in j64p) has no after-figure yet. Not checked by the user yet: Settings, Control Center, system sounds.
+
+#### Current bottleneck baseline (2026-10-24 03:14-03:22)
+
+First pass after tasks 1/4/7 and the task-14 ADT fix, on the existing running slot b:
+[full report](PERF-BASELINE-20261024.md). Nine six-second profiles, zero dropped samples,
+separate unprofiled/counter workloads, 4 Gold at 1747 MHz, GPU 587-588, DDR ~1296;
+the installed graphics library byte-matches task 4's final artifact. No new CI/build,
+reboot, flash or software/clock change.
+
+CA's display thread is on CPU ~75% for home swipes and 82-85% for Control Center;
+Mesa/wrapper plus support-library work is ~63-66% of its CPU. Lower-rate sampling agrees.
+`w_DrawElements` is 52-57% inclusive CPU; `draw_prep` 10-13%, batch creation ~7%
+(overlapping). GPU average busy is 34-46%, with RAM-stall cycles a secondary lead.
+First measured Spotlight incurs ~276 ms shader-worker waiting across six seconds;
+the repeat has none. Home's SpringBoard main thread is also busy (711-743 ms/s).
+Task 5 is the next steady-motion target; accurate FPS/frame latency still needs explicit
+swap/latch timing, because flushes are not frames and sampled `present()` counts broke
+when j0058 made it microsecond-fast. Raw data stays ignored in
+`research/perf-firstpass-20261024/`. Final 03:24 check: GPU 12516/12516 jobs completed,
+clocks unchanged, profiler idle; our log collector stopped and phone lock released.

@@ -262,6 +262,15 @@ per flush drops against a same-day baseline; no leak over a 10-minute run (Sweet
 
 ## 5. Cut Mesa's per-draw CPU cost (part of 14.6 ms)
 
+**Re-profiled 2026-10-24 03:14-03:22, no changes to installed software or clocks:**
+[Current baseline](PERF-BASELINE-20261024.md). At GPU 588 MHz with task 4/7 fixes, CA's
+display thread is on CPU ~75% during home swipes and 82-85% in Control Center; Mesa/wrapper
+user code plus its support calls are ~63-66% of that CPU time. Lower-rate profiles agree.
+The task remains a strong lead. `w_DrawElements` includes 52-57% of the thread's CPU,
+`draw_prep` 10-13%, batch creation ~7% (inclusive, overlapping shares). GPU average busy
+34-46%, with a secondary RAM-stall signal. This is not a new ms/frame or FPS estimate:
+flushes are not frames, and the old sampled-present frame detector no longer works.
+
 **Now.** About 70-100 draws per frame at ~0.16 ms each (`w_DrawElements` in the libsweetca profile); a normal
 freedreno draw costs a few microseconds. Every render target gets its own batch (CoreAnimation's offscreen
 passes, the backdrop blur), and each batch costs setup. Profile inside Mesa first (the j0057 profile has Mesa
