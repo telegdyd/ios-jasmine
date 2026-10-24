@@ -1,0 +1,67 @@
+From c4a00b00b1ccc8f1ce9ff62c25425ab13b14b1f0 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 17:46:41 +0200
+Subject: [PATCH] jasmine-j0080o: trace of the GLINK/qrtr traffic after 3 s,
+ both ways (250 lines)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 9e0c3b4..0433f4a 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -1011,9 +1011,31 @@ glink_send(const void *data, uint32_t len)
+ 
+ /* ---------------------------------------------------------------- QRTR */
+ 
++/*
++ * j0080o: the traffic after the first 3 s, both ways, 250 lines at most (the modem goes quiet
++ * at 8.8 s and dies of dog_hb diag starvation at ~101 s: what does it still ask for?).
++ */
++static unsigned late_lines;
++
++static void
++late_trace(const char *dir, uint32_t type, uint32_t sport, uint32_t dport, const uint8_t *d, uint32_t len)
++{
++	if (g_ms < 3000 || late_lines >= 250) {
++		return;
++	}
++	late_lines++;
++	char hx[3 * 20 + 1] = "";
++	uint32_t n = MIN(len, 20u);
++	for (uint32_t i = 0; d != NULL && i < n; i++) {
++		snprintf(hx + 3 * i, 4, "%02x ", d[i]);
++	}
++	LOG("t=%u ms: %s type %u port %x -> %x, %u B: %s", g_ms, dir, type, sport, dport, len, hx);
++}
++
+ static void
+ qrtr_send(uint32_t type, uint32_t src_port, uint32_t dst_node, uint32_t dst_port, const void *payload, uint32_t len)
+ {
++	late_trace("qrtr tx", type, src_port, dst_port, (const uint8_t *)payload, len);
+ 	uint32_t cap = (uint32_t)sizeof(struct qrtr_hdr_v1) + len + 4;
+ 	uint8_t *buf = (uint8_t *)IOMalloc(cap);
+ 	uint32_t n;
+@@ -1092,6 +1114,7 @@ qrtr_rx(const uint8_t *p, uint32_t len)
+ 		return;
+ 	}
+ 	const struct qrtr_ctrl *c = (const struct qrtr_ctrl *)(p + hlen);
++	late_trace("qrtr rx", type, src_port, dst_port, p + hlen, hlen + size <= len ? size : 0);
+ 
+ 	switch (type) {
+ 	case QRTR_TYPE_HELLO:
+@@ -1146,6 +1169,9 @@ rx_one(void)
+ 	}
+ 	rx_peek(0, &m, sizeof(m));
+ 	g_rx_msgs++;
++	if (m.cmd != CMD_TX_DATA && m.cmd != CMD_TX_DATA_CONT) {
++		late_trace("glink rx cmd", m.cmd, m.p1, m.p2, NULL, 0);
++	}
+ 	switch (m.cmd) {
+ 	case CMD_VERSION:
+ 		rx_advance(8);
+-- 
+2.47.3
+
