@@ -1,0 +1,35 @@
+From fde1ca9cb0006161092207e76f9e1427b896ae26 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 05:37:03 +0200
+Subject: [PATCH] jasmine-j0070: publish the AppleMobileFileIntegrity service
+ on every board (topaz 0151 was topaz-only): ExtensionKit reads the signed
+ extension point cache, LaunchServices registers app extensions (wallpapers,
+ widgets)
+
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 851db83..d0c8a5a 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -434,9 +434,13 @@ AppleCLCD::start(IOService *provider)
+ 	if (topaz) {
+ 		topaz_modem_init();
+ 		topaz_audio_init();
+-		/* topaz 0151 (HackiOS): not yet tried on jasmine */
+-		sweet_amfi_service_init();
+ 	}
++	/*
++	 * Every board: the AMFI service is software only. Without it ExtensionKit cannot read the
++	 * signed extension point cache ("Unable to find AMFI" in lsd's log), so LaunchServices
++	 * registers no app extension: no wallpapers, widgets or share sheets (jasmine j0070).
++	 */
++	sweet_amfi_service_init();
+ 	sweet_busy_init();
+ 	PE_current_console(&video);
+ 	fPhys = video.v_baseAddr;
+-- 
+2.47.3
+
