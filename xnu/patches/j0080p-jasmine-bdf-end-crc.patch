@@ -1,0 +1,34 @@
+From c16a4a71d087d35b43145980c7bbf6d701ed4de6 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 18:03:02 +0200
+Subject: [PATCH] jasmine-j0080p: board data end segment rejected (CRC check)
+ is not fatal, as ath10k: on to cal_report
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 0433f4a..376a0b6 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3823,10 +3823,15 @@ wlfw_rx(const uint8_t *d, uint32_t len)
+ 		w_start_bdf();
+ 		break;
+ 	case WLFW_BDF_DOWNLOAD:
+-		if (!ok) {
++		if (!ok && w_bdf_off < w_bdf_len) {
+ 			LOG("wlfw: bdf segment %u FAILED err %u", w_bdf_seg - 1, err);
+ 			break;
+ 		}
++		if (!ok) {
++			/* ath10k: end=1 makes the firmware CRC-check the board data; on a mismatch it answers
++			 * MALFORMED_MSG and boots with the default board data in its image: go on */
++			LOG("wlfw: board data end segment rejected (err %u, CRC check): firmware default board data", err);
++		}
+ 		if (w_bdf_off < w_bdf_len) {
+ 			w_bdf_segment();
+ 		} else {
+-- 
+2.47.3
+
