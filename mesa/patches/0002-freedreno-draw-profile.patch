@@ -1,0 +1,342 @@
+diff --git a/src/freedreno/ir3/ir3_shader.c b/src/freedreno/ir3/ir3_shader.c
+index 7aa6284..4f28dee 100644
+--- a/src/freedreno/ir3/ir3_shader.c
++++ b/src/freedreno/ir3/ir3_shader.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "util/format/u_format.h"
+ #include "util/u_atomic.h"
+ #include "util/u_math.h"
+@@ -570,6 +571,7 @@ static struct ir3_shader_variant *
+ create_variant(struct ir3_shader *shader, const struct ir3_shader_key *key,
+                bool write_disasm, void *mem_ctx)
+ {
++   SWEET_SCOPE(sp_diag, SP_SHADER_VARIANT);
+    struct ir3_shader_variant *v = alloc_variant(shader, key, NULL, mem_ctx);
+ 
+    if (!v)
+diff --git a/src/gallium/auxiliary/util/u_upload_mgr.c b/src/gallium/auxiliary/util/u_upload_mgr.c
+index bd2afdd..e27bb0a 100644
+--- a/src/gallium/auxiliary/util/u_upload_mgr.c
++++ b/src/gallium/auxiliary/util/u_upload_mgr.c
+@@ -29,6 +29,7 @@
+  * coalescing small buffers into larger ones.
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "pipe/p_defines.h"
+ #include "util/u_inlines.h"
+ #include "pipe/p_context.h"
+@@ -239,6 +240,8 @@ u_upload_alloc(struct u_upload_mgr *upload,
+                struct pipe_resource **releasebuf,
+                void **ptr)
+ {
++   SWEET_SCOPE(sp_diag, SP_UPLOAD_ALLOC);
++   SWEET_EVENT(SPE_UPLOAD_BYTES, size);
+    unsigned buffer_size = upload->buffer_size;
+    unsigned offset = MAX2(min_out_offset, upload->offset);
+ 
+@@ -318,6 +321,7 @@ u_upload_data(struct u_upload_mgr *upload,
+               struct pipe_resource **outbuf,
+               struct pipe_resource **releasebuf)
+ {
++   SWEET_SCOPE(sp_diag, SP_UPLOAD_DATA);
+    uint8_t *ptr;
+ 
+    u_upload_alloc(upload, min_out_offset, size, alignment,
+diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_vbuf.c
+index 882f683..31368c5 100644
+--- a/src/gallium/auxiliary/util/u_vbuf.c
++++ b/src/gallium/auxiliary/util/u_vbuf.c
+@@ -85,6 +85,7 @@
+  * The module also has its own CSO cache of vertex element states.
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "util/u_vbuf.h"
+ 
+ #include "util/u_dump.h"
+@@ -1433,6 +1434,7 @@ void u_vbuf_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *inf
+                      const struct pipe_draw_start_count_bias *draws,
+                      unsigned num_draws)
+ {
++   SWEET_SCOPE(sp_diag, SP_VBUF);
+    struct u_vbuf *mgr = pipe->vbuf;
+    int start_vertex;
+    unsigned min_index;
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+index f0dff4e..07c0f7d 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "pipe/p_state.h"
+ #include "util/u_memory.h"
+ #include "util/u_prim.h"
+@@ -81,8 +82,11 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
+ 
+    unsigned dirty = ctx->dirty;
+ 
+-   emit.prog = fd5_program_state(
+-      ir3_cache_lookup(ctx->shader_cache, &emit.key, &ctx->debug));
++   {
++      SWEET_SCOPE(sp_lookup, SP_PROGRAM_LOOKUP);
++      emit.prog = fd5_program_state(
++         ir3_cache_lookup(ctx->shader_cache, &emit.key, &ctx->debug));
++   }
+ 
+    /* bail if compile failed: */
+    if (!emit.prog)
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
+index d890de4..b6decab 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "pipe/p_state.h"
+ #include "util/format/u_format.h"
+ #include "util/u_helpers.h"
+@@ -499,6 +500,7 @@ void
+ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
+                struct fd5_emit *emit)
+ {
++   SWEET_SCOPE(sp_diag, SP_EMIT_STATE);
+    struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
+    const struct ir3_shader_variant *vp = fd5_emit_get_vp(emit);
+    const struct ir3_shader_variant *fp = fd5_emit_get_fp(emit);
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_program.c b/src/gallium/drivers/freedreno/a5xx/fd5_program.c
+index 550756a..6b83a24 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_program.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_program.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "pipe/p_state.h"
+ #include "util/bitset.h"
+ #include "util/format/u_format.h"
+@@ -248,6 +249,7 @@ void
+ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
+                  struct fd5_emit *emit)
+ {
++   SWEET_SCOPE(sp_diag, SP_EMIT_PROGRAM);
+    struct stage s[MAX_STAGES];
+    uint32_t pos_regid, psize_regid, color_regid[8];
+    uint32_t face_regid, coord_regid, zwcoord_regid, samp_id_regid,
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch.c b/src/gallium/drivers/freedreno/freedreno_batch.c
+index 22172e5..fecc4f3 100644
+--- a/src/gallium/drivers/freedreno/freedreno_batch.c
++++ b/src/gallium/drivers/freedreno/freedreno_batch.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "util/hash_table.h"
+ #include "util/list.h"
+ #include "util/set.h"
+@@ -73,6 +74,7 @@ subpass_destroy(struct fd_batch_subpass *subpass)
+ struct fd_batch *
+ fd_batch_create(struct fd_context *ctx, bool nondraw)
+ {
++   SWEET_SCOPE(sp_diag, SP_BATCH_CREATE);
+    struct fd_batch *batch = CALLOC_STRUCT(fd_batch);
+ 
+    if (!batch)
+@@ -343,11 +345,14 @@ static void
+ batch_flush(struct fd_batch *batch, bool last_batch)
+   assert_dt
+ {
++   SWEET_SCOPE(sp_diag, SP_BATCH_FLUSH);
+    DBG("%p: needs_flush=%d", batch, batch->needs_flush);
+ 
+    if (batch->flushed)
+       return;
+ 
++   SWEET_BATCH(batch->num_draws);
++
+    tc_assert_driver_thread(batch->ctx->tc);
+ 
+    batch->needs_flush = false;
+@@ -511,6 +516,7 @@ fd_batch_add_resource(struct fd_batch *batch, struct fd_resource *rsc)
+ void
+ fd_batch_resource_write(struct fd_batch *batch, struct fd_resource *rsc)
+ {
++   SWEET_SCOPE(sp_diag, SP_RESOURCE_WRITE);
+    struct fd_resource_tracking *track = rsc->track;
+ 
+    fd_screen_assert_locked(batch->ctx->screen);
+@@ -577,6 +583,7 @@ fd_batch_resource_write(struct fd_batch *batch, struct fd_resource *rsc)
+ void
+ fd_batch_resource_read_slowpath(struct fd_batch *batch, struct fd_resource *rsc)
+ {
++   SWEET_SCOPE(sp_diag, SP_RESOURCE_READ);
+    fd_screen_assert_locked(batch->ctx->screen);
+ 
+    if (rsc->stencil)
+@@ -610,6 +617,7 @@ fd_batch_resource_read_slowpath(struct fd_batch *batch, struct fd_resource *rsc)
+ void
+ fd_batch_check_size(struct fd_batch *batch)
+ {
++   SWEET_SCOPE(sp_diag, SP_BATCH_SIZE);
+    if (batch->num_draws > 100000) {
+       fd_batch_flush(batch);
+       return;
+diff --git a/src/gallium/drivers/freedreno/freedreno_context.c b/src/gallium/drivers/freedreno/freedreno_context.c
+index e642299..2d5ae14 100644
+--- a/src/gallium/drivers/freedreno/freedreno_context.c
++++ b/src/gallium/drivers/freedreno/freedreno_context.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "freedreno_context.h"
+ #include "ir3/ir3_cache.h"
+ #include "util/u_upload_mgr.h"
+@@ -27,6 +28,7 @@ static void
+ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
+                  unsigned flags) in_dt
+ {
++   SWEET_SCOPE(sp_diag, SP_CONTEXT_FLUSH);
+    struct fd_context *ctx = fd_context(pctx);
+    struct pipe_fence_handle *fence = NULL;
+    struct fd_batch *batch = fd_bc_last_batch(ctx);
+@@ -137,6 +139,7 @@ out:
+ static void
+ fd_texture_barrier(struct pipe_context *pctx, unsigned flags) in_dt
+ {
++   SWEET_SCOPE(sp_diag, SP_TEXTURE_BARRIER);
+    /* On devices that could sample from GMEM we could possibly do better.
+     * Or if we knew that we were doing GMEM bypass we could just emit a
+     * cache flush, perhaps?  But we don't know if future draws would cause
+@@ -333,6 +336,7 @@ fd_context_batch(struct fd_context *ctx)
+ struct fd_batch *
+ fd_context_batch_draw(struct fd_context *ctx)
+ {
++   SWEET_SCOPE(sp_diag, SP_BATCH_SELECT);
+    struct fd_batch *batch = NULL;
+ 
+    tc_assert_driver_thread(ctx->tc);
+diff --git a/src/gallium/drivers/freedreno/freedreno_draw.c b/src/gallium/drivers/freedreno/freedreno_draw.c
+index 837f03d..6401c9e 100644
+--- a/src/gallium/drivers/freedreno/freedreno_draw.c
++++ b/src/gallium/drivers/freedreno/freedreno_draw.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "pipe/p_state.h"
+ #include "util/format/u_format.h"
+ #include "util/u_draw.h"
+@@ -217,6 +218,7 @@ static void
+ batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
+                     const struct pipe_draw_indirect_info *indirect) assert_dt
+ {
++   SWEET_SCOPE(sp_diag, SP_DRAW_TRACKING);
+    struct fd_context *ctx = batch->ctx;
+ 
+    if (!needs_draw_tracking(batch, info, indirect))
+@@ -298,6 +300,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
+             const struct pipe_draw_indirect_info *indirect,
+             const struct pipe_draw_start_count_bias *draws, unsigned num_draws) in_dt
+ {
++   SWEET_SCOPE(sp_diag, SP_FD_DRAW);
+    struct fd_context *ctx = fd_context(pctx);
+ 
+    /* for debugging problems with indirect draw, it is convenient
+diff --git a/src/gallium/drivers/freedreno/ir3/ir3_cache.c b/src/gallium/drivers/freedreno/ir3/ir3_cache.c
+index 3ad3d9c..662ee84 100644
+--- a/src/gallium/drivers/freedreno/ir3/ir3_cache.c
++++ b/src/gallium/drivers/freedreno/ir3/ir3_cache.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "util/hash_table.h"
+ #include "util/ralloc.h"
+ #define XXH_INLINE_ALL
+@@ -76,9 +77,11 @@ ir3_cache_lookup(struct ir3_cache *cache, const struct ir3_cache_key *key,
+       _mesa_hash_table_search_pre_hashed(cache->ht, hash, key);
+ 
+    if (entry) {
++      SWEET_EVENT(SPE_PROGRAM_HIT, 1);
+       return entry->data;
+    }
+ 
++   SWEET_EVENT(SPE_PROGRAM_MISS, 1);
+    MESA_TRACE_FUNC();
+ 
+    if (key->hs)
+diff --git a/src/gallium/drivers/freedreno/ir3/ir3_gallium.c b/src/gallium/drivers/freedreno/ir3/ir3_gallium.c
+index 7eb3a63..d33a6aa 100644
+--- a/src/gallium/drivers/freedreno/ir3/ir3_gallium.c
++++ b/src/gallium/drivers/freedreno/ir3/ir3_gallium.c
+@@ -6,6 +6,7 @@
+  *    Rob Clark <robclark@freedesktop.org>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "pipe/p_screen.h"
+ #include "pipe/p_state.h"
+ #include "tgsi/tgsi_dump.h"
+@@ -397,6 +398,7 @@ ir3_shader_state_delete(struct pipe_context *pctx, void *_hwcso)
+ struct ir3_shader *
+ ir3_get_shader(struct ir3_shader_state *hwcso)
+ {
++   SWEET_SCOPE(sp_diag, SP_SHADER_GET);
+    if (!hwcso)
+       return NULL;
+ 
+diff --git a/src/mesa/main/state.c b/src/mesa/main/state.c
+index e716502..c0977c3 100644
+--- a/src/mesa/main/state.c
++++ b/src/mesa/main/state.c
+@@ -31,6 +31,7 @@
+  */
+ 
+ 
++#include "util/sweet_profile.h"
+ #include "util/glheader.h"
+ #include "mtypes.h"
+ #include "arrayobj.h"
+@@ -554,6 +555,7 @@ update_fixed_func_program_usage(struct gl_context *ctx)
+ void
+ _mesa_update_state_locked( struct gl_context *ctx )
+ {
++   SWEET_SCOPE(sp_diag, SP_MESA_STATE);
+    GLbitfield new_state = ctx->NewState;
+    GLbitfield new_prog_state = 0x0;
+    const GLbitfield checked_states =
+diff --git a/src/mesa/state_tracker/st_draw.c b/src/mesa/state_tracker/st_draw.c
+index c3005f5..979d903 100644
+--- a/src/mesa/state_tracker/st_draw.c
++++ b/src/mesa/state_tracker/st_draw.c
+@@ -35,6 +35,7 @@
+  *   Keith Whitwell <keithw@vmware.com>
+  */
+ 
++#include "util/sweet_profile.h"
+ #include "main/context.h"
+ #include "main/errors.h"
+ 
+@@ -74,6 +75,7 @@ static_assert(GL_PATCHES == MESA_PRIM_PATCHES, "enum mismatch");
+ void
+ st_prepare_draw(struct gl_context *ctx, const st_state_bitset state_mask)
+ {
++   SWEET_SCOPE(sp_diag, SP_ST_PREP);
+    struct st_context *st = ctx->st;
+ 
+    /* Mesa core state should have been validated already */

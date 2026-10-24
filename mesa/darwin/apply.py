@@ -7,8 +7,10 @@ root = pathlib.Path(sys.argv[1])
 here = pathlib.Path(__file__).parent
 drm = root / 'src/freedreno/drm'
 (drm / 'darwin').mkdir(exist_ok=True)
-for f in ('darwin_priv.h', 'darwin_device.c', 'darwin_bo.c', 'darwin_pipe.c'):
+for f in ('darwin_priv.h', 'darwin_device.c', 'darwin_bo.c', 'darwin_pipe.c', 'sweet_profile.c'):
     (drm / 'darwin' / f).write_text((here / f).read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
+(root / 'src/util/sweet_profile.h').write_text((here / 'sweet_profile.h').read_text(encoding='utf-8'),
+                                             encoding='utf-8', newline='\n')
 
 
 def sub(rel, old, new):
@@ -73,6 +75,7 @@ sub('src/freedreno/drm/meson.build',
     "    'darwin/darwin_device.c',\n"
     "    'darwin/darwin_pipe.c',\n"
     "    'darwin/darwin_priv.h',\n"
+    "    'darwin/sweet_profile.c',\n"
     "  )\n"
     "  libfreedreno_drm_deps += dependency('appleframeworks', modules : ['IOKit', 'CoreFoundation'])\n"
     "endif\n")

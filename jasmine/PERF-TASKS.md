@@ -37,6 +37,7 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 | 13 | Thermal limits: TSENS-driven caps on CPU and GPU clocks | keeps the phone usable under long load | new `sweet_thermal.c` (after 2 and 11) | j0068 |
 | 14 | **Fix the startup freeze above 266 MHz GPU** (588 default again since 2026-10-24 00:42). **Boot-logo freeze fixed 2026-10-24 02:45** (lsd seed waited 5 s per built-in app for a Wi-Fi MAC; MACs now in the ADT `/chosen`; 12/12 clean boots). Open: lock-screen freeze (backboardd stuck in SweetGPU buffer free, j60b/t4d2) | unblocks task 3's clock (and task 11's DCVS) | `bsd/dev/sweet_gpu.c`, `iokit/Kernel/arm/SweetGPU.cpp` | j0069 |
 | 15 | Make lsd keep its LaunchServices store across boots (it rebuilds its database at every boot; task 14) | boot time, and no seed window at startup | phone iOS root (ownership / protection of lsd's directories), maybe a kernel trace | none (j0070 if a trace is needed) |
+| 16 | Pipeline rendering and presentation using surface completion fences | unmeasured; overlap CPU preparation with the previous frame's GPU tail | libsweetca, `SweetFramebuffer.cpp`, possibly SweetGPU submission | reserve kernel number when implementation is scoped |
 
 Savings overlap (a faster CPU also shortens the copy), so they do not add up exactly. Tasks 4 and 5 both change
 Mesa: give them to one agent, or run them one after the other. Tasks 10 and 11 both touch `sweet_gpu.c` (10 only
@@ -793,3 +794,36 @@ libMobileGestalt.dylib.s). Obfuscated MG keys: base64(MD5("MGCopyAnswer" + name)
 **Done when:** after one boot a `com.apple.LaunchServices-*-v2.csstore` exists in lsd's container and
 `/var/db/lsd/com.apple.lsdidentifiers.plist` exists; the next boot loads the store instead of seeding (no new
 `NSIRD_lsd_*`; lsd's census shows no `seedDatabase`); on the phone by default ("Done means on the phone").
+
+## 16. Pipeline rendering and presentation using surface completion fences
+
+**Why (2026-10-24).** libsweetca's `w_Flush()` calls `glFinish()`, so CA's rendering thread
+waits for queued GPU work before it can prepare more CPU work. Task 4's CPU savings at
+266 MHz reappeared as GPU waiting. Submitting frame N and preparing N+1 while the GPU
+finishes N is a real opportunity, but its current gain has not been measured.
+
+**The catch.** Replacing that `glFinish()` with `glFlush()` alone is insufficient:
+`AppleCLCD::directPresent()` calls `sweet_surface_cpu_access()` before scanning the surface,
+which waits for its GPU fence on the same calling thread. The wait can simply move there.
+True overlap requires a queued presentation that becomes eligible after the surface's
+render-completion fence, allowing CA's thread to return before GPU completion. Keep genuine
+`Finish`/CPU-readback semantics intact. Jobs must be submitted before publishing their fences.
+
+**Required ordering.** Do not present unfinished pixels; retain each queued surface until
+its render fence completes and it retires from scanout; do not let GPU writes reuse a
+surface the panel still reads. Preserve j0058's SwapWait/latch protections. Bound the queue
+to avoid turning throughput gains into extra touch latency. Earlier overlap experiments
+exposed flicker from premature surface reuse (GPU.md, "The flicker found").
+
+**Measure first.** Add timestamps/IDs for CPU render/flush, GPU submission/completion,
+swap queueing and actual observed latch, linked by surface/swap/fence. Identify the critical
+path and available CPU/GPU overlap; distinguish panel waits from GPU execution. The current
+[first pass](PERF-BASELINE-20261024.md) finds explicit GPU-fence sleeping around 5-6% of the
+home capture and 1% in Control Center; submission waits add more but include other causes.
+These are not removable frame-time estimates. Run task 5 first; revisit overlap after its
+CPU cost changes. Do not infer FPS from GL flushes or the old sampled-present detector.
+
+**Done when:** matched home/Control Center runs show shorter measured presentation
+intervals or lower end-to-end latency, bounded queue depth and correct fence/surface
+lifetime; no new corruption, tearing, flicker, held-surface writes or hangs in a sustained
+UI run; the result is on by default on the phone, with the baseline and result in GPU.md.

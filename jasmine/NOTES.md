@@ -1,6 +1,21 @@
 # jasmine (Mi A2) working notes
 
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
+**2026-10-24 task 5 step 1 in progress:** pipelining is now task 16 in PERF-TASKS.md.
+Opt-in (`SWEETCA_DRAWPROF=1`) nested elapsed-time/call diagnostics in Mesa patch 0002
+and the Darwin backend: wrapper preparation/barriers, validation, batch setup/flush
+causes, uploads, shader lookups/variants, submits/waits. No optimization or sync change.
+13 changed Mesa TUs pass host syntax checks; nested/early-return, 4-thread counters,
+exclusive-time accounting and disabled-mode checks pass. Fresh Mesa patch order verified.
+Next: one Mesa CI build, temporary diagnostic-library boot, home/Control Center measurements.
+**User's standing request (2026-10-24): park in the charging console whenever the phone
+is not needed.** Currently r109 Linux charging shell, temporarily booted from
+`shim/out/nura-r109-boot_a.img`, backlight 0, charge voltage 3950000; qcom-battery reports
+Charging, +722655 uA, 3835927 uV, 34%. USB shell took a few minutes after the Nura logo.
+Use `tools/pmos-shell.py`; its network is 172.16.42.1, host Ethernet 172.16.42.2/24.
+Our phone lock was released while it charges. Do not use the older `nura-debugshell.img`
+for parking (its kernel discharges). Existing unstaged CPU-clock notes below belong to
+earlier work; preserve them.
 **2026-10-24 03:22: current bottleneck first pass complete**: [baseline report](PERF-BASELINE-20261024.md).
 Nine 6-second profiles (0 dropped), repeated home/Control Center/Spotlight and lower-rate checks;
 separate GPU counters. Same running j69b slot-b boot, 4 Gold at 1747, GPU 587-588, DDR ~1296,

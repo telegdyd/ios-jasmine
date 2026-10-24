@@ -6,6 +6,7 @@
 #include <mach/mach_time.h>
 
 #include "util/os_time.h"
+#include "util/sweet_profile.h"
 
 #include "freedreno_ringbuffer_sp.h"
 #include "darwin_priv.h"
@@ -69,6 +70,7 @@ uint32_t darwin_last_kfence, darwin_last_ufence;
 static int
 darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
 {
+   SWEET_SCOPE(sp_wait, SP_WAIT);
    uint64_t ms = timeout == OS_TIMEOUT_INFINITE ? 60000 : timeout / 1000000;
    uint64_t in[2] = { fence->kfence, ms };
    uint64_t t0 = mach_absolute_time();
@@ -100,6 +102,7 @@ struct darwin_ib {
 static int
 flush_submit_list(struct list_head *submit_list)
 {
+   SWEET_SCOPE(sp_submit, SP_SUBMIT);
    struct fd_submit_sp *fd_submit = to_fd_submit_sp(last_submit(submit_list));
    struct fd_pipe *pipe = fd_submit->base.pipe;
    unsigned nr_cmds = 0;

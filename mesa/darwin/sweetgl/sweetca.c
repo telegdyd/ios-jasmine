@@ -53,6 +53,7 @@
 
 #include "sweetgl.h"
 #include "sweetca_slots.inc"
+#include "util/sweet_profile.h"
 
 #define GL_TEXTURE_RECTANGLE_ARB 0x84F5
 #define GL_TEXTURE_BINDING_RECTANGLE_ARB 0x84F6
@@ -420,6 +421,7 @@ prof_report(double wall_ms)
    waitt0 = waitt;
    waits0 = waits;
    darwin_prof_report(sca_log);
+   sweet_profile_report(sca_log);
    prof_gl_ticks = 0;
    /* the 8 slowest wrappers, then every wrapper that submitted */
    uint8_t shown[PROF_SLOTS] = {0};
@@ -466,6 +468,7 @@ w_Flush(void *rctx)
 {
    static unsigned traced;
    CUR(rctx);
+   SWEET_SCOPE(sp_frame, SP_FRAME_FLUSH);
    (void)c;
    double t = now_ms();
    shadow_write_back(c);
@@ -1089,6 +1092,7 @@ set_unit(struct sca_ctx *c, int u, GLuint want)
 static void
 texel_scale(struct sca_ctx *c, GLuint tex, GLint loc)
 {
+   SWEET_SCOPE(sp_uniform, SP_PREP_UNIFORM);
    unsigned w = tex < TEXMAX ? c->tex_w[tex] : 0, h = tex < TEXMAX ? c->tex_h[tex] : 0;
    glUniform2f(loc, w ? 1.0f / w : 1.0f, h ? 1.0f / h : 1.0f);
 }
@@ -1104,12 +1108,15 @@ texel_scale(struct sca_ctx *c, GLuint tex, GLint loc)
 static void
 draw_prep(struct sca_ctx *c)
 {
+   SWEET_SCOPE(sp_prep, SP_PREP);
    struct sca_obj *p = c->program && c->program < OBJMAX ? &c->obj[c->program] : NULL;
    int runit = -1;
    if (p && (p->flags & OBJ_RECT)) {
       GLint unit = 0;
-      if (p->rect_sampler_loc >= 0)
+      if (p->rect_sampler_loc >= 0) {
+         SWEET_SCOPE(sp_query, SP_PREP_QUERY);
          glGetUniformiv(c->program, p->rect_sampler_loc, &unit);
+      }
       runit = unit;
    }
    for (int u = 0; u < UNITS; u++) {
@@ -1118,8 +1125,10 @@ draw_prep(struct sca_ctx *c)
       GLuint want = u == runit ? c->bindrect[u] : c->bind2d[u];
       if (c->held[u] != want)
          set_unit(c, u, want);
-      if (want && want < TEXMAX && c->copies[want])
+      if (want && want < TEXMAX && c->copies[want]) {
+         SWEET_SCOPE(sp_refresh, SP_PREP_REFRESH);
          copy_refresh(c, u, want);
+      }
    }
    if (runit >= 0 && runit < UNITS && p->rect_scale_loc >= 0)
       texel_scale(c, c->bindrect[runit], p->rect_scale_loc);
@@ -1132,14 +1141,17 @@ draw_prep(struct sca_ctx *c)
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
          glActiveTexture(GL_TEXTURE0 + c->active);
       }
-      if (p->fb_sampler_loc >= 0)
+      if (p->fb_sampler_loc >= 0) {
+         SWEET_SCOPE(sp_sampler, SP_PREP_UNIFORM);
          glUniform1i(p->fb_sampler_loc, c->fbfetch_unit);
+      }
       if (p->fb_scale_loc >= 0)
          texel_scale(c, fbtex, p->fb_scale_loc);
    }
    if (fbtex) {
       for (int u = 0; u < UNITS; u++) {
          if (c->held[u] == fbtex) {
+            SWEET_SCOPE(sp_barrier, SP_PREP_BARRIER);
             sgl_texture_barrier();
             break;
          }
@@ -1189,6 +1201,7 @@ kick_after_draw(void)
    if (kick_every == 0 || ++kick_draws < kick_every)
       return;
    kick_draws = 0;
+   SWEET_SCOPE(sp_kick, SP_KICK);
    GLsync s = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
    if (s) {
       (void)glClientWaitSync(s, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
@@ -1200,10 +1213,14 @@ static void
 w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
    CUR(rctx);
+   SWEET_SCOPE(sp_draw, SP_DRAW);
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
-   glDrawArrays(mode, first, count);
+   {
+      SWEET_SCOPE(sp_call, SP_DRAW_CALL);
+      glDrawArrays(mode, first, count);
+   }
    shadow_drawn(c);
    kick_after_draw();
    POST(65);
@@ -1213,10 +1230,14 @@ static void
 w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
    CUR(rctx);
+   SWEET_SCOPE(sp_draw, SP_DRAW);
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
-   glDrawElements(mode, count, type, indices);
+   {
+      SWEET_SCOPE(sp_call, SP_DRAW_CALL);
+      glDrawElements(mode, count, type, indices);
+   }
    shadow_drawn(c);
    kick_after_draw();
    POST(67);
