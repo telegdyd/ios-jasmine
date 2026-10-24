@@ -1,0 +1,32 @@
+From 2190c8c83f0c2fc835146d5ee3ffe8956fccafb5 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 20:12:31 +0200
+Subject: [PATCH] jasmine-j0080v: diag FEATURE_MASK with mask_len < 4 (jasmine
+ modem: 3 bytes, 0x1eef7) is answered
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index fab3031..6f57f7e 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -1217,9 +1217,11 @@ diag_cntl_rx(struct aux_chan *c, const uint8_t *d, uint32_t len)
+ 			break;
+ 		}
+ 		const uint8_t *p = d + off + 8;
+-		if (cmd == DIAG_CNTL_FEATURE_MASK && plen >= 8) {
+-			uint32_t theirs, local = DIAG_FEATURE_LOCAL;
+-			memcpy(&theirs, p + 4, 4);
++		if (cmd == DIAG_CNTL_FEATURE_MASK && plen >= 5) {
++			/* mask_len, then that many mask bytes: jasmine's modem sends 3 (0x1eef7) */
++			uint32_t mlen, theirs = 0, local = DIAG_FEATURE_LOCAL;
++			memcpy(&mlen, p, 4);
++			memcpy(&theirs, p + 4, MIN(MIN(mlen, plen - 4), 4u));
+ 			if (c == NULL || aux[AUX_DIAG_CMD].remote_open) {
+ 				local |= DIAG_FEATURE_REQ_RSP;
+ 			}
+-- 
+2.47.3
+
