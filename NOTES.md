@@ -1,5 +1,12 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-24 jasmine documentation handoff
+
+Mi A2 task-list cleanup is recorded in [jasmine/NOTES.md](jasmine/NOTES.md) and
+[jasmine/PERF-TASKS.md](jasmine/PERF-TASKS.md). Existing tasks regrouped; no new tasks
+added. Documentation-only; no CI/build/boot/device changes. Commit subject:
+`docs: group performance tasks and separate completed work`.
+
 ### >>> UPDATE 2026-10-21: sweetd works over USB Ethernet <<<
 
 The new command daemon/client groundwork is in place. `ios/sweetd.c`,

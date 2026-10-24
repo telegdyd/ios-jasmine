@@ -1,5 +1,16 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-24: PERF-TASKS.md editorial cleanup.** Existing tasks grouped into open performance
+improvements (2/3/5/6/10/11/12/13/16), open bugs (8/14), completed work (1/4/7/9),
+and closed investigation (15, persistence premise disproved by the later wallpaper investigation).
+Numbers preserved; completed briefs condensed; obsolete 266-MHz default and deadlock/persistence
+claims corrected. Historical timings and outstanding validation remain labelled. No new tasks
+added; performance blind spots are recommendations in the chat awaiting the user's decision.
+Documentation-only: no build, CI run, boot, flash, root change or phone access. Existing
+task-5/GPU/CPU-clock working edits preserved. Next: user's choice of proposed additions;
+task 5 remains the measured steady-rendering lead. Commit: see git log for
+`docs: group performance tasks and separate completed work`.
+
 Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md). GPU plan: [GPU.md](GPU.md).
 **2026-10-24 05:05-05:45: why there are no wallpapers (and no widgets/app extensions) — cause found, fix j0070 building.**
 - Observed (slot b j69b, `logs/netlog-wp1-slotb.txt`): PosterBoard runs, but no poster extension
