@@ -1,4 +1,4 @@
-From 34cafd8fa671c9c8cff5ed1fd8e1b6e900683ddd Mon Sep 17 00:00:00 2001
+From 16dbc955d1dccbee61c8e34eb2f04e03b62ed231 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Sun, 25 Oct 2026 01:36:08 +0200
 Subject: [PATCH] jasmine-j0091: the leave stops a running scan first and waits
@@ -6,11 +6,11 @@ Subject: [PATCH] jasmine-j0091: the leave stops a running scan first and waits
  line per leave step; no wlan off wait on a crashed modem
 
 ---
- iokit/Kernel/arm/TopazModem.cpp | 81 +++++++++++++++++++++------------
- 1 file changed, 51 insertions(+), 30 deletions(-)
+ iokit/Kernel/arm/TopazModem.cpp | 83 +++++++++++++++++++++------------
+ 1 file changed, 52 insertions(+), 31 deletions(-)
 
 diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
-index ea0b1f9..47665be 100644
+index ea0b1f9..e60ba10 100644
 --- a/iokit/Kernel/arm/TopazModem.cpp
 +++ b/iokit/Kernel/arm/TopazModem.cpp
 @@ -6528,17 +6528,29 @@ w_eapol_rx(const uint8_t *e, size_t elen)
@@ -147,6 +147,15 @@ index ea0b1f9..47665be 100644
  			}
  			w_teardown();                       /* (nothing when not joined) */
  		}
+@@ -8204,7 +8225,7 @@ topaz_modem_stop(bool panic)
+ 		return;
+ 	}
+ 	mss_up = false;
+-	if (!panic && w_mission) {
++	if (!panic && w_mission && !(mss_sk != NULL && (*mss_sk & 1))) {   /* (a crashed modem answers nothing: j90) */
+ 		unsigned ms = 0;
+ 		w_off_asked = true;                     /* the modem thread does it (it owns the CE and QMI) */
+ 		while (!w_off_done && ms < 6000) {      /* j0090: the leave's own waits come first (<= 2.2 s) */
 -- 
 2.47.3
 
