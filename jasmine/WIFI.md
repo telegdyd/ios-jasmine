@@ -33,7 +33,7 @@ CX votes (GPU-off image), MBA content (j0080h).
 ## Linux reference (r109 shell, same phone, same firmware chain): boots fine
 
 `fastboot boot shim/out/nura-r109-boot_a.img`, push `qmi_helpers qcom_sysmon qcom_q6v5 qcom_common qcom_pil_info
-qrtr qcom_q6v5_mss` (.ko from the r109 apk, decompressed: scratchpad `mods/`; qcom_aoss and mdt_loader are already
+qrtr qcom_q6v5_mss` (.ko from the r109 apk, decompressed: `research/wifi/r109-mods/` in the main checkout; qcom_aoss and mdt_loader are already
 loaded), `mount -t vfat -o ro /dev/disk/by-partlabel/modem_a /mnt/m`, firmware path `/mnt/m/image`, insmod, `echo
 start > /sys/class/remoteproc/remoteproc0/state`: "MBA booted" ~80-110 ms, MPSS up 1.5 s.
 
@@ -44,6 +44,9 @@ start > /sys/class/remoteproc/remoteproc0/state`: "MBA booted" ~80-110 ms, MPSS 
   STOP_CORE gets PBL 1 and MBA 2.
 - Reading QDSP6SS registers from a kprobe right after the core start, or RMB+0x40 while the modem runs, crashed
   Linux too: those reads are fatal in Linux as well. Linux reads only RMB 0x04/0x0c during the boot.
+
+Tools in `research/wifi/` (main checkout, gitignored): `modem-round.sh` (lock + fastboot boot + log; aborts if the
+phone is unreachable), `fatls.py`, `rd32.c`, `mba_load.dis` (r109 module disassembly), `linux-trace/`.
 
 ## Next (not done)
 
