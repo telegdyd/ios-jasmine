@@ -1,17 +1,17 @@
-# Wi-Fi on jasmine: handoff (2026-10-24, 19:30)
+# Wi-Fi on jasmine: handoff (2026-10-24, 20:50)
 
-Status: **the modem boots and runs under iOS, GLINK/QRTR and the host services work, and the WLAN
-firmware reaches FW_READY + mission mode. Blocker: the modem's own watchdog kills it ~101 s after
-start (`dog_hb.c:266: Task starvation: diag`).** The radio itself (copy engines, HTC, WMI, scan) and
-the iOS glue are not started yet. Details of every round are in `jasmine/WIFI.md`; this file is the
-summary plus what is left.
+Status: **the modem boots and runs under iOS and now stays up (8+ min, no FATAL, j0080u-w).** GLINK/QRTR,
+the host services and diag (over QRTR) work. With the WLAN PD on, the WLAN firmware reached FW_READY +
+mission mode before (j0080p), but that has not been re-run since the diag fix. The radio itself (copy engines,
+HTC, WMI, scan) and the iOS glue are not started yet. Details of every round are in `jasmine/WIFI.md`; this
+file is the summary plus what is left.
 
 ## Where things are
 
 | What | Where |
 |---|---|
-| Patches | `xnu/patches/j0080*.patch` (j0080 .. j0080t), branch `wifi` of telegdyd/ios-jasmine, worktree `ios-jasmine-wifi/` |
-| XNU source | WSL `~/xnu-wifi`, branch `wifi`, HEAD `6137680` = j0080t (one commit per patch; `git format-patch -1 --stdout` > the patch file) |
+| Patches | `xnu/patches/j0080*.patch` (j0080 .. j0080w), branch `wifi` of telegdyd/ios-jasmine, worktree `ios-jasmine-wifi/` |
+| XNU source | WSL `~/xnu-wifi`, branch `wifi`, HEAD `5c945c8` = j0080w (one commit per patch; `git format-patch -1 --stdout` > the patch file) |
 | Main code | `iokit/Kernel/arm/TopazModem.cpp` (topaz's modem/Wi-Fi stack, made per board by `board_setup()` / `soc.jasmine`) |
 | Other touched files | `bsd/dev/sweet_rpm.c` (per-client rail votes, `sweet_rpm_kvp`), `osfmk/arm64/sleh.c` (SError details in the panic line), `osfmk/arm64/sweet_osm.c` (MSS regs on the command port) |
 | Test scripts | `ios-jasmine/research/wifi/` (gitignored): `modem-round.sh`, `linux-modem-life.sh`, `nura-extract.sh`, `nura-journal.sh`, `fatls.py`, `rd32.c` |
@@ -53,12 +53,59 @@ summary plus what is left.
 | j0080r | AP SMP2P item has `master-kernel` (jasmine DT) instead of topaz's `ipa` |
 | j0080s | pd-mapper answers built from jasmine's six `.jsn` files (no `tms/pdr_enabled`, ADSP 74 / CDSP 76) |
 | j0080t | multi-channel GLINK: `glink_ssr` opened back; `DIAG_CNTL`/`DIAG`/`DIAG_CMD` handled with a minimal diag-router (never exercised: the modem did not open them) |
+| j0080u | **the diag fix**: diag over QRTR as diag-router `peripheral-qrtr.c`: we publish service 4097 (0x1001), instance-in-version 0 CNTL / 2 DATA / 4 DCI on ports 0x4005-7; the modem's diag connects at ~230 ms and publishes its CMD server 1001:1 (port 0x1c) and 1001:3 |
+| j0080v | diag FEATURE_MASK with `mask_len` 3 (modem mask 0x1eef7) answered; DIAG_ID "msm/modem/root_pd" -> 2 |
+| j0080w | one `modem alive` line a minute (slave-kernel, glink rx, diag cntl) |
 
 Working sequence (j0080t log): MBA booted, metadata + MPSS authenticated, READY + HANDOVER at ~114 ms, GLINK
 IPCRTR + glink_ssr up, 40-42 QRTR services, rmtfs (modemst1/2, fsg, fsc), tftp (mcfg, wlanmdsp), pd-mapper,
 WLFW at ~840 ms: chip 140, fw WLAN.HL.1.0.1.c2-00811, board data `image/bdwlan.bin`, FW_READY 2.3 s, mission ok.
 
-## The blocker: `dog_hb.c:266: Task starvation: diag, ping: 4`
+## Solved 2026-10-24 20:00-20:30: the diag starvation (j0080u/v)
+
+The modem's diag does **not** use GLINK channels on this firmware: it is a QRTR client ("diag over sockets").
+Nura's journal shows diag-router `Connecting CMD socket to 0:28` (node 0 = modem, port 28 = 0x1c) and the
+`SOCKETS` feature bit. diag-router publishes service 4097 with the diag instance in the version byte (modem base 0:
+CNTL 0, CMD 1 (looked up, the modem's server), DATA 2, DCI 4); the modem's diag waits for those servers and
+starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}-nowlan.txt`):
+- j80u (20:05): modem connects to our CNTL at 228 ms, 35 CNTL messages; the feature mask was dropped (7-byte
+  packet, we wanted 8). **No FATAL line** (j80t: `slave-kernel 00000007 FATAL` at 100.95 s); log ran ~200 s
+  past the modem start. (The trace's last line sits at ~101 s only because the 250-line cap ran out.)
+- j80v (20:20): full handshake (mask 0x1eef7, ours 0xa053, DIAG_ID), no FATAL, same ~200 s.
+- **j80w (20:34-20:44): confirmed.** `modem alive: slave-kernel 00000006` at every minute from t=60000 to
+  t=480000 (the last before the log ended), no FATAL. glink rx stops growing at 280 msgs after ~2 min (an idle
+  modem is quiet); diag cntl 34. Reboot afterwards parked fine (as after j80u/v).
+
+## Findings worth knowing (2026-10-24 evening)
+
+- **Diag protocol over QRTR** (diag-router `router/peripheral-qrtr.c`, now in
+  `research/wifi/diag/peripheral-qrtr.c`): service 4097, and the "instance" field is `instance << 8 | version`
+  with the diag instance passed as the *version* (so the raw field is 0/2/4 for modem CNTL/DATA/DCI). Bases:
+  modem 0, lpass 64, wcnss 128, sensors 192, cdsp 256. Replies go to the source address of the modem's
+  first CNTL message (here 0:0x1b). DATA/DCI are dropped (RESUME_TX still sent by the generic path).
+- The modem's FEATURE_MASK has `mask_len` 3 (7 payload bytes); diag-router reads 4 bytes regardless, which is
+  why it "works" there. Control packets 12 (NUM_PRESETS) and 28 are ignored by diag-router too. We send
+  feature mask, an all-disabled msg mask, diag mode v1, buffering mode v1; diag-router also sends log/event
+  masks (`diag_cntl_send_masks`); add them only if something asks.
+- **Reading round logs**: the GLINK/qrtr trace stops after 250 lines, so its last line is *not* the modem's death.
+  A crash always shows `slave-kernel 00000007 FATAL` + `modem crash reason: ...`; the `modem alive` line
+  (j0080w) gives the lifetime. The `t=` counter in `modem_watch` counts `IOSleep(1)` loop iterations, so it
+  runs slower than wall time (the old 100.95 s FATAL used the same counter, comparisons hold).
+- **Nura journal**, the best Linux reference: in WSL
+  `journalctl --file='~/nura-root/journal/*.journal*' -o short-monotonic --no-pager | grep ...` (ordered, with
+  boot-relative times). diag-router lines: `Connecting CMD socket to 0:28`, `[modem] mask: ... (0x1eef7)`,
+  `unsupported control packet: 28`. The modem is up at ~42.4 s and its diag talks 250 ms later.
+- Nura's rootfs (`~/nura-root/root.img`, debugfs) has `rmtfs`, `tqftpserv`, `diag-router` in /usr/bin and
+  their systemd units; no pd-mapper binary (kernel 6.19.10 does it in-kernel), no udev rules for rpmsg.
+- Tooling gotchas: `wsl bash -c '... | grep -E "a|b" ...'` from Git Bash mangles the quoting (empty output);
+  write the script to a file and run `wsl bash /mnt/c/...`. In `~/xnu-wifi` git has no identity: commit with
+  `git -c user.name=telegdyd -c user.email=telegdyd93@gmail.com commit ...`.
+- 19:45: after the user's hard reset the phone was in fastboot, but `fastboot boot` of the r109 shell gave no
+  USB device at all for ~13 min (no USB network, no fastboot); at ~20:04 it was back in fastboot and every
+  later round and park worked. Cause unknown; if it repeats, wait or ask for another Power + Volume down.
+- Battery: 73% at 20:46, charging fine in the r109 shell (~0.7 A).
+
+## The old blocker (solved): `dog_hb.c:266: Task starvation: diag, ping: 4`
 
 - Deterministic: 100.95-101.4 s after the modem start in every round without the WLFW handshake; 13-17 s when
   the WLAN firmware waits on the host (stuck handshake or mission mode with no copy engines).
@@ -69,35 +116,30 @@ WLFW at ~840 ms: chip 140, fw WLAN.HL.1.0.1.c2-00811, board data `image/bdwlan.b
   `glink_ssr` (j0080t).
 - Linux r109 shell (no rmtfs/tftp/diag) is **not** a reference: its modem dies every 40 s ("fatal error without
   message").
-- **Lead**: Nura (real Linux on this phone, weeks of uptime with Wi-Fi) ran `diag-router`. Its journal has
-  `[modem] mask: ... DIAG-ID (0x1eef7)` and a modem control packet 28 on every one of 17 modem boots, and no
-  diag starvation ever. So under Linux the modem **opens `DIAG_CNTL`/`DIAG` itself**; under our kernel it never
-  does, in any round. Finding out why is the next step.
+- The earlier lead ("under Linux the modem opens `DIAG_CNTL`/`DIAG` itself") was wrong: under Linux the diag
+  traffic is QRTR, not GLINK channels. j0080t's GLINK diag code stays for other firmware but is unused here.
+- Still not done and not needed so far (things Linux does that we do not): kernel `qcom_sysmon` (SSCTL 0x2b
+  client), QRTR lookups/DEL_CLIENT/BYE handling in our name service, PDR clients for the servreg-notifier (0x42),
+  the GLINK interrupt (we poll). Look here first if a later step stalls.
 
 ## Next tasks, in order
 
-1. **Phone recovery first**: after the j80t round (19:25) the reboot froze the phone (no fastboot, no command
-   port). Power + Volume down for ~10 s, then park: `fastboot boot shim/out/nura-r109-boot_a.img`.
-2. **Why the modem does not open DIAG.** Best tool: a real Linux reference on the phone. Boot the r109 shell
-   (`research/wifi/linux-modem-life.sh` does the module + firmware part), add `rmtfs`, `tqftpserv`, `diag-router`
-   and their libraries (`libqrtr.so.1`, `libudev.so.1`, musl) dumped from `~/nura-root/root.img`, check whether
-   r109 has the in-kernel pd-mapper (Nura had no pd-mapper binary), start the modem and watch
-   `/sys/bus/rpmsg/devices` for when `DIAG*` appear and what was there before. Compare with our j0080o trace.
-   Things Linux does that we still do not: kernel `qcom_sysmon` (QMI SSCTL 0x2b client, plus `sys_mon` if the
-   modem has it), QRTR name-service behaviour (lookups, DEL_CLIENT/BYE), PDR clients registering with the modem's
-   servreg-notifier (0x42) for `avs/audio` and `wlan/fw`, the GLINK interrupt (we poll), Linux's GLINK intent
-   defaults. Nura journal timestamps of `[modem] mask` vs "remote processor ... is now up" would show what it waits for.
-3. **Safe modem stop before reboot** (the freezes after a modem crash: j0080p, j0080t). Port `q6v5_stop`:
+1. **WLAN PD back on.** Every round since j80q used `modem_nowlan=1`. Run the plain `modem=1 modem_delay=45`
+   image (WCN3990 LDOs on, WLFW handshake with the jasmine quirks, j0080l/m/p): expect chip 140, BDF, FW_READY,
+   mission mode, and watch the `modem alive` lines. The old 13-17 s deaths with the WLAN firmware waiting on the
+   host were the same diag starvation and may be gone; if the modem still dies, read the crash reason (a
+   WLAN PD waiting for copy engines would be a different message).
+2. **Safe modem stop before reboot** (the freezes after a modem crash: j0080p, j0080t). Port `q6v5_stop`:
    set the `master-kernel` stop bit (SMP2P), wait for stop-ack (`slave-kernel` bit 3), then halt the AXI ports,
    assert `mss_restart`, clocks off, reclaim memory, and call it from the reboot path. j0080q's reclaim straight
    after a crash took an SError after the modem port failed to halt: do the stop handshake first.
-4. **Radio bring-up** once the modem stays up: run with `wifi=1`. Unknowns: whether the anoc2 SMMU
+3. **Radio bring-up** (the modem stays up now): run with `wifi=1`. Unknowns: whether the anoc2 SMMU
    (0x16c0000, SID 0x1a00 mask 1) takes our identity context bank (the log says "OK" or "NOT as written"; it may
    be hypervisor-owned), then CE start, HTC, WMI READY and the passive scan (topaz code, polled). A WLAN firmware
    in mission mode without CE is also what preceded the first freeze.
-5. **ath10k TxBF-on-disassoc fix** (Nura `kernel/0005`): do not reset the TxBF vdev param after the peer is gone,
+4. **ath10k TxBF-on-disassoc fix** (Nura `kernel/0005`): do not reset the TxBF vdev param after the peer is gone,
    or the HL.1.0 firmware asserts on disassociation.
-6. **iOS glue**: `topaz_sta_init()` (en0 + Apple80211 for wifid) is skipped on jasmine in `topaz_modem_init()`;
+5. **iOS glue**: `topaz_sta_init()` (en0 + Apple80211 for wifid) is skipped on jasmine in `topaz_modem_init()`;
    enable it once scans work.
-7. **Done means on the phone**: make it default (no boot args) and flash slot b with the user's OK; drop the
+6. **Done means on the phone**: make it default (no boot args) and flash slot b with the user's OK; drop the
    diagnostics (j0080o trace, step logs) or put them behind a boot arg.

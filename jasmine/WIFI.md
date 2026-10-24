@@ -96,3 +96,9 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 - j0080s pd-mapper from the jasmine jsn files; j0080t glink_ssr + DIAG channels: glink_ssr up, the modem still never
   opened DIAG, FATAL at 100.95 s; the reboot after the round froze the phone.
 - Summary and next tasks: `jasmine/WIFI-HANDOFF.md`.
+
+## 2026-10-24 20:00-20:45 (j0080u-w): diag starvation solved
+
+- The modem's diag is a QRTR client (service 4097), not GLINK `DIAG*` channels. j0080u publishes the diag
+  servers, j0080v answers its 3-byte feature mask, j0080w logs `modem alive` each minute. j80w: alive to t=480000,
+  no FATAL. Details and findings: `jasmine/WIFI-HANDOFF.md`.
