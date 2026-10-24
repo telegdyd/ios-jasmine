@@ -1,0 +1,39 @@
+From 2063795967ff5ebd315b8d659a9decefc1ff8a55 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 17:44:46 +0200
+Subject: [PATCH] jasmine-j0080n: wifi=1 on jasmine (anoc2 SMMU identity bank,
+ copy engines after mission); shadow registers from the board WLAN base
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 3672754..9e0c3b4 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3952,7 +3952,7 @@ smmu_identity(uint32_t sid, uint32_t mask, const char *name)
+ 
+ #define CE_PA               soc.ce_pa
+ #define CE_COUNT            12
+-#define SHADOW_PA           (0x0C800000ull + 0x32000)
++#define SHADOW_PA           (CE_PA - 0x240000 + 0x32000)   /* WLAN membase + 0x32000 */
+ #define SR_BASE_LO          0x00
+ #define SR_BASE_HI          0x04
+ #define SR_SIZE             0x08
+@@ -7466,11 +7466,7 @@ topaz_modem_thread(void *arg __unused, wait_result_t wr __unused)
+ 		return;
+ 	}
+ 	LOG("SMEM version %u", *(volatile uint32_t *)(smem + 64 + 7 * 4) >> 16);
+-	if (wifi_enabled() && soc.jasmine) {
+-		/* the WLAN SMMU (anoc2, behind the hypervisor) and the WCN3990 quirks are the next step */
+-		LOG("wifi: not ported to jasmine yet, the radio stays off (modem only)");
+-		wifi_on = 0;
+-	}
++	/* jasmine (j0080n): the WLAN stream sits on the anoc2 SMMU; the same identity bank as topaz */
+ 	if (wifi_enabled() && !smmu_identity(WLAN_SID, WLAN_SID_MASK, "WLAN")) {
+ 		LOG("wifi: no SMMU stream for WLAN, the radio stays off");
+ 		wifi_on = 0;
+-- 
+2.47.3
+
