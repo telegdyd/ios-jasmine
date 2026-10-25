@@ -33,6 +33,12 @@ Why so many bytes:
    63-instruction one 5.7-6.8 ms. CA's GL renderer blurs a downsampled mip chain; our
    GLES surfaces have level 0 only (the same limit sca_vblur works around).
 
+   Task 23 audit correction: the measured sizes/times remain valid, but this
+   causal explanation is unproven. Gaussian blur has separate-target 2x/4x
+   downsampling and ordinary GL intermediate storage. Variable blur has an
+   explicit approximation in our wrapper. See [audit](PERF-TASK23-AUDIT.md);
+   do not infer missing downsampling from slowest-only summaries.
+
 ## Home frame at DDR 1296 (gd2, window at log line 5866: 40.8 ms per frame, GPU 39.9 ms)
 
 | Fragment shader (per frame) | Draws | GPU ms | Slowest draw |

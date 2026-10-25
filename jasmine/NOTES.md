@@ -1,3 +1,25 @@
+### 2026-10-25: task 23 initial offline blur audit complete
+
+Findings: jasmine/PERF-TASK23-AUDIT.md. Gaussian has explicit 2x/4x separate-target
+downsampling; GLES create_surface uses ordinary GL TexImage2D storage, separate
+from IOSurface import. Universal missing-mip explanation is not established.
+Variable blur's injected 0x26 shader deliberately discards intermediate draws;
+0x27 uses centre +24 source samples. This is a confirmed approximation, not a
+proven Gaussian defect or measured performance loss. Its level-0-only rationale
+needs rechecking against ordinary GL temporary storage. Saved slowest-only
+summaries cannot reconstruct the complete blur graph; smaller intermediates are
+already observed. Corrected the causal claim in the GPU report/task guidance.
+4,645 extracted instruction bytes match the existing cache; four GLES vtable
+entries resolved and property-13 dispatch decoded. Ignored research/t23 contains
+scripts, extracts and validation. No source implementation, build, CI, phone
+lock/access, boot, new capture or installation; device state not rechecked.
+Next: bounded complete-graph diagnostic design for Gaussian and variable blur,
+linking shader semantics, storage provenance/levels, logical bounds and sampled
+inputs; resolve variable GLES intermediate representation before replacing it.
+Task 23 remains open, no gain claimed. User wants shared UI correctness and
+performance, CC is only a benchmark. Commit subject:
+docs: audit shared blur paths and correct missing-mip premise.
+
 ### 2026-10-25: task 23 scope corrected by user
 
 Control Center is a benchmark, not the optimization boundary. Goal: higher

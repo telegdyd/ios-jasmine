@@ -74,6 +74,12 @@ Baseline to beat (DDR 1296, mode 2, gd2 round; redo at 1804 before starting):
 
 ## 23. Control Center blur at reduced resolution
 
+**Initial offline audit:** [findings](PERF-TASK23-AUDIT.md). The missing-mip
+explanation below is unproven. Gaussian blur has explicit 2x/4x downsample
+passes and ordinary GL intermediate storage. Our variable-blur shader does
+deliberately bypass intermediate draws, but that does not establish a Gaussian
+defect. Slowest-only GPU summaries cannot prove that all downsampling is absent.
+
 **User scope clarification:** Control Center is the benchmark that exposed the
 cost, not the scope boundary. Task 23 targets correct, efficient blur throughout
 the UI and higher frame rates wherever the affected paths are used. Audit shared

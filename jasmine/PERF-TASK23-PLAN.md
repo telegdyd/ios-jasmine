@@ -1,5 +1,11 @@
 # Task 23: shared UI blur correctness and performance plan
 
+Initial offline investigation: [audit](PERF-TASK23-AUDIT.md). Gaussian has
+explicit separate-target downsampling; a universal missing IOSurface mip chain
+is not established. Variable blur deliberately bypasses intermediate draws and
+uses an approximate source blur. Next: bounded complete-graph diagnostics to
+resolve actual Gaussian selection and variable-blur intermediate representation.
+
 User scope clarification: Control Center is a benchmark, not the optimization
 boundary. The goal is higher frame rates across the UI. Investigate Gaussian
 and variable blur and their shared texture/storage/copy paths; fix any confirmed
