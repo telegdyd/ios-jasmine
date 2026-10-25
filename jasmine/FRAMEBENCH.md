@@ -21,6 +21,13 @@ From the repository root in Windows, with the phone unlocked and settled:
 python tools/g2/framebench.py run --out research/framebench/current --ui-ready --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/libsweetca.dylib
 ```
 
+**Mind the time since boot.** For the first minutes after every boot, accessoryupdater
+and trustd sync accessory metadata from iCloud and take about 0.8 of the 4 Gold cores;
+it is gone by 24 minutes ([PERF-TASKS](PERF-TASKS.md) task 22, closed as normal).
+All 2026-10-25 captures started 2.5-4 minutes after boot, inside it. Compare only
+captures started the same time after boot; for absolute numbers start 25+ minutes
+after boot. Record the delay either way.
+
 Use the actual installed library's matching symbol file; the example is the last
 documented production library, not independent verification of what is installed.
 The kernel version from `bench caps`, local symbol file hashes, before/after clock

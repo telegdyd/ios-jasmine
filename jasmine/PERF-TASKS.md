@@ -101,7 +101,6 @@ performance work, with its own implementation and validation.
 | [19](#19-profile-springboards-cpu-work) | Profile SpringBoard CPU work | Home-swipe main-thread load ~711-743 ms/s in the earlier baseline; identify layout/animation/IPC costs and whether they delay output. |
 | [20](#20-investigate-memory-and-cache-growth) | Investigate memory and cache growth | Buffer/surface/memory high-water marks, allocation stalls and pressure across repeated transitions; Wallpaper exhaustion remains a hypothesis. |
 | [21](#21-profile-cold-start-boot-and-storage-waits) | Profile cold-start, boot and storage waits | Separate storage, service/IOKit waits and compilation; five-second syscfg fallback waits are an existing lead. |
-| [22](#22-accessory-update-and-trust-cpu-after-boot) | Accessory-update and trust CPU after boot | accessoryupdater + trustd use ~0.8 of 4 Gold cores during UI motion 2-4 min after boot in all three 2026-10-25 captures; gone at 24 min (idle sample): a burst after every boot, not a steady-use cause; it skews benchmarks started early. |
 
 Task 6's initial 4/8-core comparison is also diagnostic, but its scheduler implementation
 remains under performance. Task 16's shared timeline measurement is tracked in task 18;
@@ -119,6 +118,7 @@ Outstanding validation is called out in the detailed results below.
 | [7](#7-stop-the-xpc-retry-loops--done) | XPC retry loops | Done 2026-10-24, root changes installed; idle daemon load 2.16 cores -> ~0.003, TSENS ~8 C lower. Moving-frame gain not isolated. |
 | [9](#9-ddr-clock-vote-through-the-rpm--experiment-complete) | DDR clock vote and bottleneck experiment | Experiment complete 2026-10-23, j0064; 1296 -> 1804 gave no measured UI gain. Full 10-minute top-rate soak outstanding; governor is task 10. |
 | [15](#15-launchservices-store-persistence--closed-premise-disproved) | LaunchServices store persistence | Closed 2026-10-24: persisted store found in the actual InternalDaemon container, survives reboot. No persistence repair made. |
+| [22](#22-post-boot-accessory-sync-cpu--closed-normal-behavior) | Post-boot accessory sync CPU | Closed 2026-10-25: accessoryupdater + trustd sync accessory metadata from iCloud after each boot (~0.8 core), gone by 24 min. Normal; no action. Benchmarks must not start inside it. |
 
 ## Dependencies and shared files
 
@@ -197,6 +197,11 @@ The new library is used from the next boot.
 - `bash tools/g2/profround.sh <ktag> <tag> "<boot-args>"` does the same with the j0057 sampling profile; the report
   is `tools/g2/prof.py` / `profsplit.py`. Keep profile windows short: the download runs at about 20 KB/s.
 - Compare against a baseline round from the same script on the same day. Rounds vary: use 2 rounds per variant.
+- **Mind the time since boot.** For the first minutes after every boot, accessoryupdater and
+  trustd sync accessory metadata from iCloud (~0.8 of the 4 Gold cores, gone by 24 minutes;
+  task 22). Rounds that boot fresh (`uiround.sh`, `profround.sh`) measure inside it: compare
+  only rounds started the same time after boot. For absolute numbers start 25+ minutes after
+  boot, and record the delay. All 2026-10-25 framebench captures started inside it.
 - `osm-round.sh` already adds `sweetfb_sync=1` (the flicker fix) to every image.
 - Ask the user only for a final visual check.
 
@@ -638,94 +643,12 @@ CPU work, shader compilation (task 17), IPC service availability and IOKit timeo
 Use kernel/user stacks and unified logs to attribute long waits; distinguish normal
 initialization, unavailable-hardware retry behavior and filesystem defects. Compare
 read-only root/ADT facts before proposing root changes; preserve existing permission rules.
-CPU spent by daemons *during* UI motion after boot (accessoryupdater/trustd) is task 22;
-include its findings if the same job also delays first usable UI.
+Post-boot accessoryupdater/trustd CPU was closed as normal behavior (task 22); it still
+competes with first-use UI work for the first minutes after a boot.
 
 **Done when:** a report ranks measured boot/launch delays by cause and reproducibility,
 with one scoped highest-value next action or evidence to deprioritize the path. No
 storage rewrite, fabricated identity data or indiscriminate cache prewarming is implied.
-
-### 22. Accessory-update and trust CPU after boot
-
-**Type: diagnostics; may lead to a bug fix or a configuration change (user decides).**
-Added 2026-10-25 after task 5's threaded-context change. Not task 7: its XPC retry
-loops (launchd/mediaserverd/vmd) stay fixed and are near zero in these captures.
-
-**Evidence.** Three standard framebench captures on `shim-boot-framebench99.img`, each
-started 2.5-4 minutes after boot (raw data ignored under `research/framebench/`):
-
-| Capture (library) | Segment | trustd ms | accessoryupdater ms | all processes ms |
-| --- | --- | ---: | ---: | ---: |
-| `20261025-first` 05:23 (active-sampler) | Home A, 4 s | 2228 | 1556 | 7716 |
-| | Control Center A, 4 s | 1792 | 1484 | 11620 |
-| `20261025-empty-trace` 06:12 | Home A | 2250 | 1560 | 8110 |
-| | Control Center A | 1912 | 1120 | 11328 |
-| `20261025-threaded2` 07:39 (threaded Mesa) | Home A | 1588 | 1286 | 12734 |
-| | Control Center A | 1986 | 1222 | 10870 |
-
-So about 0.4-0.55 of a core for trustd plus 0.3-0.4 for accessoryupdater, on 4 Gold
-cores, in every boot. With the threaded Mesa context the render path needs two cores,
-and the CPU is contended: in `20261025-threaded2` Control Center A, threads that wanted
-a CPU but did not get one (runnable) were the Mesa driver thread 610 ms, CA's display
-thread 490 ms, SpringBoard 545 ms (`summary.json`, `thread_state_estimated_ms`). That
-links this load to frame time, but the size of the effect is not measured.
-
-**Measured 2026-10-25 08:00: it ends.** On the phone booted at 07:35:54, idle at 07:59:57
-(24 minutes after boot), a 3 s `prof.py fetch --tasks trustd,accessoryupdater,backboardd,SpringBoard`
-(`research/t22/at-boot-plus`) shows neither process among the busy ones (kernel_task 43 ms/s,
-an unnamed pid 27 ms/s, SpringBoard 21 ms/s). It is a burst after every boot that ends
-somewhere between 4 and 24 minutes, **not a cause of slow frames in settled use**. Its
-real costs: CPU for the first minutes after each boot, and every framebench capture of
-2026-10-25 started inside it (baseline and new run alike). Start benchmarks after it has
-ended, or record it. Question 1 below is answered except for the end time; the
-remaining value of this task is lower (boot-time cost, benchmark hygiene).
-
-**What the job is** (symbolized stacks, `research/t5tc/daemons.py`, output
-`research/t5tc/daemons-threaded2.txt`): one chain, not two independent daemons.
-accessoryupdater (launched as `accessoryupdaterd`; `UARPUpdaterService*` helpers also
-start at boot) runs `UARPiCloudManager handleRemoteFetchRequestSyncForCHIPAccessoriesMetadata`
--> `processCHIPAccessoriesRecord` -> `copyPublicKeyFromCertificateID` ->
-`SecTrustEvaluateWithError`: it fetches Matter/CHIP accessory firmware metadata from
-CloudKit and evaluates a certificate per record. Each evaluation is an XPC call to
-trustd, whose CPU is EC signature verification (`SecCertificateIsSignedBy` ->
-`SecKeyVerifySignature` -> `ccec_verify`). Some accessoryupdater samples are XPC
-connection setup to securityd (`_xpc_connection_bootstrap_look_up_slow`,
-`xpc_user_sessions_get_foreground_uid`). trustd's own frames are unsymbolized
-(`?:0x1002...`): its binary is not in the dyld shared cache used by `prof.py`.
-Sandbox denials in the boot log (`privilege 10001`/`1002 denied`) are printed once per
-process for many daemons and are not specific to this job.
-
-**Open questions, in order:**
-
-1. **Does it end?** Sample the same processes on an already-running phone at ~10 and
-   ~30 minutes after boot and at idle (no boot, no build): `python tools/g2/prof.py
-   fetch research/t22/at10 --secs 3 --tasks trustd,accessoryupdater,backboardd,SpringBoard`
-   and `prof.py report` (WSL, with the framebench99 kernel symbols). Take the phone lock.
-2. **Does it repeat every boot?** If it is gone at 30 minutes, check whether the next boot
-   redoes the full fetch (same CPU 2-4 min in) or finds its results cached. A full redo
-   every boot suggests state that is not persisted (CloudKit/UARP caches, keychain, trustd
-   caches under `/private/var/protected/trustd/`) — compare with task 15's lesson: look in
-   the real data container before concluding nothing is saved.
-3. **Is it a loop?** If it never ends: read accessoryupdater/cloudd/trustd unified-log
-   messages (`jasmine/NOTES.md` "Reading iOS os_log", `tools/tracev3-strings.py`) for
-   CloudKit errors, retries or a record count that never finishes; count XPC trust
-   evaluations per second. Network is up on these images (Wi-Fi), so CloudKit requests
-   can succeed or fail for account/identity reasons (no Apple ID on this phone).
-4. **Why so expensive per record?** If evaluations repeat for the same certificates,
-   trustd may be missing its cache; separate that from legitimate one-time work.
-
-**Possible outcomes, not decided:** nothing (a one-time job after first boot); a
-root-cause fix if state fails to persist or a request retries; or, only with the
-user's explicit OK and like task 7's `BTAudioHALPlugin` move, not starting the
-accessory-updater job — this phone has no Matter/CHIP accessories, but say what is
-lost (accessory firmware updates) and keep a reversible backup. No launchd jobs added,
-no root change without asking.
-
-**Done when:** a report states whether the load ends, repeats per boot or loops, with
-the measured CPU at fixed times after boot and its cause from logs/stacks, plus one
-scoped next action (or evidence that it is a harmless one-time job). If a change is
-made and kept, it is on the phone by default and a framebench run shows the background
-CPU gone without new errors.
 
 ## Completed task details
 
@@ -803,3 +726,19 @@ and persisted after reboot at 05:57. This fixed extension registration, not data
 persistence. Slot b updated at 05:58. Fresh-root seeding with j0070 is not yet tested.
 Full evidence and the separate open Wallpaper freeze: [NOTES.md](NOTES.md), top handoff.
 The syscfg fallback waits and task 14's selector-2 freeze were not resolved by this finding.
+
+### 22. Post-boot accessory sync CPU — closed, normal behavior
+
+**Closed 2026-10-25.** In all three 2026-10-25 framebench captures (started 2.5-4 minutes
+after boot) accessoryupdater and trustd used about 0.8 of the 4 Gold cores during UI motion.
+Stacks (`research/t5tc/daemons-threaded2.txt`): accessoryupdater's
+`UARPiCloudManager handleRemoteFetchRequestSyncForCHIPAccessoriesMetadata` fetches
+Matter/CHIP accessory firmware metadata from CloudKit and evaluates a certificate per
+record (`SecTrustEvaluateWithError`); each evaluation is an XPC call to trustd, which
+spends the time in EC signature checks (`ccec_verify`). An idle sample 24 minutes after
+boot (`research/t22/at-boot-plus`, 07:59:57) showed neither process busy.
+
+This is ordinary post-boot work that ends by itself, not a cause of slow frames once
+the phone has settled. Not investigated: the exact end time, and whether a stock iPhone
+also redoes the full sync on every boot. No change made. What remains is the benchmark
+rule under "Measuring": do not compare rounds started at different times after boot.
