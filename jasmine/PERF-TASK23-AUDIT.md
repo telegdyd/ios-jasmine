@@ -95,6 +95,18 @@ times remain observations; their attribution to a missing mip chain does not.
 
 ## Reproduction and next action
 
+Follow-up: Metal's set_surface (`0x1882edbe4`) extracts bits 1-5 of the
+surface's +0x40 byte as a level and shifts target dimensions by that level.
+The shared push_surface stores its level argument in those bits. GLES's
+set_surface (`0x188407610`) attaches level 0 at `0x188407700` and uses base
+dimensions. The native GLSL texture-function table has NULL entries for 0x26
+and 0x27, as expected by install_texfns. Thus merely supplying the original
+variable-blur shader expressions would not restore Metal's intermediate-level
+behavior in this GLES backend. This is a backend compatibility gap, not proof
+that all Gaussian downsampling is broken. Raw comparison extracts and texfns.py
+stay under ignored research/t23. A [bounded diagnostic](PERF-TASK23-TRACE.md)
+now addresses runtime Gaussian selection; rendering algorithms are unchanged.
+
 Ignored evidence: `research/t23/extract.py`, `verify.py`, `properties.py`,
 function extracts and `validation.json`. Run from repository root in WSL:
 

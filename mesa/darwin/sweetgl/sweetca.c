@@ -132,6 +132,7 @@ struct sca_ctx {
    unsigned ticket_surface_count;
    IOSurfaceRef ticket_frame_surface[32];
    uint32_t ticket_gl_errors; /* preserve error flags inspected while replacing import storage */
+   struct sca_pass_trace *pass_trace; /* allocated only for opt-in task-23 diagnostics */
 };
 
 static void copy_forget(struct sca_ctx *c, GLuint tex);
@@ -150,6 +151,8 @@ static void shadow_texture_drawn(struct sca_ctx *c, GLuint tex);
 static GLenum tgt(struct sca_ctx *c, GLenum target);
 static void note_size(struct sca_ctx *c, GLuint tex, unsigned w, unsigned h);
 static void kick_after_draw(struct sca_ctx *c);
+
+#include "sweetca_pass_trace.inc"
 
 static struct sca_ctx *ctxs[MAX_CTX];
 static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -784,6 +787,13 @@ w_BlitFramebuffer(void *rctx, GLint sx0, GLint sy0, GLint sx1, GLint sy1,
    if (!ticket_resolve(c) || !ticket_draw(c))
       return;
    glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+   if (pass_trace_enabled) {
+      GLint read = 0, draw = 0;
+      glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+      pass_trace_event(c, "blit read=%d draw=%d src=%d,%d,%d,%d dst=%d,%d,%d,%d mask=%#x filter=%#x",
+                       read, draw, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+   }
    shadow_drawn(c);
    ticket_after_write(c);
    POST(755);
@@ -800,6 +810,8 @@ w_CopyTexImage2D(void *rctx, GLenum target, GLint level, GLenum format, GLint x,
    ticket_storage(c, c->held[c->active], NULL, false);
    c->ticket_sync_frame = true;
    glCopyTexImage2D(t, level, format, x, y, w, h, border);
+   pass_trace_event(c, "copy-image texture=%u level=%d src=%d,%d,%d,%d", c->held[c->active], level, x, y, w, h);
+   pass_trace_storage(c, c->held[c->active], 0, level == 0);
    if (level == 0) {
       copy_forget(c, c->held[c->active]);
       note_size(c, c->held[c->active], w, h);
@@ -909,6 +921,7 @@ w_TexStorage2D(void *rctx, GLenum target, GLsizei levels, GLenum format, GLsizei
    GLenum t = tgt(c, target);
    ticket_storage(c, c->held[c->active], NULL, ticket_private_storage(c, c->held[c->active]));
    glTexStorage2D(t, levels, format, w, h);
+   pass_trace_storage(c, c->held[c->active], 0, true);
    copy_forget(c, c->held[c->active]);
    note_size(c, c->held[c->active], w, h);
    POST(1031);
@@ -1028,6 +1041,7 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
    CUR(rctx);
    for (GLsizei i = 0; i < n; i++) {
       ticket_storage(c, tex[i], NULL, false);
+      pass_trace_storage(c, tex[i], 0, true);
       for (int u = 0; u < UNITS; u++) {
          if (c->bind2d[u] == tex[i])
             c->bind2d[u] = 0;
@@ -1098,6 +1112,7 @@ w_TexImage2D(void *rctx, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsi
    if (format == GL_BGRA_EXT_ && (ifmt == GL_RGBA || ifmt == GL_RGBA8))
       ifmt = GL_BGRA_EXT_;
    glTexImage2D(t, level, ifmt, w, h, border, format, type, pixels);
+   pass_trace_storage(c, c->held[c->active], 0, level == 0);
    POST(301);
    if (level == 0) {
       note_size(c, c->held[c->active], w, h);
@@ -1127,6 +1142,7 @@ w_CompressedTexImage2D(void *rctx, GLenum target, GLint level, GLenum ifmt, GLsi
    GLenum t = tgt(c, target);
    ticket_storage(c, c->held[c->active], NULL, level == 0 && ticket_private_storage(c, c->held[c->active]));
    glCompressedTexImage2D(t, level, ifmt, w, h, border, size, data);
+   pass_trace_storage(c, c->held[c->active], 0, level == 0);
    POST(380);
    if (level == 0) {
       note_size(c, c->held[c->active], w, h);
@@ -1147,6 +1163,8 @@ w_CopyTexSubImage2D(void *rctx, GLenum target, GLint level, GLint xo, GLint yo, 
               c->tex_w[c->held[c->active] % TEXMAX], c->tex_h[c->held[c->active] % TEXMAX], level, xo, yo, x, y, w, h,
               c->fbo);
    glCopyTexSubImage2D(ticket_requested() ? t : tgt(c, target), level, xo, yo, x, y, w, h);
+   pass_trace_event(c, "copy-subimage texture=%u level=%d dst=%d,%d src=%d,%d,%d,%d",
+                    c->held[c->active], level, xo, yo, x, y, w, h);
    shadow_texture_drawn(c, c->held[c->active]);
    ticket_after_write(c);
    if (trace_on > 1) {
@@ -1177,6 +1195,7 @@ w_GenerateMipmap(void *rctx, GLenum target)
    if (!ticket_write(c, c->held[c->active]))
       return;
    glGenerateMipmap(t);
+   pass_trace_event(c, "generate-mipmap texture=%u", c->held[c->active]);
    ticket_after_write(c);
    copy_mipped(c, c->held[c->active]);
    POST(681);
@@ -1495,6 +1514,8 @@ w_LinkProgram(void *rctx, GLuint program)
 {
    CUR(rctx);
    glLinkProgram(program);
+   if (c->pass_trace && program < OBJMAX)
+      c->pass_trace->program_seen[program] = 0;
    GLint ok = 0;
    glGetProgramiv(program, GL_LINK_STATUS, &ok);
    if (!ok) {
@@ -1628,6 +1649,7 @@ draw_prep(struct sca_ctx *c)
 static void
 trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
 {
+   pass_trace_draw(c, mode, count);
    static unsigned shown;
    if (trace_on < 2 || shown >= 60)
       return;
@@ -2143,6 +2165,7 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
       ticket_storage(c, c->held[c->active], NULL, false);
       copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
    }
+   pass_trace_storage(c, c->held[c->active], strcmp(how, "in place") == 0 ? IOSurfaceGetID(s) : 0, true);
    /* An IOSurface texture has one level. With GL's default MIN_FILTER (a mipmap
     * filter) it is incomplete and samples as (0,0,0,1) unless CA sets a filter,
     * which it does not always do (Apple's are complete as they are; the same cause
@@ -2430,6 +2453,7 @@ m_dealloc(id self, SEL cmd)
          copy_forget(c, i);
       }
    }
+   free(c->pass_trace);
    free(c);
    /* EAGLContext's own init never ran: skip its dealloc, run NSObject's */
    struct objc_super sup = {self, class_getSuperclass(objc_getClass("EAGLContext"))};
@@ -2615,6 +2639,7 @@ sweetca_installed(void)
 __attribute__((constructor)) static void
 sweetca_init(void)
 {
+   pass_trace_init();
    const char *t = getenv("SWEETCA_TRACE");
    const char *b = getenv("SWEETCA_ACTIVE_BARRIERS");
    active_barriers = !b || strcmp(b, "0") != 0;

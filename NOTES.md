@@ -1,3 +1,20 @@
+### 2026-10-25: task 23 bounded diagnostic prepared
+
+Native variable-blur level requests are honoured by Metal but GLES set_surface
+attaches level 0; native GLSL entries 0x26/0x27 are NULL. Supplying shaders alone
+cannot restore the shared path. See jasmine/PERF-TASK23-AUDIT.md follow-up.
+Added opt-in SWEETCA_PASS_TRACE diagnostic (default off), bounded by time and
+shared draw/event caps; actual FBO levels, bound texture levels, fragment sources
+and import provenance. No rendering algorithm change, no glGetError/readpixels.
+Usage/limits: jasmine/PERF-TASK23-TRACE.md. Host mocked-GL harness passes with
+-Wall -Wextra -Werror; all Mesa patches apply in order from isolated checkout.
+No local iOS compiler; actual Mesa CI build is next. User explicitly confirmed
+phone free for one bounded diagnostic session; no phone access/lock yet.
+No build artifact, device result or measured gain. Next: commit/push, Mesa CI,
+then test-name library + temporary image, one bounded cross-UI blur trace.
+Production library/root defaults remain unchanged; task 23 remains open.
+Commit subject: mesa: add bounded shared blur pass diagnostics.
+
 ### 2026-10-25: task 23 initial offline blur audit complete
 
 Findings: jasmine/PERF-TASK23-AUDIT.md. Gaussian has explicit 2x/4x separate-target

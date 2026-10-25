@@ -1,6 +1,6 @@
-From dc4c77cfb65c3089418c2be925057ccf3f4c7922 Mon Sep 17 00:00:00 2001
+From e88a98580d17509199361ad3b0e46a7a916063eb Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Sun, 25 Oct 2026 21:59:35 +0100
+Date: Sun, 25 Oct 2026 23:27:34 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -21,16 +21,17 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++
  src/gallium/frontends/sweetgl/meson.build     |   90 +
- src/gallium/frontends/sweetgl/sweetca.c       | 2648 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 2673 +++++++++++++++++
+ .../frontends/sweetgl/sweetca_pass_trace.inc  |  188 ++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  655 ++++
  src/gallium/frontends/sweetgl/sweetgl.h       |  118 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
- .../frontends/sweetgl/sweetgpu_gltest.c       |  663 +++++
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  663 ++++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   67 +
- 25 files changed, 7451 insertions(+), 6 deletions(-)
+ 26 files changed, 7664 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -40,6 +41,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  create mode 100644 src/gallium/drivers/freedreno/sweetgpu_fdtest.c
  create mode 100644 src/gallium/frontends/sweetgl/meson.build
  create mode 100644 src/gallium/frontends/sweetgl/sweetca.c
+ create mode 100644 src/gallium/frontends/sweetgl/sweetca_pass_trace.inc
  create mode 100644 src/gallium/frontends/sweetgl/sweetca_slots.inc
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl.c
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl.h
@@ -1862,10 +1864,10 @@ index 0000000..ee052db
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..93ef856
+index 0000000..f068305
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,2648 @@
+@@ -0,0 +1,2673 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2000,6 +2002,7 @@ index 0000000..93ef856
 +   unsigned ticket_surface_count;
 +   IOSurfaceRef ticket_frame_surface[32];
 +   uint32_t ticket_gl_errors; /* preserve error flags inspected while replacing import storage */
++   struct sca_pass_trace *pass_trace; /* allocated only for opt-in task-23 diagnostics */
 +};
 +
 +static void copy_forget(struct sca_ctx *c, GLuint tex);
@@ -2018,6 +2021,8 @@ index 0000000..93ef856
 +static GLenum tgt(struct sca_ctx *c, GLenum target);
 +static void note_size(struct sca_ctx *c, GLuint tex, unsigned w, unsigned h);
 +static void kick_after_draw(struct sca_ctx *c);
++
++#include "sweetca_pass_trace.inc"
 +
 +static struct sca_ctx *ctxs[MAX_CTX];
 +static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2652,6 +2657,13 @@ index 0000000..93ef856
 +   if (!ticket_resolve(c) || !ticket_draw(c))
 +      return;
 +   glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
++   if (pass_trace_enabled) {
++      GLint read = 0, draw = 0;
++      glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
++      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
++      pass_trace_event(c, "blit read=%d draw=%d src=%d,%d,%d,%d dst=%d,%d,%d,%d mask=%#x filter=%#x",
++                       read, draw, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
++   }
 +   shadow_drawn(c);
 +   ticket_after_write(c);
 +   POST(755);
@@ -2668,6 +2680,8 @@ index 0000000..93ef856
 +   ticket_storage(c, c->held[c->active], NULL, false);
 +   c->ticket_sync_frame = true;
 +   glCopyTexImage2D(t, level, format, x, y, w, h, border);
++   pass_trace_event(c, "copy-image texture=%u level=%d src=%d,%d,%d,%d", c->held[c->active], level, x, y, w, h);
++   pass_trace_storage(c, c->held[c->active], 0, level == 0);
 +   if (level == 0) {
 +      copy_forget(c, c->held[c->active]);
 +      note_size(c, c->held[c->active], w, h);
@@ -2777,6 +2791,7 @@ index 0000000..93ef856
 +   GLenum t = tgt(c, target);
 +   ticket_storage(c, c->held[c->active], NULL, ticket_private_storage(c, c->held[c->active]));
 +   glTexStorage2D(t, levels, format, w, h);
++   pass_trace_storage(c, c->held[c->active], 0, true);
 +   copy_forget(c, c->held[c->active]);
 +   note_size(c, c->held[c->active], w, h);
 +   POST(1031);
@@ -2896,6 +2911,7 @@ index 0000000..93ef856
 +   CUR(rctx);
 +   for (GLsizei i = 0; i < n; i++) {
 +      ticket_storage(c, tex[i], NULL, false);
++      pass_trace_storage(c, tex[i], 0, true);
 +      for (int u = 0; u < UNITS; u++) {
 +         if (c->bind2d[u] == tex[i])
 +            c->bind2d[u] = 0;
@@ -2966,6 +2982,7 @@ index 0000000..93ef856
 +   if (format == GL_BGRA_EXT_ && (ifmt == GL_RGBA || ifmt == GL_RGBA8))
 +      ifmt = GL_BGRA_EXT_;
 +   glTexImage2D(t, level, ifmt, w, h, border, format, type, pixels);
++   pass_trace_storage(c, c->held[c->active], 0, level == 0);
 +   POST(301);
 +   if (level == 0) {
 +      note_size(c, c->held[c->active], w, h);
@@ -2995,6 +3012,7 @@ index 0000000..93ef856
 +   GLenum t = tgt(c, target);
 +   ticket_storage(c, c->held[c->active], NULL, level == 0 && ticket_private_storage(c, c->held[c->active]));
 +   glCompressedTexImage2D(t, level, ifmt, w, h, border, size, data);
++   pass_trace_storage(c, c->held[c->active], 0, level == 0);
 +   POST(380);
 +   if (level == 0) {
 +      note_size(c, c->held[c->active], w, h);
@@ -3015,6 +3033,8 @@ index 0000000..93ef856
 +              c->tex_w[c->held[c->active] % TEXMAX], c->tex_h[c->held[c->active] % TEXMAX], level, xo, yo, x, y, w, h,
 +              c->fbo);
 +   glCopyTexSubImage2D(ticket_requested() ? t : tgt(c, target), level, xo, yo, x, y, w, h);
++   pass_trace_event(c, "copy-subimage texture=%u level=%d dst=%d,%d src=%d,%d,%d,%d",
++                    c->held[c->active], level, xo, yo, x, y, w, h);
 +   shadow_texture_drawn(c, c->held[c->active]);
 +   ticket_after_write(c);
 +   if (trace_on > 1) {
@@ -3045,6 +3065,7 @@ index 0000000..93ef856
 +   if (!ticket_write(c, c->held[c->active]))
 +      return;
 +   glGenerateMipmap(t);
++   pass_trace_event(c, "generate-mipmap texture=%u", c->held[c->active]);
 +   ticket_after_write(c);
 +   copy_mipped(c, c->held[c->active]);
 +   POST(681);
@@ -3363,6 +3384,8 @@ index 0000000..93ef856
 +{
 +   CUR(rctx);
 +   glLinkProgram(program);
++   if (c->pass_trace && program < OBJMAX)
++      c->pass_trace->program_seen[program] = 0;
 +   GLint ok = 0;
 +   glGetProgramiv(program, GL_LINK_STATUS, &ok);
 +   if (!ok) {
@@ -3496,6 +3519,7 @@ index 0000000..93ef856
 +static void
 +trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
 +{
++   pass_trace_draw(c, mode, count);
 +   static unsigned shown;
 +   if (trace_on < 2 || shown >= 60)
 +      return;
@@ -4011,6 +4035,7 @@ index 0000000..93ef856
 +      ticket_storage(c, c->held[c->active], NULL, false);
 +      copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
 +   }
++   pass_trace_storage(c, c->held[c->active], strcmp(how, "in place") == 0 ? IOSurfaceGetID(s) : 0, true);
 +   /* An IOSurface texture has one level. With GL's default MIN_FILTER (a mipmap
 +    * filter) it is incomplete and samples as (0,0,0,1) unless CA sets a filter,
 +    * which it does not always do (Apple's are complete as they are; the same cause
@@ -4298,6 +4323,7 @@ index 0000000..93ef856
 +         copy_forget(c, i);
 +      }
 +   }
++   free(c->pass_trace);
 +   free(c);
 +   /* EAGLContext's own init never ran: skip its dealloc, run NSObject's */
 +   struct objc_super sup = {self, class_getSuperclass(objc_getClass("EAGLContext"))};
@@ -4483,6 +4509,7 @@ index 0000000..93ef856
 +__attribute__((constructor)) static void
 +sweetca_init(void)
 +{
++   pass_trace_init();
 +   const char *t = getenv("SWEETCA_TRACE");
 +   const char *b = getenv("SWEETCA_ACTIVE_BARRIERS");
 +   active_barriers = !b || strcmp(b, "0") != 0;
@@ -4513,6 +4540,200 @@ index 0000000..93ef856
 +   orig_set_current = swap(meta, "setCurrentContext:", m_set_current);
 +   orig_current = swap(meta, "currentContext", m_current);
 +   sca_log("sweetca: EAGL methods replaced%s", trace_on ? " (GL error checks on)" : "");
++}
+diff --git a/src/gallium/frontends/sweetgl/sweetca_pass_trace.inc b/src/gallium/frontends/sweetgl/sweetca_pass_trace.inc
+new file mode 100644
+index 0000000..49fba1c
+--- /dev/null
++++ b/src/gallium/frontends/sweetgl/sweetca_pass_trace.inc
+@@ -0,0 +1,188 @@
++/* SPDX-License-Identifier: MIT
++ * Task 23: opt-in GL snapshots, no rendering substitutions or glGetError.
++ * SWEETCA_PASS_TRACE=1; _DELAY=180 seconds, _SECONDS=12, _DRAWS=1200.
++ */
++struct sca_pass_trace {
++   uint32_t surface[TEXMAX], generation[TEXMAX];
++   uint8_t program_seen[OBJMAX];
++};
++static bool pass_trace_enabled, pass_trace_started, pass_trace_ended;
++static double pass_trace_epoch, pass_trace_delay, pass_trace_seconds;
++static unsigned pass_trace_limit, pass_trace_draws, pass_trace_events;
++static pthread_mutex_t pass_trace_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static double
++pass_trace_time(void)
++{
++   struct timespec t;
++   clock_gettime(CLOCK_MONOTONIC, &t);
++   return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
++}
++
++static unsigned
++pass_trace_number(const char *key, unsigned fallback, unsigned maximum)
++{
++   const char *v = getenv(key);
++   if (!v || !*v)
++      return fallback;
++   char *end;
++   errno = 0;
++   unsigned long n = strtoul(v, &end, 10);
++   return errno || *end || v[0] == '-' || n > maximum ? fallback : (unsigned)n;
++}
++
++static void
++pass_trace_init(void)
++{
++   const char *v = getenv("SWEETCA_PASS_TRACE");
++   pass_trace_enabled = v && strcmp(v, "1") == 0;
++   if (!pass_trace_enabled)
++      return;
++   pass_trace_delay = pass_trace_number("SWEETCA_PASS_TRACE_DELAY", 180, 3600);
++   pass_trace_seconds = pass_trace_number("SWEETCA_PASS_TRACE_SECONDS", 12, 30);
++   pass_trace_limit = pass_trace_number("SWEETCA_PASS_TRACE_DRAWS", 1200, 3000);
++   pass_trace_epoch = pass_trace_time();
++   sca_log("sweetca: passgraph armed delay=%.0f seconds=%.0f draws=%u; diagnostic timings invalid",
++           pass_trace_delay, pass_trace_seconds, pass_trace_limit);
++}
++
++/* IDs are provenance hints, not retained ownership. Updates describe attempted
++ * storage changes; dimensions/levels in draw records are queried from GL.
++ * surface=0 means private/copied/unknown storage, never proof of an import.
++ */
++static void
++pass_trace_storage(struct sca_ctx *c, GLuint tex, uint32_t surface, bool replace)
++{
++   if (!pass_trace_enabled || !tex || tex >= TEXMAX)
++      return;
++   if (!c->pass_trace)
++      c->pass_trace = calloc(1, sizeof(*c->pass_trace));
++   if (c->pass_trace && replace) {
++      c->pass_trace->surface[tex] = surface;
++      c->pass_trace->generation[tex]++;
++   }
++}
++
++static void
++pass_trace_event(struct sca_ctx *c, const char *fmt, ...)
++{
++   if (!pass_trace_enabled)
++      return;
++   pthread_mutex_lock(&pass_trace_lock);
++   double age = pass_trace_time() - pass_trace_epoch;
++   if (!pass_trace_ended && age >= pass_trace_delay &&
++       age < pass_trace_delay + pass_trace_seconds && pass_trace_events < 8000) {
++      char line[500];
++      va_list ap;
++      va_start(ap, fmt);
++      vsnprintf(line, sizeof(line), fmt, ap);
++      va_end(ap);
++      sca_log("sweetca: passgraph event ctx=%p after=%u age=%.3f %s", (void *)c,
++              pass_trace_draws, age, line);
++      if (++pass_trace_events == 8000)
++         sca_log("sweetca: passgraph event-limit; graph incomplete");
++   }
++   pthread_mutex_unlock(&pass_trace_lock);
++}
++
++static void
++pass_trace_program(struct sca_ctx *c, unsigned seq)
++{
++   GLuint p = c->program;
++   if (!c->pass_trace || !p || p >= OBJMAX || c->pass_trace->program_seen[p])
++      return;
++   c->pass_trace->program_seen[p] = 1;
++   GLuint shaders[8];
++   GLsizei n = 0;
++   glGetAttachedShaders(p, 8, &n, shaders);
++   for (GLsizei i = 0; i < n; i++) {
++      GLint type = 0;
++      glGetShaderiv(shaders[i], GL_SHADER_TYPE, &type);
++      if (type != GL_FRAGMENT_SHADER)
++         continue;
++      char src[8192] = {0};
++      GLsizei len = 0;
++      glGetShaderSource(shaders[i], sizeof(src), &len, src);
++      const char *kind = strstr(src, "sca_vblur(") ? "variable-source-disc" :
++                         strstr(src, "sca_nop(") ? "variable-discard" :
++                         strstr(src, "weight") ? "weighted-candidate" : "other";
++      sca_log("sweetca: passgraph shader ctx=%p seq=%u program=%u shader=%u kind=%s bytes=%d truncated=%d",
++              (void *)c, seq, p, shaders[i], kind, len, len == (GLsizei)sizeof(src) - 1);
++      for (GLsizei j = 0; j < len; j += 600)
++         sca_log("sweetca: passgraph source ctx=%p shader=%u offset=%d | %.600s",
++                 (void *)c, shaders[i], j, src + j);
++   }
++}
++
++static void
++pass_trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
++{
++   if (!pass_trace_enabled || c->api < 3)
++      return;
++   pthread_mutex_lock(&pass_trace_lock);
++   double age = pass_trace_time() - pass_trace_epoch;
++   if (age < pass_trace_delay || pass_trace_ended) {
++      pthread_mutex_unlock(&pass_trace_lock);
++      return;
++   }
++   if (age >= pass_trace_delay + pass_trace_seconds || pass_trace_draws >= pass_trace_limit) {
++      pass_trace_ended = true;
++      sca_log("sweetca: passgraph end age=%.3f draws=%u reason=%s", age, pass_trace_draws,
++              pass_trace_draws >= pass_trace_limit ? "draw-limit" : "time-limit");
++      pthread_mutex_unlock(&pass_trace_lock);
++      return;
++   }
++   if (!pass_trace_started) {
++      pass_trace_started = true;
++      sca_log("sweetca: passgraph begin age=%.3f", age);
++   }
++   unsigned seq = ++pass_trace_draws;
++   GLint vp[4], sc[4], fb = 0, tex = 0, level = -1, type = 0;
++   glGetIntegerv(GL_VIEWPORT, vp);
++   glGetIntegerv(GL_SCISSOR_BOX, sc);
++   glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
++   if (fb) {
++      glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                                            GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
++      if (type == GL_TEXTURE) {
++         glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                                               GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &tex);
++         glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                                               GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &level);
++      }
++   }
++   sca_log("sweetca: passgraph draw ctx=%p seq=%u age=%.3f frame=%u program=%u mode=%#x count=%d fbo=%d status=%#x target=%d level=%d size=%ux%u vp=%d,%d,%d,%d sc=%d:%d,%d,%d,%d blend=%d",
++           (void *)c, seq, age, c->frame, c->program, mode, count, fb,
++           glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER), tex, level,
++           tex > 0 && tex < TEXMAX ? c->tex_w[tex] : 0,
++           tex > 0 && tex < TEXMAX ? c->tex_h[tex] : 0,
++           vp[0], vp[1], vp[2], vp[3], glIsEnabled(GL_SCISSOR_TEST),
++           sc[0], sc[1], sc[2], sc[3], glIsEnabled(GL_BLEND));
++   pass_trace_program(c, seq);
++   GLint active = 0, units = 0;
++   glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
++   glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &units);
++   for (int u = 0; u < UNITS && u < units; u++) {
++      if (!c->held[u])
++         continue;
++      glActiveTexture(GL_TEXTURE0 + u);
++      GLint bound = 0, base = 0, max = 0, min = 0, w[4], h[4];
++      glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
++      if (!bound)
++         continue;
++      glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, &base);
++      glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, &max);
++      glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &min);
++      for (int l = 0; l < 4; l++) {
++         glGetTexLevelParameteriv(GL_TEXTURE_2D, l, GL_TEXTURE_WIDTH, &w[l]);
++         glGetTexLevelParameteriv(GL_TEXTURE_2D, l, GL_TEXTURE_HEIGHT, &h[l]);
++      }
++      unsigned surface = c->pass_trace && bound < TEXMAX ? c->pass_trace->surface[bound] : 0;
++      unsigned generation = c->pass_trace && bound < TEXMAX ? c->pass_trace->generation[bound] : 0;
++      sca_log("sweetca: passgraph texture ctx=%p seq=%u unit=%d texture=%d expected=%u surface=%u generation=%u base=%d max=%d min=%#x levels=%dx%d,%dx%d,%dx%d,%dx%d",
++              (void *)c, seq, u, bound, c->held[u], surface, generation, base, max, min,
++              w[0], h[0], w[1], h[1], w[2], h[2], w[3], h[3]);
++   }
++   glActiveTexture((GLenum)active);
++   pthread_mutex_unlock(&pass_trace_lock);
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetca_slots.inc b/src/gallium/frontends/sweetgl/sweetca_slots.inc
 new file mode 100644

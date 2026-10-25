@@ -1084,3 +1084,5 @@ SHA `8a2defaa...`). Plain slot-b reboot at 04:49:17 confirmed active barriers on
 by default, diagnostics off, same current kernel/defaults, no partition flash.
 The preceding shutdown hung at root unmount and user buttons recovered fastboot.
 Final short gestures and charging/lock state: see NOTES. Task 5 further work remains.
+
+Task 23 initial audit: see [shared blur findings](PERF-TASK23-AUDIT.md) and [bounded diagnostic](PERF-TASK23-TRACE.md). Gaussian missing-mip cause unproven; variable blur has a native GLES compatibility gap and a source-disc approximation. Diagnostic only, no gain measured.
