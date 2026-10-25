@@ -94,10 +94,26 @@ Local checks passed:
   objects at `-O2` using existing Mesa generated headers and the isolated source.
 * Applied all three repository patches in order against the pristine tag in an
   isolated index; resulting tree exactly matches the implementation checkout.
-* `git diff --check` passed.
+* `git diff --check` passed for the modified Mesa source.
 
-Validation scripts and objects are ignored local research artifacts. Full iOS
-CI build and artifact identity will be recorded here after completion. This
-change is not installed. Device rendering checks and frame-time impact remain
-pending; the user explicitly prohibited another benchmark round for this step.
-Do not infer a gain from the sample attribution or historical batch counts.
+Validation scripts and objects are ignored local research artifacts.
+Implementation `0624366` is pushed; iOS Mesa CI
+[40163837008](https://github.com/telegdyd/ios-jasmine/actions/runs/40163837008)
+**passed** for that exact commit. The Mesa job completed in 2m52s; logs confirm
+`freedreno_gmem.c` was patched cleanly and the library/test binaries linked and
+were signed. Downloaded artifact:
+
+* Library: `xnu/out-mesa-t5empty-trace/libsweetca.dylib`, 19,233,936 bytes.
+* SHA256: `cfa9fd9c56305ed82b63f9d21b0134faf8b3ad661cf4d0d34ef6bf2e5bc8c0ea`.
+* Actual ARM64 disassembly of `fd_gmem_render_tiles`: at `0x5a1bb0`, load the
+  context's tracing flags; nonzero branches to flush. Otherwise call
+  `u_trace_has_points` at `0x5a1bbc`; false branches to the return at `0x5a1bf4`,
+  bypassing `u_trace_flush`. The normal flush path still has NULL data, unknown
+  frame number and `free_data == false`.
+* Saved logs/status/disassembly: ignored session files `task5-ci.log`,
+  `task5-ci.json`, `task5-gmem-arm64.txt`.
+
+This change is not installed. Device rendering checks and frame-time impact
+remain pending; the user explicitly prohibited another benchmark round for
+this step. No boot, clock or plugin change occurred. Do not infer a gain from
+the sample attribution or historical batch counts. Task 5 overall remains open.

@@ -1,6 +1,6 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-### 2026-10-25 task-5 offline implementation: empty trace-worker jobs
+### 2026-10-25 task-5 offline step complete: empty trace-worker jobs
 
 Implemented one focused Mesa change; [evidence and correctness](jasmine/PERF-TASK5-EMPTY-TRACE-20261025.md).
 Current Control Center A primary thread: 65 on-CPU samples / 130 estimated ms
@@ -12,11 +12,18 @@ barriers, batch boundaries and fence/resource lifetimes unchanged. No claimed
 frame-time gain: these inclusive samples are an opportunity, not savings.
 Host compilation of changed gmem and matching u_trace units passed; all three
 patches apply in order and resulting tree matches isolated implementation.
-CI build pending at this milestone. Implementation commit subject:
-`perf: avoid empty Mesa trace jobs when tracing is disabled`.
+Implementation `0624366` committed and pushed. Mesa CI `40163837008` PASSED for
+that exact commit (mesa job 2m52s); build log confirms gmem patch application.
+Downloaded `xnu/out-mesa-t5empty-trace/libsweetca.dylib`, 19,233,936 bytes, SHA256
+`cfa9fd9c56305ed82b63f9d21b0134faf8b3ad661cf4d0d34ef6bf2e5bc8c0ea`.
+Actual ARM64 disassembly verifies the context-enable check and no-events branch
+around `u_trace_flush`. Logs/disassembly saved under ignored session research.
 No phone access, clock/plugin changes, boot or new benchmark. Device validation
 pending. Shared WSL source and unrelated edits in jasmine/GPU.md, jasmine/NOTES.md
-and PERF-TASKS.md remain untouched/uncommitted. Continue build validation only.
+and PERF-TASKS.md remain untouched/uncommitted (178 insertions / 38 deletions).
+Offline step complete; no runtime speedup claimed. Do not start device work or a
+new benchmark round without new user authorization. Task 5 overall remains open.
+Final handoff commit subject: `docs: record Mesa empty-trace build validation`.
 
 ### 2026-10-25 final task-5 handoff: offline work; no new benchmark round
 
