@@ -1,3 +1,18 @@
+### 2026-10-26: task 24 investigated; plan ready for review
+
+Plan: jasmine/PERF-TASK24-PLAN.md. Saved gm1/gd2 summaries rechecked.
+Active feedback barriers still flush; stale-binding filtering already exists.
+Recommend safe in-batch sysmem barriers, then selective non-feedback GMEM.
+Merged feedback batches remain sysmem; 15-20 ms Home GPU is unproven.
+Full-source cache/clear/resolve audit and eligible-batch graph remain needed.
+WSL reads returned Wsl/E_ACCESSDENIED; inspected saved task16 driver subset
+and current tracked wrapper. No implementation, build, CI, phone access/lock,
+boot, capture or installation; no new gain. Device state not freshly checked.
+Next after review: isolated Mesa26.2.5 plus current patches audit and concrete
+cache/clear/bypass design, then bounded graph instrumentation/narrow candidate.
+Task24 open; no device round scheduled. Task23 closure remains unchanged.
+Milestone subject: docs: investigate task 24 and propose staged GMEM plan.
+
 ### 2026-10-26: task 23 closed at user request
 
 Task 23 moved from open performance work to closed investigations in

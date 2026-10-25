@@ -138,6 +138,12 @@ and notification-centre blur look the same; library installed as
 
 ## 24. Fewer batches per frame, then GMEM for the big ones
 
+**2026-10-26 investigation:** [proposed staged plan](PERF-TASK24-PLAN.md).
+Merged feedback batches must stay sysmem; fewer splits alone do not imply
+GMEM eligibility. Audit cache/clear safety and measure eligible batches first.
+The 15-20 ms Home GPU estimate is unproven. No implementation or device round;
+task remains open, plan ready for review.
+
 **Why GMEM, why not yet.** In sysmem a blended full-screen draw costs 3-5 ms (texture read
 + framebuffer read + write, ~33 MB). GMEM keeps blending on-chip and writes the frame once.
 Round gm1 (`FD_MESA_DEBUG=nofp16`, i.e. sysmem no longer forced; `logs/netlog-t16-gm1.txt`,

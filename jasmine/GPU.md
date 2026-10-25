@@ -1,5 +1,12 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: task 24 plan ready for review.**
+[Investigation and staged plan](PERF-TASK24-PLAN.md). Safe in-batch sysmem
+barriers first, selective non-feedback GMEM second. Fewer batches alone does
+not establish GMEM eligibility or the estimated 15-20 ms Home GPU target.
+Full-source cache/clear/resolve audit and batch graph remain prerequisites.
+No implementation, CI/build or phone access; task24 open, no new gain.
+
 **2026-10-25 16:37 Budapest: task 16 S3 offline lifecycle audit complete.**
 [Full state machine, ownership ledger and hazards](PERF-TASK16-PLAN.md#s3-result-2026-10-25-complete).
 Audited clean S0 kernel and pristine Mesa 26.2.5 + 0001-0004; 51 source-file
