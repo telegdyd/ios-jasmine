@@ -23,7 +23,7 @@ def apply(root):
 
     edit('osfmk/arm64/sweet_prof.c', [
         ('static void\nsp_put(', 'static int sp_bench;\nstatic uint64_t sp_num(const char **s);\nstatic char sp_reply[128 * 1024];\n#include "sweet_bench.inc"\n\nstatic void\nsp_put(', 1),
-        ('\tuint64_t len = sizeof(*r) + 8ull * (nk + nu);', '\tif (sp_bench) { bc_sample_put(r, kf, nk, uf, nu); return; }\n\tuint64_t len = sizeof(*r) + 8ull * (nk + nu);', 1),
+        ('\tuint64_t len = sizeof(*r) + 8ull * (nk + nu);', '\tif (sp_bench) { bc_sample_put(r, kf, nk, uf, nu); return; }\n\tif (sp_buf == NULL) { return; } /* a late timer after a compact-only capture */\n\tuint64_t len = sizeof(*r) + 8ull * (nk + nu);', 1),
         ('\tthread_t th = current_thread();', '\tif (sp_bench && !bc_sampling(now)) {\n\t\trunning_timer_setup(processor, RUNNING_TIMER_SWEETPROF, NULL, sp_next(now), now);\n\t\treturn;\n\t}\n\tthread_t th = current_thread();', 1),
         ('\t\tif (task != kernel_task && sp_meta_used + 4096 < sp_meta_size)', '\t\tif (task != kernel_task && (!sp_bench || sp_named(p)) && sp_meta_used + 4096 < sp_meta_size)', 1),
         ('\t\tif (sp_census_period != 0) {', '''\t\tif (sp_bench && now - bc_last_memory >= sp_period * 500) {
@@ -83,8 +83,8 @@ def apply(root):
         ('\ttopaz_gpu_pool_free(pa, size);\n\tIOLockUnlock(sweet_gpu_pool_lock);', '\ttopaz_gpu_pool_free(pa, size);\n\tsweet_bench_alloc(4, -(int64_t)size);\n\tIOLockUnlock(sweet_gpu_pool_lock);', 1),
         ('\t\t\tb->poolPA = pa;', '\t\t\tb->poolPA = pa;\n\t\t\tsweet_bench_alloc(4, (int64_t)size);', 1),
         ('\t\t\ttopaz_gpu_pool_free(poolPA, size);', '\t\t\ttopaz_gpu_pool_free(poolPA, size);\n\t\t\tsweet_bench_alloc(4, -(int64_t)size);', 1),
-        ('SweetGPUBuffer::free()\n{', 'SweetGPUBuffer::free()\n{\n\tif (benchCounted) {\n\t\tsweet_bench_alloc(0, -1);\n\t\tsweet_bench_alloc(1, -(int64_t)size);\n\t}\n\tsweet_bench_alloc(7, 1);', 1),
-        ('\tOSObject::free();', '\tsweet_bench_alloc(7, -1);\n\tOSObject::free();', 1),
+        ('SweetGPUBuffer::free()\n{', 'SweetGPUBuffer::free()\n{\n\tsweet_bench_alloc(7, 1);', 1),
+        ('\tOSObject::free();', '\tif (benchCounted) {\n\t\tsweet_bench_alloc(0, -1);\n\t\tsweet_bench_alloc(1, -(int64_t)size);\n\t}\n\tsweet_bench_alloc(7, -1);\n\tOSObject::free();', 1),
         ('SweetGPUUserClient::addBuffer(SweetGPUBuffer *b)\n{', 'SweetGPUUserClient::addBuffer(SweetGPUBuffer *b)\n{\n\tif (!b->benchCounted) {\n\t\tb->benchCounted = true;\n\t\tsweet_bench_alloc(0, 1);\n\t\tsweet_bench_alloc(1, (int64_t)b->size);\n\t}', 1),
         ('\t\t\treturn kIOReturnNoMemory;\n\t\t}\n\t\tuint32_t handle', '\t\t\tsweet_bench_alloc(6, 1);\n\t\t\treturn kIOReturnNoMemory;\n\t\t}\n\t\tuint32_t handle', 1),
         ('\t\t\t\t\tjs->gpuSeqno = seqno;', '\t\t\t\t\tsweet_bench_event(22, seqno, js->id, (uint32_t)job->bufs[i]->size, 0);\n\t\t\t\t\tjs->gpuSeqno = seqno;', 1),
@@ -94,7 +94,7 @@ def apply(root):
     ])
     edit('iokit/Kernel/arm/SweetSurface.cpp', [
         ('#include "SweetSurface.h"', '#include "SweetSurface.h"' + decl, 1),
-        ('SweetSurface::free()\n{', 'SweetSurface::free()\n{\n\tif (benchCounted) { sweet_bench_alloc(2, -1); sweet_bench_alloc(3, -(int64_t)benchBytes); }', 1),
+        ('\tscanoutSlot = -1;\n\tOSObject::free();', '\tscanoutSlot = -1;\n\tif (benchCounted) { sweet_bench_alloc(2, -1); sweet_bench_alloc(3, -(int64_t)benchBytes); }\n\tOSObject::free();', 1),
         ('\t\t\ts->id = id;', '\t\t\tif (!s->benchCounted) {\n\t\t\t\ts->benchCounted = true; s->benchBytes = s->allocSize;\n\t\t\t\tsweet_bench_alloc(2, 1); sweet_bench_alloc(3, (int64_t)s->benchBytes);\n\t\t\t}\n\t\t\ts->id = id;', 1),
     ])
     for path, text in pending.items():

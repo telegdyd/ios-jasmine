@@ -105,6 +105,23 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(any('overflow' in q for q in s['quality']))
         self.assertTrue((self.root / 'report.md').exists())
 
+    def test_kernel_cache_work_is_not_assigned_to_mesa(self):
+        import prof
+        (self.root / 'profile.meta').write_text('period_us 2000\ncensus_us 5000\ntask 7 backboardd\nthread 9 7 com.apple.coreanimation.display.primary\nend\n')
+        class Symbols:
+            def __init__(self, *args): pass
+            def kernel(self, address): return ('kernel', 'sweet_gpu_flush_all')
+            def user(self, pid, address): return ('libsweetca.dylib', 'w_DrawElements')
+            def name(self, name): return name
+            def finish(self): pass
+        sample = (1000, 0, 9, 7, 0, 5, 1, 0, 0)
+        stack = (0, 1, 1, 1, 2) + (0,) * 46
+        with mock.patch.object(prof, 'Sym', Symbols), mock.patch.object(fb.os, 'name', 'posix'):
+            cpu = fb.cpu_report([sample], [stack], self.root, 'kernel-symbols', [])
+        cats = cpu['phases']['home-a']['categories_estimated_ms']
+        self.assertEqual(cats['render-cache-maintenance-CPU'], 2)
+        self.assertNotIn('render-Mesa-CPU', cats)
+
 
 class SocketStub:
     def __init__(self, chunks):

@@ -211,7 +211,8 @@ jobs:
             grep -q 'bench mark' xnu/osfmk/arm64/sweet_bench.inc || grep -q '"mark "' xnu/osfmk/arm64/sweet_bench.inc
             nm fakeroot/System/Library/Kernels/kernel.development.sweet > framebench-symbols.txt
             for symbol in sweet_bench_event sweet_bench_blob sweet_bench_alloc sweet_bench_enabled; do
-              grep -E "[[:space:]][Tt][[:space:]]_$symbol$" framebench-symbols.txt
+              # Kernel __TEXT_EXEC symbols can be reported as S rather than T.
+              grep -E "[[:space:]][TtSs][[:space:]]_$symbol$" framebench-symbols.txt
             done
           fi
           ccache -s

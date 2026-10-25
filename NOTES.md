@@ -6,10 +6,14 @@ Active handoff and CI IDs: top of [jasmine/NOTES.md](jasmine/NOTES.md).
 [Usage](jasmine/FRAMEBENCH.md). User reports plugin-enabled performance regression
 and Settings/RAM freezes; old benchmark priorities are not a current baseline.
 Runner, compact kernel capture/export, memory snapshots and manual Settings mode
-implemented; 23 offline tests pass. CI `40159475545` pending; earlier success
+implemented; 24 offline tests and the actual eight-thread interning test pass.
+Preceding CI `40160211557` and final CI `40160680219` passed. Prepared and verified
+`shim/out/shim-boot-framebench99.img` (exact j98 shim/ADT/args). Earlier success
 `40158474717` skipped j0099 and is not instrumentation validation. No device access.
-Prepare a matching temporary image, then **wait for user to confirm the phone is
-free before accessing it**. Preserve existing unrelated working edits.
+Tool/image ready for first device validation. **Wait for user to confirm the phone
+is free before accessing it**; verify actual baseline then. No on-phone result yet.
+Implementation `4210ec8`; final validation subject `perf: validate framebench capture
+and prepare first device run`. Preserve existing unrelated working edits.
 
 ### 2026-10-25 jasmine one-shot performance benchmark plan
 

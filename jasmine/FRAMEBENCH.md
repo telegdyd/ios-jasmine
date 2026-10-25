@@ -10,7 +10,7 @@ wallpaper behavior is a new baseline; old task-5 results are not a fallback rank
 From the repository root in Windows, with the phone unlocked and settled:
 
 ```powershell
-python tools/g2/framebench.py run --out research/framebench/current --ui-ready --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/mesa-ios/libsweetca.dylib
+python tools/g2/framebench.py run --out research/framebench/current --ui-ready --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/libsweetca.dylib
 ```
 
 Use the actual installed library's matching symbol file; the example is the last
@@ -38,7 +38,7 @@ if collection, transfer or analysis is incomplete. Output directories must be ne
 Start before navigating to the affected page:
 
 ```powershell
-python tools/g2/framebench.py run --out research/framebench/wallpaper --manual --seconds 45 --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/mesa-ios/libsweetca.dylib
+python tools/g2/framebench.py run --out research/framebench/wallpaper --manual --seconds 45 --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/libsweetca.dylib
 ```
 
 Manual mode injects **no touches or buttons**. It saves memory snapshots about
@@ -70,7 +70,7 @@ the standard schedule.
 - `manifest.json`: configuration, live kernel version, symbol file hashes, counts,
   dropped records, timings and failures. Library identity is operator supplied.
 
-The kernel capture/metadata allocation is bounded to approximately 9.4 MiB and
+The kernel capture/metadata allocation is bounded to approximately 15 MiB and
 retained for reuse. `bench caps` gives the exact byte budget and reports whether
 an earlier legacy profiler buffer already exists. Event/sample/dictionary overflow
 or contention is reported. GPU BO mapped bytes, surface requested bytes and actual
@@ -91,7 +91,7 @@ long-term leaks, cold boot and thermal behavior are outside this short capture.
 Reanalyze saved captures without contacting the phone:
 
 ```powershell
-python tools/g2/framebench.py report research/framebench/current --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/mesa-ios/libsweetca.dylib
+python tools/g2/framebench.py report research/framebench/current --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/libsweetca.dylib
 python -m unittest discover -s tools/g2 -p test_framebench.py -v
 ```
 
@@ -109,3 +109,14 @@ The canonical include is `tools/g2/framebench_kernel.inc`; the checked transform
 j0070 or compatible later source. Never run it on an active shared kernel tree.
 Export j0099 with `git format-patch` and verify compatibility before CI. No new
 launchd jobs, userland installation or Mesa rebuild are required.
+
+Package a local temporary image without rebuilding or modifying the shared shim:
+
+```powershell
+python tools/g2/framebench-image.py --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --baseline shim/out/shim-boot-j98-wlan.img --out shim/out/shim-boot-framebench99.img
+```
+
+This requires the four compiled capture symbols, preserves the baseline Android
+shim bytes and exact payload ADT/command line, and verifies the new payload round
+trip. Its manifest and intermediate payload remain ignored under `shim/out/`.
+It refuses existing output files and unsupported image formats. It never boots.

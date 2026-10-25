@@ -3,12 +3,11 @@
  * to tools/g2/framebench.py. All capture allocations are bounded; no disk I/O.
  */
 #include <vm/vm_page.h>
-#include <sys/proc.h>
 
 #define BC_EVENTS 131072u
 #define BC_SAMPLES 65536u
-#define BC_STACKS 2048u
-#define BC_HASH 4096u
+#define BC_STACKS 16384u
+#define BC_HASH 32768u
 #define BC_SNAPSHOT 32768u
 
 struct bc_event {
@@ -36,7 +35,7 @@ struct bc_store {
 	uint32_t hash[BC_HASH];
 };
 static struct bc_store *bc;
-static volatile uint32_t bc_ne, bc_ns, bc_nk, bc_drop, bc_sample_drop, bc_dict_lock;
+static volatile uint32_t bc_ne, bc_ns, bc_nk, bc_drop, bc_sample_drop;
 static volatile uint32_t bc_writers, bc_active, bc_phase, bc_snapshot_seq;
 static uint64_t bc_epoch, bc_end, bc_sample_until, bc_last_memory;
 static char bc_snapshot[BC_SNAPSHOT];
@@ -105,17 +104,17 @@ bc_sampling(uint64_t now)
 	       now < os_atomic_load(&bc_sample_until, relaxed);
 }
 
-/* Try-only dictionary ownership: a timer interrupt must never spin on a lock
- * held by the thread it interrupted. Contention/capacity loss is exported.
+/* Publish immutable dictionary slots with release/acquire. CPU timers share a
+ * sampling grid: a global try-lock would systematically discard other CPUs.
+ * Never wait for another writer (including an interrupted thread); probe past
+ * reservations. Duplicate concurrent internings are harmless and bounded.
  */
 static void
 bc_sample_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const uintptr_t *uf, unsigned nu)
 {
+	os_atomic_inc(&bc_writers, acquire);
 	if (!bc_sampling(mach_absolute_time())) {
-		return;
-	}
-	if (!os_atomic_cmpxchg(&bc_dict_lock, 0, 1, acquire)) {
-		os_atomic_inc(&bc_sample_drop, relaxed);
+		os_atomic_dec(&bc_writers, release);
 		return;
 	}
 	uint64_t frames[SP_KFRAMES + SP_UFRAMES];
@@ -126,19 +125,26 @@ bc_sample_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const ui
 		hash = (hash ^ frames[i]) * 1099511628211ull;
 	}
 	uint32_t slot = (uint32_t)hash & (BC_HASH - 1), id = 0;
-	for (unsigned probe = 0; probe < BC_HASH; probe++, slot = (slot + 1) & (BC_HASH - 1)) {
-		id = bc->hash[slot];
+	for (unsigned probe = 0; probe < 64; probe++, slot = (slot + 1) & (BC_HASH - 1)) {
+		id = os_atomic_load(&bc->hash[slot], acquire);
+		if (id == 0xffffffffu) { id = 0; continue; }
 		if (id == 0) {
-			if (bc_nk == BC_STACKS) {
-				break;
+			if (os_atomic_load(&bc_nk, relaxed) >= BC_STACKS ||
+			    !os_atomic_cmpxchg(&bc->hash[slot], 0, 0xffffffffu, acquire)) {
+				continue;
 			}
-			id = ++bc_nk;
+			uint32_t index = os_atomic_add_orig(&bc_nk, 1, relaxed);
+			if (index >= BC_STACKS) {
+				os_atomic_store(&bc->hash[slot], 0, release);
+				continue;
+			}
+			id = index + 1;
 			struct bc_stack *s = &bc->stacks[id - 1];
 			s->hash = hash;
 			s->nk = nk;
 			s->nu = nu;
 			memcpy(s->frames, frames, (nk + nu) * sizeof(uint64_t));
-			bc->hash[slot] = id;
+			os_atomic_store(&bc->hash[slot], id, release);
 			break;
 		}
 		struct bc_stack *s = &bc->stacks[id - 1];
@@ -148,15 +154,16 @@ bc_sample_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const ui
 		}
 		id = 0;
 	}
-	if (id != 0 && bc_ns < BC_SAMPLES) {
-		struct bc_sample *s = &bc->samples[bc_ns++];
+	uint32_t record = id != 0 ? os_atomic_add_orig(&bc_ns, 1, relaxed) : BC_SAMPLES;
+	if (id != 0 && record < BC_SAMPLES) {
+		struct bc_sample *s = &bc->samples[record];
 		*s = (struct bc_sample){(uint32_t)r->hdr, id - 1, r->tid, r->pidtrap, r->event,
 		    (uint16_t)bc_phase, (uint8_t)((r->hdr >> 40) & 15), (uint8_t)(r->hdr >> 32), 0};
-		sp_samples++;
+		os_atomic_inc(&sp_samples, relaxed);
 	} else {
 		os_atomic_inc(&bc_sample_drop, relaxed);
 	}
-	os_atomic_store(&bc_dict_lock, 0, release);
+	os_atomic_dec(&bc_writers, release);
 }
 
 /* One bounded snapshot per second, from the census worker, never a timer IRQ.
@@ -225,7 +232,8 @@ sweet_bench_blob(const char *line, const void **data, size_t *len)
 	}
 	*data = NULL;
 	*len = 0;
-	if (bc == NULL || bc_active || sp_census_running || bc_writers || bc_dict_lock) {
+	if (bc == NULL || os_atomic_load(&bc_active, acquire) || sp_census_running ||
+	    os_atomic_load(&bc_writers, acquire)) {
 		return "ERR capture busy or empty\n";
 	}
 	const char *what = line + 11;
@@ -234,10 +242,10 @@ sweet_bench_blob(const char *line, const void **data, size_t *len)
 		*len = (bc_ne < BC_EVENTS ? bc_ne : BC_EVENTS) * sizeof(struct bc_event);
 	} else if (!strcmp(what, "samples")) {
 		*data = bc->samples;
-		*len = bc_ns * sizeof(struct bc_sample);
+		*len = (bc_ns < BC_SAMPLES ? bc_ns : BC_SAMPLES) * sizeof(struct bc_sample);
 	} else if (!strcmp(what, "stacks")) {
 		*data = bc->stacks;
-		*len = bc_nk * sizeof(struct bc_stack);
+		*len = (bc_nk < BC_STACKS ? bc_nk : BC_STACKS) * sizeof(struct bc_stack);
 	} else if (!strcmp(what, "meta")) {
 		*data = sp_meta;
 		*len = sp_meta_used;
@@ -260,7 +268,7 @@ bc_cmd(const char *line)
 		    "bench-v1 events=32 samples=40 stacks=400 capture_bytes=%lu legacy_profile_bytes=%llu display=ctl-flush-observed,unvalidated\n%s\n",
 		    sizeof(struct bc_store) + BC_SNAPSHOT + (2u << 20), sp_buf != NULL ? sp_size : 0, version);
 	} else if (!strncmp(a, "start ", 6)) {
-		if (sp_census_running || bc_active || bc_writers || bc_dict_lock) {
+		if (sp_census_running || bc_active || bc_writers) {
 			return "ERR capture busy\n";
 		}
 		a += 6;
@@ -341,7 +349,8 @@ bc_cmd(const char *line)
 	} else if (!strcmp(a, "stat")) {
 		snprintf(sp_reply, sizeof(sp_reply),
 		    "bench-v1 active=%u busy=%u events=%u samples=%u stacks=%u event_dropped=%u sample_dropped=%u epoch=%llu elapsed_us=%u meta=%llu\n",
-		    bc_active, sp_census_running || bc_writers || bc_dict_lock, bc_ne, bc_ns, bc_nk,
+		    bc_active, sp_census_running || bc_writers, bc_ne < BC_EVENTS ? bc_ne : BC_EVENTS,
+		    bc_ns < BC_SAMPLES ? bc_ns : BC_SAMPLES, bc_nk < BC_STACKS ? bc_nk : BC_STACKS,
 		    bc_drop, bc_sample_drop, bc_epoch, bc_epoch ? bc_us(mach_absolute_time()) : 0, sp_meta_used);
 	} else {
 		return "ERR unknown bench command\n";

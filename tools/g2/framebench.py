@@ -31,7 +31,7 @@ import uuid
 EVENT = struct.Struct('<IHHQIIII')
 SAMPLE = struct.Struct('<IIQQQHBBI')
 STACK = struct.Struct('<QII48Q')
-MAX_BLOB = 12 * 1024 * 1024
+MAX_BLOB = 16 * 1024 * 1024
 DEFAULT_LOCK = (r'C:\Users\teleg\AppData\Local\Claude-Data\claude_pzs8sxrjxfjjc'
                 r'\side-session-notes\local_b57c5c9a-db18-434e-a448-e6d69fa0dddf\phone.lock')
 PHASES = {1: 'idle-before', 2: 'spotlight-first-observed', 3: 'spotlight-repeat',
@@ -478,7 +478,18 @@ def cpu_report(samples, stacks, out, kernel=None, libs=()):
                 if names:
                     leaf[f'{images[0]}:{names[0]}'] += weight
                 if name == 'backboardd' and 'coreanimation.display' in thread_name:
-                    if 'libsweetca.dylib' in images:
+                    if kind == 1:
+                        if any(n in trace for n in ('flush_dcache', 'FlushPoC', 'sweet_gpu_flush_all', 'SweetGPUUserClient::maintain', 'IOFlushProcessorCache')):
+                            categories['render-cache-maintenance-CPU'] += weight
+                        elif 'SweetGPUBuffer::free' in trace or 'sweet_gpu_vm_unmap' in trace:
+                            categories['render-buffer-free-CPU'] += weight
+                        elif 'SweetGPU' in trace or 'sweet_gpu' in trace:
+                            categories['render-GPU-driver-CPU'] += weight
+                        elif 'AppleCLCD' in trace or 'sweet_fb' in trace:
+                            categories['render-display-driver-CPU'] += weight
+                        else:
+                            categories['render-other-kernel-CPU'] += weight
+                    elif any(i.startswith('libsweetca') and i.endswith('.dylib') for i in images):
                         categories['render-Mesa-CPU'] += weight
                     elif 'QuartzCore' in images:
                         categories['render-CA-CPU'] += weight
@@ -552,7 +563,11 @@ def rank(summary):
     for phase in summary['cpu'].get('phases', {}).values():
         cats.update(phase['categories_estimated_ms'])
     rules = [('render-buffer-free-wait', '14', 'Identify the blocked free/unmap operation with the captured stacks.'),
+             ('render-buffer-free-CPU', '14 investigation', 'Inspect free/unmap stacks and free-inflight counts; CPU cost alone is not proof of the freeze cause.'),
              ('render-Mesa-CPU', '5', 'Split the hottest validation/emission/batch path and test one focused optimization.'),
+             ('render-cache-maintenance-CPU', '20 / driver cache-maintenance investigation', 'Relate maintenance to actual live allocations; cumulative cleaned bytes are not resident RAM.'),
+             ('render-GPU-driver-CPU', '20 / GPU-driver investigation', 'Split allocation, mapping and submission CPU work before choosing a renderer optimization.'),
+             ('render-display-driver-CPU', '18 / display-path investigation', 'Check CPU composition/copy fallback and presentation waits on slow updates.'),
              ('render-runnable', '6 investigation', 'Check CPU placement and scheduler contention; no 4/8-core conclusion from this boot.'),
              ('render-shader-worker-wait', '17 feasibility', 'Confirm compilation rather than state emission; compare first-observed and repeat.'),
              ('render-panel-surface-wait', '16 investigation', 'Inspect linked surface/fence/display events before changing synchronization.'),
@@ -702,6 +717,10 @@ def write_report(out, s):
     else:
         lines.append('No memory snapshot available.')
     lines.extend(['', '## CPU attribution', ''])
+    if s['cpu'].get('available'):
+        for name, phase in s['cpu']['phases'].items():
+            lines.append(f'- {name} sampled process CPU: ' + ', '.join(
+                f'{k} {v:.1f} estimated ms' for k, v in list(phase['process_cpu_estimated_ms'].items())[:6]))
     if s['cpu'].get('symbolized'):
         for name, phase in s['cpu']['phases'].items():
             lines.append(f"- {name}: " + ', '.join(f'{k} {v:.1f} estimated ms' for k, v in phase['categories_estimated_ms'].items()))

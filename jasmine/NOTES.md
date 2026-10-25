@@ -9,24 +9,49 @@ phone access, boot, flash, software installation or test run in this milestone.*
 Usage/limits: [FRAMEBENCH.md](FRAMEBENCH.md). Host runner/reporting, j0099 capture,
 compact binary export, process footprint/RSS/compressed snapshots, GPU/surface/pool
 accounting, and a no-input manual Settings capture are implemented. Capture RAM
-bounded ~9.4 MiB; no new 48 MiB raw profiler allocation. Twenty-three offline tests
+bounded ~15 MiB; no new 48 MiB raw profiler allocation. Twenty-four offline tests
 pass, including partial capture after connection loss and temporary-image repack.
+Actual interning function also passed an eight-thread host test: 32,000 samples
+with no contention loss, valid dictionary references and bounded overflow. An
+offline historical-profile replay verifies compact decoding and WSL symbolication;
+it is not a new device baseline. Derated historical home+CC windows had 10,232
+unique stacks, motivating the fixed 16,384-entry dictionary. Immutable slots use
+atomic publication; no global try-lock that could bias samples from aligned CPUs.
 Kernel source worktree `/home/teleg/xnu-framebench`, branch `codex/framebench`,
-source commit `529b8b5`. Patch verified with `git apply --check` against current
+source commit `fbcaec9`. Patch verified with `git apply --check` against current
 Wi-Fi source j0098 (`a60e5f0`), preserving the shared source tree. Managed CI
 worktree `C:\Users\teleg\.codex\worktrees\framebench-build\ios-jasmine`, branch
-`codex/framebench-build`, head `efafa72` (Wi-Fi base `ce06327`, includes j0070-j0098).
-CI `40159475545` is the current build. **Earlier CI `40158474717` reported success
+`codex/framebench-build`, head `7ee9cb8` (Wi-Fi base `ce06327`, includes j0070-j0098).
+**Final CI `40160680219` PASSED**, with the applied j0099 patch and all four capture
+symbols verified. Downloaded to `xnu/out-jasmine-framebench99/`; kernel SHA256
+`f4f3695dc93c35acb5828140fb849d93640f5f94735d25ee6a8a6959929fb4af`.
+Full preceding CI `40160211557` also PASSED before final dictionary sizing.
+**Earlier CI `40158474717` reported success
 but skipped j0099: not a validated instrumentation build.** `40159178092` was
-cancelled after finding that context mismatch. j0099 now uses narrow compatible
-context; workflow checks source and all four linked capture symbols, so silent
-patch skipping fails CI. No local Apple clang available; full compile goes to CI.
-Next: verify the current build/log/symbols, download kernel and package a temporary
-image using the exact shim/ADT/arguments from local `shim-boot-j98-wlan.img` via
-`tools/g2/framebench-image.py`. Then report ready and wait for the user's phone-free
-confirmation. Hardware latch/refresh signal validation and actual measurement
-overhead remain untested; reports explicitly use proxies until validated. Existing
-uncommitted task-5 documentation edits remain untouched.
+cancelled after finding that context mismatch. `40159475545` caught BSD/osfmk type
+conflicts; redundant sys/proc.h removed. `40159839455` compiled/linked successfully
+but the verification rejected Mach-O __TEXT_EXEC symbols marked S; inspected its
+artifact to confirm the symbols, and fixed the check. j0099 now uses narrow
+compatible context; workflow checks source and all four linked capture symbols,
+so silent patch skipping fails CI. No local Apple clang available; compile on CI.
+**Ready image:** `shim/out/shim-boot-framebench99.img` (17,424,384 bytes), SHA256
+`6ce2603f1b23ca3c9fed827dcb4e4d1115a6b21aaadb9ad854471640fd30281b`.
+`tools/g2/framebench-image.py` preserved the exact shim, ADT and arguments from
+local `shim-boot-j98-wlan.img`; round-trip payload/ADT/command-line verification
+passed. Manifest: `shim/out/shim-boot-framebench99.json`. All four symbols checked
+independently in the downloaded Mach-O. No build files or Apple artifacts in git.
+Implementation commit `4210ec8`; final validation commit subject:
+`perf: validate framebench capture and prepare first device run`.
+**Next: wait for the user's phone-free confirmation.** Then take the shared lock,
+verify the actual running baseline/configuration (j98 image is the latest local
+Wi-Fi baseline, not independently established as current live state), use one
+temporary instrumented boot as needed, and run the single bounded capture. Current
+production-library symbols are `xnu/out-mesa-t5active/libsweetca.dylib`, local hash
+`e5fc84b1066990dbb06a6816ad5421978d84fcd2aa7c6f49d477594516847b1c`;
+verify that this is still the installed library before interpreting exact stacks.
+Hardware latch/refresh signal validation, transport speed and actual collection
+overhead remain untested; reports explicitly use proxies until validated. No
+on-phone benchmark result exists. Existing uncommitted task-5 docs remain untouched.
 
 **2026-10-25: one-shot bottleneck benchmark plan.** User requested a plan for a
 quick automated frame-time/FPS diagnosis that runs once without repeated boots.

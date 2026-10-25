@@ -3,8 +3,11 @@
 **2026-10-25 framebench tooling:** see [FRAMEBENCH.md](FRAMEBENCH.md) and the active
 [NOTES.md](NOTES.md) handoff. j0099 adds bounded frame/GPU/CPU-stack/memory capture
 and binary export; host runner reports a new plugin-enabled baseline without
-assuming task 5 remains first. Twenty-three offline tests pass; actual device
-validation awaits the user's phone-free confirmation. CI `40159475545` pending.
+assuming task 5 remains first. Twenty-four offline tests and an eight-thread
+interning test pass; actual device validation awaits the user's phone-free
+confirmation. CI `40160211557` and final sizing/concurrency CI `40160680219` passed.
+`shim/out/shim-boot-framebench99.img` packaged and verified against the local j98
+shim/ADT/args. Ready for first device validation; no phone has been accessed.
 Earlier CI `40158474717` silently skipped j0099 and is not compile validation;
 workflow now requires capture source and linked symbols. No device access or FPS
 result yet; display observations remain labelled as proxies pending validation.
