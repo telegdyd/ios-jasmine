@@ -77,7 +77,7 @@ stays here until its remaining scope is finished and the result is on by default
 | [11](#11-gpu-power-management-hardware-clock-gating-idle-power-down-load-based-clock) | GPU clock gating, idle power-down and DCVS | Open; power/heat target. Clock transitions must account for task 14. | j0066 reserved |
 | [12](#12-cpu-idle-power-power-collapse-instead-of-wfi-unused-cores-off) | CPU/cluster power collapse; unused cores off | Open; idle power target. | j0067 reserved |
 | [13](#13-thermal-limits-tsens-driven-caps-on-cpu-and-gpu-clocks) | Thermal clock limits | Open; sustained performance and heat; depends on tasks 2 and 11. | j0068 reserved |
-| [16](#16-pipeline-rendering-and-presentation-using-surface-completion-fences) | Pipeline rendering and presentation | Planned 2026-10-25: [step plan](PERF-TASK16-PLAN.md). After the threaded context, `glFinish` (GPU fence + driver drain) is the display thread's largest wait. Benefit unmeasured. | Reserve in plan step S0 (>= j0100) |
+| [16](#16-pipeline-rendering-and-presentation-using-surface-completion-fences) | Pipeline rendering and presentation | Planned 2026-10-25: [step plan](PERF-TASK16-PLAN.md). After the threaded context, `glFinish` (GPU fence + driver drain) is the display thread's largest wait. Benefit unmeasured. | j0100 reserved (S0, 2026-10-25) |
 | [17](#17-persistent-shader-cache) | Persistent shader cache | New, unstarted; target first-use/reboot compilation hitches, not warm lookup. Feasibility and gain unvalidated. | Mesa/build; no reservation |
 
 ## Open bug fixes

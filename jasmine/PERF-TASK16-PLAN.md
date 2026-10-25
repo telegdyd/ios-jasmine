@@ -3,8 +3,8 @@
 Working plan for [PERF-TASKS](PERF-TASKS.md) task 16, written 2026-10-25 after the
 task-5 threaded context ([report](PERF-TASK5-THREADED-20261025.md)) made the
 per-frame `glFinish` the largest wait on CoreAnimation's display thread.
-**Status: planning done, no step started.** Nothing here is measured yet unless a
-step's result says so.
+**Status: S0 complete (2026-10-25); S1 not started.**
+Nothing here is measured yet unless a step's result says so.
 
 **How to use this file.** Each step below is sized for one agent. Take the next
 step whose dependencies are done, set its tracker row to `in progress` with your
@@ -19,7 +19,7 @@ first: phone lock, battery check, accessory-sync precheck, ground rules, and
 
 | Step | Work | Needs | Phone | Status | Owner / result |
 | --- | --- | --- | --- | --- | --- |
-| [S0](#s0-establish-the-baseline-and-bases) | Establish the baseline, source bases and patch number | — | read-only | todo | |
+| [S0](#s0-establish-the-baseline-and-bases) | Establish the baseline, source bases and patch number | — | read-only | done | Codex, 2026-10-25 15:01 Budapest; installed SHA256 `14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261`; slot b recorded j0070; base `bfb61629aa90e9e44d85ea929ddffbe6a5a78222`, `/home/teleg/xnu-t16` (`t16`); j0100 reserved. See S0 result. |
 | [S1](#s1-critical-path-budget-from-existing-captures) | Critical-path budget from existing captures | S0 | no | todo | |
 | [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | todo | |
 | [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | todo | |
@@ -353,3 +353,67 @@ task 16 updated. Keep the env/boot-arg switches as the rollback path.
 - **Added latency** from queueing: depth is bounded to one frame and measured.
 - **Task 14** (selector-2 buffer-free freeze) may surface more often with longer
   holds; take its census before rebooting if a freeze occurs.
+
+## S0 result (2026-10-25, complete)
+
+**Source base:** `/home/teleg/xnu-t16`, branch `t16`, clean at
+`bfb61629aa90e9e44d85ea929ddffbe6a5a78222`. Created from Wi-Fi
+`f7c66ddc6c4e25c18a6052914f3354cc6e0d9170`, then cherry-picked framebench
+`fbcaec907adc0c73b0f5d59d74f2b28db1381b06` without conflicts. The latter was
+originally based on `fde1ca9` (j0070); this new base retains Wi-Fi j0071-j0099,
+including wrapped-surface unwiring, plus framebench. `git diff --check HEAD^ HEAD`
+passes. Existing source worktrees were not changed. No new build or CI run;
+this combined source base has not been compiled or booted.
+
+**Reservation: j0100 for task 16.** Audited all refs reachable by `git log --all`
+in the WSL kernel repository, all local/remote host-repository branches' exported
+patch paths, current `xnu/patches/`, and the task reservations. Highest used number
+is j0099, with two distinct uses: `f7c66dd` (unwired wraps/reboot dump) and
+`fbcaec9` (framebench). Lower gaps already reserved for other tasks remain reserved.
+Ignored inventory evidence: `research/t16/kernel-patch-inventory.txt` and
+`research/t16/exported-patch-inventory.txt` (current checkout only for the latter).
+
+**Installed library: verified by fresh read-only retrieval.**
+`research/t16/libsweetca-installed.dylib` is 19,234,288 bytes, SHA256
+`14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261`,
+matching Mesa CI `40170072509`, the local final artifact
+`xnu/out-mesa-t5tcfinal/libsweetca.dylib`, and the previous readback
+`research/t5tc/libsweetca-final-installed.dylib`.
+The earlier threaded2 capture used the fix+dump library, whose local artifact
+`xnu/out-mesa-t5tcfix/libsweetca.dylib` hashes to
+`bb543dc9b37fa10411ce87f609d34eec633575909257b5b98e0e7ef8949e0363`.
+The current temporary boot now loads the final on-disk library; do not conflate
+it with the fix+dump library in that saved capture.
+
+**Persistent slot b:** latest recorded flash is j0070, kernel CI `40059091430`,
+`shim/out/shim-boot-j70-slotb.img` (17,354,752 bytes; local SHA256
+`97c57697df86a8bfd6922111f63c89ad7d7d8db9928e1a1023910f6d621c0f88`),
+first-boot log `logs/netlog-j70-slotb.txt`. This supersedes the older j69b paragraph
+under "Slot b = iOS". The framebench99 image was a temporary boot, not a slot-b
+flash. Current partition contents were not independently retrieved in S0.
+
+**topaz_surface_drawn(): confirmed no GPU wait on jasmine, by source.** In
+`iokit/Kernel/arm/RedwoodGPU.cpp:227`, it returns true unless both `surface->drawn`
+is nonzero and static `gGPULock` is non-null. The sole allocation of `gGPULock` is
+in `RedwoodGPUStart():332`, called only by `topaz_adreno_thread()` in
+`TopazAdreno.cpp:1230`. `AppleCLCD::start()` in `SweetFramebuffer.cpp:487-491`
+invokes `topaz_adreno_init()` only inside `if (topaz)`; jasmine follows the
+`jasmineMdp()` path. Thus jasmine leaves this lock null and the function returns
+without waiting. Its actual synchronization is the SweetGPU `gpuSeqno` path.
+
+**Device check and final state:** user granted exclusive access and allowed skipping
+the phone lock, then clarified the phone had been in the charging shell and put it
+in fastboot. `fastboot getvar current-slot` returned `b`. One temporary
+`fastboot boot shim/out/shim-boot-framebench99.img` succeeded (send 0.476 s,
+boot 0.166 s); image SHA256
+`6ce2603f1b23ca3c9fed827dcb4e4d1115a6b21aaadb9ad854471640fd30281b`,
+existing kernel CI `40160680219`. This is the existing instrumented image,
+not a build of the new combined source base. Ignored evidence:
+`research/t16/boot.txt`, `boot-final.txt`, `netlog-client.txt`,
+`netlog-final-client.txt`. Boot log shows GPU self-test expected values and
+backboardd creating its Mesa FD512 context. Battery line: 59%, 3826 mV,
+external=1, charging=1. No visual UI check claimed. Phone left in this iOS boot;
+no collectors left running, no lock held. No flash, software installation,
+benchmark, clock change or new CI run. Accessory-sync profiling was unnecessary:
+S0 reads identity only and makes no performance measurement. S1 has not started.
+Results are kept here, per the user's instruction; NOTES.md files are unchanged.
