@@ -1,5 +1,15 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 jasmine one-shot performance benchmark plan
+
+Plan requested by user: [jasmine/PERF-BENCH-PLAN.md](jasmine/PERF-BENCH-PLAN.md).
+Active handoff: top of [jasmine/NOTES.md](jasmine/NOTES.md). One bounded capture on
+an existing settled boot; runtime frame trace plus existing gestures/profiler,
+compact export and ranked slow-frame evidence. Instrumentation needs one setup
+build/temporary boot; the benchmark never boots/retries automatically. Planning
+only: no implementation, CI/build/boot/device changes. Commit subject:
+`docs: plan one-shot frame bottleneck benchmark`. Prior unrelated edits preserved.
+
 ### 2026-10-24 jasmine documentation handoff
 
 Mi A2 performance work is tracked in [jasmine/NOTES.md](jasmine/NOTES.md) and

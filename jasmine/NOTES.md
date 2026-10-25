@@ -1,5 +1,20 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-25: one-shot bottleneck benchmark plan.** User requested a plan for a
+quick automated frame-time/FPS diagnosis that runs once without repeated boots.
+See [PERF-BENCH-PLAN.md](PERF-BENCH-PLAN.md). Proposed: reuse gestures and CPU/census
+sampling; add runtime kernel frame/GPU/display events and compact binary export;
+one 60-90 s schedule on a settled boot, then rank tasks using slow-interval evidence.
+One setup instrumentation build/temporary boot is separate from benchmark execution.
+Important observed code limits: j0058's latch retirement includes a 50 ms timeout;
+raw profiler export is documented ~20 KB/s. Distinguish hardware observation from
+timeout and fix export cost before promising a quick full-FPS report. Task 5 remains
+the evidence-based candidate, not a fresh result. This milestone is planning only:
+no implementation, device access, build, CI run, boot, flash or root change. Existing
+uncommitted task-5/other edits preserved. Commit subject:
+`docs: plan one-shot frame bottleneck benchmark`. Next: implement the bounded task-18
+capture/export/runner and validate latch evidence; full input latency is deferred.
+
 **2026-10-24: performance ranking and new tasks approved.** Updated PERF-TASKS.md
 with the nine-step benefit/effort order: task 5, shader cache (17), task 6 comparison,
 task 11 clock gating, SpringBoard profiling (19), task 16, tasks 2+13, task 10,
