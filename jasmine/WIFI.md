@@ -267,3 +267,15 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   as ath10k, both -95 dBm based, averaged over ~8), into the station state; NOISE (17) answered with -95 dBm
   (ath10k/ath11k's default floor); the link event gets snr/noise; the wifi-station thread posts event 39
   every 5 s while joined and idle. `wifi data:` lines now end with `signal N dBm (beacons B, ppdus P)`.
+- **j93-wlan (02:37-02:49)**: TelekNet joined at t=35.7 s (keys in 63 ms), signal -52..-57 dBm (beacons 2303,
+  ppdus ~4100 by the end), LQM events every 5 s; **the bars turned white** (user), ~15 s after the join (the
+  first quiet 5 s came late, wifid scans after a join): j0095 posts one with the link-up event too.
+  **Reboot while joined hung again, without mss_restart**: wlan off 258 ms (clean leave), stop-ack 51 ms,
+  `mss_restart left to the board reset`, launchd teardown, `launchd quiesce complete`, then only periodic lines
+  (battery, net, ue0 counters) for a few seconds and the USB log ended at 02:45; user's Power + Volume down,
+  fastboot 02:49, parked 77%. So **mss_restart did not cause the j83/j85 hangs** (j0094's comment is wrong on
+  that). Joined reboots: j83, j85, j93 hung; j89c, j92 fine; no unjoined reboot ever hung. In good reboots
+  `vfs_unmountall(nonsystem) start` follows `launchd quiesce complete` at once, so the hang is in
+  reboot_kernel between proc_shutdown(TRUE) and vfs_unmountall: the rest of proc_shutdown, audit_shutdown,
+  sync(), or IOSystemShutdownNotification(RootUnmount). The USB log dying within seconds suggests the whole
+  system froze (a CPU stuck on a bus access?), not one blocked thread.
