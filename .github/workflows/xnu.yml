@@ -203,6 +203,23 @@ jobs:
         run: |
           ccache -z
           bash build.sh
+          # The upstream wrapper can skip a non-applying patch and still build.
+          # A framebench image is unusable unless the hooks are actually linked.
+          if ls patches/j0099*-jasmine-framebench.patch >/dev/null 2>&1; then
+            test -f xnu/osfmk/arm64/sweet_bench.inc
+            grep -q 'BC_SAMPLES 65536u' xnu/osfmk/arm64/sweet_bench.inc
+            grep -q 'bench mark' xnu/osfmk/arm64/sweet_bench.inc || grep -q '"mark "' xnu/osfmk/arm64/sweet_bench.inc
+            nm fakeroot/System/Library/Kernels/kernel.development.sweet > framebench-symbols.txt
+            for symbol in sweet_bench_event sweet_bench_blob sweet_bench_alloc sweet_bench_enabled; do
+              # Kernel __TEXT_EXEC symbols can be reported as S rather than T.
+              grep -E "[[:space:]][TtSs][[:space:]]_$symbol$" framebench-symbols.txt
+            done
+          fi
+          # task 16 build 1: the present queue must be in the source that was built
+          if [ -f patches/j0100-jasmine-present-queue.patch ]; then
+            grep -q 'sweetfb_queue' xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+            grep -q 'sweet_fb_present_capability' xnu/bsd/dev/sweet_gpu.c
+          fi
           ccache -s
 
       - name: Package build tree for local compiles
