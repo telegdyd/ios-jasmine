@@ -1,0 +1,38 @@
+From 4e4088e161eb9a5721d1e6e8e4a81dc72f051952 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 19:10:19 +0100
+Subject: [PATCH] jasmine: short SwapWait waits spin (j0100d)
+
+Even without timer leeway (j0100c), CoreAnimation 1 ms SwapWait polls took
+2.65 ms median with sweetfb_sleep=1 (511 waits in Home B), against 1.1 ms when
+spinning: sleeping gives up the CPU, and on a busy phone the display thread got
+it back only ms later. Waits of up to 2 ms spin as before; longer ones sleep.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 2a9facb..b4f5803 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -2045,6 +2045,15 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 			sweet_fb_wait_busy += !done;
+ 			return done ? kIOReturnSuccess : kIOReturnTimeout;
+ 		}
++		/*
++		 * CoreAnimation's polls ask for at most a few ms: sleeping gives up the CPU, and on a
++		 * busy phone getting it back took ~1.5 ms per wait (2.65 ms median for 1 ms waits).
++		 * Short waits spin as before sweetfb_sleep; only longer ones sleep.
++		 */
++		if (ms <= 2) {
++			IODelay(100);
++			continue;
++		}
+ 		uint64_t until;
+ 		nanoseconds_to_absolutetime((uint64_t)ms * NSEC_PER_MSEC, &until);
+ 		sweet_fb_pause(100, start + until);
+-- 
+2.47.3
+
