@@ -1,5 +1,12 @@
 # Task 5: skip disabled, empty batch trace flushes
 
+**Subsequent user-authorized device result:** [benchmark comparison](PERF-TASK5-EMPTY-TRACE-BENCH-20261025.md).
+Installed new build; all seven GL steps pass. Trace-worker paths disappear from
+the sample, but no meaningful overall frame-time improvement demonstrated. Home/
+Control Center throughput changes are small, medians do not improve, and repeated
+Spotlight is slower in this single pass. No further rounds started. The offline
+milestone and pending-device wording below describe the earlier state.
+
 One focused offline optimization removes unnecessary trace-worker jobs from
 Mesa's batch-finalization path. It does not change GPU state emission, barriers,
 batch boundaries, submission, fences or presentation. Device correctness and

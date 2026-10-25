@@ -1,5 +1,37 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 task-5 new Mesa benchmark complete: no meaningful frame-time gain
+
+User explicitly authorized using the new build and one further benchmark. This
+superseded the earlier no-new-round restriction for this single run only; no
+further rounds started or scheduled. [Full comparison](jasmine/PERF-TASK5-EMPTY-TRACE-BENCH-20261025.md).
+Installed `0624366` / Mesa CI `40163837008` library at production path, read back
+SHA256 `cfa9fd9c56305ed82b63f9d21b0134faf8b3ad661cf4d0d34ef6bf2e5bc8c0ea`.
+Old exact production backed up under ignored new session. New CI GL test passes
+all seven steps, sampler and IOSurface checks included; Home visually verified.
+Same j0099 framebench image/args and configured clocks; plugins retained. Setup
+iOS boot transferred library, one restart loaded it, then one standard capture
+at 145 s after measurement boot: activity 59.89 s / collection 66.36 s, exit 0,
+6340 events / 38376 samples / 12830 stacks; zero drops. Raw ignored directory:
+`research/framebench/20261025-empty-trace/`; baseline `20261025-first/capture/`.
+Home B arrivals 20.34->20.63/s (+1.4%), combined CC 14.05->14.28 (+1.6%). Median
+intervals did not improve; repeated Spotlight slowed (22.92->13.73 arrivals/s,
+47.04->63.40 ms median). Single short before/after: no clear net win, no proven
+reproducible regression; no statistical claim. Home A remains unverified (0 vs 1
+arrival). New run started ~6 C hotter; other startup/background variance remains.
+Targeted trace paths disappear from CC primary CPU sample: old context_process
+65 samples/130 ms and flush 8/16 ms -> neither sampled. Total primary render CPU
+3550->3526 ms over ~4 s, essentially unchanged; per observed swap 61.21->61.86 ms.
+Removal of unnecessary jobs validated, meaningful overall speedup unproven. No
+CPU-vs-RAM bandwidth conclusion; do not resurrect the obsolete DDR comparison.
+New library retained installed. No partitions flashed or clock/plugin changes.
+Own diagnostics removed. Final temporary r109 parking boot succeeded; backlight
+readback 0, float4050000, charger online1/Charging, +711425 uA, 4121327 uV, 78%.
+Own collectors exited/stopped; shared phone lock released. Task 5 remains open;
+next work is source-backed remaining draw/state/batch cost, not more automatic
+rounds. Existing unrelated edits preserved. Commit subject:
+`perf: record new Mesa trace optimization benchmark results`.
+
 ### 2026-10-25 task-5 offline step complete: empty trace-worker jobs
 
 Implemented one focused Mesa change; [evidence and correctness](jasmine/PERF-TASK5-EMPTY-TRACE-20261025.md).
