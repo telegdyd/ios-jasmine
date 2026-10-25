@@ -1,11 +1,12 @@
-# Wi-Fi on jasmine: handoff (2026-10-25, 00:40)
+# Wi-Fi on jasmine: handoff (2026-10-25, 02:05)
 
 Status: **Wi-Fi works under iOS: joined, DHCP address, internet (round j86-wlan, 23:35, user-confirmed).**
 wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms, it rejoins by itself on boot),
 configd runs DHCP on en0, traffic both ways. The factory MAC comes from persist. Still test images only
 (`wifi=1` boot arg, nothing flashed). The USB link runs on 192.168.7.0/24 (j0088/j0089: the phone hands
-the PC 192.168.7.1 over DHCP) and **survives Wi-Fi** (j89c, 01:02); the reboot while joined works (the
-j0086 fallback), but our teardown while joined crashes the WLAN firmware (task 1).
+the PC 192.168.7.1 over DHCP) and **survives Wi-Fi** (j89c, 01:02). **Leaving while joined works** (j0092,
+round j92 at 01:57): Forget + rejoin in Settings, and the reboot while joined runs a clean Wi-Fi off
+(wlan_mode off ok, stop-ack); before j0092 every leave while joined crashed the WLAN firmware.
 Details of every round are in `jasmine/WIFI.md`; this file is the summary plus what is left.
 
 ## Where things are
@@ -17,7 +18,7 @@ Details of every round are in `jasmine/WIFI.md`; this file is the summary plus w
 | Main code | `iokit/Kernel/arm/TopazModem.cpp` (topaz's modem/Wi-Fi stack, made per board by `board_setup()` / `soc.jasmine`) |
 | Other touched files | `bsd/dev/sweet_rpm.c` (per-client rail votes, `sweet_rpm_kvp`), `osfmk/arm64/sleh.c` (SError details in the panic line), `osfmk/arm64/sweet_osm.c` (MSS regs on the command port) |
 | Test scripts | `ios-jasmine/research/wifi/` (gitignored): `modem-round.sh`, `linux-modem-life.sh`, `nura-extract.sh`, `nura-journal.sh`, `fatls.py`, `rd32.c` |
-| References | `research/wifi/linux/` (mainline q6v5_mss, glink, gcc-sdm660 ...), `msm44/`, `diag/` (linux-msm diag-router sources), `jasmine.dts`, `r109-mods/` |
+| References | `research/wifi/linux/` (mainline q6v5_mss, glink, gcc-sdm660 ..., `ath10k/` and `mac80211/mlme.c` from v6.12), `msm44/`, `diag/` (linux-msm diag-router sources), `jasmine.dts`, `r109-mods/` |
 | Nura rootfs (Linux reference) | WSL `~/nura-root/root.img` (sparse, unpacked from `backup/nura-full-20261020/userdata-p2-root.e2i.gz`), read with `/sbin/debugfs -R "dump|ls|cat ..."`; journal copies in `~/nura-root/journal/` |
 | Logs | `ios-jasmine/logs/netlog-j80*-{modem1,nowlan,qdssoff}.txt` |
 
@@ -73,6 +74,9 @@ Details of every round are in `jasmine/WIFI.md`; this file is the summary plus w
 | j0087 | scoped routes for ue0 (192.168.7/24, 169.254/16); the 5140/5141/5142 listeners bound to ue0 (also: not reachable from Wi-Fi) |
 | j0088 | DHCP server on ue0: the PC's USB adapter gets 192.168.7.1/24 (no router, no DNS) instead of a 169.254 address |
 | j0089 | scoped host route 255.255.255.255 on ue0 (the DHCP answers failed with ENETUNREACH without it) |
+| j0090 | the leave as a step machine (`S_LEAVE`, `w_leave_poll`) with waits; no scan/join during it; STOP_SCAN before wlan off |
+| j0091 | the leave stops a running scan first; a log line per leave step; no wlan off wait on a FATAL modem |
+| j0092 | **the leave fix**: mac80211's order (`ieee80211_set_disassoc`): deauth, tx drain, PEER_DELETE until HTT unmap + PEER_DELETE_RESP, then VDEV_DOWN, VDEV_STOP until VDEV_STOPPED (VDEV_DOWN with the peer still there asserted in wlan_vdev.c) |
 | tools (branch `jasmine`, 8fda077) | `mkadt.py --wlan`: the `/arm-io/wlan` node launchd needs to start wifid; `mkimg.sh` passes it when EXTRA_ARGS has `wifi=1` |
 | phone rootfs (23:19) | configd's default network configuration written to `/private/var/preferences/SystemConfiguration/preferences.plist` (Set "Automatic", service "Wi-Fi" on en0, DHCP + IPv6 automatic); configd never made it because it starts before en0 exists |
 
@@ -143,24 +147,16 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 
 ## Next tasks, in order
 
-1. **Teardown while joined crashes the WLAN firmware** (j89c, 01:05): `w_teardown()` sends VDEV_DOWN,
-   PEER_DELETE and VDEV_STOP back to back; with a peer up the firmware asserts at once
-   (`err_qdi.c:459:EF:wlan_process:1:cmnos_thread.c:3285:Asserted in wlan_vdev.c`), the modem goes FATAL, and
-   WLAN_MODE OFF is never answered (j85 was the same: the teardown, not mode OFF). Unjoined (j88/j89) the
-   sequence is clean. The same teardown runs on wifid's DISASSOCIATE, so leaving or forgetting a network
-   while joined probably crashes the modem too (untested). Fix: ath10k's order with waits: VDEV_DOWN, then
-   PEER_DELETE and wait for HTT peer unmap / WMI peer delete response, then VDEV_STOP and wait for
-   VDEV_STOPPED; compare `ath10k_bss_disassoc` / `ath10k_sta_state` (ASSOC -> NONE -> NOTEXIST) and
-   `ath10k_vdev_stop`; maybe send a deauth to the AP first as mac80211 does.
-   (Done 2026-10-25: the USB link with Wi-Fi joined. XNU keeps IPv4 link-local on the primary interface,
-   so the link moved to 192.168.7/24 with a DHCP server on ue0, j0087-j0089; j89c: log over 192.168.7.2 ran
-   on after the join with 1805 frames sent all ok, and the command-port reboot while joined worked.)
+1. (Done 2026-10-25 02:00, j0090-j0092: the leave while joined. Peer before vdev, as mac80211; see WIFI.md
+   j90-j92. Also done: the USB link with Wi-Fi joined, j0087-j0089.) Not tried yet: the AP ending the link
+   (deauth from the AP, peer kickout) and a failed join (wrong password), which run the same leave.
 2. **The modem port halt.** j0086 works unjoined (j88/j89: vdev stopped + deleted,
    WLAN_MODE OFF answered in ~225 ms, stop-ack in 50 ms). The modem's AXI port never halts (`ack 0 idle 0`)
    even with Wi-Fi off, so the j0086 fallback (no mss_restart) is what makes every reboot work now; find out
    why the port does not halt (compare Linux `q6v5proc_halt_axi_port` and the halt register offsets on
-   sdm660) before the default build. While joined (j89c) the reboot worked too, with the firmware crashed by
-   task 1 and the fallback; the j83/j85 hangs were a reset under the unhalted port, which j0086 no longer does.
+   sdm660) before the default build. While joined the reboot is now clean up to the halt (j92: wlan off
+   256 ms, stop-ack 51 ms, then `ack 0 idle 0`); the j83/j85 hangs were a reset under the unhalted port,
+   which j0086 no longer does.
 3. **Gray Wi-Fi icon** in the status bar (user, j86): probably the signal bars. Apple80211 RSSI (16) is answered
    from the scan result and never updated, NOISE (17) is refused, no link-quality / RSSI-changed events are sent.
    Keep RSSI current from received frames (or WMI peer stats), answer NOISE (firmware value or ~-95 dBm), send the
@@ -181,4 +177,4 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 7. Cosmetic: en0's link is named `wcn3988` (topaz's chip) and the ADT node says `jasmine,wcn3990`; name it per board.
 8. **Done means on the phone**: make Wi-Fi the default (no `wifi=1`, ADT wlan node always on jasmine), drop or gate
    the diagnostics (j0080o trace, j0080y SMMU step lines, j0084 frame lines), build, and flash slot b **with the
-   user's OK**. Only after tasks 1 and 2 are solid: a reboot hang on the default image would need a button reset every time.
+   user's OK**. Only after task 2 is solid: a reboot hang on the default image would need a button reset every time.

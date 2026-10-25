@@ -218,3 +218,21 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   the j0086 teardown made the WLAN firmware assert at once (`Asserted in wlan_vdev.c`, modem FATAL),
   WLAN_MODE OFF unanswered (2.5 s), no stop handshake, modem port not halted -> mss_restart left alone ->
   the phone rebooted to fastboot normally; parked 84%. So j85's assert was the teardown while joined too.
+- j0090: the leave as a step machine (S_LEAVE, `w_leave_poll` after the CE poll) with waits, no scan/join
+  while it runs, STOP_SCAN (0x3002, tag 0x4e, STOP_ALL) before wlan off; order then deauth, VDEV_DOWN,
+  PEER_DELETE (wait HTT unmap 0x04 / WMI PEER_DELETE_RESP 0x6007), VDEV_STOP (wait VDEV_STOPPED).
+  **j90-wlan (01:27)**: joined, the user's Forget came during wifid's scan; FATAL in wlan_vdev.c again, no
+  rejoin. j89c too had a scan go out mid-teardown, so the scan was the first suspect.
+- j0091: the leave stops a running scan first and waits for it; one log line per leave step; no wlan off
+  wait on a crashed (FATAL) modem. **j91-wlan (01:44)**: no scan this time, deauth sent, tx out (1164/1164),
+  then VDEV_DOWN + PEER_DELETE -> FATAL 200 ms later, no unmap/resp. The order was the cause:
+  `ieee80211_set_disassoc` (mac80211 6.12, `research/wifi/linux/mac80211/mlme.c`) flushes, deauths,
+  flushes, `sta_info_flush` (peer delete, ath10k waits) and only then BSS_CHANGED_ASSOC (VDEV_DOWN) and
+  the channel release (VDEV_STOP); qcacld deletes the peer before the vdev steps too. Reboot skipped the
+  wlan off wait on the FATAL modem as meant; parked 82%.
+- j0092: PEER_DELETE (+ wait) before VDEV_DOWN. **j92-wlan (01:57): leave and rejoin work.** Joined at
+  t=29 s; the user's Forget at t=44.7 s: deauth, tx out 20 ms (929/929), peer gone in 1 ms (unmap 1,
+  delete resp 1), vdev down, vdev stopped in 4 ms, left in 26 ms; rejoined at t=67 s (user: works). Reboot
+  over the command port while joined and scanning (02:00:38): scan stopped, the same clean leave, vdev
+  deleted, `wlfw: wlan_mode off ok err 0`, wlan off done in 256 ms, stop-ack in 51 ms; the modem port
+  still did not halt (`ack 0 idle 0`, task 2), mss_restart left alone.
