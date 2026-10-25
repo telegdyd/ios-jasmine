@@ -67,6 +67,31 @@ darwin_pipe_set_param(struct fd_pipe *pipe, enum fd_param_id param, uint64_t val
 uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
 uint32_t darwin_last_kfence, darwin_last_ufence;
 
+/* fd_submit_sp_flush_execute ignores the return; preserve failures separately. */
+static int darwin_process_submit_error;
+uint64_t darwin_submit_errors;
+
+void
+darwin_submit_failed(struct fd_pipe *pipe, int error)
+{
+   __atomic_add_fetch(&darwin_submit_errors, 1, __ATOMIC_RELAXED);
+   int zero = 0;
+   __atomic_compare_exchange_n(&to_darwin_pipe(pipe)->submit_error, &zero, error, false,
+                               __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+   zero = 0;
+   __atomic_compare_exchange_n(&to_darwin_device(pipe->dev)->submit_error, &zero, error, false,
+                               __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+   zero = 0;
+   __atomic_compare_exchange_n(&darwin_process_submit_error, &zero, error, false,
+                               __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
+
+int
+darwin_pipeline_error(void)
+{
+   return __atomic_load_n(&darwin_process_submit_error, __ATOMIC_ACQUIRE);
+}
+
 static int
 darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
 {
@@ -96,8 +121,8 @@ struct darwin_ib {
 /* As msm_ringbuffer_sp.c's flush_submit_list. Every buffer is always mapped,
  * so the BO table only tells the kernel which buffers' caches to maintain
  * around this job (j0035: header word 2 = handle count, handles after the IBs).
- * A table that would not fit IOKit's inline struct (4 KiB) is left out; the
- * kernel then maintains every buffer, as before.
+ * Large tables require parameter 9 bit 2 (descriptor input). Older kernels
+ * retain the inline-or-omit ABI; tables above the kernel BO limit are omitted.
  */
 static int
 flush_submit_list(struct list_head *submit_list)
@@ -112,8 +137,10 @@ flush_submit_list(struct list_head *submit_list)
 
    size_t len = 8 + nr_cmds * sizeof(struct darwin_ib);
    uint8_t *req = calloc(1, 4096 > len ? 4096 : len);
-   if (!req)
+   if (!req) {
+      darwin_submit_failed(pipe, -ENOMEM);
       return -ENOMEM;
+   }
    *(uint32_t *)req = nr_cmds;
    struct darwin_ib *ibs = (struct darwin_ib *)(req + 8);
 
@@ -143,7 +170,16 @@ flush_submit_list(struct list_head *submit_list)
       fd_submit_del(submit);
    }
 
-   if (len + 4ull * fd_submit->nr_bos <= 4096) {
+   size_t full_len = len + 4ull * fd_submit->nr_bos;
+   if (fd_submit->nr_bos <= DARWIN_MAX_JOB_BUFS &&
+       (full_len <= 4096 || to_darwin_device(pipe->dev)->out_of_line_bo)) {
+      uint8_t *full = realloc(req, full_len);
+      if (!full) {
+         free(req);
+         darwin_submit_failed(pipe, -ENOMEM);
+         return -ENOMEM;
+      }
+      req = full;
       uint32_t *handles = (uint32_t *)(req + len);
       for (unsigned i = 0; i < fd_submit->nr_bos; i++)
          handles[i] = fd_submit->bos[i]->handle;
@@ -160,6 +196,7 @@ flush_submit_list(struct list_head *submit_list)
    __atomic_add_fetch(&darwin_submits, 1, __ATOMIC_RELAXED);
    free(req);
    if (ret) {
+      darwin_submit_failed(pipe, ret);
       ERROR_MSG("submit of %u command buffers failed: 0x%x", nr_cmds, ret);
       return -EIO;
    }

@@ -693,11 +693,101 @@ def analyze(out, kernel=None, libs=()):
         gpu=dict(matched_jobs=jobs, unmatched_submissions=len(submit), incomplete_waits=list(waits.items()),
             limitation='Detailed jobs are captured only in CPU-sampled windows. Fence observation latency includes queueing/execution/observation delay; not GPU execution time.'),
         tail_note='p99 is descriptive for this short sample; boundary stalls are lower bounds and included separately.')
+    summary['presentation'] = present_report(events)
     summary['ranking'] = rank(summary)
     summary['slow_intervals'] = slow_intervals(events, samples, windows)
     save_json(out / 'summary.json', summary)
     write_report(out, summary)
     return summary
+
+
+PRESENT_EVENTS = {30: 'BEGIN', 31: 'SEAL', 32: 'ADMIT', 33: 'FLIP',
+                  34: 'DROP', 35: 'CANCEL', 36: 'GUARD'}
+GUARD_STATES = {0: 'free', 1: 'queue', 2: 'show', 3: 'retire', 4: 'quarantine'}
+
+
+def present_report(events):
+    """Full-capture events, independent of CPU windows. Only kind 14 is a latch."""
+    timeline, frames = [], []
+    pending, flips, begins, ends = {}, {}, {}, {}
+    counts, drops, cancels = collections.Counter(), collections.Counter(), collections.Counter()
+    guards = collections.defaultdict(lambda: dict(attempts=0, rejected=0, wait_us=0))
+    depth, high_water = 0, 0
+    for us, kind, phase, tid, a, b, c, d in events:
+        if kind == 10:
+            begins[a] = us
+        elif kind == 11:
+            ends[a] = us
+        if kind == 14 and a in flips:
+            frame = flips.pop(a)
+            frame['ctl_clear_observed_us'] = us
+            frame['flip_to_ctl_clear_us'] = us - frame['flip_us']
+            if frame.get('begin_us') is not None:
+                frame['begin_to_ctl_clear_us'] = us - frame['begin_us']
+            continue
+        if kind not in PRESENT_EVENTS:
+            continue
+        name = PRESENT_EVENTS[kind]
+        counts[name] += 1
+        row = dict(us=us, event=name, phase=PHASES.get(phase, str(phase)), thread=tid)
+        if kind == 30:
+            row.update(surface=a, generation=b | (c << 32), epoch=d)
+        elif kind == 31:
+            row.update(generation=a | (b << 32), sequence=c, status=d)
+        elif kind == 32:
+            depth, high_water = c, max(high_water, c)
+            row.update(swap=a, epoch=b, depth=c)
+            frame = dict(swap=a, epoch=b, admitted_us=us, begin_us=begins.get(a),
+                         swap_end_arrival_us=ends.get(a))
+            pending[(b, a)] = frame
+            frames.append(frame)
+        elif kind == 33:
+            row.update(swap=a, epoch=b, sequence=c, direct=bool(d))
+            frame = pending.pop((b, a), None)
+            if frame is None:
+                frame = dict(swap=a, epoch=b)
+                frames.append(frame)
+            else:
+                frame['queue_residence_us'] = us - frame['admitted_us']
+            frame.update(flip_us=us, sequence=c, direct=bool(d))
+            if frame.get('swap_end_arrival_us') is not None:
+                frame['end_to_flip_us'] = us - frame['swap_end_arrival_us']
+            flips[a] = frame
+            depth = 0
+        elif kind == 34:
+            drops[c] += 1
+            row.update(swap=a, epoch=b, reason=c, generation_low=d)
+            frame = pending.pop((b, a), None)
+            if frame is not None:
+                frame.update(drop_us=us, drop_reason=c)
+                depth = 0
+        elif kind == 35:
+            cancels[b] += 1
+            row.update(epoch=a, reason=b)
+            # A4 keeps holds during fallback. CANCEL alone proves no reuse or latch.
+        elif kind == 36:
+            state = GUARD_STATES.get(b, str(b))
+            row.update(surface=a, state=state, result=c, wait_us=d)
+            guards[state]['attempts'] += 1
+            guards[state]['rejected'] += c != 0
+            guards[state]['wait_us'] += d
+        timeline.append(row)
+    latencies = {}
+    for field in ('queue_residence_us', 'end_to_flip_us', 'flip_to_ctl_clear_us', 'begin_to_ctl_clear_us'):
+        values = [frame[field] for frame in frames if field in frame]
+        buckets, previous = {}, -1
+        for upper in (1000, 5000, 16667, 33334, 50000, 100000, 200000):
+            buckets[f'{previous + 1}..{upper}'] = sum(previous < value <= upper for value in values)
+            previous = upper
+        buckets['>200000'] = sum(value > 200000 for value in values)
+        latencies[field] = dict(count=len(values), median=percentile(values, .5),
+                                p95=percentile(values, .95), p99_descriptive=percentile(values, .99),
+                                histogram_us=buckets)
+    return dict(counts=dict(counts), drops_by_reason=dict(drops), cancels_by_reason=dict(cancels),
+                latencies=latencies, queue_depth_at_end=depth, queue_high_water=high_water,
+                guards=dict(guards), frames=frames, timeline=timeline,
+                limitation='CANCEL and timeout events never prove a latch or reusable storage. '
+                           'Events 30/31 are reserved for build 2. Queue depth covers admitted records only.')
 
 
 def slow_intervals(events, samples, windows):
@@ -754,6 +844,10 @@ def write_report(out, s):
                 lines.append(f'  - {ms:.1f} estimated ms: `{fn}`')
     else:
         lines.append(s['cpu'].get('limitation') or s['cpu'].get('reason', 'Unavailable'))
+    present = s['presentation']
+    lines.extend(['', '## Present queue (full capture)', '',
+        f"Events: {present['counts']}; queue high-water {present['queue_high_water']}, final depth {present['queue_depth_at_end']}.",
+        f"Guards: {present['guards']}.", f"Latency distributions (us): {present['latencies']}.", present['limitation']])
     lines.extend(['', '## Validity and limits', ''])
     lines.extend('- ' + q for q in s['quality'])
     lines.extend(['- ' + s['tail_note'], '- ' + s['gpu']['limitation'],

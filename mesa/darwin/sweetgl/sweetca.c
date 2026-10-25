@@ -455,7 +455,7 @@ flush_stats(double wait_ms)
       t0 = t;
    waited += wait_ms;
    if (++n == 101) {
-      sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in glFinish), %u draws", t - t0,
+      sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in finish/submit), %u draws", t - t0,
               (t - t0) / 100, waited / 100, n_draws - draws0);
       prof_report(t - t0);
       n = 1;
@@ -463,6 +463,24 @@ flush_stats(double wait_ms)
       waited = 0;
       draws0 = n_draws;
    }
+}
+
+static int pipeline_mode = -1;
+static unsigned pipeline_errors;
+static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
+
+static void
+pipeline_init(void)
+{
+   const char *v = getenv("SWEETCA_PIPELINE");
+   pipeline_mode = v && !strcmp(v, "1") ? 1 : 0;
+}
+
+static bool
+pipeline_enabled(struct sca_ctx *c)
+{
+   pthread_once(&pipeline_once, pipeline_init);
+   return __atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) == 1 && sgl_pipeline_available(c->gl);
 }
 
 static void
@@ -475,7 +493,20 @@ w_Flush(void *rctx)
    double t = now_ms();
    shadow_write_back(c);
    c->frame++;
-   glFinish();
+   if (pipeline_enabled(c)) {
+      glFlush();
+      int error = sgl_flush_submit(c->gl);
+      if (error) {
+         unsigned errors = __atomic_add_fetch(&pipeline_errors, 1, __ATOMIC_RELAXED);
+         if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL) == 1)
+            sca_log("sweetca: pipeline submit/drain error %d (%u errors); full finish for process", error, errors);
+         glFinish();
+      } else if (!sgl_pipeline_available(c->gl)) {
+         glFinish();
+      }
+   } else {
+      glFinish();
+   }
    flush_stats(now_ms() - t);
    if (trace_on && traced++ < 20)
       trace_fb("flush");

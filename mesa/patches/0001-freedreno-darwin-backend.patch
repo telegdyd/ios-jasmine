@@ -1,6 +1,6 @@
-From 2759ace6837142697332a93e68775f4f62f4a97d Mon Sep 17 00:00:00 2001
+From 0322eaa32d048fbc1ddd757dcfe83af247906b39 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Sun, 25 Oct 2026 06:40:12 +0100
+Date: Sun, 25 Oct 2026 17:55:27 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -8,9 +8,9 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  include/darwin-drm/xf86drm.h                  |   87 +
  meson.build                                   |    5 +
  src/freedreno/drm/darwin/darwin_bo.c          |  159 ++
- src/freedreno/drm/darwin/darwin_device.c      |  158 ++
- src/freedreno/drm/darwin/darwin_pipe.c        |  252 ++
- src/freedreno/drm/darwin/darwin_priv.h        |  123 +
+ src/freedreno/drm/darwin/darwin_device.c      |  191 ++
+ src/freedreno/drm/darwin/darwin_pipe.c        |  289 +++
+ src/freedreno/drm/darwin/darwin_priv.h        |  134 +
  src/freedreno/drm/darwin/sweet_profile.c      |  139 ++
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
@@ -21,15 +21,15 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 2119 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 2150 +++++++++++++++++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++
- src/gallium/frontends/sweetgl/sweetgl.c       |  552 +++++
- src/gallium/frontends/sweetgl/sweetgl.h       |  111 +
+ src/gallium/frontends/sweetgl/sweetgl.c       |  645 +++++
+ src/gallium/frontends/sweetgl/sweetgl.h       |  113 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
- .../frontends/sweetgl/sweetgpu_gltest.c       |  663 ++++++
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  663 +++++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   63 +
- 24 files changed, 6411 insertions(+), 6 deletions(-)
+ 24 files changed, 6618 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -329,16 +329,17 @@ index 0000000..ceac756
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_device.c b/src/freedreno/drm/darwin/darwin_device.c
 new file mode 100644
-index 0000000..8325d26
+index 0000000..5291380
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_device.c
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,191 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + */
 +
 +#include "darwin_priv.h"
++#include <pthread.h>
 +
 +/* the last device opened and its pipes, for darwin_prof_report() */
 +static struct fd_device *prof_dev;
@@ -352,6 +353,32 @@ index 0000000..8325d26
 +   IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_GET_PARAM,
 +                                            &in, 1, value, &nout);
 +   return ret ? -EIO : 0;
++}
++
++/* Query connection lives for the process, independently of prof_dev/pipes. */
++static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
++static io_connect_t pipeline_conn;
++
++static void
++darwin_pipeline_open(void)
++{
++   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("SweetGPU"));
++   if (service) {
++      IOServiceOpen(service, mach_task_self(), 0, &pipeline_conn);
++      IOObjectRelease(service);
++   }
++}
++
++uint64_t
++darwin_pipeline_capability(void)
++{
++   pthread_once(&pipeline_once, darwin_pipeline_open);
++   uint64_t in = SWEETGPU_PARAM_PRESENT, value = 0;
++   uint32_t count = 1;
++   if (!pipeline_conn || IOConnectCallScalarMethod(pipeline_conn, SWEETGPU_GET_PARAM,
++                                                   &in, 1, &value, &count))
++      return 0;
++   return value;
 +}
 +
 +static void
@@ -418,6 +445,10 @@ index 0000000..8325d26
 +      return NULL;
 +   }
 +
++   /* Descriptor support is static; queue-active flags are still queried live. */
++   uint64_t present = 0;
++   if (!darwin_get_param(dev, SWEETGPU_PARAM_PRESENT, &present))
++      darwin_dev->out_of_line_bo = (present & DARWIN_PRESENT_OUT_OF_LINE_BO) != 0;
 +   prof_dev = dev;
 +   return dev;
 +}
@@ -474,6 +505,8 @@ index 0000000..8325d26
 +   maps0 = maps;
 +   frees0 = frees;
 +
++   log("sweetca: prof: submit errors %llu, sticky status %d",
++       (unsigned long long)__atomic_load_n(&darwin_submit_errors, __ATOMIC_RELAXED), darwin_pipeline_error());
 +   cache_line(log, &dev->bo_cache, &bo0);
 +   cache_line(log, &dev->ring_cache, &ring0);
 +
@@ -493,10 +526,10 @@ index 0000000..8325d26
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
 new file mode 100644
-index 0000000..81b0fe4
+index 0000000..a220bd5
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_pipe.c
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,289 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -566,6 +599,31 @@ index 0000000..81b0fe4
 +uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
 +uint32_t darwin_last_kfence, darwin_last_ufence;
 +
++/* fd_submit_sp_flush_execute ignores the return; preserve failures separately. */
++static int darwin_process_submit_error;
++uint64_t darwin_submit_errors;
++
++void
++darwin_submit_failed(struct fd_pipe *pipe, int error)
++{
++   __atomic_add_fetch(&darwin_submit_errors, 1, __ATOMIC_RELAXED);
++   int zero = 0;
++   __atomic_compare_exchange_n(&to_darwin_pipe(pipe)->submit_error, &zero, error, false,
++                               __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++   zero = 0;
++   __atomic_compare_exchange_n(&to_darwin_device(pipe->dev)->submit_error, &zero, error, false,
++                               __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++   zero = 0;
++   __atomic_compare_exchange_n(&darwin_process_submit_error, &zero, error, false,
++                               __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++}
++
++int
++darwin_pipeline_error(void)
++{
++   return __atomic_load_n(&darwin_process_submit_error, __ATOMIC_ACQUIRE);
++}
++
 +static int
 +darwin_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
 +{
@@ -595,8 +653,8 @@ index 0000000..81b0fe4
 +/* As msm_ringbuffer_sp.c's flush_submit_list. Every buffer is always mapped,
 + * so the BO table only tells the kernel which buffers' caches to maintain
 + * around this job (j0035: header word 2 = handle count, handles after the IBs).
-+ * A table that would not fit IOKit's inline struct (4 KiB) is left out; the
-+ * kernel then maintains every buffer, as before.
++ * Large tables require parameter 9 bit 2 (descriptor input). Older kernels
++ * retain the inline-or-omit ABI; tables above the kernel BO limit are omitted.
 + */
 +static int
 +flush_submit_list(struct list_head *submit_list)
@@ -611,8 +669,10 @@ index 0000000..81b0fe4
 +
 +   size_t len = 8 + nr_cmds * sizeof(struct darwin_ib);
 +   uint8_t *req = calloc(1, 4096 > len ? 4096 : len);
-+   if (!req)
++   if (!req) {
++      darwin_submit_failed(pipe, -ENOMEM);
 +      return -ENOMEM;
++   }
 +   *(uint32_t *)req = nr_cmds;
 +   struct darwin_ib *ibs = (struct darwin_ib *)(req + 8);
 +
@@ -642,7 +702,16 @@ index 0000000..81b0fe4
 +      fd_submit_del(submit);
 +   }
 +
-+   if (len + 4ull * fd_submit->nr_bos <= 4096) {
++   size_t full_len = len + 4ull * fd_submit->nr_bos;
++   if (fd_submit->nr_bos <= DARWIN_MAX_JOB_BUFS &&
++       (full_len <= 4096 || to_darwin_device(pipe->dev)->out_of_line_bo)) {
++      uint8_t *full = realloc(req, full_len);
++      if (!full) {
++         free(req);
++         darwin_submit_failed(pipe, -ENOMEM);
++         return -ENOMEM;
++      }
++      req = full;
 +      uint32_t *handles = (uint32_t *)(req + len);
 +      for (unsigned i = 0; i < fd_submit->nr_bos; i++)
 +         handles[i] = fd_submit->bos[i]->handle;
@@ -659,6 +728,7 @@ index 0000000..81b0fe4
 +   __atomic_add_fetch(&darwin_submits, 1, __ATOMIC_RELAXED);
 +   free(req);
 +   if (ret) {
++      darwin_submit_failed(pipe, ret);
 +      ERROR_MSG("submit of %u command buffers failed: 0x%x", nr_cmds, ret);
 +      return -EIO;
 +   }
@@ -751,10 +821,10 @@ index 0000000..81b0fe4
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_priv.h b/src/freedreno/drm/darwin/darwin_priv.h
 new file mode 100644
-index 0000000..12ea7c8
+index 0000000..dab4e3b
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_priv.h
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,134 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -837,11 +907,17 @@ index 0000000..12ea7c8
 +   SWEETGPU_PARAM_VA_SIZE = 6,
 +   SWEETGPU_PARAM_NR_RINGS = 7,
 +   SWEETGPU_PARAM_TIMESTAMP = 8,
++   SWEETGPU_PARAM_PRESENT = 9, /* bit 0 sleep, bit 1 queue active, bit 2 out-of-line BO input */
 +};
++
++#define DARWIN_PRESENT_OUT_OF_LINE_BO (1u << 2)
++#define DARWIN_MAX_JOB_BUFS 1024
 +
 +struct darwin_device {
 +   struct fd_device base;
 +   io_connect_t conn;
++   bool out_of_line_bo;
++   int submit_error;
 +};
 +FD_DEFINE_CAST(fd_device, darwin_device);
 +
@@ -851,6 +927,7 @@ index 0000000..12ea7c8
 +   uint64_t chip_id;
 +   uint64_t gmem_base;
 +   uint32_t gmem;
++   int submit_error;
 +};
 +FD_DEFINE_CAST(fd_pipe, darwin_pipe);
 +
@@ -867,8 +944,12 @@ index 0000000..12ea7c8
 +struct fd_bo *darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id);
 +int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value);
 +
++void darwin_submit_failed(struct fd_pipe *pipe, int error);
++int darwin_pipeline_error(void);
++uint64_t darwin_pipeline_capability(void);
++
 +/* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
-+extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
++extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits, darwin_submit_errors;
 +/* darwin_bo.c / darwin_device.c: SweetGPU buffer creates, imports (IOSurfaces), maps and frees (task 4) */
 +extern uint64_t darwin_bo_news, darwin_bo_imports, darwin_bo_maps, darwin_bo_frees;
 +/* darwin_device.c: buffer caches, pipe fences and the kernel's completed seqno, one log line each */
@@ -1691,10 +1772,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..6978e56
+index 0000000..7a10878
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,2119 @@
+@@ -0,0 +1,2150 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2152,7 +2233,7 @@ index 0000000..6978e56
 +      t0 = t;
 +   waited += wait_ms;
 +   if (++n == 101) {
-+      sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in glFinish), %u draws", t - t0,
++      sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in finish/submit), %u draws", t - t0,
 +              (t - t0) / 100, waited / 100, n_draws - draws0);
 +      prof_report(t - t0);
 +      n = 1;
@@ -2160,6 +2241,24 @@ index 0000000..6978e56
 +      waited = 0;
 +      draws0 = n_draws;
 +   }
++}
++
++static int pipeline_mode = -1;
++static unsigned pipeline_errors;
++static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
++
++static void
++pipeline_init(void)
++{
++   const char *v = getenv("SWEETCA_PIPELINE");
++   pipeline_mode = v && !strcmp(v, "1") ? 1 : 0;
++}
++
++static bool
++pipeline_enabled(struct sca_ctx *c)
++{
++   pthread_once(&pipeline_once, pipeline_init);
++   return __atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) == 1 && sgl_pipeline_available(c->gl);
 +}
 +
 +static void
@@ -2172,7 +2271,20 @@ index 0000000..6978e56
 +   double t = now_ms();
 +   shadow_write_back(c);
 +   c->frame++;
-+   glFinish();
++   if (pipeline_enabled(c)) {
++      glFlush();
++      int error = sgl_flush_submit(c->gl);
++      if (error) {
++         unsigned errors = __atomic_add_fetch(&pipeline_errors, 1, __ATOMIC_RELAXED);
++         if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL) == 1)
++            sca_log("sweetca: pipeline submit/drain error %d (%u errors); full finish for process", error, errors);
++         glFinish();
++      } else if (!sgl_pipeline_available(c->gl)) {
++         glFinish();
++      }
++   } else {
++      glFinish();
++   }
 +   flush_stats(now_ms() - t);
 +   if (trace_on && traced++ < 20)
 +      trace_fb("flush");
@@ -5275,10 +5387,10 @@ index 0000000..2c17092
 +	T(1035)
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
 new file mode 100644
-index 0000000..c3c24af
+index 0000000..ee5c0a9
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.c
-@@ -0,0 +1,552 @@
+@@ -0,0 +1,645 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -5294,6 +5406,8 @@ index 0000000..c3c24af
 +#include <stdio.h>
 +#include <string.h>
 +#include <unistd.h>
++#include <errno.h>
++#include <time.h>
 +
 +#include "pipe/p_screen.h"
 +#include "pipe/p_state.h"
@@ -5759,6 +5873,97 @@ index 0000000..c3c24af
 +   return true;
 +}
 +
++extern int darwin_pipeline_error(void);
++extern uint64_t darwin_pipeline_capability(void);
++
++/* A timed-out callback still owns its data; context teardown drains TC callbacks. */
++struct sgl_drain {
++   pthread_mutex_t lock;
++   pthread_cond_t cond;
++   struct pipe_context *driver;
++   unsigned refs;
++   bool done;
++   int error;
++};
++
++static void
++sgl_drain_unref(struct sgl_drain *d)
++{
++   if (__atomic_sub_fetch(&d->refs, 1, __ATOMIC_ACQ_REL) == 0) {
++      pthread_cond_destroy(&d->cond);
++      pthread_mutex_destroy(&d->lock);
++      FREE(d);
++   }
++}
++
++static void
++sgl_drain_driver(void *data)
++{
++   struct sgl_drain *d = data;
++   sgl_kick_driver(d->driver);
++   pthread_mutex_lock(&d->lock);
++   d->error = darwin_pipeline_error();
++   d->done = true;
++   pthread_cond_signal(&d->cond);
++   pthread_mutex_unlock(&d->lock);
++   sgl_drain_unref(d);
++}
++
++bool
++sgl_pipeline_available(struct sgl_context *ctx)
++{
++   return sgl_driver_pipe(ctx) && (darwin_pipeline_capability() & 3) == 3;
++}
++
++int
++sgl_flush_submit(struct sgl_context *ctx)
++{
++   struct pipe_context *pipe = ctx->st->pipe;
++   struct pipe_context *driver = sgl_driver_pipe(ctx);
++   if (!driver) {
++      sgl_kick_driver(pipe);
++      return darwin_pipeline_error();
++   }
++   struct sgl_drain *d = CALLOC_STRUCT(sgl_drain);
++   if (!d)
++      return -ENOMEM;
++   int init = pthread_mutex_init(&d->lock, NULL);
++   if (init) {
++      FREE(d);
++      return -init;
++   }
++   init = pthread_cond_init(&d->cond, NULL);
++   if (init) {
++      pthread_mutex_destroy(&d->lock);
++      FREE(d);
++      return -init;
++   }
++   d->driver = driver;
++   d->refs = 2;
++   struct timespec until;
++   if (clock_gettime(CLOCK_REALTIME, &until)) {
++      pthread_cond_destroy(&d->cond);
++      pthread_mutex_destroy(&d->lock);
++      FREE(d);
++      return -EIO;
++   }
++   until.tv_nsec += 100000000;
++   if (until.tv_nsec >= 1000000000) {
++      until.tv_nsec -= 1000000000;
++      until.tv_sec++;
++   }
++   pipe->callback(pipe, sgl_drain_driver, d, false);
++   pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
++   pthread_mutex_lock(&d->lock);
++   int error = 0;
++   while (!d->done && !error)
++      error = pthread_cond_timedwait(&d->cond, &d->lock, &until);
++   int result = d->done ? d->error : -ETIMEDOUT;
++   pthread_mutex_unlock(&d->lock);
++   sgl_drain_unref(d);
++   return result;
++}
++
 +struct sgl_sched {
 +   int policy;
 +   struct sched_param param;
@@ -5833,10 +6038,10 @@ index 0000000..c3c24af
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
 new file mode 100644
-index 0000000..a374274
+index 0000000..0a9a388
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.h
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,113 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -5938,6 +6143,8 @@ index 0000000..a374274
 + * calling thread's scheduling policy and priority.
 + */
 +bool sgl_kick(struct sgl_context *ctx);
++bool sgl_pipeline_available(struct sgl_context *ctx);
++int sgl_flush_submit(struct sgl_context *ctx);
 +void sgl_follow_thread(struct sgl_context *ctx);
 +
 +/* bind ctx and surf to the calling thread (NULL, NULL unbinds) */

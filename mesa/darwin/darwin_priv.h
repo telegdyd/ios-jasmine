@@ -80,11 +80,17 @@ enum sweetgpu_param {
    SWEETGPU_PARAM_VA_SIZE = 6,
    SWEETGPU_PARAM_NR_RINGS = 7,
    SWEETGPU_PARAM_TIMESTAMP = 8,
+   SWEETGPU_PARAM_PRESENT = 9, /* bit 0 sleep, bit 1 queue active, bit 2 out-of-line BO input */
 };
+
+#define DARWIN_PRESENT_OUT_OF_LINE_BO (1u << 2)
+#define DARWIN_MAX_JOB_BUFS 1024
 
 struct darwin_device {
    struct fd_device base;
    io_connect_t conn;
+   bool out_of_line_bo;
+   int submit_error;
 };
 FD_DEFINE_CAST(fd_device, darwin_device);
 
@@ -94,6 +100,7 @@ struct darwin_pipe {
    uint64_t chip_id;
    uint64_t gmem_base;
    uint32_t gmem;
+   int submit_error;
 };
 FD_DEFINE_CAST(fd_pipe, darwin_pipe);
 
@@ -110,8 +117,12 @@ struct fd_bo *darwin_bo_from_handle(struct fd_device *dev, uint32_t size, uint32
 struct fd_bo *darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id);
 int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *value);
 
+void darwin_submit_failed(struct fd_pipe *pipe, int error);
+int darwin_pipeline_error(void);
+uint64_t darwin_pipeline_capability(void);
+
 /* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
-extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits;
+extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits, darwin_submit_errors;
 /* darwin_bo.c / darwin_device.c: SweetGPU buffer creates, imports (IOSurfaces), maps and frees (task 4) */
 extern uint64_t darwin_bo_news, darwin_bo_imports, darwin_bo_maps, darwin_bo_frees;
 /* darwin_device.c: buffer caches, pipe fences and the kernel's completed seqno, one log line each */

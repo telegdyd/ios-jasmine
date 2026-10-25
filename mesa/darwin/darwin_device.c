@@ -4,6 +4,7 @@
  */
 
 #include "darwin_priv.h"
+#include <pthread.h>
 
 /* the last device opened and its pipes, for darwin_prof_report() */
 static struct fd_device *prof_dev;
@@ -17,6 +18,32 @@ darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t *val
    IOReturn ret = IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_GET_PARAM,
                                             &in, 1, value, &nout);
    return ret ? -EIO : 0;
+}
+
+/* Query connection lives for the process, independently of prof_dev/pipes. */
+static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
+static io_connect_t pipeline_conn;
+
+static void
+darwin_pipeline_open(void)
+{
+   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("SweetGPU"));
+   if (service) {
+      IOServiceOpen(service, mach_task_self(), 0, &pipeline_conn);
+      IOObjectRelease(service);
+   }
+}
+
+uint64_t
+darwin_pipeline_capability(void)
+{
+   pthread_once(&pipeline_once, darwin_pipeline_open);
+   uint64_t in = SWEETGPU_PARAM_PRESENT, value = 0;
+   uint32_t count = 1;
+   if (!pipeline_conn || IOConnectCallScalarMethod(pipeline_conn, SWEETGPU_GET_PARAM,
+                                                   &in, 1, &value, &count))
+      return 0;
+   return value;
 }
 
 static void
@@ -83,6 +110,10 @@ darwin_device_new(int fd)
       return NULL;
    }
 
+   /* Descriptor support is static; queue-active flags are still queried live. */
+   uint64_t present = 0;
+   if (!darwin_get_param(dev, SWEETGPU_PARAM_PRESENT, &present))
+      darwin_dev->out_of_line_bo = (present & DARWIN_PRESENT_OUT_OF_LINE_BO) != 0;
    prof_dev = dev;
    return dev;
 }
@@ -139,6 +170,8 @@ darwin_prof_report(void (*log)(const char *fmt, ...))
    maps0 = maps;
    frees0 = frees;
 
+   log("sweetca: prof: submit errors %llu, sticky status %d",
+       (unsigned long long)__atomic_load_n(&darwin_submit_errors, __ATOMIC_RELAXED), darwin_pipeline_error());
    cache_line(log, &dev->bo_cache, &bo0);
    cache_line(log, &dev->ring_cache, &ring0);
 

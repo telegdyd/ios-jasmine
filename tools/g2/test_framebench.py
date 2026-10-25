@@ -58,6 +58,35 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(p['immediate_or_copy_retirements'], 1)
         self.assertIsNone(p['displayed_fps'])
 
+    def test_queue_full_capture_and_latch_pairing(self):
+        data = event(10, 32, phase=6, a=7, b=2, c=1)
+        data += event(20, 33, phase=6, a=7, b=2, c=99, d=1)
+        data += event(30, 15, phase=6, a=7) + event(40, 35, phase=6, a=3, b=6)
+        p = self.capture(data)['presentation']
+        self.assertEqual(p['queue_high_water'], 1)
+        self.assertEqual(p['frames'][0]['queue_residence_us'], 10)
+        self.assertEqual(p['latencies']['queue_residence_us']['p95'], 10)
+        self.assertNotIn('ctl_clear_observed_us', p['frames'][0])
+        data += event(50, 14, phase=6, a=7)
+        p = self.capture(data)['presentation']
+        self.assertEqual(p['frames'][0]['flip_to_ctl_clear_us'], 30)
+        self.assertEqual(p['counts']['CANCEL'], 1)
+
+    def test_queue_drop_guard_and_reserved_ticket_decode(self):
+        data = event(1, 30, a=8, b=3, c=1, d=2)
+        data += event(2, 31, a=3, b=1, c=99, d=0)
+        data += event(3, 32, a=7, b=2, c=1) + event(4, 34, a=7, b=2, c=2)
+        data += event(5, 36, a=8, b=3, c=0, d=1000)
+        data += event(6, 36, a=9, b=2, c=1, d=0)
+        p = self.capture(data)['presentation']
+        self.assertEqual(p['timeline'][0]['generation'], (1 << 32) | 3)
+        self.assertEqual(p['queue_depth_at_end'], 0)
+        self.assertEqual(p['frames'][0]['drop_reason'], 2)
+        self.assertEqual(p['drops_by_reason'], {2: 1})
+        self.assertEqual(p['guards']['retire']['wait_us'], 1000)
+        self.assertEqual(p['guards']['show']['rejected'], 1)
+        self.assertNotIn('ctl_clear_observed_us', p['frames'][0])
+
     def test_pressure_beats_historical_cpu_ranking(self):
         s = self.capture(progress=[snapshot(free=16 << 20, wanted=2)], status='partial')
         self.assertIn('20', s['ranking'][0]['task'])

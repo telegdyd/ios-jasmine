@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <time.h>
 
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
@@ -476,6 +478,97 @@ sgl_kick(struct sgl_context *ctx)
    /* hand the queued calls, the kick among them, to the driver thread now */
    pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
    return true;
+}
+
+extern int darwin_pipeline_error(void);
+extern uint64_t darwin_pipeline_capability(void);
+
+/* A timed-out callback still owns its data; context teardown drains TC callbacks. */
+struct sgl_drain {
+   pthread_mutex_t lock;
+   pthread_cond_t cond;
+   struct pipe_context *driver;
+   unsigned refs;
+   bool done;
+   int error;
+};
+
+static void
+sgl_drain_unref(struct sgl_drain *d)
+{
+   if (__atomic_sub_fetch(&d->refs, 1, __ATOMIC_ACQ_REL) == 0) {
+      pthread_cond_destroy(&d->cond);
+      pthread_mutex_destroy(&d->lock);
+      FREE(d);
+   }
+}
+
+static void
+sgl_drain_driver(void *data)
+{
+   struct sgl_drain *d = data;
+   sgl_kick_driver(d->driver);
+   pthread_mutex_lock(&d->lock);
+   d->error = darwin_pipeline_error();
+   d->done = true;
+   pthread_cond_signal(&d->cond);
+   pthread_mutex_unlock(&d->lock);
+   sgl_drain_unref(d);
+}
+
+bool
+sgl_pipeline_available(struct sgl_context *ctx)
+{
+   return sgl_driver_pipe(ctx) && (darwin_pipeline_capability() & 3) == 3;
+}
+
+int
+sgl_flush_submit(struct sgl_context *ctx)
+{
+   struct pipe_context *pipe = ctx->st->pipe;
+   struct pipe_context *driver = sgl_driver_pipe(ctx);
+   if (!driver) {
+      sgl_kick_driver(pipe);
+      return darwin_pipeline_error();
+   }
+   struct sgl_drain *d = CALLOC_STRUCT(sgl_drain);
+   if (!d)
+      return -ENOMEM;
+   int init = pthread_mutex_init(&d->lock, NULL);
+   if (init) {
+      FREE(d);
+      return -init;
+   }
+   init = pthread_cond_init(&d->cond, NULL);
+   if (init) {
+      pthread_mutex_destroy(&d->lock);
+      FREE(d);
+      return -init;
+   }
+   d->driver = driver;
+   d->refs = 2;
+   struct timespec until;
+   if (clock_gettime(CLOCK_REALTIME, &until)) {
+      pthread_cond_destroy(&d->cond);
+      pthread_mutex_destroy(&d->lock);
+      FREE(d);
+      return -EIO;
+   }
+   until.tv_nsec += 100000000;
+   if (until.tv_nsec >= 1000000000) {
+      until.tv_nsec -= 1000000000;
+      until.tv_sec++;
+   }
+   pipe->callback(pipe, sgl_drain_driver, d, false);
+   pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
+   pthread_mutex_lock(&d->lock);
+   int error = 0;
+   while (!d->done && !error)
+      error = pthread_cond_timedwait(&d->cond, &d->lock, &until);
+   int result = d->done ? d->error : -ETIMEDOUT;
+   pthread_mutex_unlock(&d->lock);
+   sgl_drain_unref(d);
+   return result;
 }
 
 struct sgl_sched {

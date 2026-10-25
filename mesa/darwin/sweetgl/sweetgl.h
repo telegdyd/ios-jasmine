@@ -99,6 +99,8 @@ uint32_t sgl_sampled_2d_units(struct sgl_context *ctx);
  * calling thread's scheduling policy and priority.
  */
 bool sgl_kick(struct sgl_context *ctx);
+bool sgl_pipeline_available(struct sgl_context *ctx);
+int sgl_flush_submit(struct sgl_context *ctx);
 void sgl_follow_thread(struct sgl_context *ctx);
 
 /* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
