@@ -74,6 +74,13 @@ Baseline to beat (DDR 1296, mode 2, gd2 round; redo at 1804 before starting):
 
 ## 23. Control Center blur at reduced resolution
 
+**Device investigation:** [results](PERF-TASK23-DEVICE-AUDIT.md). Gaussian
+downsampling is observed on the phone, including 74x156/72x42 intermediates.
+Full-size four-tap passes coexist with it. Do not implement a universal missing
+mip/downsample fix based on the hypothesis below. Variable blur has a separate
+GLES compatibility approximation; this session did not establish runtime impact.
+Task remains open; no algorithm change or measured gain.
+
 **Initial offline audit:** [findings](PERF-TASK23-AUDIT.md). The missing-mip
 explanation below is unproven. Gaussian blur has explicit 2x/4x downsample
 passes and ordinary GL intermediate storage. Our variable-blur shader does

@@ -1,5 +1,11 @@
 # Task 23: shared UI blur correctness and performance plan
 
+Runtime investigation: [device audit](PERF-TASK23-DEVICE-AUDIT.md). Gaussian
+downsampling observed through 74x156 and 72x42 intermediates. The universal
+missing-copy premise is disproved for the observed path. Variable-blur source
+compatibility gap remains; runtime execution/impact was not captured. No blur
+algorithm fix or speedup delivered; next work must follow these findings.
+
 Initial offline investigation: [audit](PERF-TASK23-AUDIT.md). Gaussian has
 explicit separate-target downsampling; a universal missing IOSurface mip chain
 is not established. Variable blur deliberately bypasses intermediate draws and

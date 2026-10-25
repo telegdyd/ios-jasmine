@@ -1086,3 +1086,5 @@ The preceding shutdown hung at root unmount and user buttons recovered fastboot.
 Final short gestures and charging/lock state: see NOTES. Task 5 further work remains.
 
 Task 23 initial audit: see [shared blur findings](PERF-TASK23-AUDIT.md) and [bounded diagnostic](PERF-TASK23-TRACE.md). Gaussian missing-mip cause unproven; variable blur has a native GLES compatibility gap and a source-disc approximation. Diagnostic only, no gain measured.
+
+Task 23 device result: [Gaussian downsampling observed](PERF-TASK23-DEVICE-AUDIT.md), Mesa diagnostic e4ece21 / CI 40240384093 PASS. Separate 74x156 and 72x42 intermediates observed; no universal missing-mip defect. Variable-blur compatibility gap remains, runtime impact unmeasured. Production boot restored, own test files removed and phone lock released. No speedup claimed.

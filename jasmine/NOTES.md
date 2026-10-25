@@ -1,3 +1,55 @@
+### 2026-10-25: task 23 device investigation complete; Gaussian downsampling works
+
+Report: jasmine/PERF-TASK23-DEVICE-AUDIT.md. One authorized diagnostic session,
+not a speed benchmark. 2,042 contiguous pre-draw records, flush counts192-204,
+33 programs,43 weighted draws, all FBOs complete. Observed separate level-0
+Gaussian chains through 74x156 and72x42 intermediates, then larger targets.
+Full-size four-tap passes coexist. Universal missing-copy/mip premise disproved
+for observed Gaussian path; large reused allocation/viewport is not shaded area.
+Native GLES variable-blur level support/shaders are missing; current injected
+0x26/27 approximation confirmed in source. Metal attachment setLevel verified.
+No variable replacement executed in trace: runtime cost/visual impact unproven.
+No fix or gain claimed; task23 stays open. Next: source-level design for complete
+variable-blur support and specific expensive Gaussian kernels/logical bounds,
+not a blanket missing-downsample fix. No additional device round scheduled.
+Diagnostic e4ece21, Mesa CI40240384093 PASS (3m00s), test library SHA256
+c172abc13e5a7ae63a9b93aca9e1f8e1ac5f64475e8511d45264c01df0e6d9c7.
+Temporary image540ff31a... booted23:34:45, ordinary slot-b kernel/ADT preserved,
+pipeline0/GPU588/DDR1804. No partition flash. Arm-observation lag shortened usable
+window; Home/CC/NC commands sent, repeat pair skipped at deadline. Accessory-sync
+precheck no on-CPU samples for named tasks; do not infer complete UI coverage.
+Evidence/scripts/hashes under ignored research/t23, raw trace SHA256
+3d7662bfaa617fcca1b0773b04c5d9c1fce07528760b1059b9b42711393943f1.
+No new runtime fault/panic; startup self-test FSR0x400 also in production baseline.
+Production library14e32aea... never replaced; exact backup production-before.dylib.
+Restored ordinary slot-b boot, production injection path and DDR1804 verified,
+lock screen visually checked. Own test library/screenshot files removed. Profiler
+idle, own collectors ended, shared phone lock released. Phone in production iOS.
+This supersedes the active-session handoff below. Final report commit subject:
+docs: record device proof of Gaussian blur downsampling.
+
+### 2026-10-25 23:38 Budapest: task 23 diagnostic CI passed, session active
+
+Diagnostic implementation e4ece21; Mesa CI 40240384093 PASSED (3m00s).
+Artifact SHA256 c172abc13e5a7ae63a9b93aca9e1f8e1ac5f64475e8511d45264c01df0e6d9c7,
+20,441,584 bytes; diagnostic strings and installed test-name readback verified.
+User confirmed phone free. Shared lock acquired with task23-passgraph owner
+recorded in ignored research/t23/lock-owner.txt; do not remove another owner.
+Live starting baseline: slot-b j70 kernel, pipeline 0, DDR1804/GPU588; production
+library hash 14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261,
+backed up at research/t23/production-before.dylib. Production file untouched.
+Temporary fastboot boot at 23:34:45: shim-boot-t23trace.img SHA256
+540ff31a9802fa2b18406390d0f57222d8fbf3ec39041e12123c4462a196023e.
+Exact slot-b shim/ADT/kernel payload preserved, only cmdline/digest changed.
+Test library /usr/local/bin/libsweetca-t23trace.dylib loaded; trace armed at
+23:35:06 host observation, fixed 300s delay/25s/3000 draws. Home swap surface
+visually verified; CARenderServerRenderDisplay returned known black result.
+Session script research/t23/session.py is running; boot/log evidence and state
+in research/t23/session.json, boot-trace.txt, boot-client.txt. Accessory-sync
+precheck and bounded Home/CC/NC gestures pending. No algorithm change/gain claim.
+Next: finish this single session, analyze complete interior pass chains, remove
+own screenshot files, restore ordinary boot state and release own lock.
+
 ### 2026-10-25: task 23 bounded diagnostic prepared
 
 Native variable-blur level requests are honoured by Metal but GLES set_surface
