@@ -1,6 +1,6 @@
-From ed03be331a5525682bd4b9a875d0c26c381334c8 Mon Sep 17 00:00:00 2001
+From f09029c9d086e81f3acc1a803b7cf36b7084d42e Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Sun, 25 Oct 2026 21:00:39 +0100
+Date: Sun, 25 Oct 2026 21:36:20 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -11,7 +11,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/darwin/darwin_device.c      |  237 ++
  src/freedreno/drm/darwin/darwin_pipe.c        |  313 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  144 +
- src/freedreno/drm/darwin/sweet_profile.c      |  139 +
+ src/freedreno/drm/darwin/sweet_profile.c      |  143 +
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
  src/freedreno/drm/freedreno_priv.h            |    6 +
@@ -29,8 +29,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
  .../frontends/sweetgl/sweetgpu_gltest.c       |  663 +++++
  src/gallium/meson.build                       |    5 +
- src/util/sweet_profile.h                      |   63 +
- 25 files changed, 7440 insertions(+), 6 deletions(-)
+ src/util/sweet_profile.h                      |   65 +
+ 25 files changed, 7446 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1043,10 +1043,10 @@ index 0000000..a895301
 +#endif /* DARWIN_PRIV_H_ */
 diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
 new file mode 100644
-index 0000000..292ed2d
+index 0000000..ef8a684
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/sweet_profile.c
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,143 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT */
 +#include "util/sweet_profile.h"
@@ -1163,9 +1163,13 @@ index 0000000..292ed2d
 +                       draws <= 4 ? SPE_BATCH_TWO_FOUR : SPE_BATCH_FIVE_PLUS, 1);
 +}
 +
++void (*sweet_gpuprof_report)(void (*log)(const char *fmt, ...));
++
 +void
 +sweet_profile_report(void (*log)(const char *fmt, ...))
 +{
++   if (sweet_gpuprof_report)
++      sweet_gpuprof_report(log);
 +   log("sweetca: drawprof v1: enabled %u; elapsed incl/excl ms (not CPU); nested scopes overlap; per 100 flushes", enabled);
 +   if (!enabled)
 +      return;
@@ -7689,10 +7693,10 @@ index 67011f5..05a144b 100644
 +endif
 diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
 new file mode 100644
-index 0000000..166fe6f
+index 0000000..51c60b1
 --- /dev/null
 +++ b/src/util/sweet_profile.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,65 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + *
@@ -7741,6 +7745,8 @@ index 0000000..166fe6f
 +void sweet_profile_event(enum sweet_profile_event event, uint64_t value);
 +void sweet_profile_batch(unsigned draws);
 +void sweet_profile_report(void (*log)(const char *fmt, ...));
++/* freedreno_gmem.c's GPU time per batch (SWEETCA_GPUPROF=1), reported with the profile */
++extern void (*sweet_gpuprof_report)(void (*log)(const char *fmt, ...));
 +#ifdef __cplusplus
 +}
 +#endif

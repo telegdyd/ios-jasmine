@@ -1,0 +1,234 @@
+From cb41d8a8471306adcfc3c287add567bee027b7ec Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 21:36:18 +0100
+Subject: [PATCH] freedreno: GPU time per batch (SWEETCA_GPUPROF, ios-jasmine)
+
+RB_DONE_TS timestamps before and after every batch on a5xx, reported with libsweetca's 100-flush profile: busy time, gaps, per-class totals and the slowest batches.
+---
+ .../drivers/freedreno/freedreno_gmem.c        | 189 ++++++++++++++++++
+ 1 file changed, 189 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index 02acefd..abc7325 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -693,6 +693,183 @@ flush_ring(struct fd_batch *batch)
+    }
+ }
+ 
++#ifdef __APPLE__
++#include <stdlib.h>
++#include <string.h>
++#include "util/simple_mtx.h"
++#include "util/sweet_profile.h"
++
++/* ios-jasmine: SWEETCA_GPUPROF=1 times every batch on the GPU. An RB_DONE_TS
++ * timestamp (the 19.2 MHz always-on counter, once everything before it is
++ * done) goes before and after its render pass, into a ring of slots in one
++ * write-combined buffer; the batch's description waits in the slot beside it.
++ * libsweetca's 100-flush report harvests what the GPU has finished. The end
++ * stamp drains the pipeline, so batches do not overlap while this is on.
++ */
++#define GP_SLOTS 4096
++#define GP_TOP   12
++#define GP_GAP   (100 * 19200)   /* longer gaps are the UI standing still */
++
++struct gp_pass {
++   uint32_t w, h, draws, nbins, cleared, restore, resolve, nr_cbufs;
++   enum pipe_format fmt;
++   uint8_t mode;                 /* 0 nondraw, 1 sysmem, 2 gmem */
++   uint64_t t, gap;
++};
++
++static struct {
++   simple_mtx_t lock;
++   int enabled;                  /* -1: not checked yet */
++   struct fd_bo *bo;
++   volatile uint64_t *ts;        /* start and end of each slot */
++   struct gp_pass pass[GP_SLOTS];
++   uint32_t head, tail;
++   uint64_t last_end;
++   /* since the last report */
++   uint64_t n, busy, gaps, idle, dropped, first, last;
++   uint64_t cls_n[3][3], cls_t[3][3], cls_max[3][3];
++   struct gp_pass top[GP_TOP];
++   unsigned ntop;
++} gp = { .lock = SIMPLE_MTX_INITIALIZER, .enabled = -1 };
++
++static const char *const gp_modes[3] = { "nondraw", "sysmem", "gmem" };
++static const char *const gp_sizes[3] = { "full", "large", "small" };
++
++/* with gp.lock: account every slot the GPU has finished, in submit order */
++static void
++gp_harvest(void)
++{
++   while (gp.tail != gp.head) {
++      unsigned i = gp.tail % GP_SLOTS;
++      uint64_t s = gp.ts[2 * i], e = gp.ts[2 * i + 1];
++      if (!s || !e) {
++         if (gp.head - gp.tail < GP_SLOTS / 2)
++            break;
++         gp.dropped++;           /* never ran (a failed submit): give it up */
++         gp.tail++;
++         continue;
++      }
++      gp.tail++;
++      struct gp_pass *p = &gp.pass[i];
++      p->t = e > s ? e - s : 0;
++      p->gap = gp.last_end && s > gp.last_end ? s - gp.last_end : 0;
++      if (p->gap > GP_GAP) {
++         gp.idle += p->gap;
++         p->gap = 0;
++      }
++      if (e > gp.last_end)
++         gp.last_end = e;
++      if (!gp.first)
++         gp.first = s;
++      gp.last = e;
++      gp.n++;
++      gp.busy += p->t;
++      gp.gaps += p->gap;
++      uint64_t area = (uint64_t)p->w * p->h;
++      unsigned c = area >= 2000000 ? 0 : area >= 250000 ? 1 : 2;
++      gp.cls_n[p->mode][c]++;
++      gp.cls_t[p->mode][c] += p->t;
++      if (p->t > gp.cls_max[p->mode][c])
++         gp.cls_max[p->mode][c] = p->t;
++      /* the slowest batches, slowest first */
++      if (gp.ntop == GP_TOP && gp.top[GP_TOP - 1].t >= p->t)
++         continue;
++      unsigned k = gp.ntop < GP_TOP ? gp.ntop++ : GP_TOP - 1;
++      for (; k > 0 && gp.top[k - 1].t < p->t; k--)
++         gp.top[k] = gp.top[k - 1];
++      gp.top[k] = *p;
++   }
++}
++
++static void
++gp_report(void (*log)(const char *fmt, ...))
++{
++   simple_mtx_lock(&gp.lock);
++   gp_harvest();
++   double span = gp.last > gp.first ? (gp.last - gp.first) / 19200.0 : 0;
++   log("sweetca: gpuprof: %llu batches, GPU busy %.1f ms in %.1f ms (%.0f%%); gaps under 100 ms %.1f ms, "
++       "longer %.1f ms; %llu dropped, %u pending",
++       (unsigned long long)gp.n, gp.busy / 19200.0, span, span > 0 ? gp.busy / 192.0 / span : 0,
++       gp.gaps / 19200.0, gp.idle / 19200.0, (unsigned long long)gp.dropped, gp.head - gp.tail);
++   for (unsigned m = 0; m < 3; m++)
++      for (unsigned c = 0; c < 3; c++)
++         if (gp.cls_n[m][c])
++            log("sweetca: gpuprof: %-7s %-5s %6llu batches %8.1f ms, max %6.2f ms", gp_modes[m], gp_sizes[c],
++                (unsigned long long)gp.cls_n[m][c], gp.cls_t[m][c] / 19200.0, gp.cls_max[m][c] / 19200.0);
++   for (unsigned k = 0; k < gp.ntop; k++) {
++      struct gp_pass *p = &gp.top[k];
++      log("sweetca: gpuprof: top %6.2f ms %ux%u %s, %u draws, %u bins, %u cbufs %s, clear %x restore %x "
++          "resolve %x, gap before %.2f ms", p->t / 19200.0, p->w, p->h, gp_modes[p->mode], p->draws, p->nbins,
++          p->nr_cbufs, util_format_short_name(p->fmt), p->cleared, p->restore, p->resolve, p->gap / 19200.0);
++   }
++   gp.n = gp.busy = gp.gaps = gp.idle = gp.dropped = gp.first = gp.last = 0;
++   memset(gp.cls_n, 0, sizeof(gp.cls_n));
++   memset(gp.cls_t, 0, sizeof(gp.cls_t));
++   memset(gp.cls_max, 0, sizeof(gp.cls_max));
++   gp.ntop = 0;
++   simple_mtx_unlock(&gp.lock);
++}
++
++static void
++gp_stamp(struct fd_ringbuffer *ring, int slot, unsigned which)
++{
++   OUT_PKT7(ring, CP_EVENT_WRITE, 4);
++   OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(RB_DONE_TS) | CP_EVENT_WRITE_0_TIMESTAMP);
++   OUT_RELOC(ring, gp.bo, (2 * slot + which) * 8, 0, 0);
++   OUT_RING(ring, 0x00000000);
++}
++
++/* a slot for this batch with its start stamp emitted, or -1 */
++static int
++gp_begin(struct fd_batch *batch, bool sysmem) assert_dt
++{
++   struct pipe_framebuffer_state *pfb = &batch->framebuffer;
++   simple_mtx_lock(&gp.lock);
++   if (gp.enabled < 0) {
++      const char *v = getenv("SWEETCA_GPUPROF");
++      gp.enabled = v && strcmp(v, "0") && is_a5xx(batch->ctx->screen);
++      if (gp.enabled) {
++         gp.bo = fd_bo_new(batch->ctx->screen->dev, 2 * 8 * GP_SLOTS, 0, "gpuprof");
++         gp.ts = gp.bo ? fd_bo_map(gp.bo) : NULL;
++         gp.enabled = gp.ts != NULL;
++         if (gp.enabled)
++            sweet_gpuprof_report = gp_report;
++      }
++   }
++   int slot = -1;
++   if (gp.enabled) {
++      gp_harvest();
++      if (gp.head - gp.tail < GP_SLOTS) {
++         slot = gp.head++ % GP_SLOTS;
++         gp.ts[2 * slot] = gp.ts[2 * slot + 1] = 0;
++         gp.pass[slot] = (struct gp_pass){
++            .w = pfb->width, .h = pfb->height, .draws = batch->num_draws,
++            .cleared = batch->cleared, .restore = batch->restore, .resolve = batch->resolve,
++            .nr_cbufs = pfb->nr_cbufs, .fmt = pipe_surface_format(&pfb->cbufs[0]),
++            .mode = batch->nondraw ? 0 : sysmem ? 1 : 2,
++         };
++      } else {
++         gp.dropped++;
++      }
++   }
++   simple_mtx_unlock(&gp.lock);
++   if (slot >= 0)
++      gp_stamp(batch->gmem, slot, 0);
++   return slot;
++}
++
++static void
++gp_end(struct fd_batch *batch, int slot, unsigned nbins)
++{
++   if (slot < 0)
++      return;
++   simple_mtx_lock(&gp.lock);
++   gp.pass[slot].nbins = nbins;
++   simple_mtx_unlock(&gp.lock);
++   gp_stamp(batch->gmem, slot, 1);
++}
++#endif
++
+ void
+ fd_gmem_render_tiles(struct fd_batch *batch)
+ {
+@@ -755,6 +932,11 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+ 
+    ctx->stats.batch_total++;
+ 
++#ifdef __APPLE__
++   int gp_slot = gp_begin(batch, sysmem);
++   unsigned gp_bins = 0;
++#endif
++
+    if (batch->nondraw) {
+       DBG("%p: rendering non-draw", batch);
+       if (!fd_ringbuffer_empty(batch->draw)) {
+@@ -788,6 +970,9 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+          ctx->query_prepare(batch, gmem->nbins_x * gmem->nbins_y);
+       render_tiles(batch, gmem);
+       trace_end_render_pass(&batch->trace, batch->gmem);
++#ifdef __APPLE__
++      gp_bins = gmem->nbins_x * gmem->nbins_y;
++#endif
+       batch->gmem_state = NULL;
+ 
+       fd_screen_lock(ctx->screen);
+@@ -797,6 +982,10 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+       ctx->stats.batch_gmem++;
+    }
+ 
++#ifdef __APPLE__
++   gp_end(batch, gp_slot, gp_bins);
++#endif
++
+    flush_ring(batch);
+ 
+    /* With tracing disabled there is nothing to hand to the trace worker.
+-- 
+2.47.3
+
