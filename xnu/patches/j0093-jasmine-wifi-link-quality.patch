@@ -1,0 +1,352 @@
+From 7a81500a994ec8e5d05995b82d790365b8214d57 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 02:27:33 +0200
+Subject: [PATCH] jasmine-j0093: link quality for the status bar: live RSSI
+ (joined AP's beacons + rx_ppdu_start.rssi_comb), NOISE answered (-95 dBm),
+ Apple80211 LQM event 39 every 5 s while joined (j86: gray Wi-Fi icon)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/redwood_apple80211.c    | 57 ++++++++++++++++++++++++++---
+ bsd/dev/redwood_sta.c           | 33 ++++++++++++++---
+ bsd/dev/topaz_sta.c             |  6 ++++
+ bsd/sys/redwood_sta.h           |  2 ++
+ iokit/Kernel/arm/TopazModem.cpp | 64 ++++++++++++++++++++++++++++-----
+ 5 files changed, 144 insertions(+), 18 deletions(-)
+
+diff --git a/bsd/dev/redwood_apple80211.c b/bsd/dev/redwood_apple80211.c
+index e2674ee..f327da9 100644
+--- a/bsd/dev/redwood_apple80211.c
++++ b/bsd/dev/redwood_apple80211.c
+@@ -191,9 +191,33 @@ _Static_assert(sizeof(struct apple80211_scan_result) == 1164 && offsetof(struct
+     offsetof(struct apple80211_scan_result, age_ms) == 0x84 && offsetof(struct apple80211_scan_result, elements) == 0x8c,
+     "a scan's result as iOS 16.5 has it");
+ 
++/*
++ * The link quality event (39), read by IO80211.framework of 16.5 (_dispatchlqmChangedEvent: at least 180 bytes,
++ * each value behind a byte that says it is there) into the dictionary wifid hands on to the status bar.
++ */
++struct apple80211_link_quality {
++	uint8_t rssi_there, unused_0[3];
++	int32_t rssi;                           /* dBm */
++	uint8_t per_core_there;
++	int8_t per_core[2];                     /* (-128: no reading) */
++	uint8_t snr_there;
++	int16_t snr;
++	uint8_t noise_there, unused_1;
++	int16_t noise;
++	uint8_t cca_there, cca;
++	uint8_t rest[180 - 0x14];               /* frame counts, rates, roaming: not told */
++};
++
++_Static_assert(sizeof(struct apple80211_link_quality) == 180 && offsetof(struct apple80211_link_quality, snr) == 0xc &&
++    offsetof(struct apple80211_link_quality, noise) == 0x10 && offsetof(struct apple80211_link_quality, cca_there) == 0x12,
++    "the link quality as iOS 16.5 reads it");
++
+ /* Apple80211's events (APPLE80211_M_...) */
+ enum { EVENT_POWER_CHANGED = 1, EVENT_SSID_CHANGED = 2, EVENT_BSSID_CHANGED = 3, EVENT_LINK_CHANGED = 4, EVENT_ASSOC_DONE = 9,
+-       EVENT_SCAN_DONE = 10 };
++       EVENT_SCAN_DONE = 10, EVENT_LINK_QUALITY = 39 };
++
++/* the noise floor told: no radio here measures one, and Linux's ath10k and ath11k take this for theirs */
++#define NOISE_FLOOR             (-95)
+ 
+ static const char interface_name[16] = "en0";   /* (bsd/dev/redwood_net.c makes one interface, and that is its name) */
+ 
+@@ -433,6 +457,16 @@ get(struct apple80211req *request)
+ 		error = state->phase != REDWOOD_STA_JOINED ? ENXIO : give(request, &answer, sizeof(answer));
+ 		break;
+ 	}
++	case 17: {                              /* the noise there, the same way */
++		struct {
++			uint32_t version, radios, unit;
++			int32_t each[4], all, each_ext[4], all_ext;
++		} answer = { .version = 1, .radios = 1, .each = { NOISE_FLOOR }, .all = NOISE_FLOOR,
++			     .each_ext = { NOISE_FLOOR }, .all_ext = NOISE_FLOOR };
++
++		error = state->phase != REDWOOD_STA_JOINED ? ENXIO : give(request, &answer, sizeof(answer));
++		break;
++	}
+ 	case 103:                               /* all of it, as a scan's result */
+ 		error = state->phase != REDWOOD_STA_JOINED ? ENXIO : give_network(request, &state->bss);
+ 		break;
+@@ -617,12 +651,13 @@ post(uint32_t code, const void *data, uint32_t length)
+ void
+ redwood_apple80211_event(enum redwood_sta_event event, int status)
+ {
+-	static unsigned said;
++	static unsigned said, said_quality;
+ 
+-	if (said < 200) {
+-		said++;
++	if (event == REDWOOD_STA_QUALITY ? said_quality++ < 3 : said < 200) {
++		said += event != REDWOOD_STA_QUALITY;
+ 		printf("apple80211: the station says: %s, %d\n", event == REDWOOD_STA_POWER ? "power" : event == REDWOOD_STA_SCAN_DONE ?
+-		    "a scan is over" : event == REDWOOD_STA_JOIN_DONE ? "a join is over" : "the link", status);
++		    "a scan is over" : event == REDWOOD_STA_JOIN_DONE ? "a join is over" : event == REDWOOD_STA_QUALITY ?
++		    "the signal" : "the link", status);
+ 	}
+ 	switch (event) {
+ 	case REDWOOD_STA_POWER:
+@@ -650,11 +685,23 @@ redwood_apple80211_event(enum redwood_sta_event event, int status)
+ 			link.rssi = status == 1 ? state->bss.rssi : 0;
+ 			kfree_data(state, sizeof(*state));
+ 		}
++		if (status == 1) {
++			link.noise = (uint16_t)NOISE_FLOOR;
++			link.snr = (uint16_t)(link.rssi - NOISE_FLOOR);
++		}
+ 		post(EVENT_SSID_CHANGED, NULL, 0);
+ 		post(EVENT_BSSID_CHANGED, NULL, 0);
+ 		post(EVENT_LINK_CHANGED, &link, sizeof(link));
+ 		break;
+ 	}
++	case REDWOOD_STA_QUALITY: {
++		struct apple80211_link_quality quality = { .rssi_there = 1, .rssi = status, .per_core_there = 1,
++			                                   .per_core = { (int8_t)status, -128 }, .snr_there = 1, .snr = (int16_t)(status -
++			                                   NOISE_FLOOR), .noise_there = 1, .noise = NOISE_FLOOR };
++
++		post(EVENT_LINK_QUALITY, &quality, sizeof(quality));
++		break;
++	}
+ 	}
+ }
+ 
+diff --git a/bsd/dev/redwood_sta.c b/bsd/dev/redwood_sta.c
+index f4e0490..0f9a783 100644
+--- a/bsd/dev/redwood_sta.c
++++ b/bsd/dev/redwood_sta.c
+@@ -16,7 +16,11 @@
+  * again whenever the radio is turned back on (Settings' switch), until somebody asks for
+  * another network -- as iOS itself rejoins the networks it knows. If that other network cannot
+  * be joined (a wrong passphrase), the standing one is joined again.
++ *
++ * While a network is joined and nothing is asked for, the thread says every few seconds how
++ * strongly it is heard: iOS's status bar draws its bars from that, not from the join.
+  */
++#include <kern/clock.h>
+ #include <kern/kalloc.h>
+ #include <kern/locks.h>
+ #include <kern/sched_prim.h>
+@@ -32,6 +36,7 @@ extern void thread_set_thread_name(thread_t thread, const char *name);
+ 
+ #define HEARD_MOST      128
+ #define CHANNELS_MOST   96
++#define QUALITY_SECONDS 5                       /* (iOS's own drivers say it about as often) */
+ 
+ static LCK_GRP_DECLARE(sta_lock_group, "redwood-sta");
+ static LCK_MTX_DECLARE(sta_lock, &sta_lock_group);
+@@ -73,16 +78,26 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
+ 
+ 	for (;;) {
+ 		const struct redwood_sta_ops *ops;
+-		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false;
++		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false, quality = false;
+ 		int error = 0;
+ 
+ 		lck_mtx_lock(&sta_lock);
+ 		while (sta_ops == NULL || !(asked_power || asked_leave || asked_join || asked_scan)) {
+-			lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_ops, THREAD_UNINT);
++			uint64_t deadline;
++
++			/* nothing asked for in QUALITY_SECONDS: time to say how the joined network is heard */
++			clock_interval_to_deadline(QUALITY_SECONDS, NSEC_PER_SEC, &deadline);
++			if (lck_mtx_sleep_deadline(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_ops, THREAD_UNINT, deadline) ==
++			    THREAD_TIMED_OUT && sta_ops != NULL && sta_on) {
++				quality = true;
++				break;
++			}
+ 		}
+ 		ops = sta_ops;
+ 		/* one thing at a time, in the order that makes sense when several wait */
+-		if (asked_power) {
++		if (quality) {
++			/* (nothing asked for is taken) */
++		} else if (asked_power) {
+ 			power = true;
+ 			power_on = asked_power_on;
+ 			asked_power = false;
+@@ -102,7 +117,17 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
+ 		sta_calls = true;
+ 		lck_mtx_unlock(&sta_lock);
+ 
+-		if (power) {
++		if (quality) {
++			struct redwood_sta_state *state = kalloc_data(sizeof(*state), Z_WAITOK | Z_ZERO);
++
++			if (state != NULL) {
++				ops->state(state);
++				if (state->phase == REDWOOD_STA_JOINED && state->bss.rssi != 0) {
++					redwood_apple80211_event(REDWOOD_STA_QUALITY, state->bss.rssi);
++				}
++				kfree_data(state, sizeof(*state));
++			}
++		} else if (power) {
+ 			struct redwood_sta_state *state = kalloc_data(sizeof(*state), Z_WAITOK | Z_ZERO);
+ 			bool was_joined = false;
+ 
+diff --git a/bsd/dev/topaz_sta.c b/bsd/dev/topaz_sta.c
+index f2ffed4..38c8341 100644
+--- a/bsd/dev/topaz_sta.c
++++ b/bsd/dev/topaz_sta.c
+@@ -33,6 +33,7 @@ extern int topaz_wlan_join(const uint8_t *ssid, unsigned ssid_len, const uint8_t
+ extern int topaz_wlan_join_pmk(const uint8_t *ssid, unsigned ssid_len, const uint8_t *bssid, const uint8_t pmk[32]);
+ extern int topaz_wlan_leave(void);
+ extern bool topaz_wlan_joined(void);
++extern int topaz_wlan_rssi(void);
+ extern bool topaz_wlan_transmit(const uint8_t *frame, size_t length);
+ extern void (*topaz_wlan_rx_hook)(const uint8_t *frame, size_t length);
+ extern void (*topaz_wlan_link_hook)(bool up);
+@@ -133,7 +134,12 @@ sta_state(struct redwood_sta_state *state)
+ 	bzero(state, sizeof(*state));
+ 	state->phase = topaz_wlan_joined() ? REDWOOD_STA_JOINED : REDWOOD_STA_IDLE;
+ 	if (state->phase == REDWOOD_STA_JOINED) {
++		int rssi = topaz_wlan_rssi();
++
+ 		state->bss = sta_joined_bss;
++		if (rssi != 0) {
++			state->bss.rssi = (int16_t)rssi;        /* (as heard now, not at the join) */
++		}
+ 	}
+ 	state->last_error = sta_last_error;
+ }
+diff --git a/bsd/sys/redwood_sta.h b/bsd/sys/redwood_sta.h
+index c5ed067..e7abd70 100644
+--- a/bsd/sys/redwood_sta.h
++++ b/bsd/sys/redwood_sta.h
+@@ -91,6 +91,8 @@ enum redwood_sta_event {
+ 	REDWOOD_STA_JOIN_DONE,                  /* status: 0, or the join's errno */
+ 	REDWOOD_STA_LINK,                       /* status: 1 a network is joined, 0 it has been left when asked,
+ 	                                         * an errno: it was lost (the access point showed us the door) */
++	REDWOOD_STA_QUALITY,                    /* status: the joined network's signal now (dBm, from state());
++	                                         * said every few seconds while one is joined */
+ };
+ 
+ #ifdef KERNEL
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index cc30af6..6816665 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -5305,6 +5305,38 @@ scan_start(void)
+ 	    b ? "ok" : "FAILED", scanning ? "requested" : "FAILED");
+ }
+ 
++/* the station's state (its join and leave are further down: the rx paths here read it) */
++enum sta_state { S_IDLE, S_START, S_AUTH, S_ASSOC, S_4WAY, S_UP, S_LEAVE };
++static volatile enum sta_state s_state;
++static volatile int s_result;                   /* of the last join: 0 joined, else an errno (EAUTH: passphrase) */
++static volatile bool s_join_asked, s_leave_asked;
++static volatile uint32_t s_join_done;           /* bumped when a join ends either way */
++static uint8_t s_ssid[32], s_ssid_len, s_bssid[6], s_pmk[32];
++
++/*
++ * j0093: the joined AP's signal, kept current for iOS's link quality (the status bar's bars were
++ * gray with the join-time scan value alone, j86): the AP's beacons (WMI mgmt rx snr) and the
++ * first MPDU of each received PPDU (rx_ppdu_start.rssi_comb, ath10k_htt_rx_h_signal), both
++ * above ath10k's noise floor of -95 dBm, averaged over about eight readings.
++ */
++static volatile int32_t w_rssi16;               /* dBm x 16; 0: no reading since the join */
++static uint32_t w_rssi_beacons, w_rssi_ppdus;
++
++static void
++w_rssi_note(uint32_t snr, bool beacon)
++{
++	if (snr == 0 || snr >= 0x80) {
++		return;                                 /* (0x80: no reading) */
++	}
++	int32_t dbm16 = ((int32_t)snr - 95) * 16;
++	w_rssi16 = w_rssi16 == 0 ? dbm16 : w_rssi16 + (dbm16 - w_rssi16) / 8;
++	if (beacon) {
++		w_rssi_beacons++;
++	} else {
++		w_rssi_ppdus++;
++	}
++}
++
+ /* ---------------- HTT setup (ath10k htt.c ath10k_htt_setup, 64-bit, WCN3990), after WMI READY */
+ 
+ /*
+@@ -5478,6 +5510,12 @@ htt_rx(const uint8_t *p, uint32_t len)
+ 				continue;
+ 			}
+ 			htt_msdus++;
++			const uint8_t *rxd = htt_buf + (pa - htt_buf_pa);
++			uint32_t att;
++			memcpy(&att, rxd + 4 * OFF_ATTENTION, 4);
++			if (s_state == S_UP && (att & 1)) {     /* FIRST_MPDU: ppdu_start is valid (ath10k_htt_rx_h_ppdu) */
++				w_rssi_note(rxd[4 * OFF_PPDU_START + 16], false);      /* rx_ppdu_start.rssi_comb */
++			}
+ 			uint16_t mlen;
+ 			memcpy(&mlen, d + 8, 2);
+ 			if (mlen <= HTT_BUF_SIZE - 4 * OFF_MSDU_PAYLOAD) {
+@@ -5562,6 +5600,9 @@ scan_mgmt_rx(const uint8_t *t, uint32_t len)
+ 		return;                                 /* beacons and probe responses only */
+ 	}
+ 	scan_frames++;
++	if (s_state == S_UP && memcmp(f + 16, s_bssid, 6) == 0) {
++		w_rssi_note(hdr[1], true);              /* the joined AP's beacon */
++	}
+ 	int32_t rssi = (int32_t)hdr[1] - 95;
+ 	uint32_t chan = hdr[0];
+ 	char ssid[33] = "";
+@@ -6012,12 +6053,6 @@ w_crypto_selftest(void)
+ #define FC_AUTH                 0xB0
+ #define FC_DEAUTH               0xC0
+ 
+-enum sta_state { S_IDLE, S_START, S_AUTH, S_ASSOC, S_4WAY, S_UP, S_LEAVE };
+-static volatile enum sta_state s_state;
+-static volatile int s_result;                   /* of the last join: 0 joined, else an errno (EAUTH: passphrase) */
+-static volatile bool s_join_asked, s_leave_asked;
+-static volatile uint32_t s_join_done;           /* bumped when a join ends either way */
+-static uint8_t s_ssid[32], s_ssid_len, s_bssid[6], s_pmk[32];
+ static uint8_t s_body[768];                     /* the AP's beacon IEs */
+ static uint32_t s_body_len, s_freq, s_aid, s_tries, s_deadline, s_desc, s_msg1s;
+ static bool s_rsn, s_start_resp, s_ptk_set;
+@@ -6705,6 +6740,7 @@ w_join_begin(void)
+ 	}
+ 	s_state = S_START;
+ 	s_deadline = g_ms + 1500;
++	w_rssi16 = 0;                               /* (a new AP: its own readings) */
+ }
+ 
+ static void
+@@ -6879,6 +6915,7 @@ int topaz_wlan_join(const uint8_t *ssid, unsigned ssid_len, const uint8_t *bssid
+ int topaz_wlan_join_pmk(const uint8_t *ssid, unsigned ssid_len, const uint8_t *bssid, const uint8_t pmk[32]);
+ int topaz_wlan_leave(void);
+ bool topaz_wlan_joined(void);
++int topaz_wlan_rssi(void);
+ bool topaz_wlan_transmit(const uint8_t *frame, size_t length);
+ }
+ 
+@@ -6957,6 +6994,14 @@ topaz_wlan_joined(void)
+ 	return s_state == S_UP;
+ }
+ 
++/* the joined AP's signal now (dBm), or 0 when not joined or nothing was heard since the join */
++int
++topaz_wlan_rssi(void)
++{
++	int32_t r = w_rssi16;
++	return s_state != S_UP || r == 0 ? 0 : (r - 8) / 16;
++}
++
+ /* frames from the network stack wait here for the modem thread */
+ #define ETXQ 32
+ static struct { uint16_t len; uint8_t d[1514]; } etxq[ETXQ];
+@@ -7156,9 +7201,10 @@ radio_poll(unsigned ms)
+ 	if (s_state == S_UP && g_ms >= data_stat_ms) {
+ 		data_stat_ms = g_ms + 10000;
+ 		LOG("t=%u ms: wifi data: tx queued %u sent %u done %u (ok %u, st1 %u st2 %u st3 %u st4+ %u) drops %u; "
+-		    "rx msdus %u data %u (eapol %u, up %u, not up %u, no snap %u)", g_ms, etxq_tail, tx_sent, tx_done, tx_st[0],
+-		    tx_st[1], tx_st[2], tx_st[3], tx_st[4] + tx_st[5] + tx_st[6] + tx_st[7], tx_drop, htt_msdus, rx_data,
+-		    rx_eapol, rx_up, rx_down, rx_nonllc);
++		    "rx msdus %u data %u (eapol %u, up %u, not up %u, no snap %u); signal %d dBm (beacons %u, ppdus %u)", g_ms,
++		    etxq_tail, tx_sent, tx_done, tx_st[0], tx_st[1], tx_st[2], tx_st[3], tx_st[4] + tx_st[5] + tx_st[6] + tx_st[7],
++		    tx_drop, htt_msdus, rx_data, rx_eapol, rx_up, rx_down, rx_nonllc, topaz_wlan_rssi(), w_rssi_beacons,
++		    w_rssi_ppdus);
+ 	}
+ 	bool scan_ok = scan_started && !scanning && !w_off_asked && (s_state == S_IDLE || s_state == S_UP);
+ 	if (scan_ok && api_scan_asked) {
+-- 
+2.47.3
+
