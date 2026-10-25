@@ -203,6 +203,17 @@ jobs:
         run: |
           ccache -z
           bash build.sh
+          # The upstream wrapper can skip a non-applying patch and still build.
+          # A framebench image is unusable unless the hooks are actually linked.
+          if [ -f patches/j0099-jasmine-framebench.patch ]; then
+            test -f xnu/osfmk/arm64/sweet_bench.inc
+            grep -q 'BC_SAMPLES 65536u' xnu/osfmk/arm64/sweet_bench.inc
+            grep -q 'bench mark' xnu/osfmk/arm64/sweet_bench.inc || grep -q '"mark "' xnu/osfmk/arm64/sweet_bench.inc
+            nm fakeroot/System/Library/Kernels/kernel.development.sweet > framebench-symbols.txt
+            for symbol in sweet_bench_event sweet_bench_blob sweet_bench_alloc sweet_bench_enabled; do
+              grep -E "[[:space:]][Tt][[:space:]]_$symbol$" framebench-symbols.txt
+            done
+          fi
           ccache -s
 
       - name: Package build tree for local compiles
