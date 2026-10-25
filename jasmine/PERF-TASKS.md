@@ -101,7 +101,7 @@ performance work, with its own implementation and validation.
 | [19](#19-profile-springboards-cpu-work) | Profile SpringBoard CPU work | Home-swipe main-thread load ~711-743 ms/s in the earlier baseline; identify layout/animation/IPC costs and whether they delay output. |
 | [20](#20-investigate-memory-and-cache-growth) | Investigate memory and cache growth | Buffer/surface/memory high-water marks, allocation stalls and pressure across repeated transitions; Wallpaper exhaustion remains a hypothesis. |
 | [21](#21-profile-cold-start-boot-and-storage-waits) | Profile cold-start, boot and storage waits | Separate storage, service/IOKit waits and compilation; five-second syscfg fallback waits are an existing lead. |
-| [22](#22-accessory-update-and-trust-cpu-after-boot) | Accessory-update and trust CPU after boot | accessoryupdater + trustd use ~0.8 of 4 Gold cores during UI motion 2-4 min after boot in all three 2026-10-25 captures; find whether it ends, repeats each boot or loops. |
+| [22](#22-accessory-update-and-trust-cpu-after-boot) | Accessory-update and trust CPU after boot | accessoryupdater + trustd use ~0.8 of 4 Gold cores during UI motion 2-4 min after boot in all three 2026-10-25 captures; gone at 24 min (idle sample): a burst after every boot, not a steady-use cause; it skews benchmarks started early. |
 
 Task 6's initial 4/8-core comparison is also diagnostic, but its scheduler implementation
 remains under performance. Task 16's shared timeline measurement is tracked in task 18;
@@ -669,6 +669,16 @@ and the CPU is contended: in `20261025-threaded2` Control Center A, threads that
 a CPU but did not get one (runnable) were the Mesa driver thread 610 ms, CA's display
 thread 490 ms, SpringBoard 545 ms (`summary.json`, `thread_state_estimated_ms`). That
 links this load to frame time, but the size of the effect is not measured.
+
+**Measured 2026-10-25 08:00: it ends.** On the phone booted at 07:35:54, idle at 07:59:57
+(24 minutes after boot), a 3 s `prof.py fetch --tasks trustd,accessoryupdater,backboardd,SpringBoard`
+(`research/t22/at-boot-plus`) shows neither process among the busy ones (kernel_task 43 ms/s,
+an unnamed pid 27 ms/s, SpringBoard 21 ms/s). It is a burst after every boot that ends
+somewhere between 4 and 24 minutes, **not a cause of slow frames in settled use**. Its
+real costs: CPU for the first minutes after each boot, and every framebench capture of
+2026-10-25 started inside it (baseline and new run alike). Start benchmarks after it has
+ended, or record it. Question 1 below is answered except for the end time; the
+remaining value of this task is lower (boot-time cost, benchmark hygiene).
 
 **What the job is** (symbolized stacks, `research/t5tc/daemons.py`, output
 `research/t5tc/daemons-threaded2.txt`): one chain, not two independent daemons.
