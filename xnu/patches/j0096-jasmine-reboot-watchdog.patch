@@ -1,0 +1,398 @@
+From 3ced633660eabf1448c9011c70bdd234c13f5449 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 02:02:43 +0100
+Subject: [PATCH] jasmine-j0096: reboot watchdog: step lines in
+ reboot_kernel/proc_shutdown, a dump of the processes left and kernel
+ backtraces when one step takes 6 s (j83/j85/j93: reboots while joined hung
+ after launchd quiesce)
+
+---
+ bsd/dev/sweet_sample.c   | 106 +++++++++++++++++++++++++++++++++++++++
+ bsd/kern/kern_shutdown.c |  30 +++++++++++
+ osfmk/kern/exception.c   |  69 +++++++++++++++++++++++++
+ 3 files changed, 205 insertions(+)
+
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index b40eccd..a33299e 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -19,6 +19,8 @@
+ #include <kern/task.h>
+ #include <kern/thread.h>
+ #include <pexpert/pexpert.h>
++#include <kern/clock.h>
++#include <mach/mach_time.h>
+ 
+ extern task_t proc_task(proc_t);
+ extern int hz;
+@@ -86,3 +88,107 @@ sweet_sample_start(void)
+ 		thread_deallocate(thread);
+ 	}
+ }
++
++/*
++ * j0096 reboot watchdog: where does a reboot hang? (j83/j85/j93: reboots while
++ * joined to Wi-Fi stopped after "launchd quiesce complete", before
++ * vfs_unmountall.) reboot_kernel and proc_shutdown name each step with
++ * sweet_shutdown_step ("SDW step NAME at +N ms"); the first step starts a
++ * kernel thread that says every 2 s which step runs ("SDW in NAME for N ms":
++ * when these lines stop, the whole system stopped). 6 s in one step it dumps
++ * the reboot thread's kernel backtrace and every process left with its
++ * threads (state, wait event, kernel backtrace); 20 s in it also dumps the
++ * kernel_task threads. Gives up after 3 minutes.
++ */
++extern void sweet_sample_kthread(const char *tag, thread_t thread);     /* osfmk/kern/exception.c */
++extern void sweet_sample_ktask(const char *name, int pid, task_t task);
++extern vm_offset_t vm_kernel_slide;
++extern void sweet_shutdown_step(const char *what);
++
++static const char *volatile sdw_step;
++static volatile uint64_t sdw_step_at;
++static uint64_t sdw_start;
++static thread_t sdw_thread;
++
++static uint64_t
++sdw_ms(uint64_t abs)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(abs, &ns);
++	return ns / 1000000;
++}
++
++static int
++sdw_proc(proc_t p, __unused void *arg)
++{
++	char name[32];
++	task_t task = proc_task(p);
++	proc_name(proc_pid(p), name, sizeof(name));
++	printf("SDW proc %s[%d] stat %d shutdownstate %d flag 0x%x lflag 0x%x\n", name, proc_pid(p),
++	    p->p_stat, p->p_shutdownstate, p->p_flag, p->p_lflag);
++	if (task != TASK_NULL) {
++		sweet_sample_ktask(name, proc_pid(p), task);
++	}
++	return PROC_RETURNED;
++}
++
++static void
++sdw_dump(const char *step, bool kernel_threads)
++{
++	printf("SDW dump: stuck in %s, slide 0x%lx\n", step, (unsigned long)vm_kernel_slide);
++	sweet_sample_kthread("reboot thread", sdw_thread);
++	proc_iterate(PROC_ALLPROCLIST | PROC_ZOMBPROCLIST, sdw_proc, NULL, NULL, NULL);
++	if (kernel_threads) {
++		sweet_sample_ktask("kernel_task", 0, kernel_task);
++	}
++	printf("SDW dump end\n");
++}
++
++static void
++sdw_watch(__unused void *arg, __unused wait_result_t wr)
++{
++	static int chan;
++	const char *seen = NULL;
++	int dumped = 0;
++
++	for (int s = 0; s < 180; s++) {
++		(void)tsleep(&chan, PZERO, "sweetsdw", hz);
++		const char *step = sdw_step;
++		uint64_t in = sdw_ms(mach_absolute_time() - sdw_step_at);
++		if (step != seen) {
++			seen = step;
++			dumped = 0;
++		}
++		if ((s & 1) == 1) {
++			printf("SDW in %s for %llu ms\n", step, in);
++		}
++		if (dumped == 0 && in >= 6000) {
++			sdw_dump(step, false);
++			dumped = 1;
++		} else if (dumped == 1 && in >= 20000) {
++			sdw_dump(step, true);
++			dumped = 2;
++		}
++	}
++}
++
++void
++sweet_shutdown_step(const char *what)
++{
++	uint64_t now = mach_absolute_time();
++	bool first = sdw_start == 0;
++
++	if (first) {
++		sdw_start = now;
++		sdw_thread = current_thread();
++	}
++	sdw_step_at = now;
++	sdw_step = what;
++	printf("SDW step %s at +%llu ms\n", what, sdw_ms(now - sdw_start));
++	if (first) {
++		thread_t thread;
++		if (kernel_thread_start(sdw_watch, NULL, &thread) == KERN_SUCCESS) {
++			thread_deallocate(thread);
++		}
++	}
++}
+diff --git a/bsd/kern/kern_shutdown.c b/bsd/kern/kern_shutdown.c
+index 20d9d47..0ea45d2 100644
+--- a/bsd/kern/kern_shutdown.c
++++ b/bsd/kern/kern_shutdown.c
+@@ -87,6 +87,12 @@ static void sd_log(vfs_context_t, const char *, ...);
+ static void proc_shutdown(int only_non_dext);
+ static void zprint_panic_info(void);
+ extern void halt_log_enter(const char * what, const void * pc, uint64_t time);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern void sweet_shutdown_step(const char *what);      /* bsd/dev/sweet_sample.c (j0096 reboot watchdog) */
++#define SDW_STEP(what) sweet_shutdown_step(what)
++#else
++#define SDW_STEP(what) do { } while (0)
++#endif
+ 
+ #if DEVELOPMENT || DEBUG
+ extern boolean_t kdp_has_polled_corefile(void);
+@@ -190,6 +196,7 @@ reboot_kernel(int howto, char *message)
+ 		return EBUSY;
+ 	}
+ 
++	SDW_STEP("swapfile work");
+ 	lck_mtx_lock(&vm_swap_data_lock);
+ 
+ 	/* Turn OFF future swapfile reclaimation / compaction etc.*/
+@@ -211,6 +218,7 @@ reboot_kernel(int howto, char *message)
+ 	/*
+ 	 * Notify the power management root domain that the system will shut down.
+ 	 */
++	SDW_STEP("ProcessExit notification");
+ 	IOSystemShutdownNotification(howto, kIOSystemShutdownNotificationStageProcessExit);
+ 
+ 	if ((howto & RB_QUICK) == RB_QUICK) {
+@@ -230,11 +238,13 @@ reboot_kernel(int howto, char *message)
+ 		/* handle live procs (deallocate their root and current directories), suspend initproc */
+ 
+ 		startTime = mach_absolute_time();
++		SDW_STEP("proc_shutdown(non-dext)");
+ 		proc_shutdown(TRUE);
+ 		halt_log_enter("proc_shutdown", 0, mach_absolute_time() - startTime);
+ 
+ #if CONFIG_AUDIT
+ 		startTime = mach_absolute_time();
++		SDW_STEP("audit_shutdown");
+ 		audit_shutdown();
+ 		halt_log_enter("audit_shutdown", 0, mach_absolute_time() - startTime);
+ #endif
+@@ -246,14 +256,17 @@ reboot_kernel(int howto, char *message)
+ #endif
+ 
+ 		startTime = mach_absolute_time();
++		SDW_STEP("sync");
+ 		sync((proc_t)NULL, (void *)NULL, (int *)NULL);
+ 
+ 		if (kdebug_enable) {
++			SDW_STEP("shutdown.trace");
+ 			startTime = mach_absolute_time();
+ 			kdbg_dump_trace_to_file("/var/log/shutdown/shutdown.trace", true);
+ 			halt_log_enter("shutdown.trace", 0, mach_absolute_time() - startTime);
+ 		}
+ 
++		SDW_STEP("RootUnmount notification");
+ 		IOSystemShutdownNotification(howto, kIOSystemShutdownNotificationStageRootUnmount);
+ 
+ 		if (cl_sparse_push_error) {
+@@ -269,13 +282,16 @@ reboot_kernel(int howto, char *message)
+ #endif /* DEVELOPMENT || DEBUG */
+ 		{
+ 			startTime = mach_absolute_time();
++			SDW_STEP("vfs_unmountall(nonsystem)");
+ 			vfs_unmountall(TRUE);
+ 			halt_log_enter("vfs_unmountall", 0, mach_absolute_time() - startTime);
+ 		}
+ 
++		SDW_STEP("TerminateDEXTs notification");
+ 		IOSystemShutdownNotification(howto, kIOSystemShutdownNotificationTerminateDEXTs);
+ 
+ 		startTime = mach_absolute_time();
++		SDW_STEP("proc_shutdown(all)");
+ 		proc_shutdown(FALSE);
+ 		halt_log_enter("proc_shutdown", 0, mach_absolute_time() - startTime);
+ 
+@@ -284,6 +300,7 @@ reboot_kernel(int howto, char *message)
+ #endif /* DEVELOPMENT || DEBUG */
+ 		{
+ 			startTime = mach_absolute_time();
++			SDW_STEP("vfs_unmountall(system)");
+ 			vfs_unmountall(FALSE);
+ 			halt_log_enter("vfs_unmountall", 0, mach_absolute_time() - startTime);
+ 		}
+@@ -292,6 +309,7 @@ reboot_kernel(int howto, char *message)
+ 
+ 		/* Wait for the buffer cache to clean remaining dirty buffers */
+ 		startTime = mach_absolute_time();
++		SDW_STEP("bufferclean");
+ 		for (iter = 0; iter < 100; iter++) {
+ 			nbusy = count_busy_buffers();
+ 			if (nbusy == 0) {
+@@ -314,6 +332,7 @@ reboot_kernel(int howto, char *message)
+ 	 * drivers depend on to finish DMAs.
+ 	 */
+ 	startTime = mach_absolute_time();
++	SDW_STEP("if_down_all");
+ 	if_down_all();
+ 	halt_log_enter("if_down_all", 0, mach_absolute_time() - startTime);
+ #endif /* NETWORKING */
+@@ -338,6 +357,7 @@ force_reboot:
+ 		hostboot_option = HOST_REBOOT_UPSDELAY;
+ 	}
+ 
++	SDW_STEP("host_reboot");
+ 	host_reboot(host_priv_self(), hostboot_option);
+ 	/*
+ 	 * should not be reached
+@@ -542,6 +562,10 @@ sd_callback3(proc_t p, void * args)
+ 		} else {
+ 			p->exit_thread = current_thread();
+ 			printf(".");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++			printf("SDW forced exit1 %s[%d]
++", p->p_comm, proc_getpid(p));
++#endif
+ 
+ 			sd_log(ctx, "%s[%d] had to be forced closed with exit1().\n", p->p_comm, proc_getpid(p));
+ 
+@@ -613,6 +637,7 @@ sigterm_loop:
+ 
+ 	error = 0;
+ 	/* post a SIGTERM to all that catch SIGTERM and not marked for delay */
++	SDW_STEP(delayterm ? "SIGTERM (delayterm)" : "SIGTERM");
+ 	proc_rebootscan(sd_callback1, (void *)&sdargs, sd_filt1, (void *)&sfargs);
+ 
+ 	if (sdargs.activecount != 0 && proc_shutdown_exitcount != 0) {
+@@ -625,6 +650,7 @@ sigterm_loop:
+ 			 */
+ 			ts.tv_sec = 3;
+ 			ts.tv_nsec = 0;
++			SDW_STEP(delayterm ? "SIGTERM wait (delayterm)" : "SIGTERM wait");
+ 			error = msleep(&proc_shutdown_exitcount, &proc_list_mlock, PWAIT, "shutdownwait", &ts);
+ 			if (error != 0) {
+ 				for (p = allproc.lh_first; p; p = p->p_list.le_next) {
+@@ -669,6 +695,7 @@ sigterm_loop:
+ 	sdargs.activecount = 0;
+ 
+ 	/* post a SIGKILL to all that catch SIGTERM and not marked for delay */
++	SDW_STEP(delayterm ? "SIGKILL (delayterm)" : "SIGKILL");
+ 	proc_rebootscan(sd_callback2, (void *)&sdargs, sd_filt2, (void *)&sfargs);
+ 
+ 	error = 0;
+@@ -684,6 +711,7 @@ sigterm_loop:
+ 			 */
+ 			ts.tv_sec = 10;
+ 			ts.tv_nsec = 0;
++			SDW_STEP(delayterm ? "SIGKILL wait (delayterm)" : "SIGKILL wait");
+ 			error = msleep(&proc_shutdown_exitcount, &proc_list_mlock, PWAIT, "shutdownwait", &ts);
+ 			if (error != 0) {
+ 				for (p = allproc.lh_first; p; p = p->p_list.le_next) {
+@@ -731,6 +759,7 @@ sigterm_loop:
+ 
+ 
+ 	/* post a SIGTERM to all that catch SIGTERM and not marked for delay */
++	SDW_STEP(delayterm ? "forced exit1 (delayterm)" : "forced exit1");
+ 	proc_rebootscan(sd_callback3, (void *)&sdargs, sd_filt2, (void *)&sfargs);
+ 	printf("\n");
+ 
+@@ -740,6 +769,7 @@ sigterm_loop:
+ 		goto  sigterm_loop;
+ 	}
+ 
++	SDW_STEP("sd_closelog");
+ 	sd_closelog(ctx);
+ 
+ 	if (only_non_dext) {
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+index a20a764..d876a52 100644
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -823,6 +823,7 @@ exception_triage(
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <vm/vm_shared_region.h>
+ #include <arm/thread.h>
++#include <arm/machine_routines.h>
+ 
+ /*
+  * SWEET crash report on the console. The phone has no way to get crash
+@@ -1040,6 +1041,74 @@ sweet_sample_task(const char *name, int pid, task_t task)
+ 	task_unlock(task);
+ }
+ 
++/*
++ * j0096 reboot watchdog (bsd/dev/sweet_sample.c): state, wait event and a
++ * frame-pointer backtrace of a thread's kernel stack, from the callee-saved
++ * state the last context switch left at the top of the stack (raw addresses:
++ * unslid = address - the slide on the "SDW dump" line). Reads go through
++ * ml_nofault_copy and stay inside the stack, so a thread that runs or exits
++ * meanwhile gives a short or stale line, not a fault.
++ */
++void sweet_sample_kthread(const char *tag, thread_t thread);
++void sweet_sample_ktask(const char *name, int pid, task_t task);
++
++void
++sweet_sample_kthread(const char *tag, thread_t thread)
++{
++	char line[480];
++	int n;
++	vm_offset_t stack = thread->kernel_stack;
++	uint64_t fp = 0;
++
++	n = snprintf(line, sizeof(line), "SDW %s tid %llu state 0x%x pri %d hint %d wait 0x%llx",
++	    tag, thread->thread_id, thread->state, thread->sched_pri, (int)thread->block_hint,
++	    (uint64_t)thread->wait_event);
++	if (thread == current_thread()) {
++		fp = (uint64_t)__builtin_frame_address(0);
++		n += snprintf(line + n, sizeof(line) - n, " (self) bt");
++	} else if (stack == 0) {
++		n += snprintf(line + n, sizeof(line) - n, " no stack, continuation 0x%llx",
++		    (uint64_t)thread->continuation);
++	} else {
++		struct arm_kernel_saved_state ss;
++		if (ml_nofault_copy((vm_offset_t)&thread_get_kernel_state(thread)->machine.ss,
++		    (vm_offset_t)&ss, sizeof(ss)) == sizeof(ss)) {
++			fp = ss.fp;
++			n += snprintf(line + n, sizeof(line) - n, " lr 0x%llx bt", ss.lr);
++		}
++	}
++	for (int i = 0; i < 24 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; i++) {
++		uint64_t frame[2];
++		if (stack != 0 && (fp < stack || fp + sizeof(frame) > stack + kernel_stack_size)) {
++			break;
++		}
++		if (ml_nofault_copy((vm_offset_t)fp, (vm_offset_t)frame, sizeof(frame)) != sizeof(frame)) {
++			break;
++		}
++		n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
++		if (frame[0] <= fp) {
++			break;
++		}
++		fp = frame[0];
++	}
++	printf("%s\n", line);
++}
++
++void
++sweet_sample_ktask(const char *name, int pid, task_t task)
++{
++	char tag[48];
++	thread_t thread;
++	int tn = 0;
++
++	task_lock(task);
++	queue_iterate(&task->threads, thread, thread_t, task_threads) {
++		snprintf(tag, sizeof(tag), "%s[%d] t%d", name, pid, tn++);
++		sweet_sample_kthread(tag, thread);
++	}
++	task_unlock(task);
++}
++
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ kern_return_t
+-- 
+2.47.3
+
