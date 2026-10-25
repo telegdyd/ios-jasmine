@@ -115,12 +115,15 @@ sweet_profile_batch(unsigned draws)
 }
 
 void (*sweet_gpuprof_report)(void (*log)(const char *fmt, ...));
+void (*sweet_gpuprof_draw_report)(void (*log)(const char *fmt, ...));
 
 void
 sweet_profile_report(void (*log)(const char *fmt, ...))
 {
    if (sweet_gpuprof_report)
       sweet_gpuprof_report(log);
+   if (sweet_gpuprof_draw_report)
+      sweet_gpuprof_draw_report(log);
    log("sweetca: drawprof v1: enabled %u; elapsed incl/excl ms (not CPU); nested scopes overlap; per 100 flushes", enabled);
    if (!enabled)
       return;

@@ -48,6 +48,8 @@ void sweet_profile_batch(unsigned draws);
 void sweet_profile_report(void (*log)(const char *fmt, ...));
 /* freedreno_gmem.c's GPU time per batch (SWEETCA_GPUPROF=1), reported with the profile */
 extern void (*sweet_gpuprof_report)(void (*log)(const char *fmt, ...));
+/* fd5_draw.c's GPU time per draw (SWEETCA_GPUPROF=2) */
+extern void (*sweet_gpuprof_draw_report)(void (*log)(const char *fmt, ...));
 #ifdef __cplusplus
 }
 #endif

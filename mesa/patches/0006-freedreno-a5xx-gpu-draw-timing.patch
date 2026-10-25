@@ -1,0 +1,254 @@
+From c618b5e76b515c005843bd222546be30e47107bf Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 21:59:32 +0100
+Subject: [PATCH] freedreno/a5xx: GPU time per draw (SWEETCA_GPUPROF=2,
+ ios-jasmine)
+
+RB_DONE_TS before and after every draw, grouped by fragment shader with the slowest draws, their viewport, blend and sampled textures, in libsweetca's 100-flush profile.
+---
+ src/gallium/drivers/freedreno/a5xx/fd5_draw.c | 221 ++++++++++++++++++
+ 1 file changed, 221 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+index 07c0f7d..4f47ff9 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -51,6 +51,220 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
+                  emit->indirect, emit->draw, index_offset);
+ }
+ 
++#ifdef __APPLE__
++#include <stdlib.h>
++#include <string.h>
++#include "util/simple_mtx.h"
++
++/* ios-jasmine: SWEETCA_GPUPROF=2 also times every draw: an RB_DONE_TS
++ * before and after it in the draw ring. Sysmem batches run that ring once;
++ * GMEM batches replay it per bin, so their stamps cover only the last bin.
++ * Grouped by fragment shader, with the slowest draws and what they sample,
++ * in libsweetca's 100-flush report (freedreno_gmem.c times whole batches).
++ */
++#define GD_SLOTS  8192
++#define GD_GROUPS 64
++#define GD_TOP    10
++
++struct gd_draw {
++   const void *fs;
++   uint32_t instrs, waves, count, inst, vp_w, vp_h, sc_w, sc_h, fb_w, fb_h, ntex;
++   uint32_t tw[2], th[2], tlv[2], tmip[2], ttile[2];
++   bool tfb[2], blend;
++   enum pipe_format tf[2];
++   uint64_t t;
++};
++
++static struct {
++   simple_mtx_t lock;
++   int enabled;                  /* -1: not checked yet */
++   struct fd_bo *bo;
++   volatile uint64_t *ts;        /* start and end of each slot */
++   struct gd_draw draw[GD_SLOTS];
++   uint32_t head, tail;
++   /* since the last report */
++   uint64_t n, busy, dropped;
++   struct {
++      const void *fs;
++      uint64_t n, t, max;
++      struct gd_draw slow;
++   } group[GD_GROUPS];
++   unsigned ngroups;
++   struct gd_draw top[GD_TOP];
++   unsigned ntop;
++} gd = { .lock = SIMPLE_MTX_INITIALIZER, .enabled = -1 };
++
++/* with gd.lock: account every slot the GPU has finished */
++static void
++gd_harvest(void)
++{
++   while (gd.tail != gd.head) {
++      unsigned i = gd.tail % GD_SLOTS;
++      uint64_t s = gd.ts[2 * i], e = gd.ts[2 * i + 1];
++      if (!s || !e) {
++         if (gd.head - gd.tail < GD_SLOTS / 2)
++            break;
++         gd.dropped++;           /* never ran: a failed submit, or a batch thrown away */
++         gd.tail++;
++         continue;
++      }
++      gd.tail++;
++      struct gd_draw *d = &gd.draw[i];
++      d->t = e > s ? e - s : 0;
++      gd.n++;
++      gd.busy += d->t;
++      unsigned g;
++      for (g = 0; g < gd.ngroups && gd.group[g].fs != d->fs; g++)
++         ;
++      if (g == gd.ngroups) {
++         if (gd.ngroups < GD_GROUPS) {
++            gd.ngroups++;
++            gd.group[g].fs = d->fs;
++            gd.group[g].n = gd.group[g].t = gd.group[g].max = 0;
++         } else {
++            g = GD_GROUPS - 1;   /* the last group collects the rest */
++         }
++      }
++      gd.group[g].n++;
++      gd.group[g].t += d->t;
++      if (d->t >= gd.group[g].max) {
++         gd.group[g].max = d->t;
++         gd.group[g].slow = *d;
++      }
++      if (gd.ntop == GD_TOP && gd.top[GD_TOP - 1].t >= d->t)
++         continue;
++      unsigned k = gd.ntop < GD_TOP ? gd.ntop++ : GD_TOP - 1;
++      for (; k > 0 && gd.top[k - 1].t < d->t; k--)
++         gd.top[k] = gd.top[k - 1];
++      gd.top[k] = *d;
++   }
++}
++
++static void
++gd_describe(const struct gd_draw *d, char *buf, size_t len)
++{
++   int n = snprintf(buf, len, "fs %u instrs %u waves, fb %ux%u vp %ux%u sc %ux%u, %u verts x%u, blend %u, %u tex",
++                    d->instrs, d->waves, d->fb_w, d->fb_h, d->vp_w, d->vp_h, d->sc_w, d->sc_h, d->count, d->inst,
++                    d->blend, d->ntex);
++   for (unsigned i = 0; i < 2 && i < d->ntex && n > 0 && (size_t)n < len; i++)
++      n += snprintf(buf + n, len - n, "%s %ux%u %s lv%u mip%u tile%u%s", i ? "," : ":", d->tw[i], d->th[i],
++                    util_format_short_name(d->tf[i]), d->tlv[i], d->tmip[i], d->ttile[i],
++                    d->tfb[i] ? " (the target)" : "");
++}
++
++static void
++gd_report(void (*log)(const char *fmt, ...))
++{
++   char buf[320];
++   simple_mtx_lock(&gd.lock);
++   gd_harvest();
++   log("sweetca: gpudraw: %llu draws, GPU %.1f ms; %llu dropped, %u pending", (unsigned long long)gd.n,
++       gd.busy / 19200.0, (unsigned long long)gd.dropped, gd.head - gd.tail);
++   /* the 10 costliest shaders, each with its slowest draw */
++   bool shown[GD_GROUPS] = {0};
++   for (unsigned k = 0; k < 10; k++) {
++      int best = -1;
++      for (unsigned g = 0; g < gd.ngroups; g++)
++         if (!shown[g] && (best < 0 || gd.group[g].t > gd.group[best].t))
++            best = g;
++      if (best < 0)
++         break;
++      shown[best] = true;
++      gd_describe(&gd.group[best].slow, buf, sizeof(buf));
++      log("sweetca: gpudraw: shader %u: %llu draws %.1f ms, max %.2f ms; slowest: %s", best,
++          (unsigned long long)gd.group[best].n, gd.group[best].t / 19200.0, gd.group[best].max / 19200.0, buf);
++   }
++   for (unsigned k = 0; k < gd.ntop; k++) {
++      unsigned g;
++      for (g = 0; g < gd.ngroups && gd.group[g].fs != gd.top[k].fs; g++)
++         ;
++      gd_describe(&gd.top[k], buf, sizeof(buf));
++      log("sweetca: gpudraw: top %.2f ms shader %u: %s", gd.top[k].t / 19200.0, g, buf);
++   }
++   gd.n = gd.busy = gd.dropped = 0;
++   for (unsigned g = 0; g < gd.ngroups; g++)
++      gd.group[g].n = gd.group[g].t = gd.group[g].max = 0;
++   gd.ntop = 0;
++   simple_mtx_unlock(&gd.lock);
++}
++
++static void
++gd_stamp(struct fd_batch *batch, int slot, unsigned which)
++{
++   struct fd_ringbuffer *ring = batch->draw;
++   OUT_PKT7(ring, CP_EVENT_WRITE, 4);
++   OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(RB_DONE_TS) | CP_EVENT_WRITE_0_TIMESTAMP);
++   OUT_RELOC(ring, gd.bo, (2 * slot + which) * 8, 0, 0);
++   OUT_RING(ring, 0x00000000);
++   fd_reset_wfi(batch);
++}
++
++/* a slot for this draw with its start stamp emitted, or -1 */
++static int
++gd_begin(struct fd_context *ctx, const struct ir3_shader_variant *fp, const struct pipe_draw_info *info,
++         const struct pipe_draw_start_count_bias *draw) assert_dt
++{
++   struct fd_batch *batch = ctx->batch;
++   simple_mtx_lock(&gd.lock);
++   if (gd.enabled < 0) {
++      const char *v = getenv("SWEETCA_GPUPROF");
++      gd.enabled = v && atoi(v) >= 2;
++      if (gd.enabled) {
++         gd.bo = fd_bo_new(ctx->screen->dev, 2 * 8 * GD_SLOTS, 0, "gpudraw");
++         gd.ts = gd.bo ? fd_bo_map(gd.bo) : NULL;
++         gd.enabled = gd.ts != NULL;
++         if (gd.enabled)
++            sweet_gpuprof_draw_report = gd_report;
++      }
++   }
++   int slot = -1;
++   if (gd.enabled) {
++      gd_harvest();
++      if (gd.head - gd.tail < GD_SLOTS) {
++         slot = gd.head++ % GD_SLOTS;
++         gd.ts[2 * slot] = gd.ts[2 * slot + 1] = 0;
++      } else {
++         gd.dropped++;
++      }
++   }
++   simple_mtx_unlock(&gd.lock);
++   if (slot < 0)
++      return slot;
++
++   /* only this thread touches a slot between taking it and the GPU finishing it */
++   struct gd_draw *d = &gd.draw[slot];
++   struct pipe_framebuffer_state *pfb = &batch->framebuffer;
++   struct pipe_scissor_state *sc = fd_context_get_scissor(ctx);
++   struct fd_texture_stateobj *tex = &ctx->tex[MESA_SHADER_FRAGMENT];
++   float sx = ctx->viewport[0].scale[0], sy = ctx->viewport[0].scale[1];
++   *d = (struct gd_draw){
++      .fs = fp, .instrs = fp->info.instrs_count, .waves = fp->info.max_waves,
++      .count = draw->count, .inst = info->instance_count,
++      .vp_w = (uint32_t)(2 * (sx < 0 ? -sx : sx)), .vp_h = (uint32_t)(2 * (sy < 0 ? -sy : sy)),
++      .sc_w = sc && sc->maxx > sc->minx ? sc->maxx - sc->minx : 0,
++      .sc_h = sc && sc->maxy > sc->miny ? sc->maxy - sc->miny : 0,
++      .fb_w = pfb->width, .fb_h = pfb->height, .ntex = tex->num_textures,
++      .blend = ctx->blend && ctx->blend->rt[0].blend_enable,
++   };
++   struct fd_resource *target = pfb->nr_cbufs && pfb->cbufs[0].texture ? fd_resource(pfb->cbufs[0].texture) : NULL;
++   for (unsigned i = 0; i < 2 && i < tex->num_textures; i++) {
++      struct pipe_sampler_view *view = tex->textures[i];
++      if (!view || !view->texture)
++         continue;
++      struct pipe_resource *prsc = view->texture;
++      d->tw[i] = prsc->width0;
++      d->th[i] = prsc->height0;
++      d->tlv[i] = prsc->last_level + 1;
++      d->tf[i] = view->format;
++      d->ttile[i] = fd_resource(prsc)->layout.tile_mode;
++      d->tfb[i] = target && fd_resource(prsc)->bo == target->bo;
++      d->tmip[i] = tex->samplers[i] ? tex->samplers[i]->min_mip_filter : 0;
++   }
++   gd_stamp(batch, slot, 0);
++   return slot;
++}
++#endif
++
+ static bool
+ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
+              unsigned drawid_offset,
+@@ -114,7 +328,14 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
+    emit.binning_pass = false;
+    emit.dirty = dirty;
+ 
++#ifdef __APPLE__
++   int gd_slot = gd_begin(ctx, fp, info, draw);
++#endif
+    draw_impl(ctx, ctx->batch->draw, &emit, index_offset);
++#ifdef __APPLE__
++   if (gd_slot >= 0)
++      gd_stamp(ctx->batch, gd_slot, 1);
++#endif
+ 
+    /* and now binning pass: */
+    emit.binning_pass = true;
+-- 
+2.47.3
+
