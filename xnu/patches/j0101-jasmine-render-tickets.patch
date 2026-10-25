@@ -1,0 +1,1001 @@
+From b4d87a93a08f5d05c3d5eebede1c24dcbc314f1b Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 21:00:04 +0100
+Subject: [PATCH] jasmine: render tickets for libsweetca mode 2 (j0101)
+
+Task 16 build 2, behind sweetgpu_tickets=1 (needs sweetfb_queue=1, default
+off). SweetGPU selector 8 QUERY/BEGIN and 9 SEAL/ABORT: a generation per
+written IOSurface, sealed with a successful post-BEGIN submit's seqno, so
+CoreAnimation's w_Flush can return without draining the driver queue. The
+presenter shows a ticketed layer once it is sealed and the GPU has passed
+that seqno; CPU access to a pending surface waits for it (100 ms).
+Cancellation on GPU client close and display power-off; terminal receipts
+bounded per connection; framebench events 30/31/37-41.
+
+A slow frame is not a fault: tickets have no deadline of their own (BEGIN is
+the first draw, so CA's CPU work and shader variants compiled in the drain
+count against it); the presenter's bound for ticketed frames is 1 s.
+
+Implementation by Codex (gpt-6.1-sol), review fixes by Claude.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp   | 104 ++++++-
+ iokit/Kernel/arm/SweetGPU.cpp           |  97 +++++++
+ iokit/Kernel/arm/SweetRenderTickets.inc | 355 ++++++++++++++++++++++++
+ iokit/Kernel/arm/SweetSurface.cpp       |  37 ++-
+ iokit/Kernel/arm/SweetSurface.h         |  54 +++-
+ 5 files changed, 624 insertions(+), 23 deletions(-)
+ create mode 100755 iokit/Kernel/arm/SweetRenderTickets.inc
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 2a9facb..5e96d6d 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -418,6 +418,7 @@ public:
+ 	uint8_t       fQueueRec[SWEET_FB_SWAP_REC_SIZE];
+ 	SweetSurface *fQueueHold[4];
+ 	uint32_t      fQueueSeq[4], fQueueEpoch;
++	SweetRenderTicket *fQueueTicket[4]; /* retained generation snapshot, including unchanged layers */
+ 	uint64_t      fSerial, fAcceptedSerial, fProgramSerial, fLatchedSerial;
+ 	bool          fWrapped;
+ 	bool          fLatchValid, fShownValid;
+@@ -468,6 +469,8 @@ class IOAcceleratorES : public IOService {
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+ 
++#include "SweetRenderTickets.inc"
++
+ struct SweetPresentScope {
+ 	AppleCLCD *fb;
+ 	bool owned;
+@@ -713,6 +716,11 @@ AppleCLCD::start(IOService *provider)
+ 	fProtocol = queue != 0;
+ 	fQueueActive = false;
+ 	fEpoch = 1;
++	PE_parse_boot_argn("sweetgpu_tickets", &sweet_tickets_on, sizeof(sweet_tickets_on));
++	if (sweet_tickets_on && !fProtocol) {
++		IOLog("SWEET GPU: tickets refused: requires sweetfb_queue=1\n");
++		sweet_tickets_on = 0;
++	}
+ 	if (fProtocol) { sweet_fb_force_sync = true; }
+ 	uint32_t sync = 0;
+ 	if ((fProtocol || !(PE_parse_boot_argn("sweetfb_sync", &sync, sizeof(sync)) && sync != 0)) && (fQLock = IOLockAlloc()) != NULL) {
+@@ -727,6 +735,10 @@ AppleCLCD::start(IOService *provider)
+ 		}
+ 	}
+ 	if (fProtocol && fQLock == NULL) { fProtocol = fQueueActive = false; }
++	if (sweet_tickets_on && !fQueueActive) {
++		IOLog("SWEET GPU: tickets refused: queue presenter unavailable\n");
++		sweet_tickets_on = 0;
++	}
+ 
+ 	publishModes();
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+@@ -1350,7 +1362,11 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			if (available && queued) {
+ 				memcpy(fQueueRec, rec, sizeof(fQueueRec));
+ 				memcpy(fQueueHold, held, sizeof(fQueueHold));
+-				for (unsigned i = 0; i < 4; i++) { fQueueSeq[i] = held[i] ? held[i]->gpuSeqno : 0; }
++				for (unsigned i = 0; i < 4; i++) {
++					fQueueSeq[i] = held[i] ? held[i]->gpuSeqno : 0;
++					fQueueTicket[i] = held[i] ? held[i]->renderTicket : NULL;
++					if (fQueueTicket[i]) { fQueueTicket[i]->retain(); }
++				}
+ 				fQueueEpoch = fEpoch;
+ 				fAcceptedSerial = serial;
+ 				fQueueWaiting = true;
+@@ -1371,6 +1387,13 @@ AppleCLCD::swap(const uint8_t *rec)
+ 					sweet_hold_set(held, false);
+ 					return kIOReturnAborted;
+ 				}
++				for (unsigned i = 0; i < 4; i++) {
++					if (sweet_tickets_enabled() && held[i] && sweet_surface_cpu_access(held[i], true) != kIOReturnSuccess) {
++						rejectFrame(get32(rec, 0x50), 16, kIOReturnAborted);
++						sweet_hold_set(held, false);
++						return kIOReturnSuccess;
++					}
++				}
+ 				uint64_t until;
+ 				clock_interval_to_deadline(100, kMillisecondScale, &until);
+ 				for (;;) {
+@@ -1589,6 +1612,7 @@ AppleCLCD::queuePresent(void)
+ {
+ 	uint8_t rec[SWEET_FB_SWAP_REC_SIZE];
+ 	SweetSurface *held[4];
++	SweetRenderTicket *tickets[4];
+ 	uint32_t seq[4], epoch;
+ 	IOLockLock(fLock);
+ 	while (!fQueueWaiting || fPresentBusy) {
+@@ -1598,25 +1622,67 @@ AppleCLCD::queuePresent(void)
+ 	memcpy(rec, fQueueRec, sizeof(rec));
+ 	memcpy(held, fQueueHold, sizeof(held));
+ 	memcpy(seq, fQueueSeq, sizeof(seq));
++	memcpy(tickets, fQueueTicket, sizeof(tickets));
+ 	epoch = fQueueEpoch;
+ 	IOLockUnlock(fLock);
+ 	SweetPresentScope scope = { this, true };
+ 	uint64_t until;
+-	clock_interval_to_deadline(100, kMillisecondScale, &until);
++	bool tracked = false;
++	for (unsigned i = 0; i < 4; i++) { tracked = tracked || tickets[i] != NULL; }
++	/* A tracked frame's drain (shader variants are compiled there) and its GPU work both
++	 * count from here. Slow is not a fault, and this bound switches the queue off for the
++	 * boot, so it is for lost work only; admission drops frames meanwhile. */
++	clock_interval_to_deadline(tracked ? 1000 : 100, kMillisecondScale, &until);
+ 	bool ready = false;
++	IOReturn ticketError = kIOReturnSuccess;
++	uint64_t ticketStart = mach_absolute_time();
+ 	while (!terminal()) {
+ 		uint32_t done = sweet_gpu_completed();
+ 		ready = true;
++		if (tracked) { IOLockLock(fLock); }
+ 		for (unsigned i = 0; i < 4; i++) {
+-			if (seq[i] && (int32_t)(done - seq[i]) < 0) { ready = false; }
+-		}
+-		if (ready || mach_absolute_time() >= until) { break; }
++			if (tickets[i]) {
++				IOReturn r = sweet_ticket_ready(tickets[i], done, &seq[i]);
++				if (r != kIOReturnSuccess) { ready = false; }
++				if (r != kIOReturnSuccess && r != kIOReturnNotReady) { ticketError = r; }
++			} else if (seq[i] && (int32_t)(done - seq[i]) < 0) { ready = false; }
++		}
++		if (tracked) { IOLockUnlock(fLock); }
++		if (ready || ticketError != kIOReturnSuccess || mach_absolute_time() >= until) { break; }
+ 		sweet_fb_pause(1000);
+ 	}
++	uint64_t ticketNS = 0;
++	absolutetime_to_nanoseconds(mach_absolute_time() - ticketStart, &ticketNS);
++	for (unsigned i = 0; i < 4; i++) {
++		if (tickets[i]) { sweet_ticket_metadata(tickets[i]); sweet_bench_event(39, get32(rec, 0x50), (uint32_t)tickets[i]->generation,
++		    ready ? 0 : (uint32_t)(ticketError == kIOReturnSuccess ? kIOReturnTimeout : ticketError), (uint32_t)(ticketNS / 1000)); }
++	}
++	bool cancelled = false;
++	if (tracked) {
++		IOLockLock(fLock);
++		for (unsigned i = 0; i < 4; i++) { cancelled = cancelled || (tickets[i] && tickets[i]->cancelled); }
++		IOLockUnlock(fLock);
++	}
++	bool cancelQuiesced = false;
++	if (cancelled) {
++		clock_interval_to_deadline(100, kMillisecondScale, &until);
++		for (;;) {
++			uint32_t done = sweet_gpu_completed();
++			IOLockLock(fLock);
++			cancelQuiesced = true;
++			for (unsigned i = 0; i < 4; i++) {
++				if ((tickets[i] && tickets[i]->backing) ||
++				    (held[i] && held[i]->gpuSeqno && (int32_t)(done - held[i]->gpuSeqno) < 0)) { cancelQuiesced = false; }
++			}
++			IOLockUnlock(fLock);
++			if (cancelQuiesced || terminal() || mach_absolute_time() >= until) { break; }
++			sweet_fb_pause(1000);
++		}
++	}
+ 	bool latched = waitLatch();
+ 	IOLockLock(fLock);
+-	bool valid = ready && latched && !terminal() && fQueueActive && epoch == fEpoch && queueCandidate(rec, held);
+-	if (!valid && fQueueActive) { queueFallback(ready ? 3 : 2); }
++	bool valid = ready && !cancelled && latched && !terminal() && fQueueActive && epoch == fEpoch && queueCandidate(rec, held);
++	if (!valid && fQueueActive && !(cancelled && cancelQuiesced)) { queueFallback(ready ? 3 : 2); }
+ 	IOLockUnlock(fLock);
+ 	if (valid) {
+ 		unsigned layer = 0;
+@@ -1633,14 +1699,15 @@ AppleCLCD::queuePresent(void)
+ 		IOLockUnlock(fLock);
+ 		noteShown(get32(rec, 0x50));
+ 	} else {
+-		sweet_bench_event(34, get32(rec, 0x50), epoch, ready ? 3 : 2, 0);
++		uint32_t reason = cancelled && cancelQuiesced ? 13 : ready ? 3 : 2;
++		sweet_bench_event(34, get32(rec, 0x50), epoch, reason, 0);
+ 		IOLockLock(fLock);
+ 		fDrops++;
+-		fDropReason[ready ? 3 : 2]++;
++		fDropReason[reason]++;
+ 		for (unsigned i = 0; i < 128; i++) {
+-			if (fTokens[i].id == get32(rec, 0x50) && fTokens[i].owner) { fTokens[i].cancelled = ready; }
++			if (fTokens[i].id == get32(rec, 0x50) && fTokens[i].owner) { fTokens[i].cancelled = ready || cancelQuiesced; }
+ 		}
+-		if (!ready || terminal()) {
++		if ((!ready && !cancelQuiesced) || terminal()) {
+ 			/* Bounded quarantine: only one admitted record; never free unfinished GPU storage. */
+ 			memcpy(fFaultHold, held, sizeof(fFaultHold));
+ 			uint64_t bytes = 0;
+@@ -1656,6 +1723,7 @@ AppleCLCD::queuePresent(void)
+ 	}
+ 	IOLockLock(fLock);
+ 	bzero(fQueueHold, sizeof(fQueueHold));
++	bzero(fQueueTicket, sizeof(fQueueTicket));
+ 	fQueueWaiting = false;
+ 	IOLockWakeup(fLock, fQueueRec, false);
+ 	if (fAdmissions && fAdmissions % 600 == 0) {
+@@ -1664,8 +1732,10 @@ AppleCLCD::queuePresent(void)
+ 		IOLog("SWEET FB: guard rejected q/s/r %u/%u/%u, wait us %llu/%llu/%llu, latch checks %u; drops admission/GPU/epoch/record %u/%u/%u/%u\n",
+ 		    fGuardReject[1], fGuardReject[2], fGuardReject[3], fGuardUS[1], fGuardUS[2], fGuardUS[3], fLatchTimeoutChecks,
+ 		    fDropReason[1], fDropReason[2], fDropReason[3], fDropReason[12]);
++		sweet_ticket_stats();
+ 	}
+ 	IOLockUnlock(fLock);
++	for (unsigned i = 0; i < 4; i++) { OSSafeReleaseNULL(tickets[i]); }
+ }
+ 
+ /* State numbers in GUARD: 1 queued, 2 scanning, 3 retiring, 4 quarantine. */
+@@ -2432,7 +2502,7 @@ AppleCLCD::directPresent(const uint8_t *rec, SweetSurface **sources)
+ 		if (fScaler && s->gpuPool && whole && s->bytesPerElement == 4 && s->width == fLogicalW &&
+ 		    s->height == fLogicalH && (pa & 0xf) == 0 && (s->bytesPerRow & 0xf) == 0 &&
+ 		    pa + (uint64_t)fLogicalH * s->bytesPerRow < (1ull << 32)) {
+-			sweet_surface_cpu_access(s);    /* the GPU's last job on it is done (j0055) */
++			sweet_surface_cpu_access(s, !(fProtocol && sweet_tickets_enabled())); /* S6 validated before any copy/MMIO */
+ 			sweet_bench_event(13, get32(rec, 0x50), s->id, s->gpuSeqno, 1);
+ 			scanScaled(pa, s->bytesPerRow);
+ 			ok = true;
+@@ -2576,7 +2646,7 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface **sources)
+ 			continue;
+ 		}
+ 		(void)topaz_surface_drawn(s, 100);
+-		sweet_surface_cpu_access(s);
++		sweet_surface_cpu_access(s, !(fProtocol && sweet_tickets_enabled()));
+ 		if (fFitW != 0 && dst != (uint8_t *)fPixels) {
+ 			if (w <= 0 || h <= 0) {
+ 				w = (int32_t)s->width;
+@@ -2862,6 +2932,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				break;
+ 			}
+ 			SweetPresentScope scope = { fFB, false };
++			if (off) { sweet_ticket_cancel(NULL); }
+ 			if (fFB->fProtocol) {
+ 				scope.owned = fFB->drainPresent();
+ 				if (!scope.owned) { sweet_fb_submit_fault(8); scope.owned = fFB->drainPresent(); }
+@@ -2869,6 +2940,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			}
+ 			IOLockLock(fFB->fLock);
+ 			bool changed = off != fFB->fPowerOff;
++			if (!off) { sweet_ticket_suspended = false; }
+ 			if (changed) {
+ 				fFB->fPowerOff = off;
+ 				fFB->fFadeStep = 0;
+@@ -2914,6 +2986,12 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		    args->scalarInputCount, args->structureInputSize,
+ 		    args->scalarOutputCount, args->structureOutputSize, ret);
+ 	}
++	/* CA permanently stops presenting after a failed SwapEnd. A ticket fault
++	 * drops the frame/falls back, but never becomes a failed CA transaction. */
++	if (selector == kSweetFBSwapEnd && sweet_tickets_enabled() && ret != kIOReturnSuccess) {
++		fFB->rejectFrame(0, 16, ret);
++		ret = kIOReturnSuccess;
++	}
+ 	return ret;
+ }
+ #endif /* SWEET */
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 0b8e5e2..e507a84 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -456,6 +456,8 @@ class SweetGPUUserClient : public IOUserClient {
+ 	uint32_t fStatSubmits, fStatBufs, fStatBulk;
+ 	uint32_t fActiveCalls;
+ 	bool fClosing;
++	SweetRenderOwner fRender;
++	OSArray *fTickets; /* newest receipts keep repeated SEAL/ABORT idempotent */
+ 
+ 	SweetGPUBuffer *buffer(uint64_t handle);
+ 	uint32_t addBuffer(SweetGPUBuffer *b);
+@@ -486,6 +488,8 @@ SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ 	proc_selfname(fName, sizeof(fName));
+ 	GPULOG("opened by %s", fName);
+ 	fJobs = fJobsTail = NULL;
++	bzero(&fRender, sizeof(fRender));
++	fTickets = NULL; /* no ticket allocation on the default path */
+ 	fStatT0 = fStatNs = fStatBytes = 0;
+ 	fStatSubmits = fStatBufs = fStatBulk = 0;
+ 	fLock = IOLockAlloc();
+@@ -496,6 +500,8 @@ SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ void
+ SweetGPUUserClient::free()
+ {
++	if (fRender.proof) { IODelete(fRender.proof, SweetSubmitProof, SWEET_TICKET_PROOFS); fRender.proof = NULL; }
++	OSSafeReleaseNULL(fTickets);
+ 	OSSafeReleaseNULL(fBuffers);
+ 	if (fLock != NULL) {
+ 		IOLockFree(fLock);
+@@ -530,6 +536,7 @@ SweetGPUUserClient::clientClose(void)
+ 		if (!idle || (seq && (int32_t)(sweet_gpu_completed() - seq) < 0)) {
+ 			/* Quiescence is unproved: retain the connection, mappings, pins and BOs for this boot. */
+ 			retain();
++			sweet_ticket_cancel(&fRender);
+ 			sweet_fb_submit_fault(14);
+ 			IOLog("SWEET GPU: close quarantined %s, active %u, last job %u; storage retained for boot\n",
+ 			    fName, fActiveCalls, seq);
+@@ -537,6 +544,7 @@ SweetGPUUserClient::clientClose(void)
+ 			return kIOReturnSuccess;
+ 		}
+ 	}
++	sweet_ticket_cancel(&fRender);
+ 	retireJobs(0, true);
+ 	if (sweet_fb_queue_boot()) {
+ 		fBuffers->flushCollection(); /* calls are quiesced; no lock across last release */
+@@ -815,6 +823,7 @@ SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t n
+ 		    fName, fStatSubmits, since / NSEC_PER_MSEC, fStatSubmits ? fStatBufs / fStatSubmits : 0,
+ 		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC, fStatBulk, sweet_gpu_held_draws,
+ 		    sweet_gpu_panel_waits, sweet_gpu_panel_us / 1000, sweet_gpu_nbo_zero, sweet_fb_sleep_us(), sweet_fb_spin_us(), sweet_gpu_protected_listings);
++		sweet_ticket_gpu_stats();
+ 		sweet_gpu_held_draws = sweet_gpu_panel_waits = 0;
+ 		sweet_gpu_panel_us = 0;
+ 		fStatT0 = now;
+@@ -895,17 +904,31 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (nin < 1) {
+ 			return kIOReturnBadArgument;
+ 		}
++		SweetGPUBuffer *released = NULL;
+ 		IOLockLock(fLock);
+ 		IOReturn ret = kIOReturnBadArgument;
+ 		if (in[0] >= 1 && in[0] <= fBuffers->getCount() &&
+ 		    OSDynamicCast(SweetGPUBuffer, fBuffers->getObject((unsigned int)in[0] - 1)) != NULL) {
++			if (sweet_tickets_enabled()) {
++				released = (SweetGPUBuffer *)fBuffers->getObject((unsigned int)in[0] - 1);
++				released->retain();
++			}
+ 			fBuffers->replaceObject((unsigned int)in[0] - 1, kOSBooleanFalse);
+ 			ret = kIOReturnSuccess;
+ 		}
+ 		IOLockUnlock(fLock);
++		OSSafeReleaseNULL(released);
+ 		return ret;
+ 	}
+ 	case 3: {       /* submit */
++		struct TicketSubmit {
++			SweetRenderOwner *owner;
++			uint64_t issued;
++			uint32_t seqno;
++			bool success;
++			~TicketSubmit() { sweet_ticket_submit(owner, issued, seqno, success); }
++		} proof = { &fRender, sweet_ticket_submit_enter(&fRender), 0, false };
++		if (sweet_tickets_enabled() && !proof.issued) { return kIOReturnNoResources; }
+ 		struct ib {
+ 			uint64_t iova;
+ 			uint32_t dwords, pad;
+@@ -1038,6 +1061,7 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 				if (js != NULL && !job->bufs[i]->readonly) {
+ 					sweet_bench_event(22, seqno, js->id, (uint32_t)job->bufs[i]->size, 0);
+ 					js->gpuSeqno = seqno;
++					sweet_ticket_legacy_write(js);
+ 					uint32_t state = sweet_fb_write_state(js);
+ 					protectedListing = protectedListing || state == 2 || state == 3;
+ 					held = held || (js->state != NULL &&
+@@ -1060,6 +1084,7 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (err == 0 && sweet_gpu_debug && sweet_gpu_hang_check(seqno, 1000) != 0) {
+ 			return kIOReturnTimeout;
+ 		}
++		proof.seqno = seqno; proof.success = err == 0;
+ 		return err == 0 ? kIOReturnSuccess : err == EBUSY ? kIOReturnBusy : kIOReturnError;
+ 	}
+ 	case 4:         /* wait */
+@@ -1120,6 +1145,78 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		b->release();
+ 		return kIOReturnSuccess;
+ 	}
++	case 8: {       /* versioned QUERY / BEGIN */
++		if (nin < 2 || in[0] != 1) { return kIOReturnBadArgument; }
++		uint64_t epoch = 0, flags = sweet_ticket_query(&epoch);
++		if (in[1] == 0) {
++			if (nin != 2 || args->structureInputSize || args->structureInputDescriptor || args->scalarOutputCount != 4) { return kIOReturnBadArgument; }
++			args->scalarOutput[0] = 1; args->scalarOutput[1] = flags;
++			args->scalarOutput[2] = 32; args->scalarOutput[3] = epoch;
++			return kIOReturnSuccess;
++		}
++		if (in[1] != 1 || nin != 3 || args->scalarOutputCount != 2 || args->structureInputDescriptor) { return kIOReturnBadArgument; }
++		const uint32_t *s = (const uint32_t *)args->structureInput;
++		if (!s || args->structureInputSize < 12 || !s[0] || s[0] > 32 || s[1] || args->structureInputSize != 8 + 4 * s[0]) { return kIOReturnBadArgument; }
++		if ((flags & 9) != 9) { return kIOReturnUnsupported; }
++		if (!sweet_ticket_owner_prepare(&fRender)) { return kIOReturnNoMemory; }
++		SweetRenderTicket *t = OSTypeAlloc(SweetRenderTicket);
++		if (!t || !t->init()) { OSSafeReleaseNULL(t); return kIOReturnNoMemory; }
++		t->backing = OSArray::withCapacity(s[0]);
++		SweetSurface *surfaces[32] = {};
++		IOReturn ret = t->backing ? kIOReturnSuccess : kIOReturnNoMemory;
++		for (unsigned i = 0; ret == kIOReturnSuccess && i < s[0]; i++) {
++			SweetGPUBuffer *b = buffer(s[2 + i]);
++			if (!b || !b->surface || b->readonly || b->surface->readOnly) { ret = kIOReturnBadArgument; }
++			else if (!t->backing->setObject(b)) { ret = kIOReturnNoMemory; }
++			else { surfaces[i] = b->surface; }
++			OSSafeReleaseNULL(b);
++		}
++		bool stored = false;
++		if (ret == kIOReturnSuccess) {
++			IOLockLock(fLock); bool needTable = fTickets == NULL; IOLockUnlock(fLock);
++			OSArray *table = needTable ? OSArray::withCapacity(32) : NULL;
++			IOLockLock(fLock);
++			if (!fTickets) { fTickets = table; table = NULL; }
++			IOLockUnlock(fLock);
++			OSSafeReleaseNULL(table);
++			IOLockLock(fLock); stored = fTickets && fTickets->setObject(t); IOLockUnlock(fLock);
++			ret = stored ? sweet_ticket_begin(&fRender, t, surfaces, s[0], in[2]) : kIOReturnNoMemory;
++		}
++		if (ret == kIOReturnSuccess) {
++			args->scalarOutput[0] = t->generation; args->scalarOutput[1] = t->epoch;
++			/* Repeated SEAL/ABORT calls come within a frame or two: keep the newest receipts.
++			 * One per frame for the connection's life (backboardd's) grew without bound. */
++			OSObject *oldest = NULL;
++			IOLockLock(fLock);
++			if (fTickets->getCount() > SWEET_TICKET_RECEIPTS) {
++				oldest = fTickets->getObject(0); oldest->retain(); fTickets->removeObject(0);
++			}
++			IOLockUnlock(fLock);
++			OSSafeReleaseNULL(oldest);
++		} else if (stored) {
++			IOLockLock(fLock);
++			unsigned index = fTickets->getNextIndexOfObject(t, 0);
++			if (index != (unsigned)-1) { fTickets->removeObject(index); }
++			IOLockUnlock(fLock);
++		}
++		t->release();
++		return ret;
++	}
++	case 9: {       /* SEAL / ABORT */
++		if (nin != 5 || in[0] != 1 || !in[1] || in[3] > 1 || in[4] > 0xffffffffull ||
++		    (in[3] && in[4]) || args->structureInputSize || args->structureInputDescriptor || args->scalarOutputCount) { return kIOReturnBadArgument; }
++		SweetRenderTicket *t = NULL;
++		IOLockLock(fLock);
++		for (unsigned i = fTickets ? fTickets->getCount() : 0; i > 0; i--) {
++			SweetRenderTicket *p = (SweetRenderTicket *)fTickets->getObject(i - 1);
++			if (__atomic_load_n(&p->generation, __ATOMIC_ACQUIRE) == in[1]) { t = p; t->retain(); break; }
++		}
++		IOLockUnlock(fLock);
++		if (!t) { sweet_ticket_unknown(); return kIOReturnNotFound; }
++		IOReturn ret = sweet_ticket_end(&fRender, t, in[2], in[3] == 1, (uint32_t)in[4]);
++		t->release();
++		return ret;
++	}
+ 	default:
+ 		return kIOReturnUnsupported;
+ 	}
+diff --git a/iokit/Kernel/arm/SweetRenderTickets.inc b/iokit/Kernel/arm/SweetRenderTickets.inc
+new file mode 100755
+index 0000000..020aaf9
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetRenderTickets.inc
+@@ -0,0 +1,355 @@
++/* j0101: included by SweetFramebuffer.cpp. All state uses AppleCLCD::fLock.
++ * No GPU/client/pool lock is taken here. Polls and last releases are outside it.
++ */
++OSDefineMetaClassAndStructors(SweetRenderTicket, OSObject);
++static SweetRenderTicket *sweet_ticket_list;
++static uint64_t sweet_render_epoch = 1;
++static uint64_t sweet_render_owner;
++static bool sweet_ticket_suspended;
++static uint32_t sweet_tickets_on;
++static uint64_t sweet_ticket_begins, sweet_ticket_seals, sweet_ticket_aborts;
++static uint64_t sweet_ticket_stale, sweet_ticket_errors, sweet_ticket_timeouts;
++static uint64_t sweet_ticket_live, sweet_ticket_high;
++
++static void
++sweet_ticket_unlink(SweetRenderTicket *t)
++{
++	SweetRenderTicket **p = &sweet_ticket_list;
++	while (*p && *p != t) { p = &(*p)->next; }
++	if (*p) { *p = t->next; }
++	t->next = NULL; t->listed = false;
++}
++
++static void
++sweet_ticket_metadata(SweetRenderTicket *t)
++{
++	sweet_bench_event(40, (uint32_t)t->generation, (uint32_t)(t->generation >> 32),
++	    (uint32_t)t->identity, (uint32_t)(t->identity >> 32));
++	sweet_bench_event(41, (uint32_t)t->generation, (uint32_t)(t->generation >> 32),
++	    (uint32_t)t->epoch, (uint32_t)(t->epoch >> 32));
++}
++
++void
++SweetRenderTicket::free()
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (listed && fb) {
++		IOLockLock(fb->fLock);
++		sweet_ticket_unlink(this);
++		IOLockUnlock(fb->fLock);
++	}
++	OSSafeReleaseNULL(backing);
++	OSObject::free();
++}
++
++bool
++sweet_tickets_enabled(void)
++{
++	return sweet_tickets_on != 0;
++}
++
++uint64_t
++sweet_ticket_query(uint64_t *epoch)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb) { *epoch = sweet_render_epoch; return 2; }
++	IOLockLock(fb->fLock);
++	*epoch = sweet_render_epoch;
++	uint64_t flags = 2 | (sweet_tickets_on ? 1 : 0) | (sweet_fb_sleeping ? 4 : 0) |
++	    (fb->fQueueActive && !sweet_ticket_suspended && !fb->fPowerOff && !fb->terminal() ? 8 : 0);
++	IOLockUnlock(fb->fLock);
++	return flags;
++}
++
++IOReturn
++sweet_ticket_begin(SweetRenderOwner *owner, SweetRenderTicket *t, SweetSurface **surfaces,
++    uint32_t count, uint64_t epoch)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb) { return kIOReturnUnsupported; }
++	SweetRenderTicket *old[32] = {};
++	IOLockLock(fb->fLock);
++	IOReturn ret = kIOReturnSuccess;
++	if (owner->closed || !fb->fQueueActive || sweet_ticket_suspended || fb->fPowerOff || fb->terminal() || epoch != sweet_render_epoch) {
++		sweet_ticket_stale++; ret = kIOReturnAborted;
++	} else if (owner->generation == ~0ull || owner->issued == ~0ull || owner->serial == ~0ull ||
++	    owner->errors == ~0ull || (!owner->identity && sweet_render_owner == ~0ull)) {
++		ret = kIOReturnBusy;
++	}
++	for (unsigned i = 0; ret == kIOReturnSuccess && i < count; i++) {
++		SweetSurface *s = surfaces[i];
++		SweetRenderTicket *p = s->renderTicket;
++		if (s->displayWriters || fb->writeState(s) || (p && (p->status == 0 || p->backing))) { ret = kIOReturnBusy; }
++		for (unsigned j = 0; j < i; j++) { if (s == surfaces[j]) { ret = kIOReturnBadArgument; } }
++	}
++	if (ret == kIOReturnSuccess) {
++		t->owner = owner;
++		__atomic_store_n(&t->generation, ++owner->generation, __ATOMIC_RELEASE);
++		t->epoch = epoch;
++		t->serial = owner->serial;
++		t->issued = owner->issued;
++		if (!owner->identity) { owner->identity = ++sweet_render_owner; }
++		t->identity = owner->identity;
++		t->errors = owner->errors;
++		t->status = t->seqno = 0;
++		t->next = sweet_ticket_list; sweet_ticket_list = t; t->listed = true;
++		sweet_ticket_metadata(t);
++		for (unsigned i = 0; i < count; i++) {
++			old[i] = surfaces[i]->renderTicket;
++			t->retain(); surfaces[i]->renderTicket = t;
++			sweet_bench_event(30, surfaces[i]->id, (uint32_t)t->generation,
++			    (uint32_t)(t->generation >> 32), (uint32_t)epoch);
++		}
++		sweet_ticket_begins++; sweet_ticket_live++;
++		if (sweet_ticket_live > sweet_ticket_high) { sweet_ticket_high = sweet_ticket_live; }
++	}
++	IOLockUnlock(fb->fLock);
++	for (unsigned i = 0; i < count; i++) { OSSafeReleaseNULL(old[i]); }
++	return ret;
++}
++
++IOReturn
++sweet_ticket_proof(SweetRenderOwner *owner, SweetRenderTicket *t, uint32_t seqno)
++{
++	if (!seqno || !owner->proof || owner->errors != t->errors) { return kIOReturnBadArgument; }
++	for (unsigned i = 0; i < SWEET_TICKET_PROOFS; i++) {
++		SweetSubmitProof &p = owner->proof[i];
++		if (p.seqno == seqno && p.serial > t->serial && p.issued > t->issued) { return kIOReturnSuccess; }
++	}
++	return kIOReturnBadArgument; /* never infer success from a global/evicted fence */
++}
++
++bool
++sweet_ticket_owner_prepare(SweetRenderOwner *owner)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb) { return false; }
++	IOLockLock(fb->fLock); bool have = owner->proof != NULL; IOLockUnlock(fb->fLock);
++	if (have) { return true; }
++	SweetSubmitProof *proof = IONewZero(SweetSubmitProof, SWEET_TICKET_PROOFS);
++	IOLockLock(fb->fLock);
++	if (!owner->proof) { owner->proof = proof; proof = NULL; }
++	have = owner->proof != NULL;
++	IOLockUnlock(fb->fLock);
++	if (proof) { IODelete(proof, SweetSubmitProof, SWEET_TICKET_PROOFS); }
++	return have;
++}
++
++IOReturn
++sweet_ticket_end(SweetRenderOwner *owner, SweetRenderTicket *t, uint64_t epoch,
++    bool abort, uint32_t seqno)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb || !sweet_tickets_on) { return kIOReturnUnsupported; }
++	OSArray *backing = NULL;
++	IOLockLock(fb->fLock);
++	IOReturn ret = kIOReturnSuccess;
++	if (t->owner != owner || t->epoch != epoch) {
++		sweet_ticket_stale++; ret = kIOReturnAborted;
++	} else if (t->status) {
++		if (!(abort && t->status == 2) && !(t->status == 1 && !abort && t->seqno == seqno)) {
++			sweet_ticket_stale++; ret = t->status == 2 ? kIOReturnAborted : kIOReturnBusy;
++		}
++		if (abort && t->status == 2) {
++			backing = t->backing; t->backing = NULL;
++			sweet_ticket_unlink(t);
++		}
++	} else if (epoch != sweet_render_epoch || fb->terminal()) {
++		sweet_ticket_stale++; ret = kIOReturnAborted;
++	} else if (!abort && sweet_ticket_proof(owner, t, seqno) != kIOReturnSuccess) {
++		sweet_ticket_errors++; ret = kIOReturnBadArgument;
++	} else {
++		t->status = abort ? 2 : 1; t->seqno = seqno;
++		if (abort) { sweet_ticket_aborts++; } else { sweet_ticket_seals++; }
++		sweet_ticket_live--;
++		sweet_ticket_metadata(t);
++		sweet_bench_event(abort ? 37 : 31, (uint32_t)t->generation,
++		    (uint32_t)(t->generation >> 32), seqno, abort ? 1 : 0);
++		backing = t->backing; t->backing = NULL;
++		sweet_ticket_unlink(t);
++		IOLockWakeup(fb->fLock, fb->fQueueRec, false);
++	}
++	IOLockUnlock(fb->fLock);
++	OSSafeReleaseNULL(backing);
++	return ret;
++}
++
++uint64_t
++sweet_ticket_submit_enter(SweetRenderOwner *owner)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb) { return 0; }
++	IOLockLock(fb->fLock);
++	uint64_t issued = owner->issued == ~0ull ? 0 : ++owner->issued;
++	IOLockUnlock(fb->fLock);
++	return issued;
++}
++
++void
++sweet_ticket_submit(SweetRenderOwner *owner, uint64_t issued, uint32_t seqno, bool success)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb) { return; }
++	IOLockLock(fb->fLock);
++	if (success && owner->serial != ~0ull) {
++		owner->serial++; owner->seqno = seqno;
++		if (owner->proof) {
++			SweetSubmitProof &p = owner->proof[owner->serial % SWEET_TICKET_PROOFS];
++			p.serial = owner->serial; p.issued = issued; p.seqno = seqno;
++		}
++	}
++	else { if (owner->errors != ~0ull) { owner->errors++; } sweet_ticket_errors++; }
++	IOLockUnlock(fb->fLock);
++}
++
++/* Cancel first, then detach each backing retain outside fLock. UC/job/CA holds
++ * cover in-flight writers; closing a GPU UC still proves quiescence or quarantines.
++ */
++void
++sweet_ticket_cancel(SweetRenderOwner *owner)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb) { return; }
++	IOLockLock(fb->fLock);
++	if (!owner) {
++		sweet_render_epoch++; sweet_ticket_suspended = true;
++		sweet_bench_event(35, fb->fEpoch, 20, (uint32_t)sweet_render_epoch, (uint32_t)(sweet_render_epoch >> 32));
++	}
++	else { owner->closed = true; }
++	for (SweetRenderTicket *t = sweet_ticket_list; t; t = t->next) {
++		if ((!owner || t->owner == owner) && t->status == 0) {
++			t->status = 2; t->cancelled = true; sweet_ticket_live--; sweet_ticket_aborts++;
++			sweet_ticket_metadata(t);
++			sweet_bench_event(37, (uint32_t)t->generation, (uint32_t)(t->generation >> 32), 0, 2);
++		}
++	}
++	IOLockWakeup(fb->fLock, fb->fQueueRec, false);
++	IOLockUnlock(fb->fLock);
++	/* A display cancellation cannot drain TC. Its callback still owns these
++	 * imports until it has drained/aborted. GPU close has quiesced calls (or
++	 * retained the entire UC), so it can detach them immediately. */
++	if (!owner) { return; }
++	for (;;) {
++		IOLockLock(fb->fLock);
++		OSArray *backing = NULL;
++		for (SweetRenderTicket *t = sweet_ticket_list; t; t = t->next) {
++			if ((!owner || t->owner == owner) && t->status == 2 && t->backing) {
++				backing = t->backing; t->backing = NULL;
++				sweet_ticket_unlink(t); break;
++			}
++		}
++		IOLockUnlock(fb->fLock);
++		if (!backing) { break; }
++		backing->release();
++	}
++}
++
++/* Called under fLock by the presenter; the retained ticket is its snapshot. */
++IOReturn
++sweet_ticket_ready(SweetRenderTicket *t, uint32_t done, uint32_t *seqno)
++{
++	if (!t) { return kIOReturnSuccess; }
++	if (t->status == 2 || sweet_fb_main->terminal()) { return kIOReturnAborted; }
++	if (t->status == 1 && t->seqno && (int32_t)(done - t->seqno) >= 0) {
++		*seqno = t->seqno; return kIOReturnSuccess;
++	}
++	/* No deadline of its own: BEGIN is the frame's first draw, so CA's CPU work, shader
++	 * variants compiled in the drain and heavy GPU jobs all count against it. A slow
++	 * frame is not a fault; the presenter and CPU readers bound their own waits. */
++	return kIOReturnNotReady;
++}
++
++/* After a boot fallback, a later synchronous frame uses the legacy fence.
++ * Queue snapshots retain the old terminal ticket, so this cannot ready a drop.
++ */
++void
++sweet_ticket_legacy_write(SweetSurface *s, bool cpu)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb) { return; }
++	SweetRenderTicket *old = NULL;
++	IOLockLock(fb->fLock);
++	if ((!fb->fQueueActive || cpu) && s->renderTicket && s->renderTicket->status && !s->renderTicket->backing) {
++		old = s->renderTicket; s->renderTicket = NULL;
++	}
++	IOLockUnlock(fb->fLock);
++	OSSafeReleaseNULL(old);
++}
++
++int
++sweet_ticket_cpu_write_begin(SweetSurface *s)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb) { return 0; }
++	IOLockLock(fb->fLock);
++	uint32_t state = fb->writeState(s);
++	bool pending = s->renderTicket && (s->renderTicket->status == 0 || s->renderTicket->backing);
++	if (state || pending || fb->terminal()) {
++		if (state) { fb->fGuard[state]++; fb->fGuardReject[state]++; }
++		sweet_bench_event(36, s->id, state, 1, 0);
++		if (state || fb->terminal()) { fb->queueFallback(17); } /* pending only: not on the display */
++		IOLockUnlock(fb->fLock); return -1;
++	}
++	if (!fb->fQueueActive) { IOLockUnlock(fb->fLock); return 0; }
++	s->displayWriters++; fb->fWriters++;
++	IOLockUnlock(fb->fLock);
++	return 1;
++}
++
++IOReturn
++sweet_ticket_wait(SweetSurface *s, bool sync)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb || !sync) { return kIOReturnSuccess; }
++	IOLockLock(fb->fLock);
++	SweetRenderTicket *t = s->renderTicket;
++	if (t) { t->retain(); }
++	IOLockUnlock(fb->fLock);
++	if (!t) { return kIOReturnSuccess; }
++	uint64_t until, start = mach_absolute_time(), ns = 0;
++	clock_interval_to_deadline(100, kMillisecondScale, &until);
++	IOReturn ret;
++	for (;;) {
++		uint32_t done = sweet_gpu_completed(), seq = 0;
++		IOLockLock(fb->fLock);
++		ret = sweet_ticket_ready(t, done, &seq);
++		IOLockUnlock(fb->fLock);
++		if (ret != kIOReturnNotReady) { break; }
++		if (mach_absolute_time() >= until) { ret = kIOReturnTimeout; break; }
++		IOSleep(1);
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++	sweet_ticket_metadata(t);
++	sweet_bench_event(38, s->id, (uint32_t)t->generation, (uint32_t)ret, (uint32_t)(ns / 1000));
++	t->release();
++	if (ret == kIOReturnTimeout) { IOLockLock(fb->fLock); sweet_ticket_timeouts++; IOLockUnlock(fb->fLock); }
++	return ret;
++}
++
++void
++sweet_ticket_stats(void)
++{
++	if (!sweet_tickets_on) { return; }
++	/* Caller holds fLock. Cumulative counters, not a liveness assertion. */
++	IOLog("SWEET FB: tickets begin/seal/abort %llu/%llu/%llu stale/error/timeout %llu/%llu/%llu live/high %llu/%llu epoch %llu\n",
++	    sweet_ticket_begins, sweet_ticket_seals, sweet_ticket_aborts, sweet_ticket_stale,
++	    sweet_ticket_errors, sweet_ticket_timeouts, sweet_ticket_live, sweet_ticket_high, sweet_render_epoch);
++}
++
++void
++sweet_ticket_gpu_stats(void)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb) { return; }
++	IOLockLock(fb->fLock);
++	sweet_ticket_stats();
++	IOLockUnlock(fb->fLock);
++}
++
++void
++sweet_ticket_unknown(void)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!sweet_tickets_on || !fb) { return; }
++	IOLockLock(fb->fLock); sweet_ticket_stale++; IOLockUnlock(fb->fLock);
++}
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index e3dcc58..fbba49e 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -301,6 +301,7 @@ extern SInt32 sweet_gpu_wrapped_imports; /* SweetGPU.cpp */
+ void
+ SweetSurface::free()
+ {
++	OSSafeReleaseNULL(renderTicket);
+ 	if (OSDynamicCast(IOBufferMemoryDescriptor, memory) != NULL) {
+ 		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 	}
+@@ -1707,9 +1708,12 @@ static uint64_t sweet_surface_wait_us;
+  * display's copy), not after every GPU job. Only kernel buffers: wrapped client
+  * memory is kept up around each job as before, the GPU pool is write-combined.
+  */
+-void
++IOReturn
+ sweet_surface_cpu_access(SweetSurface *s, bool sync)
+ {
++	uint64_t accessStart = mach_absolute_time();
++	IOReturn ticket = sweet_ticket_wait(s, sync);
++	if (ticket != kIOReturnSuccess) { return ticket; }
+ 	/*
+ 	 * jasmine (j0055): Mesa runs without implicit sync and CoreAnimation hands a frame
+ 	 * to the display without waiting for the GPU, so the display's copy (and a lock)
+@@ -1720,7 +1724,14 @@ sweet_surface_cpu_access(SweetSurface *s, bool sync)
+ 	uint32_t seq = s->gpuSeqno;
+ 	if (sync && seq != 0 && (int32_t)(sweet_gpu_completed() - seq) < 0) {
+ 		uint64_t t0 = mach_absolute_time(), ns = 0;
+-		(void)sweet_gpu_wait(seq, 100);
++		uint32_t ms = 100;
++		if (sweet_tickets_enabled()) {
++			absolutetime_to_nanoseconds(t0 - accessStart, &ns);
++			if (ns >= 100 * NSEC_PER_MSEC) { return kIOReturnTimeout; }
++			ms -= (uint32_t)(ns / NSEC_PER_MSEC);
++		}
++		int error = sweet_gpu_wait(seq, ms);
++		if (sweet_tickets_enabled() && error) { return kIOReturnTimeout; }
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+ 		sweet_surface_wait_us += ns / 1000;
+ 		if ((++sweet_surface_waits % 100) == 0) {
+@@ -1729,7 +1740,7 @@ sweet_surface_cpu_access(SweetSurface *s, bool sync)
+ 		}
+ 	}
+ 	if (!s->gpuDirty || OSDynamicCast(IOBufferMemoryDescriptor, s->memory) == NULL) {
+-		return;
++		return kIOReturnSuccess;
+ 	}
+ 	s->gpuDirty = false;
+ 	uint64_t len = s->memory->getLength(), bulk = sweet_gpu_bulk_bytes();
+@@ -1738,6 +1749,7 @@ sweet_surface_cpu_access(SweetSurface *s, bool sync)
+ 	} else {
+ 		IOFlushProcessorCache(kernel_task, (IOVirtualAddress)s->kernelAddress(), len);
+ 	}
++	return kIOReturnSuccess;
+ }
+ 
+ IOReturn
+@@ -1748,14 +1760,20 @@ IOSurfaceRootUserClient::trapLock(void *id, void *options, void *seedOut,
+ 	if (s == NULL) { return kIOReturnNotFound; }
+ 	bool wrote = !((uintptr_t)options & kIOSurfaceLockReadOnly);
+ 	bool reserved = false;
+-	if (wrote && (sweet_fb_present_capability() & 2)) {
+-		int reservation = sweet_fb_write_begin(&s, 1);
++	bool sync = !((uintptr_t)options & kIOSurfaceLockAvoidSync);
++	bool accessed = false;
++	if (wrote && sweet_tickets_enabled()) {
++		IOReturn ready = sweet_surface_cpu_access(s, sync);
++		if (ready != kIOReturnSuccess) { s->release(); return ready; }
++		accessed = true;
++	}
++	if (wrote && (sweet_tickets_enabled() || (sweet_fb_present_capability() & 2))) {
++		int reservation = sweet_tickets_enabled() ? sweet_ticket_cpu_write_begin(s) : sweet_fb_write_begin(&s, 1);
+ 		if (reservation < 0) { s->release(); return kIOReturnBusy; }
+ 		reserved = reservation > 0;
+ 	}
+ 	IOReturn ret = kIOReturnSuccess;
+-	bool sync = !((uintptr_t)options & kIOSurfaceLockAvoidSync);
+-	if (sync && (sweet_fb_present_capability() & 2)) {
++	if (sync && !sweet_tickets_enabled() && (sweet_fb_present_capability() & 2)) {
+ 		uint64_t until;
+ 		clock_interval_to_deadline(100, kMillisecondScale, &until);
+ 		while (s->gpuSeqno && (int32_t)(sweet_gpu_completed() - s->gpuSeqno) < 0) {
+@@ -1769,8 +1787,8 @@ IOSurfaceRootUserClient::trapLock(void *id, void *options, void *seedOut,
+ 		}
+ 	}
+ 	if (ret == kIOReturnSuccess) {
+-		sweet_surface_cpu_access(s, sync);
+-		ret = sweet_surface_seed_out(s, seedOut, false);
++		if (!accessed) { ret = sweet_surface_cpu_access(s, sync); }
++		if (ret == kIOReturnSuccess) { ret = sweet_surface_seed_out(s, seedOut, false); }
+ 	}
+ 	if (ret == kIOReturnSuccess && reserved) {
+ 		IOLockLock(fLock);
+@@ -1793,6 +1811,7 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+ 	bool wrote = !((uintptr_t)options & kIOSurfaceLockReadOnly);
+ 	if (wrote) { s->cpuDirty = true; /* cleaned before the GPU's next use (j0053) */ }
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut, wrote);
++	if (wrote && ret == kIOReturnSuccess) { sweet_ticket_legacy_write(s, true); }
+ 	bool reserved = false;
+ 	if (wrote) {
+ 		IOLockLock(fLock);
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index 19c24e2..9783e0d 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -14,10 +14,61 @@
+ #include <IOKit/IOMemoryDescriptor.h>
+ #include <IOKit/IOBufferMemoryDescriptor.h>
+ #include <libkern/c++/OSObject.h>
++#include <libkern/c++/OSArray.h>
+ #include <mach/mach_types.h>
+ 
+ #define SWEET_SURFACE_MAX_PLANES        20
+ 
++/* j0101: fLock in AppleCLCD protects tickets and their surface links. */
++class SweetSurface;
++#define SWEET_TICKET_PROOFS 1024
++#define SWEET_TICKET_RECEIPTS 256 /* newest terminal receipts kept per GPU connection */
++struct SweetSubmitProof {
++	uint64_t serial, issued;
++	uint32_t seqno;
++};
++struct SweetRenderOwner {
++	uint64_t generation, serial, errors, issued, identity;
++	uint32_t seqno;
++	SweetSubmitProof *proof;
++	bool closed;
++};
++
++class SweetRenderTicket : public OSObject {
++	OSDeclareDefaultStructors(SweetRenderTicket);
++public:
++	SweetRenderOwner *owner; /* identity only; never dereferenced after close */
++	uint64_t generation, epoch, serial, issued, errors, identity;
++	uint32_t seqno, status; /* 0 pending, 1 sealed, 2 aborted */
++	OSArray *backing;       /* pending imports; detached before last release */
++	SweetRenderTicket *next;
++	bool listed;
++	bool cancelled; /* expected display/client epoch cancellation */
++	bool init() APPLE_KEXT_OVERRIDE {
++		owner = NULL; generation = epoch = serial = issued = errors = identity = 0;
++		seqno = status = 0; backing = NULL; next = NULL; listed = cancelled = false;
++		return OSObject::init();
++	}
++	void free() APPLE_KEXT_OVERRIDE;
++};
++
++bool sweet_tickets_enabled(void);
++uint64_t sweet_ticket_query(uint64_t *epoch);
++IOReturn sweet_ticket_begin(SweetRenderOwner *, SweetRenderTicket *, SweetSurface **,
++    uint32_t, uint64_t);
++IOReturn sweet_ticket_end(SweetRenderOwner *, SweetRenderTicket *, uint64_t, bool, uint32_t);
++void sweet_ticket_submit(SweetRenderOwner *, uint64_t, uint32_t, bool);
++uint64_t sweet_ticket_submit_enter(SweetRenderOwner *);
++bool sweet_ticket_owner_prepare(SweetRenderOwner *);
++void sweet_ticket_legacy_write(SweetSurface *, bool cpu = false);
++int sweet_ticket_cpu_write_begin(SweetSurface *);
++void sweet_ticket_cancel(SweetRenderOwner *); /* NULL: display epoch cancellation */
++IOReturn sweet_ticket_wait(SweetSurface *, bool sync);
++void sweet_ticket_stats(void);
++void sweet_ticket_gpu_stats(void);
++void sweet_ticket_unknown(void);
++IOReturn sweet_ticket_ready(SweetRenderTicket *, uint32_t done, uint32_t *seqno);
++
+ struct sweet_surface_plane {
+ 	uint32_t width, height, bytesPerRow, offset, size;
+ 	uint16_t bytesPerElement;
+@@ -58,6 +109,7 @@ public:
+ 	volatile bool             cpuDirty, gpuDirty;
+ 	uint32_t                  displayWriters; /* task 16: submit/CPU write reservations, framebuffer fLock */
+ 	volatile uint32_t         gpuSeqno;     /* jasmine: last SweetGPU job that writes it (j0055), or 0 */
++	SweetRenderTicket        *renderTicket = NULL; /* latest generation, retained */
+ 
+ 	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; cpuDirty = true; gpuDirty = false; gpuSeqno = 0; displayWriters = 0; return OSObject::init(); }
+ 	uint64_t benchBytes = 0;
+@@ -73,7 +125,7 @@ public:
+  * sync false, IOSurfaceLock's kIOSurfaceLockAvoidSync), then drop cache lines its
+  * writes made stale (j0053).
+  */
+-void sweet_surface_cpu_access(SweetSurface *s, bool sync = true);
++IOReturn sweet_surface_cpu_access(SweetSurface *s, bool sync = true);
+ 
+ /*
+  * j0099: wrapped client memory is not wired for the surface's life; a GPU that
+-- 
+2.47.3
+
