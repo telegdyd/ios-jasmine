@@ -3,7 +3,7 @@
 Working plan for [PERF-TASKS](PERF-TASKS.md) task 16, written 2026-10-25 after the
 task-5 threaded context ([report](PERF-TASK5-THREADED-20261025.md)) made the
 per-frame `glFinish` the largest wait on CoreAnimation's display thread.
-**Status: S0 and S1 complete (2026-10-25); S2 next. G1 remains open.**
+**Status: S0-S2 complete (2026-10-25); S3 next. G1 remains open (conditional S2 feasibility).**
 Nothing here is measured yet unless a step's result says so.
 
 **How to use this file.** Each step below is sized for one agent. Take the next
@@ -21,9 +21,9 @@ first: phone lock, battery check, accessory-sync precheck, ground rules, and
 | --- | --- | --- | --- | --- | --- |
 | [S0](#s0-establish-the-baseline-and-bases) | Establish the baseline, source bases and patch number | — | read-only | done | Codex, 2026-10-25 15:01 Budapest; installed SHA256 `14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261`; slot b recorded j0070; base `bfb61629aa90e9e44d85ea929ddffbe6a5a78222`, `/home/teleg/xnu-t16` (`t16`); j0100 reserved. See S0 result. |
 | [S1](#s1-critical-path-budget-from-existing-captures) | Critical-path budget from existing captures | S0 | no | done | Codex, 2026-10-25 15:14 Budapest; `research/t16/budget.py`, `budget.json`, `stacks.txt`; CC A flush drain + GPU wait 19.16 ms/arrival (36.8% occupancy), Home A 29.37 ms (52.3%). B/repeat unsampled. See S1 result. No new CI/boot. |
-| [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | todo | |
+| [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | done | Codex, 2026-10-25 15:26 Budapest; three page records, dynamic Buffer allocation; third surface conditional on availability policy. 9,916 instruction and eight vtable checks pass. See S2 result; no CI/boot. |
 | [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | todo | |
-| [G1](#gates) | Gate: is there enough overlap to win? | S1, S2 | — | open | (a) supported by saved fix+dump capture, with final-library equivalence caveat; (b) awaits S2. No implementation approval inferred. |
+| [G1](#gates) | Gate: is there enough overlap to win? | S1, S2 | — | open | (a) supported by saved fix+dump capture, with final-library equivalence caveat; (b) S2 found conditional third-buffer feasibility; current-workload private flags/cooldown unverified. Resolve in S3/S4 before implementation. |
 | [S4](#s4-design-review) | Design review with the user | G1, S3 | no | todo | |
 | [S5](#s5-kernel-sleep-instead-of-spin-in-the-present-path) | Kernel: sleep instead of spin in the present path | S0, S3 | yes | todo | |
 | [S6](#s6-kernel-render-tickets) | Kernel: render tickets (surface pending/ready) | S4 | — | todo | |
@@ -566,3 +566,172 @@ and absence of samples in zero-duration windows. Source checked against S0's
 `bsd/dev/sweet_gpu.c:sweet_gpu_completed/sweet_gpu_wait` and
 `osfmk/arm64/sweet_bench.inc:sweet_bench_event`. Next task: **S2**, offline
 CoreAnimation swap-surface feasibility. G1 stays open; S3 and S4 remain unfinished.
+
+## S2 result (2026-10-25, complete)
+
+**G1(b): conditional third-surface feasibility, not established for the current
+workload.** This cache has a **three-page ring**, not a hard-coded two-surface
+allocation limit. Its buffer allocator can create another buffer when all existing
+buffers have page references. However, `can_update_` has a strict/cooldown path
+that can reject a tick even when the next page is free. No saved capture exposes
+those private fields. Thus a third surface is source-supported under explicit
+conditions below; automatic use under the proposed asynchronous presentation is
+unverified. **G1 remains open.** This does not disprove the premise or authorize
+implementation. Next is S3's lifecycle audit; S4 must resolve the conditional
+feasibility before S6/S7. No phone access, capture, build, CI, boot or install.
+
+### Inputs and reproduction
+
+Existing iPhone X iOS 16.7.16 / 20H392 arm64 cache at
+`/home/teleg/ios-work/gl/dsc/dyld_shared_cache_arm64` (WSL); unslid addresses below.
+Used the existing `tools/g2/dsc/` workflow and saved QuartzCore/IOMobileFramebuffer
+disassembly, not documentation for a different iOS release. No network lookup.
+Apple-derived material stays ignored under `research/t16/s2-*.txt`.
+
+Reproduce from the repository root in WSL:
+`python3 research/t16/s2-reproduce.py` (uses existing `s2-tables.py`).
+It regenerates annotated function extracts and vtable listings, compares **9,916
+selected instruction encodings** against the actual mapped cache bytes, and
+asserts eight relevant slots in the AppleDisplay and concrete AppleCLCDDisplay
+vtables. All checks passed. `research/t16/s2-validation.json` records full input
+hashes; key SHA256 values:
+
+| Input | SHA256 |
+| --- | --- |
+| `~/ios-work/gl/out/qc.s` | `a901a5545db9e996fde632d63acfc927bf9a05a8644922391e03ab8467d8f372` |
+| `~/ios-work/gl/out2/qc-symbols.txt` | `ba170c3b0c904d30766758bcd4fbab4f62e8d37ccfb30ad25f1e330527d85fd4` |
+| `~/ios-work/gl/out2/iomfb.s` | `b780c5051c23f7640d3937eec6c605651ef22864d121780c982ca8639acff41e` |
+
+These checks validate the binary evidence and virtual-call identification; they
+are not runtime tests or a proof that every private state takes the favorable path.
+
+### Page records, buffers and actual IOSurfaces are different counts
+
+`CA::WindowServer::AppleDisplay::AppleDisplay` at **0x1883aca34** initializes
+three 0x30-byte page records at object +0x3a8 (`0x1883acabc` onward).
+At **0x1883ad1e8-0x1883ad208**, normal initialization sets write index +0x358
+to 1 and page count +0x360 to **3**. The benchmark-mode global at
+0x1dcdfc26d instead selects count 1; this is not a triple-buffer enable switch.
+The examined count assignment is an internal default, not a framebuffer-property
+read or a kernel queue-depth response. No configurable surface-count property
+was identified on this path.
+
+The concrete `AppleCLCDDisplay::open` allocation block at **0x1883aeed4** calls
+this constructor and installs vptr **0x1d5b38798**. Its `can_update`, `begin_update`,
+`finish_update` and `update_surface` slots match the base vptr **0x1d5b2a5d0**;
+this is relevant to jasmine's AppleCLCD path, not only a different display backend.
+
+Reverse-engineered field meanings (names inferred from use):
+
+| Offset from display | Meaning |
+| --- | --- |
+| +0x358 / +0x35c / +0x360 | next page index / last finished page index / page count |
+| +0x364 | availability-policy countdown, not a buffer count |
+| +0x3a8 + i*0x30 | page i: update seed at +0, Buffer* +8, held Surface* +0x10, swap ID +0x18, auxiliary reference +0x20, flags +0x28 |
+| +0x4a0 | linked list of reusable Buffer objects |
+
+`finish_update_` (**0x1882ed310**, rotation at **0x1882ed374-388**) advances the
+write index modulo +0x360 and saves the prior index. Three page records do not
+mean three IOSurfaces are allocated at startup:
+
+- `allocate_buffer(Page*,bool,uint64_t)` (**0x18837881c**) first returns that
+  page's existing Buffer. Otherwise it searches +0x4a0 for a compatible Buffer
+  with **zero page references**, checked at **0x188378890-894**.
+- If none is reusable it allocates a fresh 0x88-byte Buffer at
+  **0x1883788d8-928**. This path has no two-buffer ceiling.
+- `current_page_surface` (**0x18853c4cc**) finds the write page's Buffer and its
+  surface; if absent/incompatible it calls `Display::allocate_surface` at
+  **0x18853c6fc**, storing the new Surface at Buffer +0x20. Assembly surfaces
+  at Buffer +0x28 are another case, not a guaranteed third scanout target.
+- `can_update_` drops the completed page's Buffer reference at
+  **0x1882bebb4-bebc4**. With the current synchronous path, timely retirement
+  can recycle two physical buffers across three page records. Historical surface
+  IDs 2 and 4 establish observed reuse, not a hard allocation maximum.
+
+**Achievable third-buffer case:** the next page is empty/free, the other two
+pages still reference distinct live Buffers, availability policy permits proceeding,
+and surface allocation succeeds. The allocator then cannot recycle either live
+Buffer and has an explicit path to allocate a third. This is a source-level
+feasibility case, not evidence it happened on the phone. Extra memory, allocation
+failure, partial redraw and kernel pool capacity belong in S3/S4; a count knob
+alone is not the proposed solution.
+
+### Availability check and frame work ordering
+
+`IOMFBDisplay::can_update(unsigned)` at **0x188325804** wraps
+`can_update_(unsigned)` at **0x1882be944**. The latter starts at the next write
+index, considers at most **min(page_count,2)** records (**0x1882bea10-20**), and
+normally skips the most recently finished page. The immediate 2 limits this
+availability scan; it is not the number of allocated IOSurfaces.
+
+A nonzero page update seed and nonzero page swap ID cause `SwapWait` on that
+stored ID. Success clears the ID and releases the page's references. Poll timeout
+is selected with bit 31, normally `0x80000000`; some calls use `0x80000001`.
+There are also flag-dependent blocking/retry choices and `swap_wait_timeout`
+(**0x18853c088**), which retries with `usleep(100)` until success or its time budget.
+It would be incorrect to describe every path as exactly one nonblocking poll.
+
+The critical conditional branch is **0x1882bec80-becd8**: on an unsuccessful
+wait, input flag bit 0 or nonzero +0x364 forces the available count to zero.
+Otherwise an already-counted free page can preserve success. +0x364 is set to
+4 at **0x1882beab8-beabc** when the examined page's low flag bits are not 2
+(subject to the arbitration/input tests), and decremented at
+**0x1882bed58-bed6c**. Return is based on the available count plus a display-state
+bit (**0x1882bed98-bedd4**). We have not observed these private bits/countdown in
+the saved benchmark. In particular, **a free third page is not sufficient in all
+states**. No claim that replacing the waits will automatically allocate it.
+
+`Server::render_for_time` (**0x1884f4df0**) makes the display virtual `can_update`
+call at **0x1884f52cc** (slot +0x140, verified in both display vtables).
+A false result branches at **0x1884f52d0** to **0x1884f5f24**, invalidates the
+pending shape, and follows the skipped-update/scheduling cleanup path. It does
+not continue with normal rendering into a busy page or unconditionally retry
+rendering in that tick. A later scheduled invocation can try again; wait helpers
+inside the availability call can themselves spend time retrying.
+
+Before this gate: timing/locking, queued server action callbacks
+(**0x1884f4fb8**) and scheduling checks. After it: constructing `Render::Update`
+(**0x1884f535c**), adding render contexts/layer handles (**0x1884f5774**), backdrop
+invalidation and `added_all_contexts` (**0x1884f57fc/5804**), then display
+`begin_update` (**0x1884f5c24**). The alternate renderer path uses the server's
+render-update virtual call at **0x1884f5d5c**. `EAGLServer::render_update`
+(**0x1883601dc**) calls `Display::render_display` (**0x1882e1ad0**), which obtains
+its target through `update_surface` before the render passes. Normal offscreen
+rendering is downstream of the availability gate as part of this rendering.
+
+Thus the binary does **not** establish substantial next-frame layer preparation
+or offscreen GPU work before a failed availability gate. Client-side commits can
+be produced elsewhere, but their overlap was not established here and is not
+counted toward G1(b). The useful route found by S2 is the conditional third Buffer,
+not a measured reservoir of pre-gate CPU work.
+
+### SwapBegin, SwapEnd and SwapWait contract
+
+| Function / call site | Observed contract |
+| --- | --- |
+| IOMFB `kern_SwapBegin` **0x1af223708** | Selector 4, no input scalars, one output scalar. Success stores the 32-bit kernel ID in the framework's current swap record (+0x68) and caller's out pointer. |
+| CA `begin_update`, **0x1882e7920-938** | If the selected page ID is zero, calls SwapBegin with the address of page +0x18; otherwise retains the ID. |
+| CA `finish_update`, **0x1882d1350-1360** | Also calls SwapBegin if page ID is still zero (e.g. a path that did not begin it earlier). |
+| IOMFB `kern_SwapEnd` **0x1af223530** | Selector 5 sends the 0x46c-byte record at framework object +0x18. Both output pointer/count are null. Returns the IOKit status after bookkeeping; no selector out-data to consume. |
+| CA SwapEnd caller **0x1882d3008** | Saves status in w20. Nonzero status takes logging/error handling at **0x1882d3048-306c**; zero continues page bookkeeping. A display flag can additionally cause `SwapWait(fb,0,2)` at **0x1882d3018-3024**. |
+| IOMFB `kern_SwapWait` **0x1af223648** | Selector 6 sends three scalars: swap ID, timeout, zero. Returns IOKit status. |
+| CA `can_update_` **0x1882beb2c-3c**, `finish_update` **0x1882d1120-13c** | Poll the page's stored SwapBegin ID, not the IOSurface ID, ring index or a separately returned SwapEnd token. |
+
+Consequently an asynchronous SwapEnd must preserve status/error behavior and
+record/hold lifetime despite returning before display completion. Absence of out
+data does not make moving that call to another thread safe.
+
+S0's kernel `AppleCLCD::swapWait` (`SweetFramebuffer.cpp:1481`) treats future IDs
+`(int32_t)(id-fSwapID)>0` as never begun. The normal CA page calls above use
+kernel-issued Begin IDs, so this exception is not a general license to retire a
+real pending frame. Zero-ID special calls exist; initial/wrap/reset cases must be
+audited in S3 before changing the rule. Do not confuse a zero page field, for which
+CA usually issues Begin/skips a poll, with a future valid swap token.
+
+**Decision:** S2 is complete as offline feasibility research. The earlier C2
+"two swap surfaces" wording is historical observed behavior and is superseded
+by the page/buffer distinction here. G1(a) retains S1's provenance caveat; G1(b)
+has a conditional allocation path but no proof of the required private state in
+the current workload. Keep G1 open, resolve this in the S3/S4 design work, and do
+not start S6-S10 from the optimistic overlap ceiling. S5 remains independently
+scoped by its own dependencies. No speedup or device validation claimed.
