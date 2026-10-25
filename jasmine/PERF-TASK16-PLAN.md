@@ -3,7 +3,10 @@
 Working plan for [PERF-TASKS](PERF-TASKS.md) task 16, written 2026-10-25 after the
 task-5 threaded context ([report](PERF-TASK5-THREADED-20261025.md)) made the
 per-frame `glFinish` the largest wait on CoreAnimation's display thread.
-**Status: S0-S3 complete (2026-10-25); S4 design review next. G1 remains open (conditional S2 feasibility).**
+**Status: S0-S3 complete (2026-10-25); G1 evaluated: HOLD, runtime policy evidence missing.**
+See [G1 result](#g1-result-2026-10-25-hold) for two corrected S2 branches and
+the evidence needed to pass. S4 can prepare the diagnostic/design review;
+S6-S10 remain gated.
 Nothing here is measured yet unless a step's result says so.
 
 **How to use this file.** Each step below is sized for one agent. Take the next
@@ -23,7 +26,7 @@ first: phone lock, battery check, accessory-sync precheck, ground rules, and
 | [S1](#s1-critical-path-budget-from-existing-captures) | Critical-path budget from existing captures | S0 | no | done | Codex, 2026-10-25 15:14 Budapest; `research/t16/budget.py`, `budget.json`, `stacks.txt`; CC A flush drain + GPU wait 19.16 ms/arrival (36.8% occupancy), Home A 29.37 ms (52.3%). B/repeat unsampled. See S1 result. No new CI/boot. |
 | [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | done | Codex, 2026-10-25 15:26 Budapest; three page records, dynamic Buffer allocation; third surface conditional on availability policy. 9,916 instruction and eight vtable checks pass. See S2 result; no CI/boot. |
 | [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | done | Codex, 2026-10-25 16:37 Budapest; kernel + pristine patched Mesa lifecycle audit; 51 source files inventoried, four patches apply, wrapper sources match. See S3 result. No CI/boot. |
-| [G1](#gates) | Gate: is there enough overlap to win? | S1, S2 | — | open | (a) supported by saved fix+dump capture, with final-library equivalence caveat; (b) S2 found conditional third-buffer feasibility; current-workload private flags/cooldown unverified. Resolve in S3/S4 before implementation. |
+| [G1](#g1-result-2026-10-25-hold) | Gate: is there enough overlap to win? | S1, S2 | — | hold (evaluated) | Codex, 2026-10-25 15:42 Budapest; (a) supported with S1 caveats; (b) unproven. Corrected S2 cooldown reset and failed-wait conditions; 9,916 byte checks, eight vtable checks and 26 branch cases pass. Runtime policy/third-buffer use still missing. No implementation or phone work. |
 | [S4](#s4-design-review) | Design review with the user | G1, S3 | no | todo | |
 | [S5](#s5-kernel-sleep-instead-of-spin-in-the-present-path) | Kernel: sleep instead of spin in the present path | S0, S3 | yes | todo | |
 | [S6](#s6-kernel-render-tickets) | Kernel: render tickets (surface pending/ready) | S4 | — | todo | |
@@ -672,14 +675,16 @@ There are also flag-dependent blocking/retry choices and `swap_wait_timeout`
 It would be incorrect to describe every path as exactly one nonblocking poll.
 
 The critical conditional branch is **0x1882bec80-becd8**: on an unsuccessful
-wait, input flag bit 0 or nonzero +0x364 forces the available count to zero.
-Otherwise an already-counted free page can preserve success. +0x364 is set to
-4 at **0x1882beab8-beabc** when the examined page's low flag bits are not 2
-(subject to the arbitration/input tests), and decremented at
+wait, **input flag bit 0 clear AND nonzero +0x364** forces the available count
+to zero. Otherwise an already-counted free page can preserve success. +0x364
+is set to 4 at **0x1882beab8-beabc** when the examined page's low flag bits
+**equal 2**, input bit 0 is clear, and the arbitration case is false; decremented at
 **0x1882bed58-bed6c**. Return is based on the available count plus a display-state
 bit (**0x1882bed98-bedd4**). We have not observed these private bits/countdown in
 the saved benchmark. In particular, **a free third page is not sufficient in all
 states**. No claim that replacing the waits will automatically allocate it.
+The two emphasized conditions correct S2's original reversed interpretation;
+see the G1 audit below.
 
 `Server::render_for_time` (**0x1884f4df0**) makes the display virtual `can_update`
 call at **0x1884f52cc** (slot +0x140, verified in both display vtables).
@@ -953,3 +958,114 @@ do not declare G1 passed from allocation possibility alone. S5's isolated sleep
 change remains independently scoped; it cannot be represented as fixing all
 these lifecycle gaps. No source implementation, CI run, build, phone access,
 capture, boot or installation occurred in S3. No measured speedup claimed.
+
+## G1 result (2026-10-25, HOLD)
+
+**Decision: do not pass G1 or begin S6-S10.** The saved evidence supports a
+large removable wait opportunity, but does not establish useful next-frame work
+while an earlier frame remains pending. This is an evaluated hold for missing
+evidence, not a failed premise or a claim that triple buffering is impossible.
+S4 may prepare the concrete diagnostic/design review; its implementation review
+must keep this dependency explicit. S5 retains its independent scope.
+
+| Gate requirement | Evidence checked again | Decision |
+| --- | --- | --- |
+| (a) Significant display-thread flush wait | S1 regenerated: CC A 8.70 ms drain + 10.45 ms GPU wait = 19.16 ms/arrival, 36.8% sampled occupancy; Home A 11.83 + 17.54 = 29.37 ms, 52.3%. | Supported for the captured fix+dump binary. Final-library equivalence remains inferred from source; capture was during accessory sync, not settled-system validation. |
+| (b), useful work before the surface gate | `render_for_time` checks `can_update` before building the normal render update and executing render passes. | Not established; no quantified substantial pre-gate work. |
+| (b), achievable third surface for this pipeline | Three pages, uncapped dynamic Buffer allocator, and favorable availability paths exist. The availability policy can also reject an update with a free write page. | Conditional feasibility only; actual workload flags and their behavior with a pending frame remain unobserved. |
+
+### Two S2 branch corrections
+
+The original S2 prose reversed two conditions. The result above has been edited
+in place; the original historical handoffs should not be used to reconstruct
+these predicates. Addresses refer to the same 20H392 cache, not another OS build.
+
+1. At **0x1882beaa0-beabc**, `cmp low_flags,2; cset ne; orr input_bit0`
+   followed by two `tbnz` skips the reset unless **low_flags == 2 AND
+   input_bit0 == 0 AND arbitration_case == 0**. Only then is +0x364 set to 4.
+   `arbitration_case` here means the boolean built at **0x1882bea68-bea98**,
+   not merely whether arbitration is globally enabled.
+2. At **0x1882bec84-bec90**, `tst input,1; ccmp cooldown,0,#4,eq; cset ne`
+   sets w22 only when **input_bit0 == 0 AND cooldown != 0**. A false CCMP
+   condition supplies NZCV=4, whose Z bit is set; input bit 0 set therefore
+   does **not** force w22 to 1. At **0x1882becd4-becd8**, w22 determines
+   whether an already-counted available page is discarded.
+
+For a failed older-page wait after one free page has already been counted,
+and with no successful auxiliary retry or extra display-state contribution:
+
+| Input bit 0 | Cooldown at failed wait | Available count |
+| --- | --- | --- |
+| 0 | 0 | Preserved |
+| 0 | 1-4 | Cleared |
+| 1 | any | Preserved |
+
+This table does not assert the final return for every display state. The
+auxiliary retry at **0x1882becb8-becc8**, wrapper prerequisites, and final
+display-state calculation still apply. A preserved count must already be
+positive to establish the normal free-page route.
+
+Cooldown decrements only with input bit 0 clear at **0x1882bed58-bed6c**.
+It is unsafe to assume that four later ticks necessarily clear the restriction:
+examining a qualifying page can reset it to four again before the decrement.
+Conversely, the corrected predicates provide a stronger favorable case than
+S2 originally described; they do not justify declaring G1 failed.
+
+The call-site trace narrows the unknown: `render_for_time` saves incoming x4 in
+x25 at **0x1884f4e38**, masks its low bit at **0x1884f51f0**, stores it in the
+local +0x140 at **0x1884f51f4**, then passes it in w1 at **0x1884f52c8**.
+The wrapper preserves that argument through **0x188325860-5864**. It is not a
+literal always-zero or always-one flag at this call site. Page bits also have
+conditional writers in `finish_update` (**0x1882d1774**, **0x1882d18a0**,
+**0x1882d382c-3834**); neither their values nor the incoming render flags were
+captured. A modeled favorable combination does not prove workload reachability.
+
+### What closes the hold
+
+The missing evidence is a **linked availability/target observation**, not another
+generic FPS capture. A bounded diagnostic proposal for S4 should record the
+actual display's can_update input/result, next/last indices, page count, cooldown
+before/after, examined page seeds/flags/Begin IDs, SwapWait results, and page-to-
+Buffer-to-IOSurface identities. Correlate that with final frame submit/completion
+and flip/latch observations. Keep all private dumps and pointers in ignored
+research storage. Observe both partial redraw and ordinary motion; capacity and
+damage correctness are separate from the allocation branch.
+
+Passing (b) needs evidence that a valid next target remains available while the
+earlier frame is pending, with useful render work then possible, or a concrete
+reviewed way to provide that target. The required sequence is: A scanning,
+B pending, C admitted for rendering without reusing A/B, with CA's damage history
+and all holds preserved. Merely finding a third surface sometime during a run
+does not establish this sequence. Observing default synchronous flags can narrow
+the predicate but cannot alone validate changed asynchronous scheduling. If only
+the rejected-policy case is reachable, re-scope around S11 with the user as G1
+requires; do not fake SwapWait success for a scanning/pending page or patch CA's
+private fields as a gate workaround.
+
+No new phone capture or implementation was performed for this evaluation.
+The existing event 11 contains swap-record fields (ID, +0x54, layer mask), event
+18 only slow SwapWait results, and event 22 GPU-job surface associations; none
+contains CA's page flags, cooldown or Buffer reference counts. These events
+cannot reconstruct the missing availability policy from the saved capture.
+
+### Reproduction and limits
+
+From the repository root in WSL, run in order:
+
+```sh
+python3 research/t16/s2-reproduce.py
+python3 research/t16/budget.py > research/t16/g1-budget-output.txt
+python3 research/t16/g1-audit.py
+```
+
+All passed in this evaluation: **9,916 instruction byte comparisons, eight
+vtable slots, S1 capture/pair/summary assertions, 13 critical instruction-shape
+checks, 16 cooldown-reset cases and 10 failed-wait cases**. The truth tables
+check bounded branch semantics, not whole-program reachability or runtime
+behavior. Ignored `g1-validation.json` records input/script hashes; audit script
+SHA256 `106d067612218ba7265368fa35245f236bdbb09418c48d66eb243de908f7b196`.
+These are existing local binary/source checks, not a new build or device test.
+
+No kernel/Mesa source change, CI run, build, boot, installation, phone lock or
+phone access. No speedup measured. Phone state remains inherited from S0
+(temporary framebench99 iOS boot, lock released), not freshly checked.
