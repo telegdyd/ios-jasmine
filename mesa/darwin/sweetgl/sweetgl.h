@@ -101,6 +101,11 @@ uint32_t sgl_sampled_2d_units(struct sgl_context *ctx);
 bool sgl_kick(struct sgl_context *ctx);
 bool sgl_pipeline_available(struct sgl_context *ctx);
 int sgl_flush_submit(struct sgl_context *ctx);
+bool sgl_tickets_available(struct sgl_context *ctx);
+int sgl_ticket_write(struct sgl_context *ctx, uint32_t surface);
+int sgl_ticket_flush(struct sgl_context *ctx); /* ordered callback, no drain wait */
+int sgl_ticket_finish(struct sgl_context *ctx); /* resolve own writes before CPU access */
+int sgl_ticket_error(struct sgl_context *ctx);
 void sgl_follow_thread(struct sgl_context *ctx);
 
 /* bind ctx and surf to the calling thread (NULL, NULL unbinds) */

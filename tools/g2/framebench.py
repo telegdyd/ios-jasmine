@@ -702,7 +702,9 @@ def analyze(out, kernel=None, libs=()):
 
 
 PRESENT_EVENTS = {30: 'BEGIN', 31: 'SEAL', 32: 'ADMIT', 33: 'FLIP',
-                  34: 'DROP', 35: 'CANCEL', 36: 'GUARD'}
+                  34: 'DROP', 35: 'CANCEL', 36: 'GUARD', 37: 'ABORT',
+                  38: 'CPU_TICKET_WAIT', 39: 'PRESENT_TICKET_WAIT',
+                  40: 'TICKET_OWNER', 41: 'TICKET_EPOCH'}
 GUARD_STATES = {0: 'free', 1: 'queue', 2: 'show', 3: 'retire', 4: 'quarantine'}
 
 
@@ -713,6 +715,9 @@ def present_report(events):
     counts, drops, cancels = collections.Counter(), collections.Counter(), collections.Counter()
     guards = collections.defaultdict(lambda: dict(attempts=0, rejected=0, wait_us=0))
     depth, high_water = 0, 0
+    ticket_metadata = {}
+    ticket_current = {}
+    ticket_waits = collections.defaultdict(list)
     for us, kind, phase, tid, a, b, c, d in events:
         if kind == 10:
             begins[a] = us
@@ -732,7 +737,7 @@ def present_report(events):
         row = dict(us=us, event=name, phase=PHASES.get(phase, str(phase)), thread=tid)
         if kind == 30:
             row.update(surface=a, generation=b | (c << 32), epoch=d)
-        elif kind == 31:
+        elif kind in (31, 37):
             row.update(generation=a | (b << 32), sequence=c, status=d)
         elif kind == 32:
             depth, high_water = c, max(high_water, c)
@@ -764,6 +769,8 @@ def present_report(events):
         elif kind == 35:
             cancels[b] += 1
             row.update(epoch=a, reason=b)
+            if b == 20:
+                row['render_epoch'] = c | (d << 32)
             # A4 keeps holds during fallback. CANCEL alone proves no reuse or latch.
         elif kind == 36:
             state = GUARD_STATES.get(b, str(b))
@@ -771,6 +778,23 @@ def present_report(events):
             guards[state]['attempts'] += 1
             guards[state]['rejected'] += c != 0
             guards[state]['wait_us'] += d
+        elif kind in (38, 39):
+            row.update(generation_low=b, result=c, wait_us=d)
+            row['surface' if kind == 38 else 'swap'] = a
+            generation = ticket_current.get(tid)
+            if generation is not None and generation & 0xffffffff == b:
+                row['generation'] = generation
+                row.update(ticket_metadata.get((tid, generation), {}))
+            ticket_waits[name].append(dict(wait_us=d, result=c))
+        elif kind in (40, 41):
+            generation = a | (b << 32)
+            row.update(generation=generation)
+            key = (tid, generation)
+            ticket_current[tid] = generation
+            meta = ticket_metadata.setdefault(key, {})
+            meta['owner' if kind == 40 else 'render_epoch'] = c | (d << 32)
+        if kind in (30, 31, 37, 40, 41):
+            row.update(ticket_metadata.get((tid, row['generation']), {}))
         timeline.append(row)
     latencies = {}
     for field in ('queue_residence_us', 'end_to_flip_us', 'flip_to_ctl_clear_us', 'begin_to_ctl_clear_us'):
@@ -786,8 +810,13 @@ def present_report(events):
     return dict(counts=dict(counts), drops_by_reason=dict(drops), cancels_by_reason=dict(cancels),
                 latencies=latencies, queue_depth_at_end=depth, queue_high_water=high_water,
                 guards=dict(guards), frames=frames, timeline=timeline,
+                ticket_waits={name: dict(count=len(waits), errors=sum(w['result'] != 0 for w in waits),
+                                         median_us=percentile([w['wait_us'] for w in waits], .5),
+                                         p95_us=percentile([w['wait_us'] for w in waits], .95))
+                              for name, waits in ticket_waits.items()},
                 limitation='CANCEL and timeout events never prove a latch or reusable storage. '
-                           'Events 30/31 are reserved for build 2. Queue depth covers admitted records only.')
+                           'Wait identity needs adjacent owner/epoch metadata on the emitting thread. '
+                           'Queue depth covers admitted records only.')
 
 
 def slow_intervals(events, samples, windows):
@@ -847,7 +876,8 @@ def write_report(out, s):
     present = s['presentation']
     lines.extend(['', '## Present queue (full capture)', '',
         f"Events: {present['counts']}; queue high-water {present['queue_high_water']}, final depth {present['queue_depth_at_end']}.",
-        f"Guards: {present['guards']}.", f"Latency distributions (us): {present['latencies']}.", present['limitation']])
+        f"Guards: {present['guards']}.", f"Latency distributions (us): {present['latencies']}.",
+        f"Ticket waits (us): {present['ticket_waits']}.", present['limitation']])
     lines.extend(['', '## Validity and limits', ''])
     lines.extend('- ' + q for q in s['quality'])
     lines.extend(['- ' + s['tail_note'], '- ' + s['gpu']['limitation'],

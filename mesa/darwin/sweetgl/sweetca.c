@@ -123,6 +123,15 @@ struct sca_ctx {
    uint8_t tex_swizzled[TEXMAX];
    struct sca_copy *copies[TEXMAX];     /* textures holding a copy of an IOSurface */
    struct sca_obj obj[OBJMAX];
+   IOSurfaceRef ticket_surface[TEXMAX]; /* mode 2: retained storage identity */
+   uint64_t ticket_version[TEXMAX];
+   uint8_t ticket_known[TEXMAX], ticket_fbo_bad[FBOMAX];
+   bool ticket_sync_frame, ticket_failed;
+   bool ticket_cap_checked;
+   int ticket_frame_mode;
+   unsigned ticket_surface_count;
+   IOSurfaceRef ticket_frame_surface[32];
+   uint32_t ticket_gl_errors; /* preserve error flags inspected while replacing import storage */
 };
 
 static void copy_forget(struct sca_ctx *c, GLuint tex);
@@ -130,6 +139,17 @@ static void copy_refresh(struct sca_ctx *c, int u, GLuint tex);
 static void copy_mipped(struct sca_ctx *c, GLuint tex);
 static void shadow_drawn(struct sca_ctx *c);
 static void shadow_write_back(struct sca_ctx *c);
+static bool ticket_requested(void);
+static bool ticket_resolve(struct sca_ctx *c);
+static bool ticket_write(struct sca_ctx *c, GLuint texture);
+static bool ticket_draw(struct sca_ctx *c);
+static void ticket_after_write(struct sca_ctx *c);
+static void ticket_storage(struct sca_ctx *c, GLuint tex, IOSurfaceRef surface, bool known);
+static void draw_prep(struct sca_ctx *c);
+static void shadow_texture_drawn(struct sca_ctx *c, GLuint tex);
+static GLenum tgt(struct sca_ctx *c, GLenum target);
+static void note_size(struct sca_ctx *c, GLuint tex, unsigned w, unsigned h);
+static void kick_after_draw(struct sca_ctx *c);
 
 static struct sca_ctx *ctxs[MAX_CTX];
 static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -313,7 +333,11 @@ static GLenum
 w_GetError(void *rctx)
 {
    CUR(rctx);
-   (void)c;
+   if (ticket_requested() && c->ticket_gl_errors) {
+      unsigned bit = (unsigned)__builtin_ctz(c->ticket_gl_errors);
+      c->ticket_gl_errors &= ~(1u << bit);
+      return GL_INVALID_ENUM + bit;
+   }
    return glGetError();
 }
 
@@ -467,6 +491,7 @@ flush_stats(double wait_ms)
 }
 
 static int pipeline_mode = -1;
+static bool pipeline_tickets;
 static unsigned pipeline_errors, pipeline_slow;
 static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
 
@@ -474,7 +499,177 @@ static void
 pipeline_init(void)
 {
    const char *v = getenv("SWEETCA_PIPELINE");
-   pipeline_mode = v && !strcmp(v, "1") ? 1 : 0;
+   pipeline_mode = v && !strcmp(v, "2") ? 2 : v && !strcmp(v, "1") ? 1 : 0;
+   pipeline_tickets = pipeline_mode == 2;
+}
+
+static bool
+ticket_requested(void)
+{
+   pthread_once(&pipeline_once, pipeline_init);
+   return pipeline_tickets;
+}
+
+static void
+ticket_failed(struct sca_ctx *c, int error)
+{
+   c->ticket_failed = true;
+   c->ticket_gl_errors |= 1u << (GL_INVALID_OPERATION - GL_INVALID_ENUM);
+   unsigned errors = __atomic_add_fetch(&pipeline_errors, 1, __ATOMIC_RELAXED);
+   if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL))
+      sca_log("sweetca: ticket/submit error %d (%u errors); frame invalid, full finish for process", error, errors);
+}
+
+/* An owner CPU read must not wait for an unqueued SEAL of its own writes. */
+static bool
+ticket_resolve(struct sca_ctx *c)
+{
+   if (!ticket_requested())
+      return true;
+   int error = sgl_ticket_finish(c->gl);
+   if (error == -ETIMEDOUT || error == -ENOMEM) {
+      glFinish();
+      error = sgl_ticket_error(c->gl); /* lateness/bookkeeping allocation alone never disables the mode */
+   }
+   if (error && (__atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) != 0 || c->ticket_failed))
+      ticket_failed(c, error);
+   return !c->ticket_failed;
+}
+
+static int
+ticket_mode(struct sca_ctx *c)
+{
+   if (!ticket_requested())
+      return 0;
+   int mode = __atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE);
+   if (mode == 2) {
+      if (!c->ticket_cap_checked) {
+         c->ticket_cap_checked = true;
+         c->ticket_frame_mode = sgl_tickets_available(c->gl) ? 2 : sgl_pipeline_available(c->gl) ? 1 : 0;
+      }
+      return c->ticket_frame_mode;
+   }
+   return mode;
+}
+
+static void
+ticket_storage(struct sca_ctx *c, GLuint tex, IOSurfaceRef surface, bool known)
+{
+   if (!ticket_requested() || tex >= TEXMAX)
+      return;
+   /* Pending batches own their BOs, independent of this GL name/version.
+    * Replacing a mapping must not turn each surface bind into a drain. */
+   if (surface)
+      CFRetain(surface);
+   if (c->ticket_surface[tex])
+      CFRelease(c->ticket_surface[tex]);
+   c->ticket_surface[tex] = surface;
+   c->ticket_known[tex] = known;
+   c->ticket_version[tex]++;
+}
+
+static bool
+ticket_private_storage(struct sca_ctx *c, GLuint tex)
+{
+   if (!ticket_requested())
+      return false;
+   /* Redefining an import can fail and leave its old storage installed. Keep
+    * that name unknown until a successful import or deletion, without eating
+    * GL's error flag. A fresh/private name cannot conceal an IOSurface. */
+   return tex < TEXMAX && !c->ticket_surface[tex] &&
+          (!c->ticket_version[tex] || c->ticket_known[tex]);
+}
+
+static GLenum
+ticket_gl_capture(struct sca_ctx *c)
+{
+   GLenum result = GL_NO_ERROR;
+   for (unsigned i = 0; i < 8; i++) {
+      GLenum error = glGetError();
+      if (error == GL_NO_ERROR)
+         break;
+      result = error;
+      if (error >= GL_INVALID_ENUM && error <= GL_INVALID_ENUM + 7)
+         c->ticket_gl_errors |= 1u << (error - GL_INVALID_ENUM);
+   }
+   return result;
+}
+
+static bool
+ticket_write(struct sca_ctx *c, GLuint tex)
+{
+   if (!ticket_requested())
+      return true;
+   if (c->ticket_failed)
+      return false;
+   if (__atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) == 0)
+      return true;
+   if (sgl_ticket_error(c->gl)) {
+      (void)ticket_resolve(c);
+      return false;
+   }
+   if (ticket_mode(c) != 2)
+      return ticket_resolve(c);
+   if (!c->ticket_sync_frame && tex && tex < TEXMAX && c->ticket_known[tex]) {
+      if (!c->ticket_surface[tex])
+         return true; /* known private GL storage */
+      IOSurfaceRef surface = c->ticket_surface[tex];
+      bool seen = false;
+      for (unsigned i = 0; i < c->ticket_surface_count; i++)
+         seen |= c->ticket_frame_surface[i] == surface;
+      int error = !seen && c->ticket_surface_count == 32 ? -E2BIG :
+                  sgl_ticket_write(c->gl, IOSurfaceGetID(surface));
+      if (pipeline_tickets && error == -ENOMEM) {
+         glFinish(); /* failed drain bookkeeping; sticky backend status is checked below */
+      } else if (error == -ETIMEDOUT) {
+         glFinish(); /* a late callback at reuse is a slow frame, not a submit failure */
+         error = sgl_ticket_error(c->gl);
+         if (!error)
+            error = sgl_ticket_write(c->gl, IOSurfaceGetID(surface));
+      }
+      if (!error) {
+         if (!seen) {
+            CFRetain(surface);
+            c->ticket_frame_surface[c->ticket_surface_count++] = surface;
+         }
+         return true;
+      }
+      if (error != -ENOMEM && error != -E2BIG && error != -ENOTSUP && error != -EBUSY) {
+         (void)ticket_resolve(c);
+         ticket_failed(c, error);
+         return false;
+      }
+   }
+   c->ticket_sync_frame = true;
+   if (!ticket_resolve(c))
+      return false;
+   shadow_write_back(c);
+   glFinish();
+   int error = sgl_ticket_error(c->gl);
+   if (error)
+      ticket_failed(c, error);
+   return !c->ticket_failed;
+}
+
+static bool
+ticket_draw(struct sca_ctx *c)
+{
+   if (!ticket_requested())
+      return true;
+   GLuint tex = c->fbo && c->fbo < FBOMAX && !c->ticket_fbo_bad[c->fbo] ? c->fbo_tex[c->fbo] : 0;
+   return ticket_write(c, tex);
+}
+
+static void
+ticket_after_write(struct sca_ctx *c)
+{
+   if (ticket_requested() && c->ticket_sync_frame) {
+      shadow_write_back(c);
+      glFinish();
+      int error = sgl_ticket_error(c->gl);
+      if (error)
+         ticket_failed(c, error);
+   }
 }
 
 static bool
@@ -494,7 +689,20 @@ w_Flush(void *rctx)
    double t = now_ms();
    shadow_write_back(c);
    c->frame++;
-   if (pipeline_enabled(c)) {
+   if (ticket_requested())
+      c->ticket_cap_checked = false; /* QUERY is live at the flush boundary */
+   int mode = ticket_mode(c);
+   if (pipeline_tickets && mode != 2)
+      (void)sgl_ticket_flush(c->gl); /* capability loss still resolves this frame's open set */
+   if (mode == 2 && !c->ticket_sync_frame && !c->ticket_failed) {
+      glFlush();
+      int error = sgl_ticket_flush(c->gl);
+      if (error) {
+         (void)ticket_resolve(c);
+         ticket_failed(c, error);
+         glFinish();
+      }
+   } else if (pipeline_enabled(c) || (pipeline_tickets && mode == 1 && !c->ticket_failed)) {
       glFlush();
       int error = sgl_flush_submit(c->gl);
       if (error == -ETIMEDOUT) {
@@ -506,14 +714,27 @@ w_Flush(void *rctx)
          glFinish();
       } else if (error) {
          unsigned errors = __atomic_add_fetch(&pipeline_errors, 1, __ATOMIC_RELAXED);
-         if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL) == 1)
+         if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL) != 0)
             sca_log("sweetca: pipeline submit/drain error %d (%u errors); full finish for process", error, errors);
          glFinish();
       } else if (!sgl_pipeline_available(c->gl)) {
          glFinish();
       }
    } else {
+      if (ticket_requested())
+         (void)ticket_resolve(c);
       glFinish();
+   }
+   if (ticket_requested()) {
+      int error = sgl_ticket_error(c->gl);
+      if (error && !c->ticket_failed && mode != 0)
+         ticket_failed(c, error);
+      c->ticket_sync_frame = false;
+      c->ticket_failed = false; /* the faulted frame ended; later frames use mode 0 */
+      c->ticket_cap_checked = false;
+      for (unsigned i = 0; i < c->ticket_surface_count; i++)
+         CFRelease(c->ticket_frame_surface[i]);
+      c->ticket_surface_count = 0;
    }
    flush_stats(now_ms() - t);
    if (trace_on && traced++ < 20)
@@ -525,8 +746,11 @@ static void
 w_Finish(void *rctx)
 {
    CUR(rctx);
+   (void)ticket_resolve(c);
    shadow_write_back(c);
    glFinish();
+   if (ticket_requested() && __atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) != 0 && sgl_ticket_error(c->gl))
+      ticket_failed(c, sgl_ticket_error(c->gl));
    POST(89);
 }
 
@@ -536,6 +760,158 @@ w_FinishObjectAPPLE(void *rctx, GLenum object, GLint name)
    (void)object;
    (void)name;
    w_Finish(rctx);
+}
+
+/* These slots were unsupported by the old wrapper. Install them only for the
+ * mode-2 request, including its synchronous capability fallback. */
+static void
+w_ReadPixels(void *rctx, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format,
+             GLenum type, void *pixels)
+{
+   CUR(rctx);
+   if (!ticket_resolve(c))
+      return;
+   shadow_write_back(c);
+   glReadPixels(x, y, w, h, format, type, pixels);
+   POST(237);
+}
+
+static void
+w_BlitFramebuffer(void *rctx, GLint sx0, GLint sy0, GLint sx1, GLint sy1,
+                  GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter)
+{
+   CUR(rctx);
+   if (!ticket_resolve(c) || !ticket_draw(c))
+      return;
+   glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+   shadow_drawn(c);
+   ticket_after_write(c);
+   POST(755);
+}
+
+static void
+w_CopyTexImage2D(void *rctx, GLenum target, GLint level, GLenum format, GLint x,
+                 GLint y, GLsizei w, GLsizei h, GLint border)
+{
+   CUR(rctx);
+   GLenum t = tgt(c, target);
+   if (!ticket_resolve(c))
+      return;
+   ticket_storage(c, c->held[c->active], NULL, false);
+   c->ticket_sync_frame = true;
+   glCopyTexImage2D(t, level, format, x, y, w, h, border);
+   if (level == 0) {
+      copy_forget(c, c->held[c->active]);
+      note_size(c, c->held[c->active], w, h);
+   }
+   ticket_after_write(c);
+   POST(54);
+}
+
+static void
+w_CompressedTexSubImage2D(void *rctx, GLenum target, GLint level, GLint x, GLint y,
+                         GLsizei w, GLsizei h, GLenum format, GLsizei size, const void *data)
+{
+   CUR(rctx);
+   GLenum t = tgt(c, target);
+   if (!ticket_write(c, c->held[c->active]))
+      return;
+   glCompressedTexSubImage2D(t, level, x, y, w, h, format, size, data);
+   shadow_texture_drawn(c, c->held[c->active]);
+   ticket_after_write(c);
+   POST(383);
+}
+
+static void
+w_DrawArraysInstanced(void *rctx, GLenum mode, GLint first, GLsizei count, GLsizei instances)
+{
+   CUR(rctx);
+   draw_prep(c);
+   if (count > 0 && instances > 0 && !ticket_draw(c))
+      return;
+   n_draws++;
+   glDrawArraysInstanced(mode, first, count, instances);
+   shadow_drawn(c);
+   ticket_after_write(c);
+   kick_after_draw(c);
+   POST(762);
+}
+
+static void
+w_DrawElementsInstanced(void *rctx, GLenum mode, GLsizei count, GLenum type,
+                        const void *indices, GLsizei instances)
+{
+   CUR(rctx);
+   draw_prep(c);
+   if (count > 0 && instances > 0 && !ticket_draw(c))
+      return;
+   n_draws++;
+   glDrawElementsInstanced(mode, count, type, indices, instances);
+   shadow_drawn(c);
+   ticket_after_write(c);
+   kick_after_draw(c);
+   POST(763);
+}
+
+#define TICKET_CLEAR(slot, suffix, type)                                         \
+   static void w_ClearBuffer##suffix(void *rctx, GLenum buffer, GLint drawbuffer, \
+                                     const type *value)                         \
+   {                                                                            \
+      CUR(rctx);                                                                \
+      if (!ticket_draw(c))                                                      \
+         return;                                                                \
+      glClearBuffer##suffix(buffer, drawbuffer, value);                          \
+      shadow_drawn(c);                                                          \
+      ticket_after_write(c);                                                    \
+      POST(slot);                                                               \
+   }
+TICKET_CLEAR(774, iv, GLint)
+TICKET_CLEAR(775, uiv, GLuint)
+TICKET_CLEAR(776, fv, GLfloat)
+#undef TICKET_CLEAR
+
+static void
+w_ClearBufferfi(void *rctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
+{
+   CUR(rctx);
+   if (!ticket_draw(c))
+      return;
+   glClearBufferfi(buffer, drawbuffer, depth, stencil);
+   shadow_drawn(c);
+   ticket_after_write(c);
+   POST(777);
+}
+
+static void
+w_FramebufferRenderbuffer(void *rctx, GLenum target, GLenum attachment, GLenum rtarget, GLuint rb)
+{
+   CUR(rctx);
+   if (c->fbo < FBOMAX && (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
+      c->ticket_fbo_bad[c->fbo] = 1;
+   glFramebufferRenderbuffer(target, attachment, rtarget, rb);
+   POST(679);
+}
+
+static void
+w_FramebufferTextureLayer(void *rctx, GLenum target, GLenum attachment, GLuint tex, GLint level, GLint layer)
+{
+   CUR(rctx);
+   if (c->fbo < FBOMAX && (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
+      c->ticket_fbo_bad[c->fbo] = 1;
+   glFramebufferTextureLayer(target, attachment, tex, level, layer);
+   POST(691);
+}
+
+static void
+w_TexStorage2D(void *rctx, GLenum target, GLsizei levels, GLenum format, GLsizei w, GLsizei h)
+{
+   CUR(rctx);
+   GLenum t = tgt(c, target);
+   ticket_storage(c, c->held[c->active], NULL, ticket_private_storage(c, c->held[c->active]));
+   glTexStorage2D(t, levels, format, w, h);
+   copy_forget(c, c->held[c->active]);
+   note_size(c, c->held[c->active], w, h);
+   POST(1031);
 }
 
 /* ---- strings and queries ---- */
@@ -651,6 +1027,7 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
 {
    CUR(rctx);
    for (GLsizei i = 0; i < n; i++) {
+      ticket_storage(c, tex[i], NULL, false);
       for (int u = 0; u < UNITS; u++) {
          if (c->bind2d[u] == tex[i])
             c->bind2d[u] = 0;
@@ -661,6 +1038,8 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
       }
       copy_forget(c, tex[i]);
       if (tex[i] < TEXMAX) {
+         if (ticket_requested())
+            c->ticket_version[tex[i]] = 0; /* a reused GL name is a fresh object */
          c->tex_w[tex[i]] = c->tex_h[tex[i]] = 0;
          c->tex_swizzled[tex[i]] = 0;
       }
@@ -711,6 +1090,7 @@ w_TexImage2D(void *rctx, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsi
 {
    CUR(rctx);
    GLenum t = tgt(c, target);
+   ticket_storage(c, c->held[c->active], NULL, level == 0 && ticket_private_storage(c, c->held[c->active]));
    if (trace_on > 1)
       sca_log("sweetca: TexImage2D tex %u target %#x level %d ifmt %#x %dx%d fmt %#x type %#x data %p", c->held[c->active], target, level,
               ifmt, w, h, format, type, pixels);
@@ -730,7 +1110,12 @@ w_TexSubImage2D(void *rctx, GLenum target, GLint level, GLint x, GLint y, GLsize
                 GLenum format, GLenum type, const void *pixels)
 {
    CUR(rctx);
-   glTexSubImage2D(tgt(c, target), level, x, y, w, h, format, type, pixels);
+   GLenum t = tgt(c, target);
+   if (w > 0 && h > 0 && !ticket_write(c, c->held[c->active]))
+      return;
+   glTexSubImage2D(t, level, x, y, w, h, format, type, pixels);
+   shadow_texture_drawn(c, c->held[c->active]);
+   ticket_after_write(c);
    POST(307);
 }
 
@@ -739,7 +1124,9 @@ w_CompressedTexImage2D(void *rctx, GLenum target, GLint level, GLenum ifmt, GLsi
                        GLint border, GLsizei size, const void *data)
 {
    CUR(rctx);
-   glCompressedTexImage2D(tgt(c, target), level, ifmt, w, h, border, size, data);
+   GLenum t = tgt(c, target);
+   ticket_storage(c, c->held[c->active], NULL, level == 0 && ticket_private_storage(c, c->held[c->active]));
+   glCompressedTexImage2D(t, level, ifmt, w, h, border, size, data);
    POST(380);
    if (level == 0) {
       note_size(c, c->held[c->active], w, h);
@@ -752,11 +1139,16 @@ w_CopyTexSubImage2D(void *rctx, GLenum target, GLint level, GLint xo, GLint yo, 
                     GLsizei w, GLsizei h)
 {
    CUR(rctx);
+   GLenum t = ticket_requested() ? tgt(c, target) : target;
+   if (!ticket_resolve(c) || !ticket_write(c, c->held[c->active]))
+      return;
    if (trace_on > 1)
       sca_log("sweetca: CopyTexSubImage2D tex %u (%ux%u) level %d at %d,%d from %d,%d size %dx%d, fbo %u", c->held[c->active],
               c->tex_w[c->held[c->active] % TEXMAX], c->tex_h[c->held[c->active] % TEXMAX], level, xo, yo, x, y, w, h,
               c->fbo);
-   glCopyTexSubImage2D(tgt(c, target), level, xo, yo, x, y, w, h);
+   glCopyTexSubImage2D(ticket_requested() ? t : tgt(c, target), level, xo, yo, x, y, w, h);
+   shadow_texture_drawn(c, c->held[c->active]);
+   ticket_after_write(c);
    if (trace_on > 1) {
       /* what the copy holds, and what it copied from */
       static int shown;
@@ -781,7 +1173,11 @@ static void
 w_GenerateMipmap(void *rctx, GLenum target)
 {
    CUR(rctx);
-   glGenerateMipmap(tgt(c, target));
+   GLenum t = tgt(c, target);
+   if (!ticket_write(c, c->held[c->active]))
+      return;
+   glGenerateMipmap(t);
+   ticket_after_write(c);
    copy_mipped(c, c->held[c->active]);
    POST(681);
 }
@@ -793,8 +1189,13 @@ w_BindFramebuffer(void *rctx, GLenum target, GLuint fb)
 {
    CUR(rctx);
    if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER)
-      c->fbo = fb < FBOMAX ? fb : 0;
+      c->fbo = ticket_requested() ? fb : fb < FBOMAX ? fb : 0;
    glBindFramebuffer(target, fb);
+   if (ticket_requested()) {
+      GLint actual = 0;
+      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &actual);
+      c->fbo = (GLuint)actual;
+   }
    POST(672);
 }
 
@@ -805,6 +1206,8 @@ w_DeleteFramebuffers(void *rctx, GLsizei n, const GLuint *fb)
    for (GLsizei i = 0; i < n; i++) {
       if (fb[i] < FBOMAX)
          c->fbo_tex[fb[i]] = 0;
+      if (ticket_requested() && fb[i] < FBOMAX)
+         c->ticket_fbo_bad[fb[i]] = 0;
       if (c->fbo == fb[i])
          c->fbo = 0;
    }
@@ -817,12 +1220,22 @@ w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum text
                        GLint level)
 {
    CUR(rctx);
+   if (ticket_requested())
+      (void)ticket_gl_capture(c);
+   if (ticket_requested() && c->fbo < FBOMAX &&
+       (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) &&
+       (attachment != GL_COLOR_ATTACHMENT0 || level ||
+        (textarget != GL_TEXTURE_2D && textarget != GL_TEXTURE_RECTANGLE_ARB)))
+      c->ticket_fbo_bad[c->fbo] = 1;
    if (attachment == GL_COLOR_ATTACHMENT0 && c->fbo > 0 && c->fbo < FBOMAX &&
        (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
       c->fbo_tex[c->fbo] = tex;
    glFramebufferTexture2D(target, attachment,
                           textarget == GL_TEXTURE_RECTANGLE_ARB ? GL_TEXTURE_2D : textarget, tex,
                           level);
+   if (ticket_requested() && ticket_gl_capture(c) != GL_NO_ERROR && c->fbo < FBOMAX &&
+       (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
+      c->ticket_fbo_bad[c->fbo] = 1;
    POST(677);
 }
 
@@ -1279,11 +1692,14 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
+   if (count > 0 && !ticket_draw(c))
+      return; /* preparation may read back/seal earlier writes; BEGIN comes after it */
    {
       SWEET_SCOPE(sp_call, SP_DRAW_CALL);
       glDrawArrays(mode, first, count);
    }
    shadow_drawn(c);
+   ticket_after_write(c);
    kick_after_draw(c);
    POST(65);
 }
@@ -1296,11 +1712,14 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
+   if (count > 0 && !ticket_draw(c))
+      return;
    {
       SWEET_SCOPE(sp_call, SP_DRAW_CALL);
       glDrawElements(mode, count, type, indices);
    }
    shadow_drawn(c);
+   ticket_after_write(c);
    kick_after_draw(c);
    POST(67);
 }
@@ -1309,10 +1728,13 @@ static void
 w_Clear(void *rctx, GLbitfield mask)
 {
    CUR(rctx);
+   if (mask && !ticket_draw(c))
+      return;
    (void)c;
    n_clears++;
    glClear(mask);
    shadow_drawn(c);
+   ticket_after_write(c);
    POST(10);
 }
 
@@ -1426,7 +1848,7 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
 {
    if (bpe == 0 || pitch % bpe != 0)
       return false;
-   if (IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL) != 0)
+   if (!ticket_resolve(c) || IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL) != 0)
       return false;
    const void *base = IOSurfaceGetBaseAddress(s);
    GLint row = 0, align = 4;
@@ -1536,6 +1958,13 @@ copy_refresh(struct sca_ctx *c, int u, GLuint tex)
  * surface before CA flushes or finishes, so other processes and the display see them.
  */
 static void
+shadow_texture_drawn(struct sca_ctx *c, GLuint tex)
+{
+   if (ticket_requested() && tex && tex < TEXMAX && c->copies[tex] && c->copies[tex]->target)
+      c->copies[tex]->dirty = true;
+}
+
+static void
 shadow_drawn(struct sca_ctx *c)
 {
    GLuint t = c->fbo && c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
@@ -1548,6 +1977,15 @@ shadow_write_back(struct sca_ctx *c)
 {
    static unsigned told;
    GLint prev = -1;
+   if (ticket_requested()) {
+      bool dirty = false;
+      for (int i = 0; i < 64; i++) {
+         GLuint tex = c->shadows[i];
+         dirty |= tex && tex < TEXMAX && c->copies[tex] && c->copies[tex]->dirty;
+      }
+      if (dirty && !ticket_resolve(c))
+         return;
+   }
    for (int i = 0; i < 64; i++) {
       GLuint tex = c->shadows[i];
       struct sca_copy *k = tex ? c->copies[tex] : NULL;
@@ -1558,8 +1996,23 @@ shadow_write_back(struct sca_ctx *c)
       if (!k || !k->dirty)
          continue;
       k->dirty = false;
-      if (k->bpe != 4 || k->pitch % 4 != 0 || IOSurfaceLock(k->s, 0, NULL) != 0)
+      if (k->bpe != 4 || k->pitch % 4 != 0) {
+         if (ticket_requested()) {
+            k->dirty = true;
+            ticket_failed(c, -ENOTSUP);
+            break;
+         }
          continue;
+      }
+      int locked = IOSurfaceLock(k->s, 0, NULL);
+      if (locked != 0) {
+         if (ticket_requested()) {
+            k->dirty = true;
+            ticket_failed(c, locked);
+            break;
+         }
+         continue;
+      }
       if (prev < 0)
          glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev);
       if (!c->readback_fbo)
@@ -1576,7 +2029,11 @@ shadow_write_back(struct sca_ctx *c)
       glPixelStorei(GL_PACK_ROW_LENGTH, row);
       glPixelStorei(GL_PACK_ALIGNMENT, align);
       glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-      IOSurfaceUnlock(k->s, 0, NULL);
+      int unlocked = IOSurfaceUnlock(k->s, 0, NULL);
+      if (ticket_requested() && (unlocked || e != GL_NO_ERROR)) {
+         k->dirty = true;
+         ticket_failed(c, unlocked ? unlocked : -EIO);
+      }
       k->seed = IOSurfaceGetSeed(k->s);
       if (told++ < 20 || e != GL_NO_ERROR)
          sca_log("sweetca: shadow target tex %u written back to surface %u (%zux%zu pitch %zu): GL error %#x", tex,
@@ -1629,6 +2086,8 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
              uint32_t plane, bool flip, const char *why)
 {
    static int logged;
+   GLenum t = ticket_requested() ? tgt(c, target) : target;
+   ticket_storage(c, c->held[c->active], NULL, false);
    uint32_t fourcc = IOSurfaceGetPixelFormat(s);
    bool planar = IOSurfaceGetPlaneCount(s) > 1;
    size_t w = planar ? IOSurfaceGetWidthOfPlane(s, plane) : IOSurfaceGetWidth(s);
@@ -1646,7 +2105,8 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
                  IOSurfaceGetID(s), cc, w, h, pitch, plane, format, type);
       return false;
    }
-   GLenum t = tgt(c, target);
+   if (!ticket_requested())
+      t = tgt(c, target);
    set_swizzle(c, t, f.swz, f.swizzled);
    uint32_t seed = IOSurfaceGetSeed(s);
    bool done = false;
@@ -1655,8 +2115,12 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
     * GPU takes it in place there when the start is 64-byte aligned (texture bases
     * need 32, render targets more); our mapping of it begins at the page */
    size_t offset = (uintptr_t)IOSurfaceGetBaseAddress(s) & vm_page_mask;
+   if (ticket_requested())
+      (void)ticket_gl_capture(c);
    if (pitch % 64 == 0 && offset % 64 == 0 && !flip)
       done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, (unsigned)offset, f.f);
+   if (ticket_requested() && ticket_gl_capture(c) != GL_NO_ERROR)
+      done = false;
    if (!done && format) {
       /* the copy is uploaded as GL_ALPHA / GL_LUMINANCE(_ALPHA) itself: the swizzle
        * above is for R8/RG8 storage in place, and on an ALPHA texture (0,0,0,R)
@@ -1672,9 +2136,11 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
       return false;
    }
    if (strcmp(how, "in place") == 0) {
+      ticket_storage(c, c->held[c->active], s, true);
       note_size(c, c->held[c->active], w, h);
       copy_forget(c, c->held[c->active]);
    } else {
+      ticket_storage(c, c->held[c->active], NULL, false);
       copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
    }
    /* An IOSurface texture has one level. With GL's default MIN_FILTER (a mipmap
@@ -1836,6 +2302,21 @@ fill_dispatch(void **d)
    S(817, w_Nop);
    S(818, w_Nop);
    S(1024, w_FramebufferParameteriAPPLE);
+   if (ticket_requested()) {
+      S(54, w_CopyTexImage2D);
+      S(237, w_ReadPixels);
+      S(383, w_CompressedTexSubImage2D);
+      S(679, w_FramebufferRenderbuffer);
+      S(691, w_FramebufferTextureLayer);
+      S(755, w_BlitFramebuffer);
+      S(762, w_DrawArraysInstanced);
+      S(763, w_DrawElementsInstanced);
+      S(774, w_ClearBufferiv);
+      S(775, w_ClearBufferuiv);
+      S(776, w_ClearBufferfv);
+      S(777, w_ClearBufferfi);
+      S(1031, w_TexStorage2D);
+   }
 #undef S
 }
 
@@ -1940,6 +2421,15 @@ m_dealloc(id self, SEL cmd)
    if (cur == c)
       bind_ctx(NULL);
    sgl_context_destroy(c->gl);
+   if (ticket_requested()) {
+      for (unsigned i = 0; i < c->ticket_surface_count; i++)
+         CFRelease(c->ticket_frame_surface[i]);
+      for (int i = 0; i < TEXMAX; i++) {
+         if (c->ticket_surface[i])
+            CFRelease(c->ticket_surface[i]);
+         copy_forget(c, i);
+      }
+   }
    free(c);
    /* EAGLContext's own init never ran: skip its dealloc, run NSObject's */
    struct objc_super sup = {self, class_getSuperclass(objc_getClass("EAGLContext"))};

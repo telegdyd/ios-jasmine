@@ -1,17 +1,17 @@
-From 4a8ca8df6697dba1c5bfc5810aa224ee04ecbeba Mon Sep 17 00:00:00 2001
+From ed03be331a5525682bd4b9a875d0c26c381334c8 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Sun, 25 Oct 2026 19:16:38 +0100
+Date: Sun, 25 Oct 2026 21:00:39 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
 ---
  include/darwin-drm/xf86drm.h                  |   87 +
  meson.build                                   |    5 +
- src/freedreno/drm/darwin/darwin_bo.c          |  159 ++
- src/freedreno/drm/darwin/darwin_device.c      |  191 ++
- src/freedreno/drm/darwin/darwin_pipe.c        |  289 +++
- src/freedreno/drm/darwin/darwin_priv.h        |  134 +
- src/freedreno/drm/darwin/sweet_profile.c      |  139 ++
+ src/freedreno/drm/darwin/darwin_bo.c          |  159 +
+ src/freedreno/drm/darwin/darwin_device.c      |  237 ++
+ src/freedreno/drm/darwin/darwin_pipe.c        |  313 ++
+ src/freedreno/drm/darwin/darwin_priv.h        |  144 +
+ src/freedreno/drm/darwin/sweet_profile.c      |  139 +
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
  src/freedreno/drm/freedreno_priv.h            |    6 +
@@ -19,17 +19,18 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/meson.build                     |    2 +-
  .../drivers/freedreno/freedreno_resource.c    |    7 +
  src/gallium/drivers/freedreno/meson.build     |   32 +
- .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
- src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 2158 +++++++++++++++++
- .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++
- src/gallium/frontends/sweetgl/sweetgl.c       |  645 +++++
- src/gallium/frontends/sweetgl/sweetgl.h       |  113 +
+ .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++
+ src/gallium/frontends/sweetgl/meson.build     |   90 +
+ src/gallium/frontends/sweetgl/sweetca.c       | 2648 +++++++++++++++++
+ .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++
+ src/gallium/frontends/sweetgl/sweetgl.c       |  655 ++++
+ src/gallium/frontends/sweetgl/sweetgl.h       |  118 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
+ .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
  .../frontends/sweetgl/sweetgpu_gltest.c       |  663 +++++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   63 +
- 24 files changed, 6626 insertions(+), 6 deletions(-)
+ 25 files changed, 7440 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -43,6 +44,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl.c
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl.h
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl_gles2.c
+ create mode 100644 src/gallium/frontends/sweetgl/sweetgl_tickets.inc
  create mode 100644 src/gallium/frontends/sweetgl/sweetgpu_gltest.c
  create mode 100644 src/util/sweet_profile.h
 
@@ -329,10 +331,10 @@ index 0000000..ceac756
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_device.c b/src/freedreno/drm/darwin/darwin_device.c
 new file mode 100644
-index 0000000..5291380
+index 0000000..f6a504d
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_device.c
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,237 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -379,6 +381,52 @@ index 0000000..5291380
 +                                                   &in, 1, &value, &count))
 +      return 0;
 +   return value;
++}
++
++uint64_t
++darwin_ticket_query(struct fd_device *dev, uint64_t *epoch)
++{
++   uint64_t in[2] = {1, 0}, out[4] = {0};
++   uint32_t count = 4;
++   if (IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_TICKET_BEGIN,
++                                 in, 2, out, &count) || count != 4 || out[0] != 1 || out[2] != 32)
++      return 0;
++   *epoch = out[3];
++   return out[1];
++}
++
++int
++darwin_ticket_begin(struct fd_device *dev, const uint32_t *handles, unsigned count,
++                   uint64_t *generation, uint64_t *epoch)
++{
++   if (!count || count > 32 || (darwin_ticket_query(dev, epoch) & 15) != 15)
++      return -ENOTSUP;
++   uint32_t req[34] = {count, 0};
++   memcpy(req + 2, handles, count * sizeof(*handles));
++   uint64_t in[3] = {1, 1, *epoch}, out[2] = {0};
++   uint32_t nout = 2;
++   IOReturn ret = IOConnectCallMethod(to_darwin_device(dev)->conn, SWEETGPU_TICKET_BEGIN,
++                                      in, 3, req, 8 + 4 * count, out, &nout, NULL, NULL);
++   /* refused for now, not a failed submit: the surface's previous generation is still
++    * open or on the display, or the display epoch changed since QUERY */
++   if (ret == DARWIN_kIOReturnBusy || ret == DARWIN_kIOReturnAborted || ret == DARWIN_kIOReturnUnsupported)
++      return -EBUSY;
++   if (ret == DARWIN_kIOReturnNoMemory)
++      return -ENOMEM;
++   if (ret || nout != 2 || !out[0] || out[1] != *epoch)
++      return ret ? ret : -EIO;
++   *generation = out[0];
++   __atomic_store_n(&to_darwin_device(dev)->tickets_active, true, __ATOMIC_RELEASE);
++   return 0;
++}
++
++int
++darwin_ticket_end(struct fd_device *dev, uint64_t generation, uint64_t epoch, bool abort,
++                 uint32_t seqno)
++{
++   uint64_t in[5] = {1, generation, epoch, abort ? 1 : 0, abort ? 0 : seqno};
++   return IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_TICKET_END,
++                                    in, 5, NULL, NULL);
 +}
 +
 +static void
@@ -526,16 +574,18 @@ index 0000000..5291380
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
 new file mode 100644
-index 0000000..a220bd5
+index 0000000..723ae9b
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_pipe.c
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,313 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + */
 +
 +#include <mach/mach_time.h>
++#include <stdlib.h>
++#include <string.h>
 +
 +#include "util/os_time.h"
 +#include "util/sweet_profile.h"
@@ -703,6 +753,15 @@ index 0000000..a220bd5
 +   }
 +
 +   size_t full_len = len + 4ull * fd_submit->nr_bos;
++   const char *mode = getenv("SWEETCA_PIPELINE");
++   bool tickets = mode && !strcmp(mode, "2") &&
++                  __atomic_load_n(&to_darwin_device(pipe->dev)->tickets_active, __ATOMIC_ACQUIRE);
++   if (tickets && (fd_submit->nr_bos == 0 || fd_submit->nr_bos > DARWIN_MAX_JOB_BUFS ||
++                   (full_len > 4096 && !to_darwin_device(pipe->dev)->out_of_line_bo))) {
++      free(req);
++      darwin_submit_failed(pipe, -E2BIG);
++      return -E2BIG;
++   }
 +   if (fd_submit->nr_bos <= DARWIN_MAX_JOB_BUFS &&
 +       (full_len <= 4096 || to_darwin_device(pipe->dev)->out_of_line_bo)) {
 +      uint8_t *full = realloc(req, full_len);
@@ -720,6 +779,19 @@ index 0000000..a220bd5
 +   }
 +
 +   uint64_t seqno = 0;
++   static unsigned tested;
++   const char *test = tickets ? getenv("SWEETCA_TICKET_TEST") : NULL;
++   unsigned hook = test && !strcmp(test, "submit-error") ? 1 :
++                   test && !strcmp(test, "nbo-zero") ? 2 : 0;
++   if (hook && (__atomic_fetch_or(&tested, hook, __ATOMIC_ACQ_REL) & hook))
++      hook = 0;
++   if (hook == 1) {
++      free(req);
++      darwin_submit_failed(pipe, -EIO);
++      return -EIO;
++   }
++   if (hook == 2)
++      ((uint32_t *)req)[1] = 0;
 +   uint32_t nout = 1;
 +   uint64_t t0 = mach_absolute_time();
 +   IOReturn ret = IOConnectCallMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_SUBMIT, NULL, 0,
@@ -821,10 +893,10 @@ index 0000000..a220bd5
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_priv.h b/src/freedreno/drm/darwin/darwin_priv.h
 new file mode 100644
-index 0000000..dab4e3b
+index 0000000..a895301
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_priv.h
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,144 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -884,6 +956,10 @@ index 0000000..dab4e3b
 +                                mach_vm_address_t atAddress);
 +#define DARWIN_kIOMapAnywhere      0x00000001
 +#define DARWIN_kIOReturnTimeout    ((IOReturn)0xe00002d6)
++#define DARWIN_kIOReturnNoMemory   ((IOReturn)0xe00002bd)
++#define DARWIN_kIOReturnUnsupported ((IOReturn)0xe00002c7)
++#define DARWIN_kIOReturnBusy       ((IOReturn)0xe00002d5)
++#define DARWIN_kIOReturnAborted    ((IOReturn)0xe00002eb)
 +
 +enum sweetgpu_selector {
 +   SWEETGPU_GET_PARAM = 0,
@@ -894,6 +970,8 @@ index 0000000..dab4e3b
 +   SWEETGPU_COMPLETED = 5,
 +   SWEETGPU_IMPORT_IOSURFACE = 6,
 +   SWEETGPU_BUFFER_INFO = 7,
++   SWEETGPU_TICKET_BEGIN = 8,
++   SWEETGPU_TICKET_END = 9,
 +};
 +
 +/* sweet_gpu_param() numbers */
@@ -917,6 +995,7 @@ index 0000000..dab4e3b
 +   struct fd_device base;
 +   io_connect_t conn;
 +   bool out_of_line_bo;
++   bool tickets_active;
 +   int submit_error;
 +};
 +FD_DEFINE_CAST(fd_device, darwin_device);
@@ -947,6 +1026,9 @@ index 0000000..dab4e3b
 +void darwin_submit_failed(struct fd_pipe *pipe, int error);
 +int darwin_pipeline_error(void);
 +uint64_t darwin_pipeline_capability(void);
++uint64_t darwin_ticket_query(struct fd_device *dev, uint64_t *epoch);
++int darwin_ticket_begin(struct fd_device *, const uint32_t *, unsigned, uint64_t *, uint64_t *);
++int darwin_ticket_end(struct fd_device *, uint64_t, uint64_t, bool, uint32_t);
 +
 +/* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
 +extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits, darwin_submit_errors;
@@ -1677,10 +1759,10 @@ index 0000000..d0e3cb8
 +}
 diff --git a/src/gallium/frontends/sweetgl/meson.build b/src/gallium/frontends/sweetgl/meson.build
 new file mode 100644
-index 0000000..2841507
+index 0000000..ee052db
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/meson.build
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,90 @@
 +# Copyright © 2026 ios-jasmine
 +# SPDX-License-Identifier: MIT
 +
@@ -1699,8 +1781,9 @@ index 0000000..2841507
 +  'sweetgl',
 +  ['sweetgl.c', 'sweetgl.h', 'sweetgl_gles2.c', sweetgl_es2_mapi_tmp_h],
 +  include_directories : [
-+    inc_include, inc_util, inc_mesa, inc_src, inc_gallium, inc_gallium_aux,
++    inc_include, inc_util, inc_mesa, inc_src, inc_gallium, inc_gallium_aux, inc_freedreno,
 +    include_directories('../../drivers/freedreno'),
++    include_directories('../../drivers/freedreno/ir3', '../../../freedreno/drm'),
 +  ],
 +  dependencies : [idep_mesautil, idep_xmlconfig, idep_nir],
 +  link_with : [libmesa, libglapi],
@@ -1772,10 +1855,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..288c229
+index 0000000..93ef856
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,2158 @@
+@@ -0,0 +1,2648 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1901,6 +1984,15 @@ index 0000000..288c229
 +   uint8_t tex_swizzled[TEXMAX];
 +   struct sca_copy *copies[TEXMAX];     /* textures holding a copy of an IOSurface */
 +   struct sca_obj obj[OBJMAX];
++   IOSurfaceRef ticket_surface[TEXMAX]; /* mode 2: retained storage identity */
++   uint64_t ticket_version[TEXMAX];
++   uint8_t ticket_known[TEXMAX], ticket_fbo_bad[FBOMAX];
++   bool ticket_sync_frame, ticket_failed;
++   bool ticket_cap_checked;
++   int ticket_frame_mode;
++   unsigned ticket_surface_count;
++   IOSurfaceRef ticket_frame_surface[32];
++   uint32_t ticket_gl_errors; /* preserve error flags inspected while replacing import storage */
 +};
 +
 +static void copy_forget(struct sca_ctx *c, GLuint tex);
@@ -1908,6 +2000,17 @@ index 0000000..288c229
 +static void copy_mipped(struct sca_ctx *c, GLuint tex);
 +static void shadow_drawn(struct sca_ctx *c);
 +static void shadow_write_back(struct sca_ctx *c);
++static bool ticket_requested(void);
++static bool ticket_resolve(struct sca_ctx *c);
++static bool ticket_write(struct sca_ctx *c, GLuint texture);
++static bool ticket_draw(struct sca_ctx *c);
++static void ticket_after_write(struct sca_ctx *c);
++static void ticket_storage(struct sca_ctx *c, GLuint tex, IOSurfaceRef surface, bool known);
++static void draw_prep(struct sca_ctx *c);
++static void shadow_texture_drawn(struct sca_ctx *c, GLuint tex);
++static GLenum tgt(struct sca_ctx *c, GLenum target);
++static void note_size(struct sca_ctx *c, GLuint tex, unsigned w, unsigned h);
++static void kick_after_draw(struct sca_ctx *c);
 +
 +static struct sca_ctx *ctxs[MAX_CTX];
 +static pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2091,7 +2194,11 @@ index 0000000..288c229
 +w_GetError(void *rctx)
 +{
 +   CUR(rctx);
-+   (void)c;
++   if (ticket_requested() && c->ticket_gl_errors) {
++      unsigned bit = (unsigned)__builtin_ctz(c->ticket_gl_errors);
++      c->ticket_gl_errors &= ~(1u << bit);
++      return GL_INVALID_ENUM + bit;
++   }
 +   return glGetError();
 +}
 +
@@ -2245,6 +2352,7 @@ index 0000000..288c229
 +}
 +
 +static int pipeline_mode = -1;
++static bool pipeline_tickets;
 +static unsigned pipeline_errors, pipeline_slow;
 +static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
 +
@@ -2252,7 +2360,177 @@ index 0000000..288c229
 +pipeline_init(void)
 +{
 +   const char *v = getenv("SWEETCA_PIPELINE");
-+   pipeline_mode = v && !strcmp(v, "1") ? 1 : 0;
++   pipeline_mode = v && !strcmp(v, "2") ? 2 : v && !strcmp(v, "1") ? 1 : 0;
++   pipeline_tickets = pipeline_mode == 2;
++}
++
++static bool
++ticket_requested(void)
++{
++   pthread_once(&pipeline_once, pipeline_init);
++   return pipeline_tickets;
++}
++
++static void
++ticket_failed(struct sca_ctx *c, int error)
++{
++   c->ticket_failed = true;
++   c->ticket_gl_errors |= 1u << (GL_INVALID_OPERATION - GL_INVALID_ENUM);
++   unsigned errors = __atomic_add_fetch(&pipeline_errors, 1, __ATOMIC_RELAXED);
++   if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL))
++      sca_log("sweetca: ticket/submit error %d (%u errors); frame invalid, full finish for process", error, errors);
++}
++
++/* An owner CPU read must not wait for an unqueued SEAL of its own writes. */
++static bool
++ticket_resolve(struct sca_ctx *c)
++{
++   if (!ticket_requested())
++      return true;
++   int error = sgl_ticket_finish(c->gl);
++   if (error == -ETIMEDOUT || error == -ENOMEM) {
++      glFinish();
++      error = sgl_ticket_error(c->gl); /* lateness/bookkeeping allocation alone never disables the mode */
++   }
++   if (error && (__atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) != 0 || c->ticket_failed))
++      ticket_failed(c, error);
++   return !c->ticket_failed;
++}
++
++static int
++ticket_mode(struct sca_ctx *c)
++{
++   if (!ticket_requested())
++      return 0;
++   int mode = __atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE);
++   if (mode == 2) {
++      if (!c->ticket_cap_checked) {
++         c->ticket_cap_checked = true;
++         c->ticket_frame_mode = sgl_tickets_available(c->gl) ? 2 : sgl_pipeline_available(c->gl) ? 1 : 0;
++      }
++      return c->ticket_frame_mode;
++   }
++   return mode;
++}
++
++static void
++ticket_storage(struct sca_ctx *c, GLuint tex, IOSurfaceRef surface, bool known)
++{
++   if (!ticket_requested() || tex >= TEXMAX)
++      return;
++   /* Pending batches own their BOs, independent of this GL name/version.
++    * Replacing a mapping must not turn each surface bind into a drain. */
++   if (surface)
++      CFRetain(surface);
++   if (c->ticket_surface[tex])
++      CFRelease(c->ticket_surface[tex]);
++   c->ticket_surface[tex] = surface;
++   c->ticket_known[tex] = known;
++   c->ticket_version[tex]++;
++}
++
++static bool
++ticket_private_storage(struct sca_ctx *c, GLuint tex)
++{
++   if (!ticket_requested())
++      return false;
++   /* Redefining an import can fail and leave its old storage installed. Keep
++    * that name unknown until a successful import or deletion, without eating
++    * GL's error flag. A fresh/private name cannot conceal an IOSurface. */
++   return tex < TEXMAX && !c->ticket_surface[tex] &&
++          (!c->ticket_version[tex] || c->ticket_known[tex]);
++}
++
++static GLenum
++ticket_gl_capture(struct sca_ctx *c)
++{
++   GLenum result = GL_NO_ERROR;
++   for (unsigned i = 0; i < 8; i++) {
++      GLenum error = glGetError();
++      if (error == GL_NO_ERROR)
++         break;
++      result = error;
++      if (error >= GL_INVALID_ENUM && error <= GL_INVALID_ENUM + 7)
++         c->ticket_gl_errors |= 1u << (error - GL_INVALID_ENUM);
++   }
++   return result;
++}
++
++static bool
++ticket_write(struct sca_ctx *c, GLuint tex)
++{
++   if (!ticket_requested())
++      return true;
++   if (c->ticket_failed)
++      return false;
++   if (__atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) == 0)
++      return true;
++   if (sgl_ticket_error(c->gl)) {
++      (void)ticket_resolve(c);
++      return false;
++   }
++   if (ticket_mode(c) != 2)
++      return ticket_resolve(c);
++   if (!c->ticket_sync_frame && tex && tex < TEXMAX && c->ticket_known[tex]) {
++      if (!c->ticket_surface[tex])
++         return true; /* known private GL storage */
++      IOSurfaceRef surface = c->ticket_surface[tex];
++      bool seen = false;
++      for (unsigned i = 0; i < c->ticket_surface_count; i++)
++         seen |= c->ticket_frame_surface[i] == surface;
++      int error = !seen && c->ticket_surface_count == 32 ? -E2BIG :
++                  sgl_ticket_write(c->gl, IOSurfaceGetID(surface));
++      if (pipeline_tickets && error == -ENOMEM) {
++         glFinish(); /* failed drain bookkeeping; sticky backend status is checked below */
++      } else if (error == -ETIMEDOUT) {
++         glFinish(); /* a late callback at reuse is a slow frame, not a submit failure */
++         error = sgl_ticket_error(c->gl);
++         if (!error)
++            error = sgl_ticket_write(c->gl, IOSurfaceGetID(surface));
++      }
++      if (!error) {
++         if (!seen) {
++            CFRetain(surface);
++            c->ticket_frame_surface[c->ticket_surface_count++] = surface;
++         }
++         return true;
++      }
++      if (error != -ENOMEM && error != -E2BIG && error != -ENOTSUP && error != -EBUSY) {
++         (void)ticket_resolve(c);
++         ticket_failed(c, error);
++         return false;
++      }
++   }
++   c->ticket_sync_frame = true;
++   if (!ticket_resolve(c))
++      return false;
++   shadow_write_back(c);
++   glFinish();
++   int error = sgl_ticket_error(c->gl);
++   if (error)
++      ticket_failed(c, error);
++   return !c->ticket_failed;
++}
++
++static bool
++ticket_draw(struct sca_ctx *c)
++{
++   if (!ticket_requested())
++      return true;
++   GLuint tex = c->fbo && c->fbo < FBOMAX && !c->ticket_fbo_bad[c->fbo] ? c->fbo_tex[c->fbo] : 0;
++   return ticket_write(c, tex);
++}
++
++static void
++ticket_after_write(struct sca_ctx *c)
++{
++   if (ticket_requested() && c->ticket_sync_frame) {
++      shadow_write_back(c);
++      glFinish();
++      int error = sgl_ticket_error(c->gl);
++      if (error)
++         ticket_failed(c, error);
++   }
 +}
 +
 +static bool
@@ -2272,7 +2550,20 @@ index 0000000..288c229
 +   double t = now_ms();
 +   shadow_write_back(c);
 +   c->frame++;
-+   if (pipeline_enabled(c)) {
++   if (ticket_requested())
++      c->ticket_cap_checked = false; /* QUERY is live at the flush boundary */
++   int mode = ticket_mode(c);
++   if (pipeline_tickets && mode != 2)
++      (void)sgl_ticket_flush(c->gl); /* capability loss still resolves this frame's open set */
++   if (mode == 2 && !c->ticket_sync_frame && !c->ticket_failed) {
++      glFlush();
++      int error = sgl_ticket_flush(c->gl);
++      if (error) {
++         (void)ticket_resolve(c);
++         ticket_failed(c, error);
++         glFinish();
++      }
++   } else if (pipeline_enabled(c) || (pipeline_tickets && mode == 1 && !c->ticket_failed)) {
 +      glFlush();
 +      int error = sgl_flush_submit(c->gl);
 +      if (error == -ETIMEDOUT) {
@@ -2284,14 +2575,27 @@ index 0000000..288c229
 +         glFinish();
 +      } else if (error) {
 +         unsigned errors = __atomic_add_fetch(&pipeline_errors, 1, __ATOMIC_RELAXED);
-+         if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL) == 1)
++         if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL) != 0)
 +            sca_log("sweetca: pipeline submit/drain error %d (%u errors); full finish for process", error, errors);
 +         glFinish();
 +      } else if (!sgl_pipeline_available(c->gl)) {
 +         glFinish();
 +      }
 +   } else {
++      if (ticket_requested())
++         (void)ticket_resolve(c);
 +      glFinish();
++   }
++   if (ticket_requested()) {
++      int error = sgl_ticket_error(c->gl);
++      if (error && !c->ticket_failed && mode != 0)
++         ticket_failed(c, error);
++      c->ticket_sync_frame = false;
++      c->ticket_failed = false; /* the faulted frame ended; later frames use mode 0 */
++      c->ticket_cap_checked = false;
++      for (unsigned i = 0; i < c->ticket_surface_count; i++)
++         CFRelease(c->ticket_frame_surface[i]);
++      c->ticket_surface_count = 0;
 +   }
 +   flush_stats(now_ms() - t);
 +   if (trace_on && traced++ < 20)
@@ -2303,8 +2607,11 @@ index 0000000..288c229
 +w_Finish(void *rctx)
 +{
 +   CUR(rctx);
++   (void)ticket_resolve(c);
 +   shadow_write_back(c);
 +   glFinish();
++   if (ticket_requested() && __atomic_load_n(&pipeline_mode, __ATOMIC_ACQUIRE) != 0 && sgl_ticket_error(c->gl))
++      ticket_failed(c, sgl_ticket_error(c->gl));
 +   POST(89);
 +}
 +
@@ -2314,6 +2621,158 @@ index 0000000..288c229
 +   (void)object;
 +   (void)name;
 +   w_Finish(rctx);
++}
++
++/* These slots were unsupported by the old wrapper. Install them only for the
++ * mode-2 request, including its synchronous capability fallback. */
++static void
++w_ReadPixels(void *rctx, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format,
++             GLenum type, void *pixels)
++{
++   CUR(rctx);
++   if (!ticket_resolve(c))
++      return;
++   shadow_write_back(c);
++   glReadPixels(x, y, w, h, format, type, pixels);
++   POST(237);
++}
++
++static void
++w_BlitFramebuffer(void *rctx, GLint sx0, GLint sy0, GLint sx1, GLint sy1,
++                  GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter)
++{
++   CUR(rctx);
++   if (!ticket_resolve(c) || !ticket_draw(c))
++      return;
++   glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
++   shadow_drawn(c);
++   ticket_after_write(c);
++   POST(755);
++}
++
++static void
++w_CopyTexImage2D(void *rctx, GLenum target, GLint level, GLenum format, GLint x,
++                 GLint y, GLsizei w, GLsizei h, GLint border)
++{
++   CUR(rctx);
++   GLenum t = tgt(c, target);
++   if (!ticket_resolve(c))
++      return;
++   ticket_storage(c, c->held[c->active], NULL, false);
++   c->ticket_sync_frame = true;
++   glCopyTexImage2D(t, level, format, x, y, w, h, border);
++   if (level == 0) {
++      copy_forget(c, c->held[c->active]);
++      note_size(c, c->held[c->active], w, h);
++   }
++   ticket_after_write(c);
++   POST(54);
++}
++
++static void
++w_CompressedTexSubImage2D(void *rctx, GLenum target, GLint level, GLint x, GLint y,
++                         GLsizei w, GLsizei h, GLenum format, GLsizei size, const void *data)
++{
++   CUR(rctx);
++   GLenum t = tgt(c, target);
++   if (!ticket_write(c, c->held[c->active]))
++      return;
++   glCompressedTexSubImage2D(t, level, x, y, w, h, format, size, data);
++   shadow_texture_drawn(c, c->held[c->active]);
++   ticket_after_write(c);
++   POST(383);
++}
++
++static void
++w_DrawArraysInstanced(void *rctx, GLenum mode, GLint first, GLsizei count, GLsizei instances)
++{
++   CUR(rctx);
++   draw_prep(c);
++   if (count > 0 && instances > 0 && !ticket_draw(c))
++      return;
++   n_draws++;
++   glDrawArraysInstanced(mode, first, count, instances);
++   shadow_drawn(c);
++   ticket_after_write(c);
++   kick_after_draw(c);
++   POST(762);
++}
++
++static void
++w_DrawElementsInstanced(void *rctx, GLenum mode, GLsizei count, GLenum type,
++                        const void *indices, GLsizei instances)
++{
++   CUR(rctx);
++   draw_prep(c);
++   if (count > 0 && instances > 0 && !ticket_draw(c))
++      return;
++   n_draws++;
++   glDrawElementsInstanced(mode, count, type, indices, instances);
++   shadow_drawn(c);
++   ticket_after_write(c);
++   kick_after_draw(c);
++   POST(763);
++}
++
++#define TICKET_CLEAR(slot, suffix, type)                                         \
++   static void w_ClearBuffer##suffix(void *rctx, GLenum buffer, GLint drawbuffer, \
++                                     const type *value)                         \
++   {                                                                            \
++      CUR(rctx);                                                                \
++      if (!ticket_draw(c))                                                      \
++         return;                                                                \
++      glClearBuffer##suffix(buffer, drawbuffer, value);                          \
++      shadow_drawn(c);                                                          \
++      ticket_after_write(c);                                                    \
++      POST(slot);                                                               \
++   }
++TICKET_CLEAR(774, iv, GLint)
++TICKET_CLEAR(775, uiv, GLuint)
++TICKET_CLEAR(776, fv, GLfloat)
++#undef TICKET_CLEAR
++
++static void
++w_ClearBufferfi(void *rctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
++{
++   CUR(rctx);
++   if (!ticket_draw(c))
++      return;
++   glClearBufferfi(buffer, drawbuffer, depth, stencil);
++   shadow_drawn(c);
++   ticket_after_write(c);
++   POST(777);
++}
++
++static void
++w_FramebufferRenderbuffer(void *rctx, GLenum target, GLenum attachment, GLenum rtarget, GLuint rb)
++{
++   CUR(rctx);
++   if (c->fbo < FBOMAX && (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
++      c->ticket_fbo_bad[c->fbo] = 1;
++   glFramebufferRenderbuffer(target, attachment, rtarget, rb);
++   POST(679);
++}
++
++static void
++w_FramebufferTextureLayer(void *rctx, GLenum target, GLenum attachment, GLuint tex, GLint level, GLint layer)
++{
++   CUR(rctx);
++   if (c->fbo < FBOMAX && (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
++      c->ticket_fbo_bad[c->fbo] = 1;
++   glFramebufferTextureLayer(target, attachment, tex, level, layer);
++   POST(691);
++}
++
++static void
++w_TexStorage2D(void *rctx, GLenum target, GLsizei levels, GLenum format, GLsizei w, GLsizei h)
++{
++   CUR(rctx);
++   GLenum t = tgt(c, target);
++   ticket_storage(c, c->held[c->active], NULL, ticket_private_storage(c, c->held[c->active]));
++   glTexStorage2D(t, levels, format, w, h);
++   copy_forget(c, c->held[c->active]);
++   note_size(c, c->held[c->active], w, h);
++   POST(1031);
 +}
 +
 +/* ---- strings and queries ---- */
@@ -2429,6 +2888,7 @@ index 0000000..288c229
 +{
 +   CUR(rctx);
 +   for (GLsizei i = 0; i < n; i++) {
++      ticket_storage(c, tex[i], NULL, false);
 +      for (int u = 0; u < UNITS; u++) {
 +         if (c->bind2d[u] == tex[i])
 +            c->bind2d[u] = 0;
@@ -2439,6 +2899,8 @@ index 0000000..288c229
 +      }
 +      copy_forget(c, tex[i]);
 +      if (tex[i] < TEXMAX) {
++         if (ticket_requested())
++            c->ticket_version[tex[i]] = 0; /* a reused GL name is a fresh object */
 +         c->tex_w[tex[i]] = c->tex_h[tex[i]] = 0;
 +         c->tex_swizzled[tex[i]] = 0;
 +      }
@@ -2489,6 +2951,7 @@ index 0000000..288c229
 +{
 +   CUR(rctx);
 +   GLenum t = tgt(c, target);
++   ticket_storage(c, c->held[c->active], NULL, level == 0 && ticket_private_storage(c, c->held[c->active]));
 +   if (trace_on > 1)
 +      sca_log("sweetca: TexImage2D tex %u target %#x level %d ifmt %#x %dx%d fmt %#x type %#x data %p", c->held[c->active], target, level,
 +              ifmt, w, h, format, type, pixels);
@@ -2508,7 +2971,12 @@ index 0000000..288c229
 +                GLenum format, GLenum type, const void *pixels)
 +{
 +   CUR(rctx);
-+   glTexSubImage2D(tgt(c, target), level, x, y, w, h, format, type, pixels);
++   GLenum t = tgt(c, target);
++   if (w > 0 && h > 0 && !ticket_write(c, c->held[c->active]))
++      return;
++   glTexSubImage2D(t, level, x, y, w, h, format, type, pixels);
++   shadow_texture_drawn(c, c->held[c->active]);
++   ticket_after_write(c);
 +   POST(307);
 +}
 +
@@ -2517,7 +2985,9 @@ index 0000000..288c229
 +                       GLint border, GLsizei size, const void *data)
 +{
 +   CUR(rctx);
-+   glCompressedTexImage2D(tgt(c, target), level, ifmt, w, h, border, size, data);
++   GLenum t = tgt(c, target);
++   ticket_storage(c, c->held[c->active], NULL, level == 0 && ticket_private_storage(c, c->held[c->active]));
++   glCompressedTexImage2D(t, level, ifmt, w, h, border, size, data);
 +   POST(380);
 +   if (level == 0) {
 +      note_size(c, c->held[c->active], w, h);
@@ -2530,11 +3000,16 @@ index 0000000..288c229
 +                    GLsizei w, GLsizei h)
 +{
 +   CUR(rctx);
++   GLenum t = ticket_requested() ? tgt(c, target) : target;
++   if (!ticket_resolve(c) || !ticket_write(c, c->held[c->active]))
++      return;
 +   if (trace_on > 1)
 +      sca_log("sweetca: CopyTexSubImage2D tex %u (%ux%u) level %d at %d,%d from %d,%d size %dx%d, fbo %u", c->held[c->active],
 +              c->tex_w[c->held[c->active] % TEXMAX], c->tex_h[c->held[c->active] % TEXMAX], level, xo, yo, x, y, w, h,
 +              c->fbo);
-+   glCopyTexSubImage2D(tgt(c, target), level, xo, yo, x, y, w, h);
++   glCopyTexSubImage2D(ticket_requested() ? t : tgt(c, target), level, xo, yo, x, y, w, h);
++   shadow_texture_drawn(c, c->held[c->active]);
++   ticket_after_write(c);
 +   if (trace_on > 1) {
 +      /* what the copy holds, and what it copied from */
 +      static int shown;
@@ -2559,7 +3034,11 @@ index 0000000..288c229
 +w_GenerateMipmap(void *rctx, GLenum target)
 +{
 +   CUR(rctx);
-+   glGenerateMipmap(tgt(c, target));
++   GLenum t = tgt(c, target);
++   if (!ticket_write(c, c->held[c->active]))
++      return;
++   glGenerateMipmap(t);
++   ticket_after_write(c);
 +   copy_mipped(c, c->held[c->active]);
 +   POST(681);
 +}
@@ -2571,8 +3050,13 @@ index 0000000..288c229
 +{
 +   CUR(rctx);
 +   if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER)
-+      c->fbo = fb < FBOMAX ? fb : 0;
++      c->fbo = ticket_requested() ? fb : fb < FBOMAX ? fb : 0;
 +   glBindFramebuffer(target, fb);
++   if (ticket_requested()) {
++      GLint actual = 0;
++      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &actual);
++      c->fbo = (GLuint)actual;
++   }
 +   POST(672);
 +}
 +
@@ -2583,6 +3067,8 @@ index 0000000..288c229
 +   for (GLsizei i = 0; i < n; i++) {
 +      if (fb[i] < FBOMAX)
 +         c->fbo_tex[fb[i]] = 0;
++      if (ticket_requested() && fb[i] < FBOMAX)
++         c->ticket_fbo_bad[fb[i]] = 0;
 +      if (c->fbo == fb[i])
 +         c->fbo = 0;
 +   }
@@ -2595,12 +3081,22 @@ index 0000000..288c229
 +                       GLint level)
 +{
 +   CUR(rctx);
++   if (ticket_requested())
++      (void)ticket_gl_capture(c);
++   if (ticket_requested() && c->fbo < FBOMAX &&
++       (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) &&
++       (attachment != GL_COLOR_ATTACHMENT0 || level ||
++        (textarget != GL_TEXTURE_2D && textarget != GL_TEXTURE_RECTANGLE_ARB)))
++      c->ticket_fbo_bad[c->fbo] = 1;
 +   if (attachment == GL_COLOR_ATTACHMENT0 && c->fbo > 0 && c->fbo < FBOMAX &&
 +       (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
 +      c->fbo_tex[c->fbo] = tex;
 +   glFramebufferTexture2D(target, attachment,
 +                          textarget == GL_TEXTURE_RECTANGLE_ARB ? GL_TEXTURE_2D : textarget, tex,
 +                          level);
++   if (ticket_requested() && ticket_gl_capture(c) != GL_NO_ERROR && c->fbo < FBOMAX &&
++       (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
++      c->ticket_fbo_bad[c->fbo] = 1;
 +   POST(677);
 +}
 +
@@ -3057,11 +3553,14 @@ index 0000000..288c229
 +   draw_prep(c);
 +   n_draws++;
 +   trace_draw(c, mode, count);
++   if (count > 0 && !ticket_draw(c))
++      return; /* preparation may read back/seal earlier writes; BEGIN comes after it */
 +   {
 +      SWEET_SCOPE(sp_call, SP_DRAW_CALL);
 +      glDrawArrays(mode, first, count);
 +   }
 +   shadow_drawn(c);
++   ticket_after_write(c);
 +   kick_after_draw(c);
 +   POST(65);
 +}
@@ -3074,11 +3573,14 @@ index 0000000..288c229
 +   draw_prep(c);
 +   n_draws++;
 +   trace_draw(c, mode, count);
++   if (count > 0 && !ticket_draw(c))
++      return;
 +   {
 +      SWEET_SCOPE(sp_call, SP_DRAW_CALL);
 +      glDrawElements(mode, count, type, indices);
 +   }
 +   shadow_drawn(c);
++   ticket_after_write(c);
 +   kick_after_draw(c);
 +   POST(67);
 +}
@@ -3087,10 +3589,13 @@ index 0000000..288c229
 +w_Clear(void *rctx, GLbitfield mask)
 +{
 +   CUR(rctx);
++   if (mask && !ticket_draw(c))
++      return;
 +   (void)c;
 +   n_clears++;
 +   glClear(mask);
 +   shadow_drawn(c);
++   ticket_after_write(c);
 +   POST(10);
 +}
 +
@@ -3204,7 +3709,7 @@ index 0000000..288c229
 +{
 +   if (bpe == 0 || pitch % bpe != 0)
 +      return false;
-+   if (IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL) != 0)
++   if (!ticket_resolve(c) || IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL) != 0)
 +      return false;
 +   const void *base = IOSurfaceGetBaseAddress(s);
 +   GLint row = 0, align = 4;
@@ -3314,6 +3819,13 @@ index 0000000..288c229
 + * surface before CA flushes or finishes, so other processes and the display see them.
 + */
 +static void
++shadow_texture_drawn(struct sca_ctx *c, GLuint tex)
++{
++   if (ticket_requested() && tex && tex < TEXMAX && c->copies[tex] && c->copies[tex]->target)
++      c->copies[tex]->dirty = true;
++}
++
++static void
 +shadow_drawn(struct sca_ctx *c)
 +{
 +   GLuint t = c->fbo && c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
@@ -3326,6 +3838,15 @@ index 0000000..288c229
 +{
 +   static unsigned told;
 +   GLint prev = -1;
++   if (ticket_requested()) {
++      bool dirty = false;
++      for (int i = 0; i < 64; i++) {
++         GLuint tex = c->shadows[i];
++         dirty |= tex && tex < TEXMAX && c->copies[tex] && c->copies[tex]->dirty;
++      }
++      if (dirty && !ticket_resolve(c))
++         return;
++   }
 +   for (int i = 0; i < 64; i++) {
 +      GLuint tex = c->shadows[i];
 +      struct sca_copy *k = tex ? c->copies[tex] : NULL;
@@ -3336,8 +3857,23 @@ index 0000000..288c229
 +      if (!k || !k->dirty)
 +         continue;
 +      k->dirty = false;
-+      if (k->bpe != 4 || k->pitch % 4 != 0 || IOSurfaceLock(k->s, 0, NULL) != 0)
++      if (k->bpe != 4 || k->pitch % 4 != 0) {
++         if (ticket_requested()) {
++            k->dirty = true;
++            ticket_failed(c, -ENOTSUP);
++            break;
++         }
 +         continue;
++      }
++      int locked = IOSurfaceLock(k->s, 0, NULL);
++      if (locked != 0) {
++         if (ticket_requested()) {
++            k->dirty = true;
++            ticket_failed(c, locked);
++            break;
++         }
++         continue;
++      }
 +      if (prev < 0)
 +         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev);
 +      if (!c->readback_fbo)
@@ -3354,7 +3890,11 @@ index 0000000..288c229
 +      glPixelStorei(GL_PACK_ROW_LENGTH, row);
 +      glPixelStorei(GL_PACK_ALIGNMENT, align);
 +      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-+      IOSurfaceUnlock(k->s, 0, NULL);
++      int unlocked = IOSurfaceUnlock(k->s, 0, NULL);
++      if (ticket_requested() && (unlocked || e != GL_NO_ERROR)) {
++         k->dirty = true;
++         ticket_failed(c, unlocked ? unlocked : -EIO);
++      }
 +      k->seed = IOSurfaceGetSeed(k->s);
 +      if (told++ < 20 || e != GL_NO_ERROR)
 +         sca_log("sweetca: shadow target tex %u written back to surface %u (%zux%zu pitch %zu): GL error %#x", tex,
@@ -3407,6 +3947,8 @@ index 0000000..288c229
 +             uint32_t plane, bool flip, const char *why)
 +{
 +   static int logged;
++   GLenum t = ticket_requested() ? tgt(c, target) : target;
++   ticket_storage(c, c->held[c->active], NULL, false);
 +   uint32_t fourcc = IOSurfaceGetPixelFormat(s);
 +   bool planar = IOSurfaceGetPlaneCount(s) > 1;
 +   size_t w = planar ? IOSurfaceGetWidthOfPlane(s, plane) : IOSurfaceGetWidth(s);
@@ -3424,7 +3966,8 @@ index 0000000..288c229
 +                 IOSurfaceGetID(s), cc, w, h, pitch, plane, format, type);
 +      return false;
 +   }
-+   GLenum t = tgt(c, target);
++   if (!ticket_requested())
++      t = tgt(c, target);
 +   set_swizzle(c, t, f.swz, f.swizzled);
 +   uint32_t seed = IOSurfaceGetSeed(s);
 +   bool done = false;
@@ -3433,8 +3976,12 @@ index 0000000..288c229
 +    * GPU takes it in place there when the start is 64-byte aligned (texture bases
 +    * need 32, render targets more); our mapping of it begins at the page */
 +   size_t offset = (uintptr_t)IOSurfaceGetBaseAddress(s) & vm_page_mask;
++   if (ticket_requested())
++      (void)ticket_gl_capture(c);
 +   if (pitch % 64 == 0 && offset % 64 == 0 && !flip)
 +      done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, (unsigned)offset, f.f);
++   if (ticket_requested() && ticket_gl_capture(c) != GL_NO_ERROR)
++      done = false;
 +   if (!done && format) {
 +      /* the copy is uploaded as GL_ALPHA / GL_LUMINANCE(_ALPHA) itself: the swizzle
 +       * above is for R8/RG8 storage in place, and on an ALPHA texture (0,0,0,R)
@@ -3450,9 +3997,11 @@ index 0000000..288c229
 +      return false;
 +   }
 +   if (strcmp(how, "in place") == 0) {
++      ticket_storage(c, c->held[c->active], s, true);
 +      note_size(c, c->held[c->active], w, h);
 +      copy_forget(c, c->held[c->active]);
 +   } else {
++      ticket_storage(c, c->held[c->active], NULL, false);
 +      copy_note(c, c->held[c->active], s, seed, &f, w, h, pitch, bpe, flip);
 +   }
 +   /* An IOSurface texture has one level. With GL's default MIN_FILTER (a mipmap
@@ -3614,6 +4163,21 @@ index 0000000..288c229
 +   S(817, w_Nop);
 +   S(818, w_Nop);
 +   S(1024, w_FramebufferParameteriAPPLE);
++   if (ticket_requested()) {
++      S(54, w_CopyTexImage2D);
++      S(237, w_ReadPixels);
++      S(383, w_CompressedTexSubImage2D);
++      S(679, w_FramebufferRenderbuffer);
++      S(691, w_FramebufferTextureLayer);
++      S(755, w_BlitFramebuffer);
++      S(762, w_DrawArraysInstanced);
++      S(763, w_DrawElementsInstanced);
++      S(774, w_ClearBufferiv);
++      S(775, w_ClearBufferuiv);
++      S(776, w_ClearBufferfv);
++      S(777, w_ClearBufferfi);
++      S(1031, w_TexStorage2D);
++   }
 +#undef S
 +}
 +
@@ -3718,6 +4282,15 @@ index 0000000..288c229
 +   if (cur == c)
 +      bind_ctx(NULL);
 +   sgl_context_destroy(c->gl);
++   if (ticket_requested()) {
++      for (unsigned i = 0; i < c->ticket_surface_count; i++)
++         CFRelease(c->ticket_frame_surface[i]);
++      for (int i = 0; i < TEXMAX; i++) {
++         if (c->ticket_surface[i])
++            CFRelease(c->ticket_surface[i]);
++         copy_forget(c, i);
++      }
++   }
 +   free(c);
 +   /* EAGLContext's own init never ran: skip its dealloc, run NSObject's */
 +   struct objc_super sup = {self, class_getSuperclass(objc_getClass("EAGLContext"))};
@@ -5395,10 +5968,10 @@ index 0000000..2c17092
 +	T(1035)
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
 new file mode 100644
-index 0000000..ee5c0a9
+index 0000000..7ec5506
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.c
-@@ -0,0 +1,645 @@
+@@ -0,0 +1,655 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -5435,6 +6008,12 @@ index 0000000..ee5c0a9
 +#include "compiler/glsl_types.h"
 +
 +#include "sweetgl.h"
++#include "freedreno_screen.h"
++#include "freedreno_fence.h"
++#include "../../../freedreno/drm/darwin/darwin_priv.h"
++
++struct sgl_render_set;
++static void sgl_tickets_destroy(struct sgl_context *ctx);
 +
 +struct renderonly;
 +struct pipe_screen *fd_screen_create(int fd, const struct pipe_screen_config *config,
@@ -5455,6 +6034,7 @@ index 0000000..ee5c0a9
 +struct sgl_context {
 +   struct sgl_display *dpy;
 +   struct st_context *st;
++   struct sgl_render_set *tickets;
 +};
 +
 +struct sgl_surface {
@@ -5574,6 +6154,7 @@ index 0000000..ee5c0a9
 +   if (st_api_get_current() == ctx->st)
 +      st_api_make_current(NULL, NULL, NULL);
 +   st_context_flush(ctx->st, 0, NULL, NULL, NULL);
++   sgl_tickets_destroy(ctx);
 +   st_destroy_context(ctx->st);
 +   FREE(ctx);
 +}
@@ -5972,6 +6553,8 @@ index 0000000..ee5c0a9
 +   return result;
 +}
 +
++#include "sweetgl_tickets.inc"
++
 +struct sgl_sched {
 +   int policy;
 +   struct sched_param param;
@@ -6046,10 +6629,10 @@ index 0000000..ee5c0a9
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
 new file mode 100644
-index 0000000..0a9a388
+index 0000000..29821f1
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.h
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,118 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -6153,6 +6736,11 @@ index 0000000..0a9a388
 +bool sgl_kick(struct sgl_context *ctx);
 +bool sgl_pipeline_available(struct sgl_context *ctx);
 +int sgl_flush_submit(struct sgl_context *ctx);
++bool sgl_tickets_available(struct sgl_context *ctx);
++int sgl_ticket_write(struct sgl_context *ctx, uint32_t surface);
++int sgl_ticket_flush(struct sgl_context *ctx); /* ordered callback, no drain wait */
++int sgl_ticket_finish(struct sgl_context *ctx); /* resolve own writes before CPU access */
++int sgl_ticket_error(struct sgl_context *ctx);
 +void sgl_follow_thread(struct sgl_context *ctx);
 +
 +/* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
@@ -6183,6 +6771,240 @@ index 0000000..2bc8126
 +#define MAPI_TMP_DEFINES
 +#define MAPI_TMP_PUBLIC_ENTRIES_NO_HIDDEN
 +#include "es2_glapi_mapi_tmp.h"
+diff --git a/src/gallium/frontends/sweetgl/sweetgl_tickets.inc b/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
+new file mode 100644
+index 0000000..1ed5ee6
+--- /dev/null
++++ b/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
+@@ -0,0 +1,228 @@
++/* Mode 2 only. GL's owner thread edits open; callbacks only publish error.
++ * Each batch owns its BOs and a reference to the error state, never sca_ctx.
++ */
++struct sgl_render_ticket {
++   struct fd_bo *bo;
++   uint32_t surface;
++   uint64_t generation, epoch;
++};
++
++struct sgl_render_batch {
++   struct sgl_render_set *set;
++   struct pipe_context *driver;
++   unsigned count;
++   struct sgl_render_batch *next;
++   struct sgl_render_ticket tickets[32];
++};
++
++struct sgl_render_set {
++   unsigned refs;
++   int error;
++   bool cancelled;
++   struct sgl_render_batch *open;
++   pthread_mutex_t lock;
++   struct sgl_render_batch *inflight;
++};
++
++static void
++sgl_render_unref(struct sgl_render_set *set)
++{
++   if (__atomic_sub_fetch(&set->refs, 1, __ATOMIC_ACQ_REL) == 0) {
++      pthread_mutex_destroy(&set->lock);
++      FREE(set);
++   }
++}
++
++int
++sgl_ticket_error(struct sgl_context *ctx)
++{
++   int error = ctx->tickets ? __atomic_load_n(&ctx->tickets->error, __ATOMIC_ACQUIRE) : 0;
++   return error ? error : darwin_pipeline_error();
++}
++
++bool
++sgl_tickets_available(struct sgl_context *ctx)
++{
++   uint64_t epoch = 0;
++   if (!sgl_driver_pipe(ctx))
++      return false;
++   uint64_t flags = darwin_ticket_query(fd_screen(ctx->st->pipe->screen)->dev, &epoch);
++   if (ctx->tickets && ctx->tickets->open && ctx->tickets->open->count &&
++       ctx->tickets->open->tickets[0].epoch != epoch && sgl_ticket_finish(ctx))
++      return false;
++   return (flags & 15) == 15;
++}
++
++int
++sgl_ticket_write(struct sgl_context *ctx, uint32_t surface)
++{
++   int error = sgl_ticket_error(ctx);
++   if (error || !surface || !sgl_driver_pipe(ctx))
++      return error ? error : -ENOTSUP;
++   if (!ctx->tickets) {
++      ctx->tickets = CALLOC_STRUCT(sgl_render_set);
++      if (!ctx->tickets)
++         return -ENOMEM;
++      int init = pthread_mutex_init(&ctx->tickets->lock, NULL);
++      if (init) {
++         FREE(ctx->tickets);
++         ctx->tickets = NULL;
++         return -ENOMEM;
++      }
++      ctx->tickets->refs = 1;
++   }
++   struct sgl_render_set *set = ctx->tickets;
++   bool pending = false;
++   pthread_mutex_lock(&set->lock);
++   for (struct sgl_render_batch *b = set->inflight; b; b = b->next) {
++      for (unsigned i = 0; i < b->count; i++)
++         pending |= b->tickets[i].surface == surface;
++   }
++   pthread_mutex_unlock(&set->lock);
++   if (pending) {
++      /* Reusing an offscreen target can reach us before its previous callback.
++       * Wait only at this write hazard, never at the preceding w_Flush. */
++      error = sgl_flush_submit(ctx);
++      if (error)
++         return error;
++      error = sgl_ticket_error(ctx);
++      if (error)
++         return error;
++   }
++   if (!set->open) {
++      set->open = CALLOC_STRUCT(sgl_render_batch);
++      if (!set->open)
++         return -ENOMEM;
++      set->open->set = set;
++      set->open->driver = sgl_driver_pipe(ctx);
++   }
++   struct sgl_render_batch *batch = set->open;
++   for (unsigned i = 0; i < batch->count; i++) {
++      if (batch->tickets[i].surface == surface)
++         return 0;
++   }
++   if (batch->count == 32)
++      return -E2BIG;
++   struct fd_device *dev = fd_screen(ctx->st->pipe->screen)->dev;
++   struct fd_bo *bo = fd_bo_from_dmabuf(dev, surface);
++   if (!bo)
++      return -ENOMEM;
++   struct sgl_render_ticket ticket = {.bo = bo, .surface = surface};
++   error = darwin_ticket_begin(dev, &bo->handle, 1, &ticket.generation, &ticket.epoch);
++   if (error) {
++      fd_bo_del(bo);
++      return error;
++   }
++   batch->tickets[batch->count++] = ticket;
++   return 0;
++}
++
++static void
++sgl_render_driver(void *data)
++{
++   struct sgl_render_batch *batch = data;
++   /* One-shot bounded S10 fixtures. No hook is active in modes 0/1. */
++   static unsigned tested;
++   const char *test = getenv("SWEETCA_TICKET_TEST");
++   unsigned hook = test && !strcmp(test, "delay80") ? 1 :
++                   test && !strcmp(test, "delay150") ? 2 :
++                   test && !strcmp(test, "stale") ? 4 :
++                   test && !strcmp(test, "abort") ? 8 : 0;
++   if (!batch->count)
++      hook = 0;
++   if (hook && (__atomic_fetch_or(&tested, hook, __ATOMIC_ACQ_REL) & hook))
++      hook = 0;
++   if (hook == 1 || hook == 2)
++      usleep(hook == 1 ? 80000 : 150000);
++   struct pipe_context *pipe = batch->driver;
++   struct pipe_screen *screen = pipe->screen;
++   struct pipe_fence_handle *fence = NULL;
++   pipe->flush(pipe, &fence, 0);
++   /* This drains the submit queue even if the GPU is still busy. The poll's
++    * boolean is not successful-submit proof; use the retained final fence. */
++   if (fence)
++      (void)screen->fence_finish(screen, pipe, fence, 0);
++   struct pipe_fence_handle *final = fence;
++   while (final && final->last_fence)
++      final = final->last_fence;
++   int error = darwin_pipeline_error();
++   if (hook == 8)
++      error = -ECANCELED;
++   if (__atomic_load_n(&batch->set->cancelled, __ATOMIC_ACQUIRE))
++      error = -ECANCELED;
++   uint32_t seqno = final && final->fence ? final->fence->kfence : 0;
++   struct fd_device *dev = batch->count ? batch->tickets[0].bo->dev : NULL;
++   if (batch->count && (!seqno || !final || !final->fence || final->fence->pipe->dev != dev))
++      error = error ? error : -EIO;
++   for (unsigned i = 0; i < batch->count; i++) {
++      struct sgl_render_ticket *t = &batch->tickets[i];
++      uint64_t epoch = 0;
++      uint64_t flags = darwin_ticket_query(t->bo->dev, &epoch);
++      bool cancelled = (flags & 1) && epoch != t->epoch;
++      int ret = darwin_ticket_end(t->bo->dev, t->generation, t->epoch + (hook == 4 && i == 0), error != 0 || cancelled, seqno);
++      if (ret) {
++         /* Resolve every open generation even if one SEAL was rejected. */
++         int abort = darwin_ticket_end(t->bo->dev, t->generation, t->epoch, true, 0);
++         flags = darwin_ticket_query(t->bo->dev, &epoch);
++         cancelled = !hook && !abort && (flags & 1) && epoch != t->epoch;
++         if (!cancelled)
++            error = error ? error : ret;
++      }
++   }
++   if (error) {
++      int zero = 0;
++      __atomic_compare_exchange_n(&batch->set->error, &zero, error, false,
++                                  __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++   }
++   screen->fence_reference(screen, &fence, NULL);
++   pthread_mutex_lock(&batch->set->lock);
++   struct sgl_render_batch **p = &batch->set->inflight;
++   while (*p && *p != batch)
++      p = &(*p)->next;
++   if (*p)
++      *p = batch->next;
++   pthread_mutex_unlock(&batch->set->lock);
++   for (unsigned i = 0; i < batch->count; i++)
++      fd_bo_del(batch->tickets[i].bo);
++   sgl_render_unref(batch->set);
++   FREE(batch);
++}
++
++int
++sgl_ticket_flush(struct sgl_context *ctx)
++{
++   struct sgl_render_set *set = ctx->tickets;
++   if (set && set->open) {
++      struct sgl_render_batch *batch = set->open;
++      set->open = NULL;
++      __atomic_add_fetch(&set->refs, 1, __ATOMIC_RELAXED);
++      pthread_mutex_lock(&set->lock);
++      batch->next = set->inflight;
++      set->inflight = batch;
++      pthread_mutex_unlock(&set->lock);
++      struct pipe_context *pipe = ctx->st->pipe;
++      pipe->callback(pipe, sgl_render_driver, batch, false);
++      pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
++   }
++   return sgl_ticket_error(ctx);
++}
++
++int
++sgl_ticket_finish(struct sgl_context *ctx)
++{
++   int error = sgl_ticket_flush(ctx);
++   int drain = sgl_flush_submit(ctx);
++   return error ? error : drain ? drain : sgl_ticket_error(ctx);
++}
++
++static void
++sgl_tickets_destroy(struct sgl_context *ctx)
++{
++   if (!ctx->tickets)
++      return;
++   __atomic_store_n(&ctx->tickets->cancelled, true, __ATOMIC_RELEASE);
++   /* TC destruction drains these callbacks before destroying the driver pipe. */
++   (void)sgl_ticket_flush(ctx);
++   sgl_render_unref(ctx->tickets);
++   ctx->tickets = NULL;
++}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 new file mode 100644
 index 0000000..a4fd842

@@ -4,6 +4,8 @@
  */
 
 #include <mach/mach_time.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "util/os_time.h"
 #include "util/sweet_profile.h"
@@ -171,6 +173,15 @@ flush_submit_list(struct list_head *submit_list)
    }
 
    size_t full_len = len + 4ull * fd_submit->nr_bos;
+   const char *mode = getenv("SWEETCA_PIPELINE");
+   bool tickets = mode && !strcmp(mode, "2") &&
+                  __atomic_load_n(&to_darwin_device(pipe->dev)->tickets_active, __ATOMIC_ACQUIRE);
+   if (tickets && (fd_submit->nr_bos == 0 || fd_submit->nr_bos > DARWIN_MAX_JOB_BUFS ||
+                   (full_len > 4096 && !to_darwin_device(pipe->dev)->out_of_line_bo))) {
+      free(req);
+      darwin_submit_failed(pipe, -E2BIG);
+      return -E2BIG;
+   }
    if (fd_submit->nr_bos <= DARWIN_MAX_JOB_BUFS &&
        (full_len <= 4096 || to_darwin_device(pipe->dev)->out_of_line_bo)) {
       uint8_t *full = realloc(req, full_len);
@@ -188,6 +199,19 @@ flush_submit_list(struct list_head *submit_list)
    }
 
    uint64_t seqno = 0;
+   static unsigned tested;
+   const char *test = tickets ? getenv("SWEETCA_TICKET_TEST") : NULL;
+   unsigned hook = test && !strcmp(test, "submit-error") ? 1 :
+                   test && !strcmp(test, "nbo-zero") ? 2 : 0;
+   if (hook && (__atomic_fetch_or(&tested, hook, __ATOMIC_ACQ_REL) & hook))
+      hook = 0;
+   if (hook == 1) {
+      free(req);
+      darwin_submit_failed(pipe, -EIO);
+      return -EIO;
+   }
+   if (hook == 2)
+      ((uint32_t *)req)[1] = 0;
    uint32_t nout = 1;
    uint64_t t0 = mach_absolute_time();
    IOReturn ret = IOConnectCallMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_SUBMIT, NULL, 0,

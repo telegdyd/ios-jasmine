@@ -46,6 +46,52 @@ darwin_pipeline_capability(void)
    return value;
 }
 
+uint64_t
+darwin_ticket_query(struct fd_device *dev, uint64_t *epoch)
+{
+   uint64_t in[2] = {1, 0}, out[4] = {0};
+   uint32_t count = 4;
+   if (IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_TICKET_BEGIN,
+                                 in, 2, out, &count) || count != 4 || out[0] != 1 || out[2] != 32)
+      return 0;
+   *epoch = out[3];
+   return out[1];
+}
+
+int
+darwin_ticket_begin(struct fd_device *dev, const uint32_t *handles, unsigned count,
+                   uint64_t *generation, uint64_t *epoch)
+{
+   if (!count || count > 32 || (darwin_ticket_query(dev, epoch) & 15) != 15)
+      return -ENOTSUP;
+   uint32_t req[34] = {count, 0};
+   memcpy(req + 2, handles, count * sizeof(*handles));
+   uint64_t in[3] = {1, 1, *epoch}, out[2] = {0};
+   uint32_t nout = 2;
+   IOReturn ret = IOConnectCallMethod(to_darwin_device(dev)->conn, SWEETGPU_TICKET_BEGIN,
+                                      in, 3, req, 8 + 4 * count, out, &nout, NULL, NULL);
+   /* refused for now, not a failed submit: the surface's previous generation is still
+    * open or on the display, or the display epoch changed since QUERY */
+   if (ret == DARWIN_kIOReturnBusy || ret == DARWIN_kIOReturnAborted || ret == DARWIN_kIOReturnUnsupported)
+      return -EBUSY;
+   if (ret == DARWIN_kIOReturnNoMemory)
+      return -ENOMEM;
+   if (ret || nout != 2 || !out[0] || out[1] != *epoch)
+      return ret ? ret : -EIO;
+   *generation = out[0];
+   __atomic_store_n(&to_darwin_device(dev)->tickets_active, true, __ATOMIC_RELEASE);
+   return 0;
+}
+
+int
+darwin_ticket_end(struct fd_device *dev, uint64_t generation, uint64_t epoch, bool abort,
+                 uint32_t seqno)
+{
+   uint64_t in[5] = {1, generation, epoch, abort ? 1 : 0, abort ? 0 : seqno};
+   return IOConnectCallScalarMethod(to_darwin_device(dev)->conn, SWEETGPU_TICKET_END,
+                                    in, 5, NULL, NULL);
+}
+
 static void
 darwin_bo_close_handle(struct fd_bo *bo)
 {

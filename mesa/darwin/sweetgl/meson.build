@@ -16,8 +16,9 @@ libsweetgl = static_library(
   'sweetgl',
   ['sweetgl.c', 'sweetgl.h', 'sweetgl_gles2.c', sweetgl_es2_mapi_tmp_h],
   include_directories : [
-    inc_include, inc_util, inc_mesa, inc_src, inc_gallium, inc_gallium_aux,
+    inc_include, inc_util, inc_mesa, inc_src, inc_gallium, inc_gallium_aux, inc_freedreno,
     include_directories('../../drivers/freedreno'),
+    include_directories('../../drivers/freedreno/ir3', '../../../freedreno/drm'),
   ],
   dependencies : [idep_mesautil, idep_xmlconfig, idep_nir],
   link_with : [libmesa, libglapi],

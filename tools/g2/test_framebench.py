@@ -87,6 +87,34 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(p['guards']['show']['rejected'], 1)
         self.assertNotIn('ctl_clear_observed_us', p['frames'][0])
 
+    def test_tickets_full_capture_metadata_abort_and_wait_errors(self):
+        data = event(1, 40, phase=6, a=3, b=1, c=5, d=2)
+        data += event(2, 41, phase=6, a=3, b=1, c=7, d=4)
+        data += event(3, 30, phase=6, a=8, b=3, c=1, d=7)
+        data += event(4, 37, phase=6, a=3, b=1, d=2)
+        data += event(5, 38, phase=6, a=8, b=3, c=0xe00002d6, d=100001)
+        data += event(6, 39, phase=6, a=9, b=3, d=80000)
+        p = self.capture(data)['presentation']
+        self.assertEqual(p['timeline'][2]['owner'], (2 << 32) | 5)
+        self.assertEqual(p['timeline'][2]['render_epoch'], (4 << 32) | 7)
+        self.assertEqual(p['counts']['ABORT'], 1)
+        self.assertEqual(p['timeline'][4]['generation'], (1 << 32) | 3)
+        self.assertEqual(p['ticket_waits']['CPU_TICKET_WAIT']['errors'], 1)
+        self.assertEqual(p['ticket_waits']['PRESENT_TICKET_WAIT']['p95_us'], 80000)
+        self.assertEqual(p['frames'], [])  # neither a SEAL nor a wait proves a flip/latch
+
+    def test_ticket_identity_is_connection_scoped_across_callback_threads(self):
+        data = event(1, 40, a=1, c=10) + event(2, 41, a=1, c=3)
+        data += event(3, 30, a=8, b=1, d=3)
+        data += event(4, 40, a=1, c=20) + event(5, 41, a=1, c=4)
+        data += event(6, 30, a=9, b=1, d=4)
+        data += event(7, 40, a=1, c=10, tid=2) + event(8, 41, a=1, c=3, tid=2)
+        data += event(9, 31, a=1, c=99, tid=2)
+        rows = self.capture(data)['presentation']['timeline']
+        self.assertEqual((rows[2]['owner'], rows[2]['render_epoch']), (10, 3))
+        self.assertEqual((rows[5]['owner'], rows[5]['render_epoch']), (20, 4))
+        self.assertEqual((rows[8]['owner'], rows[8]['render_epoch']), (10, 3))
+
     def test_pressure_beats_historical_cpu_ranking(self):
         s = self.capture(progress=[snapshot(free=16 << 20, wanted=2)], status='partial')
         self.assertIn('20', s['ranking'][0]['task'])

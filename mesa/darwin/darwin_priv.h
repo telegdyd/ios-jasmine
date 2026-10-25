@@ -57,6 +57,10 @@ IOReturn IOConnectUnmapMemory64(io_connect_t connect, uint32_t memoryType, task_
                                 mach_vm_address_t atAddress);
 #define DARWIN_kIOMapAnywhere      0x00000001
 #define DARWIN_kIOReturnTimeout    ((IOReturn)0xe00002d6)
+#define DARWIN_kIOReturnNoMemory   ((IOReturn)0xe00002bd)
+#define DARWIN_kIOReturnUnsupported ((IOReturn)0xe00002c7)
+#define DARWIN_kIOReturnBusy       ((IOReturn)0xe00002d5)
+#define DARWIN_kIOReturnAborted    ((IOReturn)0xe00002eb)
 
 enum sweetgpu_selector {
    SWEETGPU_GET_PARAM = 0,
@@ -67,6 +71,8 @@ enum sweetgpu_selector {
    SWEETGPU_COMPLETED = 5,
    SWEETGPU_IMPORT_IOSURFACE = 6,
    SWEETGPU_BUFFER_INFO = 7,
+   SWEETGPU_TICKET_BEGIN = 8,
+   SWEETGPU_TICKET_END = 9,
 };
 
 /* sweet_gpu_param() numbers */
@@ -90,6 +96,7 @@ struct darwin_device {
    struct fd_device base;
    io_connect_t conn;
    bool out_of_line_bo;
+   bool tickets_active;
    int submit_error;
 };
 FD_DEFINE_CAST(fd_device, darwin_device);
@@ -120,6 +127,9 @@ int darwin_get_param(struct fd_device *dev, enum sweetgpu_param param, uint64_t 
 void darwin_submit_failed(struct fd_pipe *pipe, int error);
 int darwin_pipeline_error(void);
 uint64_t darwin_pipeline_capability(void);
+uint64_t darwin_ticket_query(struct fd_device *dev, uint64_t *epoch);
+int darwin_ticket_begin(struct fd_device *, const uint32_t *, unsigned, uint64_t *, uint64_t *);
+int darwin_ticket_end(struct fd_device *, uint64_t, uint64_t, bool, uint32_t);
 
 /* darwin_pipe.c: kernel submits and waits and the mach ticks spent in them (libsweetca's profile) */
 extern uint64_t darwin_submits, darwin_submit_ticks, darwin_wait_ticks, darwin_waits, darwin_submit_errors;

@@ -263,7 +263,7 @@ sub('src/freedreno/drm/freedreno_bo_cache.c',
 # sweetgl: GL ES contexts on the freedreno screen without EGL/DRI, and its test
 sgl = root / 'src/gallium/frontends/sweetgl'
 sgl.mkdir(exist_ok=True)
-for f in ('meson.build', 'sweetgl.h', 'sweetgl.c', 'sweetgl_gles2.c', 'sweetgpu_gltest.c', 'sweetca.c',
+for f in ('meson.build', 'sweetgl.h', 'sweetgl.c', 'sweetgl_tickets.inc', 'sweetgl_gles2.c', 'sweetgpu_gltest.c', 'sweetca.c',
           'sweetca_slots.inc'):
     (sgl / f).write_text((here / 'sweetgl' / f).read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
 p = root / 'src/gallium/meson.build'

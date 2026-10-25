@@ -34,6 +34,12 @@
 #include "compiler/glsl_types.h"
 
 #include "sweetgl.h"
+#include "freedreno_screen.h"
+#include "freedreno_fence.h"
+#include "../../../freedreno/drm/darwin/darwin_priv.h"
+
+struct sgl_render_set;
+static void sgl_tickets_destroy(struct sgl_context *ctx);
 
 struct renderonly;
 struct pipe_screen *fd_screen_create(int fd, const struct pipe_screen_config *config,
@@ -54,6 +60,7 @@ struct sgl_display {
 struct sgl_context {
    struct sgl_display *dpy;
    struct st_context *st;
+   struct sgl_render_set *tickets;
 };
 
 struct sgl_surface {
@@ -173,6 +180,7 @@ sgl_context_destroy(struct sgl_context *ctx)
    if (st_api_get_current() == ctx->st)
       st_api_make_current(NULL, NULL, NULL);
    st_context_flush(ctx->st, 0, NULL, NULL, NULL);
+   sgl_tickets_destroy(ctx);
    st_destroy_context(ctx->st);
    FREE(ctx);
 }
@@ -570,6 +578,8 @@ sgl_flush_submit(struct sgl_context *ctx)
    sgl_drain_unref(d);
    return result;
 }
+
+#include "sweetgl_tickets.inc"
 
 struct sgl_sched {
    int policy;
