@@ -1,5 +1,42 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 07:48 task 5: threaded context fixed, measured, installed
+
+Leak fix in patch 0004 (`a9e95ec`): a TC flush replacing a barrier-created fence no
+longer leaks the batch. Fix+dump build booted at 07:35: home drawn, dump never fired,
+GL test 7/7. Framebench `research/framebench/20261025-threaded2/` vs empty-trace
+baseline: CC A 14.49->18.79 arrivals/s (+30%), CC B +4%, Home B 20.63->18.52 (-10%,
+one sample), Spotlight repeat +14%; display-thread CPU per arrival in CC 61.9->22.9 ms.
+Display thread now mostly waits in CA's per-frame glFinish (GPU fence, driver drain).
+**Installed at 07:48:** final library from `jasmine` (Mesa CI `40170072509`, SHA256
+`14e32aea…`) at `/usr/local/bin/libsweetca.dylib`; the running backboardd still has the
+equivalent fix+dump build until the next boot. Rollback: `research/t5tc/libsweetca-before2.dylib`
+(`cfa9fd9c…`). Phone in iOS (framebench99 image), lock released, not parked. Details:
+[report](jasmine/PERF-TASK5-THREADED-20261025.md). Next: task 16 (no per-frame glFinish).
+
+### 2026-10-25 07:10 task 5: threaded context for a5xx; first boot froze, old library restored
+
+[Report, ranking and next steps](jasmine/PERF-TASK5-THREADED-20261025.md). Profile of
+the CC display thread: Mesa 72% of its CPU, ~2/3 of that freedreno driver work that
+a5xx runs inline (upstream enables u_threaded_context only on a6xx). Commit `c954a07`
+(patch 0004 + sweetgl kick/priority on the driver thread), Mesa CI `40166420782`,
+library `38c8f967…`; its GL test passed 7/7 on the phone. Boot at 06:51 with it froze
+between Apple logo and lock screen (user confirmed): driver thread `gdrv0` spins in
+`fd_batch_from_fb`/`alloc_batch_locked` (census `research/t5tc/prof-hang`), all 32
+batch-cache slots held. **Production library `cfa9fd9c…` restored at ~06:58 and
+verified by hash; a verification boot drew the UI again.** The `jasmine` branch still
+contains 0004 — do not install a library built from it until the leak is fixed.
+Diagnostic dump on branch `t5tc-diag` not built yet (two CI failures explained in the
+report). Phone left booted in iOS (framebench99 image, old library), lock released,
+not parked in r109.
+**~07:30 cause found in source:** `fd_fence_destroy()` never drops `fence->batch`;
+a TC flush replacing a batch's barrier-created fence leaks the batch. Fix written into
+`mesa/patches/0004-…` (uncommitted, third hunk in `freedreno_context.c`). Next command
+(not yet run, shell checker was down):
+`bash research/t5tc/build-fixdiag.sh` — applies 0001-0004 + diag 0005 to pristine
+Mesa, host-checks, pushes `t5tc-diag`, starts Mesa CI. Then one boot: UI drawn = fix
+works; still frozen = read the `fdbc:` lines, restore `research/t5tc/libsweetca-before.dylib`.
+
 ### 2026-10-25 task-5 new Mesa benchmark complete: no meaningful frame-time gain
 
 User explicitly authorized using the new build and one further benchmark. This
