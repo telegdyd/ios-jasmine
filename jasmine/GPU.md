@@ -1,5 +1,14 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-25 framebench tooling:** see [FRAMEBENCH.md](FRAMEBENCH.md) and the active
+[NOTES.md](NOTES.md) handoff. j0099 adds bounded frame/GPU/CPU-stack/memory capture
+and binary export; host runner reports a new plugin-enabled baseline without
+assuming task 5 remains first. Twenty-three offline tests pass; actual device
+validation awaits the user's phone-free confirmation. CI `40159475545` pending.
+Earlier CI `40158474717` silently skipped j0099 and is not compile validation;
+workflow now requires capture source and linked symbols. No device access or FPS
+result yet; display observations remain labelled as proxies pending validation.
+
 Status: planning, 2026-10-21. Today CoreAnimation renders everything on the CPU (its software renderer),
 which is the main reason the UI is slow even after the Gold cores went from ~180 MHz to 1747 MHz.
 

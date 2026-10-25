@@ -1,0 +1,670 @@
+From 529b8b5e97a12494bc59121577de4d685824bd71 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 04:30:32 +0100
+Subject: [PATCH] jasmine-j0099: bounded frame, GPU, CPU-stack and memory
+ capture with binary USB export
+
+---
+ bsd/dev/sweet_gpu.c                   |  17 +-
+ bsd/dev/sweet_usb.c                   |  17 +-
+ iokit/Kernel/arm/SweetFramebuffer.cpp |  16 ++
+ iokit/Kernel/arm/SweetGPU.cpp         |  22 ++
+ iokit/Kernel/arm/SweetSurface.cpp     |   9 +
+ iokit/Kernel/arm/SweetSurface.h       |   2 +
+ osfmk/arm64/sweet_bench.inc           | 350 ++++++++++++++++++++++++++
+ osfmk/arm64/sweet_prof.c              |  43 +++-
+ 8 files changed, 464 insertions(+), 12 deletions(-)
+ create mode 100644 osfmk/arm64/sweet_bench.inc
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 3ec3fc6..4a1deb5 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -1196,2 +1196,5 @@ ring_space(void)
+  */
++#include <os/atomic_private.h>
++extern bool sweet_bench_enabled(void);
++extern void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+ int sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno);
+@@ -1228,2 +1231,3 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+ 	gpu_wr(CP_RB_WPTR, sg.wptr);
++	sweet_bench_event(20, *seqno, n, sg.wptr, 0);
+ 	lck_mtx_unlock(gpu_lock);
+@@ -1288,3 +1292,11 @@ sweet_gpu_completed(void)
+ {
+-	return sg.mem[FENCE_OFF / 4];
++	uint32_t done = sg.mem[FENCE_OFF / 4];
++	if (sweet_bench_enabled()) {
++		static volatile uint32_t observed;
++		uint32_t old = os_atomic_load(&observed, relaxed);
++		if ((int32_t)(done - old) > 0 && os_atomic_cmpxchg(&observed, old, done, relaxed)) {
++			sweet_bench_event(21, done, old, 0, 0);
++		}
++	}
++	return done;
+ }
+@@ -1297,2 +1309,3 @@ sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms)
+ 	uint64_t deadline;
++	sweet_bench_event(23, seqno, timeout_ms, 0, 0);
+ 	clock_interval_to_deadline(timeout_ms, NSEC_PER_MSEC, &deadline);
+@@ -1300,2 +1313,3 @@ sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms)
+ 		if (mach_absolute_time() > deadline) {
++			sweet_bench_event(24, seqno, ETIMEDOUT, 0, 0);
+ 			return ETIMEDOUT;
+@@ -1304,2 +1318,3 @@ sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms)
+ 	}
++	sweet_bench_event(24, seqno, 0, 0, 0);
+ 	return 0;
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 91661cf..98057cf 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1464,2 +1464,3 @@ extern const char *sweet_ddr_cmd(const char *line);      /* bsd/dev/sweet_ddr.c
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
++extern const char *sweet_bench_blob(const char *, const void **, size_t *);
+ static void
+@@ -1520,5 +1521,10 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		}
++		struct timeval bt = { .tv_sec = 5, .tv_usec = 0 };
++		(void)sock_setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, &bt, sizeof(bt));
++		const void *binary = NULL;
++		size_t binary_len = 0;
++		const char *binary_header = sweet_bench_blob(line, &binary, &binary_len);
+ 		bool reboot = strcmp(line, "reboot") == 0;
+ 		const char *reply = reboot ? "rebooting\n" : "?\n";
+-		const char *prof = reboot ? NULL : sweet_prof_cmd(line);
++		const char *prof = binary_header != NULL ? binary_header : reboot ? NULL : sweet_prof_cmd(line);
+ 		if (prof == NULL && !reboot) {
+@@ -1543,2 +1549,11 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		}
++		for (size_t off = 0; off < binary_len;) {
++			size_t part = binary_len - off;
++			if (part > 65536) { part = 65536; }
++			struct iovec iov = { .iov_base = (char *)binary + off, .iov_len = part };
++			struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++			size_t sent = 0;
++			if (sock_send(cs, &msg, 0, &sent) != 0 || sent == 0) { break; }
++			off += sent;
++		}
+ 		sock_close(cs);
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index d0c8a5a..f6d9200 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -37,2 +37,6 @@
+ #include "SweetSurface.h"
++extern "C" void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
++extern "C" void sweet_bench_alloc(uint32_t, int64_t);
++extern "C" bool sweet_bench_enabled(void);
++
+ #include <pexpert/pexpert.h>
+@@ -872,2 +876,6 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 	sweet_fps_tick = now;
++	if (sweet_bench_enabled() && fb->fIntf1 != NULL) {
++		volatile uint32_t *r = fb->fIntf1 + 0x800 / 4;
++		sweet_bench_event(17, r[0xac / 4], r[0xb0 / 4] & 0xffff, fb->fVTotal, fb->fPanelUS);
++	}
+ 	/*
+@@ -1199,2 +1207,3 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	sweet_fps_count();
++	sweet_bench_event(11, get32(rec, 0x50), get32(rec, 0x54), get32(rec, 0x104), 0);
+ 	SweetSurface *held[4] = {};
+@@ -1253,2 +1262,3 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		noteShown(get32(rec, 0x50));
++		sweet_bench_event(12, get32(rec, 0x50), inPlace, 0, 0);
+ 		static uint32_t frames, scaled;
+@@ -1436,2 +1446,3 @@ AppleCLCD::noteShown(uint32_t id)
+ 	} else {
++		sweet_bench_event(16, id, 0, 0, 0);
+ 		fShownID = id;          /* (no flip pending: CPU copy into the scanned buffer) */
+@@ -1456,2 +1467,3 @@ AppleCLCD::retireLatched(void)
+ 	}
++	sweet_bench_event((fCtl0[0x18 / 4] & fFlushMask) ? 15 : 14, fLatchID, fShownID, (uint32_t)(ns / 1000), fCtl0[0x18 / 4]);
+ 	fShownID = fLatchID;
+@@ -1483,2 +1495,3 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout)
+ 		if (done || ns >= (uint64_t)ms * NSEC_PER_MSEC) {
++			if (ns > 100000) { sweet_bench_event(18, id, (uint32_t)(ns / 1000), done, 0); }
+ 			sweet_fb_wait_us += ns / 1000;
+@@ -1515,2 +1528,3 @@ sweet_fb_gpu_write_wait(SweetSurface *s, uint64_t *us)
+ 		if (shown || !retiring || ns >= 50 * NSEC_PER_MSEC) {
++			if (ns > 100000) { sweet_bench_event(19, s->id, (uint32_t)(ns / 1000), shown, retiring); }
+ 			*us += ns / 1000;
+@@ -1858,2 +1872,3 @@ AppleCLCD::directPresent(const uint8_t *rec)
+ 			sweet_surface_cpu_access(s);    /* the GPU's last job on it is done (j0055) */
++			sweet_bench_event(13, get32(rec, 0x50), s->id, s->gpuSeqno, 1);
+ 			scanScaled(pa, s->bytesPerRow);
+@@ -2156,2 +2171,3 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		out[0] = ++fFB->fSwapID;
++		sweet_bench_event(10, (uint32_t)out[0], 0, 0, 0);
+ 		IOLockUnlock(fFB->fLock);
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index d8d2749..cbbcb85 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -71,2 +71,6 @@
+ #include "SweetSurface.h"
++extern "C" void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
++extern "C" void sweet_bench_alloc(uint32_t, int64_t);
++extern "C" bool sweet_bench_enabled(void);
++
+ 
+@@ -125,2 +129,3 @@ sweet_gpu_pool_take(uint64_t size, void **va)
+ 	uint64_t pa = topaz_gpu_pool_alloc(size, va);
++	if (pa != 0) { sweet_bench_alloc(4, (int64_t)size); }
+ 	IOLockUnlock(sweet_gpu_pool_lock);
+@@ -138,2 +143,3 @@ sweet_gpu_pool_give(uint64_t pa, uint64_t size)
+ 	topaz_gpu_pool_free(pa, size);
++	sweet_bench_alloc(4, -(int64_t)size);
+ 	IOLockUnlock(sweet_gpu_pool_lock);
+@@ -191,2 +197,3 @@ public:
+ 	uint64_t iova, size;
++	bool benchCounted = false;
+ 	uint64_t poolPA;                /* from the GPU pool (write-combined), or 0 */
+@@ -252,2 +259,3 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ 			b->poolPA = pa;
++			sweet_bench_alloc(4, (int64_t)size);
+ 			b->kva = (uintptr_t)va;
+@@ -354,2 +362,7 @@ SweetGPUBuffer::free()
+ {
++	if (benchCounted) {
++		sweet_bench_alloc(0, -1);
++		sweet_bench_alloc(1, -(int64_t)size);
++	}
++	sweet_bench_alloc(7, 1);
+ 	if (md != NULL) {
+@@ -363,2 +376,3 @@ SweetGPUBuffer::free()
+ 			topaz_gpu_pool_free(poolPA, size);
++			sweet_bench_alloc(4, -(int64_t)size);
+ 			IOLockUnlock(sweet_gpu_pool_lock);
+@@ -368,2 +382,3 @@ SweetGPUBuffer::free()
+ 	OSSafeReleaseNULL(surface);
++	sweet_bench_alloc(7, -1);
+ 	OSObject::free();
+@@ -473,2 +488,7 @@ SweetGPUUserClient::addBuffer(SweetGPUBuffer *b)
+ {
++	if (!b->benchCounted) {
++		b->benchCounted = true;
++		sweet_bench_alloc(0, 1);
++		sweet_bench_alloc(1, (int64_t)b->size);
++	}
+ 	IOLockLock(fLock);
+@@ -764,2 +784,3 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (b == NULL) {
++			sweet_bench_alloc(6, 1);
+ 			return kIOReturnNoMemory;
+@@ -877,2 +898,3 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 				if (js != NULL && !job->bufs[i]->readonly) {
++					sweet_bench_event(22, seqno, js->id, (uint32_t)job->bufs[i]->size, 0);
+ 					js->gpuSeqno = seqno;
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 7be0214..b70e1d8 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -32,2 +32,6 @@
+ #include "SweetSurface.h"
++extern "C" void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
++extern "C" void sweet_bench_alloc(uint32_t, int64_t);
++extern "C" bool sweet_bench_enabled(void);
++
+ 
+@@ -295,2 +299,3 @@ SweetSurface::free()
+ {
++	if (benchCounted) { sweet_bench_alloc(2, -1); sweet_bench_alloc(3, -(int64_t)benchBytes); }
+ 	if (OSDynamicCast(IOBufferMemoryDescriptor, memory) != NULL) {
+@@ -351,2 +356,6 @@ sweet_surface_insert_locked(SweetSurface *s)
+ 		if (sweet_surface_table[id] == NULL) {
++			if (!s->benchCounted) {
++				s->benchCounted = true; s->benchBytes = s->allocSize;
++				sweet_bench_alloc(2, 1); sweet_bench_alloc(3, (int64_t)s->benchBytes);
++			}
+ 			s->id = id;
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index 13fb443..6bfedd4 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -61,2 +61,4 @@ public:
+ 	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; cpuDirty = true; gpuDirty = false; gpuSeqno = 0; return OSObject::init(); }
++	uint64_t benchBytes = 0;
++	bool benchCounted = false;
+ 	void free() APPLE_KEXT_OVERRIDE;
+diff --git a/osfmk/arm64/sweet_bench.inc b/osfmk/arm64/sweet_bench.inc
+new file mode 100644
+index 0000000..47e4967
+--- /dev/null
++++ b/osfmk/arm64/sweet_bench.inc
+@@ -0,0 +1,350 @@
++/* SPDX-License-Identifier: MIT
++ * Included by sweet_prof.c; no new kernel build target. Protocol v1 is private
++ * to tools/g2/framebench.py. All capture allocations are bounded; no disk I/O.
++ */
++#include <vm/vm_page.h>
++#include <sys/proc.h>
++
++#define BC_EVENTS 131072u
++#define BC_SAMPLES 65536u
++#define BC_STACKS 2048u
++#define BC_HASH 4096u
++#define BC_SNAPSHOT 32768u
++
++struct bc_event {
++	uint32_t us;
++	uint16_t kind, phase;
++	uint64_t tid;
++	uint32_t a, b, c, d;
++};
++struct bc_sample {
++	uint32_t us, stack;
++	uint64_t tid, pidtrap, event;
++	uint16_t phase;
++	uint8_t kind, cpu;
++	uint32_t pad;
++};
++struct bc_stack {
++	uint64_t hash;
++	uint32_t nk, nu;
++	uint64_t frames[SP_KFRAMES + SP_UFRAMES];
++};
++struct bc_store {
++	struct bc_event events[BC_EVENTS];
++	struct bc_sample samples[BC_SAMPLES];
++	struct bc_stack stacks[BC_STACKS];
++	uint32_t hash[BC_HASH];
++};
++static struct bc_store *bc;
++static volatile uint32_t bc_ne, bc_ns, bc_nk, bc_drop, bc_sample_drop, bc_dict_lock;
++static volatile uint32_t bc_writers, bc_active, bc_phase, bc_snapshot_seq;
++static uint64_t bc_epoch, bc_end, bc_sample_until, bc_last_memory;
++static char bc_snapshot[BC_SNAPSHOT];
++static size_t bc_snapshot_len;
++extern char version[];
++extern uint64_t max_mem;
++static volatile int64_t bc_mem[8];
++bool sweet_bench_enabled(void);
++bool
++sweet_bench_enabled(void)
++{
++	return os_atomic_load(&bc_active, acquire) != 0;
++}
++void sweet_bench_alloc(uint32_t slot, int64_t delta);
++void
++sweet_bench_alloc(uint32_t slot, int64_t delta)
++{
++	if (slot < 8) { os_atomic_add(&bc_mem[slot], delta, relaxed); }
++}
++
++static void
++sweet_bench_memory(uint64_t *out)
++{
++	for (unsigned i = 0; i < 8; i++) { out[i] = (uint64_t)os_atomic_load(&bc_mem[i], relaxed); }
++}
++
++static uint32_t
++bc_us(uint64_t now)
++{
++	uint64_t ns = 0;
++	absolutetime_to_nanoseconds(now - bc_epoch, &ns);
++	return (uint32_t)(ns / 1000);
++}
++
++/* C/C++ hooks: bounded append, no allocation or blocking in the hot path.
++ * 20..29 are detailed GPU jobs, retained only in sampled motion windows.
++ */
++void sweet_bench_event(uint32_t kind, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
++void
++sweet_bench_event(uint32_t kind, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
++{
++	if (!os_atomic_load(&bc_active, acquire)) {
++		return;
++	}
++	os_atomic_inc(&bc_writers, acquire);
++	uint64_t now = mach_absolute_time();
++	if (!os_atomic_load(&bc_active, acquire) || now >= bc_end ||
++	    (kind >= 20 && kind <= 29 && now >= os_atomic_load(&bc_sample_until, relaxed))) {
++		os_atomic_dec(&bc_writers, release);
++		return;
++	}
++	uint32_t n = os_atomic_add_orig(&bc_ne, 1, relaxed);
++	if (n < BC_EVENTS) {
++		bc->events[n] = (struct bc_event){bc_us(now), (uint16_t)kind, (uint16_t)bc_phase,
++		    current_thread()->thread_id, a, b, c, d};
++	} else {
++		os_atomic_inc(&bc_drop, relaxed);
++	}
++	os_atomic_dec(&bc_writers, release);
++}
++
++static bool
++bc_sampling(uint64_t now)
++{
++	return sp_bench && os_atomic_load(&bc_active, acquire) && now < bc_end &&
++	       now < os_atomic_load(&bc_sample_until, relaxed);
++}
++
++/* Try-only dictionary ownership: a timer interrupt must never spin on a lock
++ * held by the thread it interrupted. Contention/capacity loss is exported.
++ */
++static void
++bc_sample_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const uintptr_t *uf, unsigned nu)
++{
++	if (!bc_sampling(mach_absolute_time())) {
++		return;
++	}
++	if (!os_atomic_cmpxchg(&bc_dict_lock, 0, 1, acquire)) {
++		os_atomic_inc(&bc_sample_drop, relaxed);
++		return;
++	}
++	uint64_t frames[SP_KFRAMES + SP_UFRAMES];
++	memcpy(frames, kf, nk * sizeof(uint64_t));
++	memcpy(frames + nk, uf, nu * sizeof(uint64_t));
++	uint64_t hash = 1469598103934665603ull ^ nk ^ ((uint64_t)nu << 8);
++	for (unsigned i = 0; i < nk + nu; i++) {
++		hash = (hash ^ frames[i]) * 1099511628211ull;
++	}
++	uint32_t slot = (uint32_t)hash & (BC_HASH - 1), id = 0;
++	for (unsigned probe = 0; probe < BC_HASH; probe++, slot = (slot + 1) & (BC_HASH - 1)) {
++		id = bc->hash[slot];
++		if (id == 0) {
++			if (bc_nk == BC_STACKS) {
++				break;
++			}
++			id = ++bc_nk;
++			struct bc_stack *s = &bc->stacks[id - 1];
++			s->hash = hash;
++			s->nk = nk;
++			s->nu = nu;
++			memcpy(s->frames, frames, (nk + nu) * sizeof(uint64_t));
++			bc->hash[slot] = id;
++			break;
++		}
++		struct bc_stack *s = &bc->stacks[id - 1];
++		if (s->hash == hash && s->nk == nk && s->nu == nu &&
++		    !memcmp(s->frames, frames, (nk + nu) * sizeof(uint64_t))) {
++			break;
++		}
++		id = 0;
++	}
++	if (id != 0 && bc_ns < BC_SAMPLES) {
++		struct bc_sample *s = &bc->samples[bc_ns++];
++		*s = (struct bc_sample){(uint32_t)r->hdr, id - 1, r->tid, r->pidtrap, r->event,
++		    (uint16_t)bc_phase, (uint8_t)((r->hdr >> 40) & 15), (uint8_t)(r->hdr >> 32), 0};
++		sp_samples++;
++	} else {
++		os_atomic_inc(&bc_sample_drop, relaxed);
++	}
++	os_atomic_store(&bc_dict_lock, 0, release);
++}
++
++/* One bounded snapshot per second, from the census worker, never a timer IRQ.
++ * Approximate unlocked VM counters and independent process ledgers are labelled
++ * as such; mapped IOSurfaces/BOs must not be added to resident memory totals.
++ */
++static void
++bc_memory_snapshot(uint64_t now)
++{
++	static task_t refs[256];
++	if (!sp_bench || !bc_active || now - bc_last_memory < sp_period * 500) {
++		return;
++	}
++	bc_last_memory = now;
++	os_atomic_inc(&bc_snapshot_seq, release);
++	uint64_t mem[8] = {};
++	sweet_bench_memory(mem);
++	size_t n = (size_t)snprintf(bc_snapshot, sizeof(bc_snapshot),
++	    "memory %u %llu %llu %llu %llu %llu %u %u %llu %llu %llu %llu %llu %llu %llu %llu\n",
++	    bc_us(now), max_mem, (uint64_t)vm_page_free_count * PAGE_SIZE,
++	    (uint64_t)vm_page_wire_count * PAGE_SIZE, (uint64_t)vm_page_active_count * PAGE_SIZE,
++	    (uint64_t)vm_page_inactive_count * PAGE_SIZE, vm_page_free_wanted, PAGE_SIZE,
++	    mem[0], mem[1], mem[2], mem[3], mem[4], mem[5], mem[6], mem[7]);
++	unsigned count = 0, total = 0;
++	task_t task;
++	lck_mtx_lock(&tasks_threads_lock);
++	queue_iterate(&tasks, task, task_t, tasks) {
++		total++;
++		if (count < sizeof(refs) / sizeof(refs[0])) {
++			task_reference(task);
++			refs[count++] = task;
++		}
++	}
++	lck_mtx_unlock(&tasks_threads_lock);
++	for (unsigned i = 0; i < count; i++) {
++		task = refs[i];
++		void *p = get_bsdtask_info(task);
++		uint64_t footprint = get_task_phys_footprint(task);
++		uint64_t resident = get_task_resident_size(task);
++		uint64_t compressed = get_task_compressed(task);
++		if (n + 192 < sizeof(bc_snapshot)) {
++			n += (size_t)snprintf(bc_snapshot + n, sizeof(bc_snapshot) - n,
++			    "process %d %llu %llu %llu %llu %s\n", task_pid(task), get_task_uniqueid(task),
++			    footprint, resident, compressed, p != NULL ? proc_name_address(p) : "kernel_task");
++		}
++		task_deallocate(task);
++	}
++	n += (size_t)snprintf(bc_snapshot + n, sizeof(bc_snapshot) - n, "tasks %u %u\n", count, total);
++	bc_snapshot_len = n;
++	os_atomic_inc(&bc_snapshot_seq, release);
++	sweet_bench_event(40, vm_page_free_count, vm_page_wire_count, vm_page_free_wanted, total);
++}
++
++static const char *bc_cmd(const char *line);
++const char *sweet_prof_cmd(const char *line);
++
++/* Binary blobs are immutable once both capture and its writer/census workers
++ * have stopped. The command service serializes control/export operations.
++ */
++const char *sweet_bench_blob(const char *line, const void **data, size_t *len);
++const char *
++sweet_bench_blob(const char *line, const void **data, size_t *len)
++{
++	if (strncmp(line, "bench data ", 11)) {
++		return NULL;
++	}
++	*data = NULL;
++	*len = 0;
++	if (bc == NULL || bc_active || sp_census_running || bc_writers || bc_dict_lock) {
++		return "ERR capture busy or empty\n";
++	}
++	const char *what = line + 11;
++	if (!strcmp(what, "events")) {
++		*data = bc->events;
++		*len = (bc_ne < BC_EVENTS ? bc_ne : BC_EVENTS) * sizeof(struct bc_event);
++	} else if (!strcmp(what, "samples")) {
++		*data = bc->samples;
++		*len = bc_ns * sizeof(struct bc_sample);
++	} else if (!strcmp(what, "stacks")) {
++		*data = bc->stacks;
++		*len = bc_nk * sizeof(struct bc_stack);
++	} else if (!strcmp(what, "meta")) {
++		*data = sp_meta;
++		*len = sp_meta_used;
++	} else {
++		return "ERR unknown blob\n";
++	}
++	snprintf(sp_reply, sizeof(sp_reply), "OK %lu\n", *len);
++	return sp_reply;
++}
++
++static const char *
++bc_cmd(const char *line)
++{
++	if (strncmp(line, "bench ", 6)) {
++		return NULL;
++	}
++	const char *a = line + 6;
++	if (!strcmp(a, "caps")) {
++		snprintf(sp_reply, sizeof(sp_reply),
++		    "bench-v1 events=32 samples=40 stacks=400 capture_bytes=%lu legacy_profile_bytes=%llu display=ctl-flush-observed,unvalidated\n%s\n",
++		    sizeof(struct bc_store) + BC_SNAPSHOT + (2u << 20), sp_buf != NULL ? sp_size : 0, version);
++	} else if (!strncmp(a, "start ", 6)) {
++		if (sp_census_running || bc_active || bc_writers || bc_dict_lock) {
++			return "ERR capture busy\n";
++		}
++		a += 6;
++		uint64_t secs = sp_num(&a), len = 0;
++		if (secs < 1 || secs > 90) {
++			return "ERR duration must be 1..90 s\n";
++		}
++		if (bc == NULL) {
++			vm_offset_t b = 0;
++			if (kmem_alloc(kernel_map, &b, sizeof(*bc), KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++				return "ERR no capture memory\n";
++			}
++			bc = (struct bc_store *)b;
++		}
++		bzero(bc, sizeof(*bc));
++		bc_ne = bc_ns = bc_nk = bc_drop = bc_sample_drop = bc_phase = 0;
++		bc_epoch = mach_absolute_time();
++		nanoseconds_to_absolutetime(secs * NSEC_PER_SEC, &len);
++		bc_end = bc_epoch + len;
++		bc_sample_until = bc_last_memory = 0;
++		bc_snapshot_len = 0;
++		sp_bench = 1;
++		os_atomic_store(&bc_active, 1, release);
++		/* Parent uses our epoch/deadline, compact sink, and a small metadata buffer. */
++		const char *r = sweet_prof_cmd("prof start 60 2000 5000 backboardd,SpringBoard,PosterBoard,Preferences");
++		if (strncmp(r, "prof: started", 13)) {
++			bc_active = 0;
++			sp_bench = 0;
++			return r;
++		}
++		sweet_bench_event(1, 0, 0, 0, 0);
++		return "OK bench started\n";
++	} else if (!strncmp(a, "phase ", 6)) {
++		if (!bc_active) {
++			return "ERR no active capture\n";
++		}
++		a += 6;
++		uint64_t phase = sp_num(&a), sample_ms = sp_num(&a);
++		if (phase > 65535 || sample_ms > 4000) {
++			return "ERR phase or sample duration\n";
++		}
++		bc_phase = (uint32_t)phase;
++		uint64_t duration = 0;
++		nanoseconds_to_absolutetime(sample_ms * NSEC_PER_MSEC, &duration);
++		os_atomic_store(&bc_sample_until, mach_absolute_time() + duration, release);
++		sweet_bench_event(2, (uint32_t)phase, (uint32_t)sample_ms, 0, 0);
++		snprintf(sp_reply, sizeof(sp_reply), "OK phase %llu us %u\n", phase, bc_us(mach_absolute_time()));
++	} else if (!strncmp(a, "mark ", 5)) {
++		a += 5;
++		uint64_t moving = sp_num(&a);
++		if (!bc_active || moving > 1) { return "ERR motion marker\n"; }
++		sweet_bench_event(4, (uint32_t)moving, 0, 0, 0);
++		snprintf(sp_reply, sizeof(sp_reply), "OK mark %llu us %u\n", moving, bc_us(mach_absolute_time()));
++	} else if (!strcmp(a, "census-all")) {
++		if (!bc_active) { return "ERR no active capture\n"; }
++		sp_census_all = 1;
++		return "OK all-thread census enabled\n";
++	} else if (!strcmp(a, "snapshot")) {
++		for (unsigned attempt = 0; attempt < 3; attempt++) {
++			uint32_t seq = os_atomic_load(&bc_snapshot_seq, acquire);
++			if (seq & 1) {
++				continue;
++			}
++			size_t n = bc_snapshot_len;
++			memcpy(sp_reply, bc_snapshot, n);
++			sp_reply[n] = 0;
++			if (seq == os_atomic_load(&bc_snapshot_seq, acquire)) {
++				return sp_reply;
++			}
++		}
++		return "ERR snapshot updating\n";
++	} else if (!strcmp(a, "stop")) {
++		sweet_bench_event(3, 0, 0, 0, 0);
++		os_atomic_store(&bc_active, 0, release);
++		sp_on = 0;
++		thread_wakeup(&sp_census_running);
++		return "OK stopping\n";
++	} else if (!strcmp(a, "stat")) {
++		snprintf(sp_reply, sizeof(sp_reply),
++		    "bench-v1 active=%u busy=%u events=%u samples=%u stacks=%u event_dropped=%u sample_dropped=%u epoch=%llu elapsed_us=%u meta=%llu\n",
++		    bc_active, sp_census_running || bc_writers || bc_dict_lock, bc_ne, bc_ns, bc_nk,
++		    bc_drop, bc_sample_drop, bc_epoch, bc_epoch ? bc_us(mach_absolute_time()) : 0, sp_meta_used);
++	} else {
++		return "ERR unknown bench command\n";
++	}
++	return sp_reply;
++}
+diff --git a/osfmk/arm64/sweet_prof.c b/osfmk/arm64/sweet_prof.c
+index 0b320f0..cbf612e 100644
+--- a/osfmk/arm64/sweet_prof.c
++++ b/osfmk/arm64/sweet_prof.c
+@@ -109,2 +109,7 @@ static int sp_census_all;       /* j0069: every thread, kernel stacks of the blo
+ 
++static int sp_bench;
++static uint64_t sp_num(const char **s);
++static char sp_reply[128 * 1024];
++#include "sweet_bench.inc"
++
+ static void
+@@ -112,2 +117,3 @@ sp_put(const struct sp_rec *r, const uintptr_t *kf, unsigned nk, const uintptr_t
+ {
++	if (sp_bench) { bc_sample_put(r, kf, nk, uf, nu); return; }
+ 	uint64_t len = sizeof(*r) + 8ull * (nk + nu);
+@@ -187,2 +193,6 @@ sweet_prof_expire(timer_call_param_t p0, timer_call_param_t p1 __unused)
+ 	}
++	if (sp_bench && !bc_sampling(now)) {
++		running_timer_setup(processor, RUNNING_TIMER_SWEETPROF, NULL, sp_next(now), now);
++		return;
++	}
+ 	thread_t th = current_thread();
+@@ -495,3 +505,3 @@ sp_write_meta(void)
+ 		task_unlock(task);
+-		if (task != kernel_task && sp_meta_used + 4096 < sp_meta_size) {
++		if (task != kernel_task && (!sp_bench || sp_named(p)) && sp_meta_used + 4096 < sp_meta_size) {
+ 			sp_meta_used += (uint64_t)sweet_prof_maps(task, sp_meta + sp_meta_used, sp_meta_size - sp_meta_used);
+@@ -528,3 +538,14 @@ sp_census_thread(void *arg __unused, wait_result_t wr __unused)
+ 	for (uint64_t now = mach_absolute_time(); now < sp_end && sp_on; now = mach_absolute_time()) {
+-		if (sp_census_period != 0) {
++		if (sp_bench && now - bc_last_memory >= sp_period * 500) {
++			for (unsigned i = 0; i < nt; i++) { task_deallocate(targets[i]); }
++			nt = 0;
++			lck_mtx_lock(&tasks_threads_lock);
++			queue_iterate(&tasks, task, task_t, tasks) {
++				void *p = get_bsdtask_info(task);
++				if (nt < SP_TASKS && sp_named(p)) { task_reference(task); targets[nt++] = task; }
++			}
++			lck_mtx_unlock(&tasks_threads_lock);
++			bc_memory_snapshot(now);
++		}
++		if (sp_census_period != 0 && (!sp_bench || bc_sampling(now))) {
+ 			for (unsigned i = 0; i < nt; i++) {
+@@ -542,3 +563,5 @@ sp_census_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
++	if (sp_bench) { os_atomic_store(&bc_active, 0, release); }
+ 	sp_write_meta();
++	sp_bench = 0;
+ 	printf("SWEET PROF: done: %llu samples, %llu bytes, %llu dropped, %llu bytes of meta\n",
+@@ -575,4 +598,2 @@ sp_num(const char **s)
+ 
+-static char sp_reply[128 * 1024];
+-
+ /* bsd/dev/sweet_usb.c: a "prof ..." line; the reply, or NULL when the line is not ours */
+@@ -582,2 +603,4 @@ sweet_prof_cmd(const char *line)
+ {
++	const char *bench = bc_cmd(line);
++	if (bench != NULL) { return bench; }
+ 	if (strncmp(line, "prof ", 5) != 0) {
+@@ -626,8 +649,8 @@ sweet_prof_cmd(const char *line)
+ 		}
+-		if (sp_buf == NULL) {
+-			vm_offset_t b = 0, m = 0;
++		if ((!sp_bench && sp_buf == NULL) || sp_meta == NULL) {
++			vm_offset_t b = (vm_offset_t)sp_buf, m = (vm_offset_t)sp_meta;
+ 			sp_size = 48ull << 20;
+ 			sp_meta_size = 2ull << 20;
+-			if (kmem_alloc(kernel_map, &b, sp_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS ||
+-			    kmem_alloc(kernel_map, &m, sp_meta_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++			if ((!sp_bench && b == 0 && kmem_alloc(kernel_map, &b, sp_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) ||
++			    (m == 0 && kmem_alloc(kernel_map, &m, sp_meta_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS)) {
+ 				snprintf(sp_reply, sizeof(sp_reply), "prof: no memory\n");
+@@ -645,6 +668,6 @@ sweet_prof_cmd(const char *line)
+ 		nanoseconds_to_absolutetime(census * NSEC_PER_USEC, &sp_census_period);
+-		sp_epoch = mach_absolute_time();
++		sp_epoch = sp_bench ? bc_epoch : mach_absolute_time();
+ 		uint64_t len = 0;
+ 		nanoseconds_to_absolutetime(secs * NSEC_PER_SEC, &len);
+-		sp_end = sp_epoch + len;
++		sp_end = sp_bench ? bc_end : sp_epoch + len;
+ 		sp_census_running = 1;
+-- 
+2.47.3
+

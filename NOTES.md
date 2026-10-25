@@ -1,5 +1,16 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 jasmine framebench implementation
+
+Active handoff and CI IDs: top of [jasmine/NOTES.md](jasmine/NOTES.md).
+[Usage](jasmine/FRAMEBENCH.md). User reports plugin-enabled performance regression
+and Settings/RAM freezes; old benchmark priorities are not a current baseline.
+Runner, compact kernel capture/export, memory snapshots and manual Settings mode
+implemented; 23 offline tests pass. CI `40159475545` pending; earlier success
+`40158474717` skipped j0099 and is not instrumentation validation. No device access.
+Prepare a matching temporary image, then **wait for user to confirm the phone is
+free before accessing it**. Preserve existing unrelated working edits.
+
 ### 2026-10-25 jasmine one-shot performance benchmark plan
 
 Plan requested by user: [jasmine/PERF-BENCH-PLAN.md](jasmine/PERF-BENCH-PLAN.md).

@@ -1,5 +1,10 @@
 # One-shot frame bottleneck benchmark
 
+Implementation and current contract: [FRAMEBENCH.md](FRAMEBENCH.md). This is the
+historical design proposal. The user's subsequent plugin-enabled regression and
+Settings/RAM freeze report supersedes its tentative task-5 priority; collect fresh
+evidence. Device validation is pending the user's availability confirmation.
+
 Proposed 2026-10-25; planning only. No benchmark implementation or device run yet.
 This is the initial, bounded part of PERF-TASKS task 18, using task 19's CPU
 attribution where possible. It does not implement the performance fixes.

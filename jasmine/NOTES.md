@@ -1,5 +1,33 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-25: framebench implementation; waiting for device availability.** User
+reports much worse performance after enabling wallpaper-related plugins and severe
+RAM-related freezes in Settings. Treat the current root as a fresh baseline; do
+not assume the old task-5 ranking still applies. User asked us to prepare the tool
+and tell them when ready, then wait for them to confirm the phone is free. **No
+phone access, boot, flash, software installation or test run in this milestone.**
+Usage/limits: [FRAMEBENCH.md](FRAMEBENCH.md). Host runner/reporting, j0099 capture,
+compact binary export, process footprint/RSS/compressed snapshots, GPU/surface/pool
+accounting, and a no-input manual Settings capture are implemented. Capture RAM
+bounded ~9.4 MiB; no new 48 MiB raw profiler allocation. Twenty-three offline tests
+pass, including partial capture after connection loss and temporary-image repack.
+Kernel source worktree `/home/teleg/xnu-framebench`, branch `codex/framebench`,
+source commit `529b8b5`. Patch verified with `git apply --check` against current
+Wi-Fi source j0098 (`a60e5f0`), preserving the shared source tree. Managed CI
+worktree `C:\Users\teleg\.codex\worktrees\framebench-build\ios-jasmine`, branch
+`codex/framebench-build`, head `efafa72` (Wi-Fi base `ce06327`, includes j0070-j0098).
+CI `40159475545` is the current build. **Earlier CI `40158474717` reported success
+but skipped j0099: not a validated instrumentation build.** `40159178092` was
+cancelled after finding that context mismatch. j0099 now uses narrow compatible
+context; workflow checks source and all four linked capture symbols, so silent
+patch skipping fails CI. No local Apple clang available; full compile goes to CI.
+Next: verify the current build/log/symbols, download kernel and package a temporary
+image using the exact shim/ADT/arguments from local `shim-boot-j98-wlan.img` via
+`tools/g2/framebench-image.py`. Then report ready and wait for the user's phone-free
+confirmation. Hardware latch/refresh signal validation and actual measurement
+overhead remain untested; reports explicitly use proxies until validated. Existing
+uncommitted task-5 documentation edits remain untouched.
+
 **2026-10-25: one-shot bottleneck benchmark plan.** User requested a plan for a
 quick automated frame-time/FPS diagnosis that runs once without repeated boots.
 See [PERF-BENCH-PLAN.md](PERF-BENCH-PLAN.md). Proposed: reuse gestures and CPU/census
