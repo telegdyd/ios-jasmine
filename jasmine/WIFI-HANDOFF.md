@@ -158,7 +158,7 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 1. (Done 2026-10-25 02:00, j0090-j0092: the leave while joined. Peer before vdev, as mac80211; see WIFI.md
    j90-j92. Also done: the USB link with Wi-Fi joined, j0087-j0089.) Not tried yet: the AP ending the link
    (deauth from the AP, peer kickout) and a failed join (wrong password), which run the same leave.
-2. **Reboot while joined hangs, 3 of 9** (j83, j85, j93 hung; j89c, j92, j96a-d fine; unjoined never).
+2. **Reboot while joined hangs, 3 of 10** (j83, j85, j93 hung; j89c, j92, j96a-d, j98 fine; unjoined: one 30 s stall, below).
    Not the modem port (j0094), not the sweet_sample sampler (j97-smp forced a sample into the kill
    phase: fine). The hung ones had a kill phase > 3 s (launchd quiesced first); good ones finish the
    whole kernel sequence in < 1 s. **j0096's watchdog is in every image now**: on the next hang wait
@@ -170,6 +170,12 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
    timeout saved it): the reboot thread in `IOSystemShutdownNotification -> waitQuietWithOptions`, an exiting
    process in `IOSurfaceRootUserClient::clientClose -> SweetSurfaceRef::free -> IOMemoryMap::taggedRelease ->
    IORecursiveLockLock` (contended). Details in WIFI.md (j0098 section); find who holds that lock.
+   Inputs: `ios-jasmine/logs/netlog-j97-aj2-reboot.txt` (4 `SDW dump` blocks; stuck pids 57, then 26),
+   kernel `ios-jasmine/xnu/out-jasmine-j97/kernel.development.sweet` (slide 0). Symbolicate in WSL with
+   `~/ios-work/tools/ipsw-3.1.739/x/ipsw macho a2s KERNEL ADDR`. Code to read: `SweetSurfaceRef::free` and
+   `IOSurfaceRootUserClient::clientClose` (our IOSurface, patch 0046 and later), and which shutdown-time
+   thread holds the memory-map lock (IOMemoryDescriptor's `gIOMemoryLock`?). Likely the same as the joined
+   hangs (j83/j85/j93 stalled in the same reboot phase), not proven.
 3. (Done 02:40, j0093/j0095: gray Wi-Fi icon.) The bars come from Apple80211 event 39 (LQM), see WIFI.md.
    j0095 (bars right at the join) is built but not yet tested.
 4. (Done 2026-10-25 04:03, j0098: auto-join.) wifid refused TelekNet as "Below minimum RSSI threshold"
