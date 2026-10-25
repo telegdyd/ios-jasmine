@@ -3,10 +3,11 @@
 Working plan for [PERF-TASKS](PERF-TASKS.md) task 16, written 2026-10-25 after the
 task-5 threaded context ([report](PERF-TASK5-THREADED-20261025.md)) made the
 per-frame `glFinish` the largest wait on CoreAnimation's display thread.
-**Status: S0-S3 complete (2026-10-25); G1 evaluated: HOLD, runtime policy evidence missing.**
-See [G1 result](#g1-result-2026-10-25-hold) for two corrected S2 branches and
-the evidence needed to pass. S4 can prepare the diagnostic/design review;
-S6-S10 remain gated.
+**Status: S0-S3 complete; G1 PASS at 16:21 on 2026-10-25 by a runtime check**
+([G1(b) runtime check](#g1b-runtime-check-2026-10-25-1613-1621-pass)): CoreAnimation
+uses a third swap surface when the previous page is still busy. Next: S4 design
+review with the user (budget the ~1.1 ms timed SwapWait; keep write protection of
+the retiring surface). S6-S10 remain gated on S4 approval; S5 is independent.
 Nothing here is measured yet unless a step's result says so.
 
 **How to use this file.** Each step below is sized for one agent. Take the next
@@ -26,7 +27,7 @@ first: phone lock, battery check, accessory-sync precheck, ground rules, and
 | [S1](#s1-critical-path-budget-from-existing-captures) | Critical-path budget from existing captures | S0 | no | done | Codex, 2026-10-25 15:14 Budapest; `research/t16/budget.py`, `budget.json`, `stacks.txt`; CC A flush drain + GPU wait 19.16 ms/arrival (36.8% occupancy), Home A 29.37 ms (52.3%). B/repeat unsampled. See S1 result. No new CI/boot. |
 | [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | done | Codex, 2026-10-25 15:26 Budapest; three page records, dynamic Buffer allocation; third surface conditional on availability policy. 9,916 instruction and eight vtable checks pass. See S2 result; no CI/boot. |
 | [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | done | Codex, 2026-10-25 16:37 Budapest; kernel + pristine patched Mesa lifecycle audit; 51 source files inventoried, four patches apply, wrapper sources match. See S3 result. No CI/boot. |
-| [G1](#g1-result-2026-10-25-hold) | Gate: is there enough overlap to win? | S1, S2 | — | hold (evaluated) | Codex, 2026-10-25 15:42 Budapest; (a) supported with S1 caveats; (b) unproven. Corrected S2 cooldown reset and failed-wait conditions; 9,916 byte checks, eight vtable checks and 26 branch cases pass. Runtime policy/third-buffer use still missing. No implementation or phone work. |
+| [G1](#g1b-runtime-check-2026-10-25-1613-1621-pass) | Gate: is there enough overlap to win? | S1, S2 | yes | **pass** | Codex 15:42 hold (offline). Claude 16:21: runtime check with `sweetfb_swapwait=2` on framebench99, settled boot: CA scans out a third surface (IDs 2/4/9 round-robin) when page k-1 is busy, after a ~1.1 ms timed SwapWait, no tick skipping. Capture `research/framebench/20261025-t16-sw2`. Unmatched baseline, Home A had no workload, 47 held draws (no write-wait in mode 2). |
 | [S4](#s4-design-review) | Design review with the user | G1, S3 | no | todo | |
 | [S5](#s5-kernel-sleep-instead-of-spin-in-the-present-path) | Kernel: sleep instead of spin in the present path | S0, S3 | yes | todo | |
 | [S6](#s6-kernel-render-tickets) | Kernel: render tickets (surface pending/ready) | S4 | — | todo | |
@@ -1069,3 +1070,79 @@ These are existing local binary/source checks, not a new build or device test.
 No kernel/Mesa source change, CI run, build, boot, installation, phone lock or
 phone access. No speedup measured. Phone state remains inherited from S0
 (temporary framebench99 iOS boot, lock released), not freshly checked.
+
+## G1(b) runtime check (2026-10-25 16:13-16:21, PASS)
+
+**Decision: G1 passes.** (a) was already supported by S1. (b) CoreAnimation renders
+the next frame into a **third swap surface** when the page before the newest is still
+busy, with its default flags in this workload, and without skipping ticks. The
+sequence the hold asked for (A scanning, B pending, C admitted for rendering
+without reusing A/B) occurred 600+ times in one capture. Next is S4, the design
+review with the user. S6-S10 stay gated on S4 approval.
+
+**Why this test.** j0058's `sweetfb_swapwait=2` (a swap is done once a *later swap
+latched*, not once it ended) puts CA in the same state the queued design would. At
+the tick after SwapEnd(k), the page holding k-1 is busy (k is flipped but not
+latched) and the page holding k-2 is free. That is exactly the predicate S2/G1
+could not settle offline (failed older-page wait with one free page counted). It
+only delays reuse, so it cannot show unfinished pixels. The same mode in j58c
+(GPU.md, old CPU-copy stack) reported 11-31 frames/s with "two swap surfaces";
+that round recorded no surface IDs.
+
+**Run.** Existing framebench99 kernel (CI `40160680219`, SHA256 `f4f3695d...`),
+image `shim/out/shim-boot-framebench99-sw2.img` (SHA256
+`0791330ed3bd1f96b8c46a4f5b8eab796441a7580bd632725b64ce9d227cf060`) =
+`shim-boot-framebench99.img` (`6ce2603f...`) repacked with ` sweetfb_swapwait=2`
+appended, nothing else changed; launchd's boot-args line confirms it. Installed
+final library (`14e32aea...`). Battery 94% in the charging shell before the
+boot (16:07); in iOS, 3953 mV with USB online. Unlocked by a command-port swipe.
+Accessory-sync precheck: 16:14 trustd 602 / accessoryupdater 442 ms/s, 16:16
+426 / 313, **16:17 both absent from the sample (idle)**. That is a settled boot,
+unlike all earlier 2026-10-25 captures. One standard framebench run, 16:17-16:19:
+`research/framebench/20261025-t16-sw2/` (ignored), 7,565 events, 0 dropped. Live
+log `logs/netlog-t16-sw2.txt`. Analysis: `python research/t16/g1-surfaces.py <capture>`
+(event 13 = scanned surface ID per swap, 11 arrivals, 18 slow SwapWait, 19
+write-waits) and WSL `python3 research/t16/g1-display-stacks.py <capture> <lib> <phases>`.
+
+| | threaded2 (default `swapwait=1`, inside accessory sync) | sw2 (`swapwait=2`, settled) |
+| --- | --- | --- |
+| Scanout surface IDs, whole capture | {2: 462, 4: 462} | **{2: 252, 4: 239, 9: 257}** |
+| Present order | 2,4 alternating | 9,4,2 round-robin. 44 of 746 three-present windows repeat a surface, all after long gaps where the busy page's wait had already succeeded |
+| Slow SwapWait (>100 us) | 1 | 668: **621 not done**, median 1.12 ms, max 2.17 ms; every one is for **swap k-1** (newest ended minus one) |
+| Home B arrivals/s, median interval | 18.54, 52.3 ms | 19.45, 50.7 ms |
+| CC A | 19.30, 49.1 ms | 16.80, 61.8 ms |
+| CC B | 15.43, 63.4 ms | 16.44, 59.0 ms |
+| Spotlight repeat | 14.05, 57.7 ms | 20.58, 43.8 ms |
+
+Reading: when SwapWait(k-1) times out after about 1 ms, CA keeps the free page it
+already counted and allocates a third Buffer/IOSurface (ID 9). It does not drop
+the count and skip the tick, so with these flags the cooldown branch was not
+taken. The cost on the display thread is that bounded ~1.1 ms timed SwapWait per
+frame, which S4 must budget. Each arrival is followed by a present of the next
+surface in the ring. Swap IDs are consecutive (747 gaps of 1).
+
+**Caveats, not settled by this run:**
+
+- The baseline is not matched: threaded2 ran inside the accessory sync with the
+  fix+dump library. Arrival rates are within roughly +-15% either way. CC A is
+  slower (61.8 vs 49.1 ms median) and the others are faster. Whether the third
+  buffer costs CPU or GPU (extra memory, 9 MB pool surface) is unmeasured; S8/S12's
+  matched rounds own that.
+- **Home A had 2 arrivals in 10 s.** The display thread sat in its run loop
+  (`IOMFBServer::thread_body` mach_msg, 109 of 112 wait samples) with almost no
+  `render_for_time` ticks. CA was not asked to render, so this is not an
+  availability rejection. Why the home swipes produced no animation there is
+  unknown (the UI state after warmup was not observed). framebench flags and
+  excludes that segment.
+- **47 GPU jobs drew into a surface the display holds** in the capture's 20.7 s
+  SWEET GPU window (26 more during unlock). `sweet_fb_gpu_write_wait` runs only
+  with `swapwait=1`, so this emulation has no write protection; j58c had 23. The
+  queued design must keep protecting the retiring surface (S3 invariant 2). This
+  run neither shows nor proves flicker. No visual check was made.
+- This is CA's view under synchronous present with latch-based release, not the
+  asynchronous queue itself. CA still sees the same page states, but S8-S10 must
+  confirm it with the real queue. Partial-redraw/damage correctness with a third
+  buffer was not checked (S3 hazard).
+
+Phone parked afterwards in the r109 charging shell. No CI run, build, flash or
+install. No speedup claimed.
