@@ -1,4 +1,4 @@
-From 529b8b5e97a12494bc59121577de4d685824bd71 Mon Sep 17 00:00:00 2001
+From 927bdbce933ebe8e61625f8e8c4e7d9a36ade26d Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Sun, 25 Oct 2026 04:30:32 +0100
 Subject: [PATCH] jasmine-j0099: bounded frame, GPU, CPU-stack and memory
@@ -11,9 +11,9 @@ Subject: [PATCH] jasmine-j0099: bounded frame, GPU, CPU-stack and memory
  iokit/Kernel/arm/SweetGPU.cpp         |  22 ++
  iokit/Kernel/arm/SweetSurface.cpp     |   9 +
  iokit/Kernel/arm/SweetSurface.h       |   2 +
- osfmk/arm64/sweet_bench.inc           | 350 ++++++++++++++++++++++++++
+ osfmk/arm64/sweet_bench.inc           | 349 ++++++++++++++++++++++++++
  osfmk/arm64/sweet_prof.c              |  43 +++-
- 8 files changed, 464 insertions(+), 12 deletions(-)
+ 8 files changed, 463 insertions(+), 12 deletions(-)
  create mode 100644 osfmk/arm64/sweet_bench.inc
 
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
@@ -229,16 +229,15 @@ index 13fb443..6bfedd4 100644
  	void free() APPLE_KEXT_OVERRIDE;
 diff --git a/osfmk/arm64/sweet_bench.inc b/osfmk/arm64/sweet_bench.inc
 new file mode 100644
-index 0000000..47e4967
+index 0000000..61b3347
 --- /dev/null
 +++ b/osfmk/arm64/sweet_bench.inc
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,349 @@
 +/* SPDX-License-Identifier: MIT
 + * Included by sweet_prof.c; no new kernel build target. Protocol v1 is private
 + * to tools/g2/framebench.py. All capture allocations are bounded; no disk I/O.
 + */
 +#include <vm/vm_page.h>
-+#include <sys/proc.h>
 +
 +#define BC_EVENTS 131072u
 +#define BC_SAMPLES 65536u
