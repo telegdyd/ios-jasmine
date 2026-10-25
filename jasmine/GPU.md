@@ -1040,3 +1040,36 @@ use that helper. Not fixed in this measurement step. Raw data in `research/t5/`.
 On->off reboot hung at root unmount and needed user buttons; off->charging reboot
 succeeded, r109 temporary charging image booted at ~04:08:30. See NOTES for final
 charging verification and lock state.
+
+#### Task 5: skip barriers for inactive samplers (2026-10-24 04:17–04:50)
+
+[Full result and limitations](PERF-TASK5-BARRIERS-20261024.md). Implementation
+`8877ff1`, Mesa CI `40053566696` PASS; library SHA256
+`e5fc84b1066990dbb06a6816ad5421978d84fcd2aa7c6f49d477594516847b1c`.
+`draw_prep()` now intersects held render-target bindings with Mesa's current
+linked-program 2D sampler units. This skips stale reserved framebuffer-fetch and
+other unused bindings; barriers for actual active feedback remain. No sync or
+pipelining change. `SWEETCA_ACTIVE_BARRIERS=0` restores legacy behavior for tests.
+
+Warm counters: actual finalized batches 54.5->30.7/flush home, 107.6->87.0 Control
+Center; one-draw share 80.3%->33.9% / 76.3%->61.6%; about 25 inactive-binding
+barriers skipped/flush in both. Against the exact original production task-4
+library, two repeats: swap arrivals 31.11->32.05/s home, 18.51->19.51 Control
+Center (+3.0%/+5.4%); GL elapsed 24.82->24.14 / 40.16->37.57 ms/flush.
+Six six-second CPU profiles across three variants: 340120 records, zero dropped.
+Home display CPU 766->727 ms/s; Control Center 895->892 while processing more
+arrivals. Swap arrivals are not confirmed distinct display latches or latency.
+
+All seven GL test steps PASS, including nine sampler-state cases and restored
+IOSurface target/memory checks (fixed its pre-existing stride/offset swap).
+CA tree has the same existing image-orientation mismatch in baseline/new, with
+identical reported samples/maps; actual home and Control Center swap captures
+show correct masks/icons/blur. Initial early-start counter run was slow and is
+excluded; repeating after startup settling agrees with off timings.
+
+Installed the tested library as `/usr/local/bin/libsweetca.dylib`; exact old
+library backup `research/t5/libsweetca-production-before-active.dylib` (task-4
+SHA `8a2defaa...`). Plain slot-b reboot at 04:49:17 confirmed active barriers on
+by default, diagnostics off, same current kernel/defaults, no partition flash.
+The preceding shutdown hung at root unmount and user buttons recovered fastboot.
+Final short gestures and charging/lock state: see NOTES. Task 5 further work remains.

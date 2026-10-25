@@ -159,17 +159,46 @@ Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
   keep AegirPoster (Astronomy; Metal/SceneKit?) from respawning, and see what grows backboardd's cache maintenance.
 - 06:18 I ran `fastboot reboot` after the WiFi session had taken the phone lock (06:16:53; my lock check did not
   gate the command); told that session. Phone left to it, booting slot b. Not parked (user: not needed now).
-**2026-10-24 task 5 step 2 in progress (user authorized):** gate the wrapper's texture
-barrier on Mesa's active graphics-program 2D sampler units, rather than stale bindings
-(especially the reserved framebuffer-fetch unit). Mesa updates linked sampler maps on
-UseProgram/Uniform/relink; no per-draw uniform queries or duplicate sampler cache.
-`SWEETCA_ACTIVE_BARRIERS=0` retains legacy behavior for comparison; default is active
-sampler gating. Opt-in counters distinguish needed/skipped barriers. Added actual GL
-sampler-state regression cases; corrected the known IOSurface helper stride/offset
-swap to restore render-target test coverage. Local helper/test syntax passes and
-patches apply in order. Next: Mesa CI, separate test dylib and temporary RAM boots,
-pixel checks and repeated profiling-off comparison. Phone remains in r109 charging
-console while building; no lock held, production dylib/slot b unchanged.
+**2026-10-24 task 5 first optimization validated and installed:**
+[Active-sampler barrier result](PERF-TASK5-BARRIERS-20261024.md).
+Implementation `8877ff1`, Mesa CI `40053566696` PASSED; `xnu/out-mesa-t5active/`,
+dylib SHA256 `e5fc84b1066990dbb06a6816ad5421978d84fcd2aa7c6f49d477594516847b1c`.
+`draw_prep()` gates texture barriers on Mesa's current linked graphics-program 2D
+sampler units, preserving all active feedback barriers. Default on;
+`SWEETCA_ACTIVE_BARRIERS=0` for legacy comparisons. No pipelining/sync change.
+Warm batches 54.5->30.7/flush home, 107.6->87.0 Control Center; one-draw share
+80.3%->33.9% / 76.3%->61.6%; ~25 unnecessary barriers skipped/flush in both.
+Exact production task-4 library comparison, two repeats: swap arrivals
+31.11->32.05/s home, 18.51->19.51 CC (+3.0%/+5.4%); GL elapsed/flush
+24.82->24.14 / 40.16->37.57 ms. Display CPU 766->727 ms/s home, 895->892 CC.
+Swap arrivals are NOT confirmed distinct displayed FPS/latency. Task 5 further
+Mesa CPU work remains open; task 16 needs a linked CPU/GPU/swap/latch timeline.
+Six six-second profiles across diagnostic baseline/new/original production,
+340120 records, zero dropped. Initial early-start counter round was slow;
+exclude it. Warm repeat agrees with off timing. Raw data/scripts in `research/t5/`.
+All seven GL test steps PASS, including nine sampler-state cases and restored
+IOSurface target/memory checks (fixed known helper stride/offset swap). CA tree
+has identical existing image-orientation mismatch in baseline/new: 9958/65536,
+same samples/maps. Actual home/CC swap captures show expected icons/masks/blur.
+Installed tested `/usr/local/bin/libsweetca.dylib`, mode 755. Exact old backup
+`research/t5/libsweetca-production-before-active.dylib`, SHA256
+`8a2defaa9e8974b126014193142754062758a7c38699ee7df8f19cb3506990f3`.
+Plain slot-b reboot at 04:49:17: default active barriers ON, diagnostics OFF,
+production library path, current j69b kernel/defaults unchanged; no flash.
+User confirmed iOS boot. Final 10 s home + 10 s CC checks passed at 04:50:45,
+GPU jobs completed, profiler idle/empty, GPU 588 and DDR ~1296. Preceding shutdown
+hung at root unmount; user Power+VolDown recovered fastboot. User visual check:
+looks fine, no regression, still unsatisfied with performance. Task 5 now contains
+the next-agent directions: split st_validate_state/atoms, dirty flags and a5xx
+state/program emission, then remaining batch allocation/setup/finalization; use
+CPU sampling and matched warmed repeats, keep active feedback/lifetimes correct.
+**Final phone state ~04:58:** r109 charging console (temporary RAM boot), backlight
+0; charger online=1/status Charging, battery current +742187 uA, 4058827 uV, 64%
+(rose from63%). Set float4050000, below both reported4400000 design/max. The old
+3.945 V float was at/below battery voltage. qcom-battery's status label still says
+Discharging despite charger Charging and rising capacity; record this discrepancy,
+do not confuse charger/fuel-gauge current readings. No attempt to fix the gauge.
+Use4050000 for parking now. Own collectors stopped; own phone lock released.
 **2026-10-24 task 5 step 1 complete:** [draw-path diagnostics](PERF-TASK5-DIAGNOSTICS-20261024.md).
 Results, parser and GPU/PERF references committed and pushed as `91c2346`.
 Pipelining is now task 16 in PERF-TASKS.md. No optimization or sync change yet;
@@ -201,7 +230,8 @@ stride and `bytes_per_row` as offset to `sgl_import_iosurface()`. Pre-existing s
 offset support was added, and only used by the test, not CA; no fix included in diagnostics.
 **User's standing request (2026-10-24): park in the charging console whenever the phone
 is not needed.** Park in r109 Linux charging shell, temporarily booted from
-`shim/out/nura-r109-boot_a.img`, backlight 0, charge voltage 3950000. Earlier verified
+`shim/out/nura-r109-boot_a.img`, backlight 0, charge voltage 4050000 (latest check above).
+Earlier 3950000 checks verified
 Charging, +722655 uA at 34%, later +402831 uA at 38%. USB shell takes a few minutes
 after the Nura logo; a 90 s connection timeout does not prove failure.
 Use `tools/pmos-shell.py`; its network is 172.16.42.1, host Ethernet 172.16.42.2/24.
@@ -391,7 +421,7 @@ Old manual loop:
 
 ## Linux shell without a recovery
 
-**Charging shell (use this one):** `fastboot reboot` boots boot_a = the r109 Nura kernel (charger HC/ICL and OSI idle patches), which finds no root and stops in the initramfs debug shell (telnet 172.16.42.1). Then `tools/pmos-shell.py 'echo 0 > /sys/class/backlight/backlight/brightness; echo 3950000 > /sys/class/power_supply/pm660-charger/constant_charge_voltage'`: about +0.9 A into the battery on the PC port. `shim/out/nura-debugshell.img` is built from `images/boot.img` (stock 2026-10-02 kernel: 500 mA input cap, no cluster idle) and **discharges** even on a charger; use it only if boot_a is gone.
+**Charging shell (use this one):** temporary `fastboot boot shim/out/nura-r109-boot_a.img` uses the r109 Nura kernel (charger HC/ICL and OSI idle patches), which finds no root and stops in the initramfs debug shell (telnet 172.16.42.1); active slot stays b. Then `tools/pmos-shell.py 'echo 0 > /sys/class/backlight/backlight/brightness; echo 4050000 > /sys/class/power_supply/pm660-charger/constant_charge_voltage'`. Latest check at top: ~+0.74 A, capacity rising; design/max is 4400000. The earlier 3950000 setting is now at/below battery voltage. Read charger online/status plus battery current/voltage/capacity; the fuel-gauge status label currently conflicts. `shim/out/nura-debugshell.img` is built from `images/boot.img` (stock 2026-10-02 kernel: 500 mA input cap, no cluster idle) and **discharges** even on a charger; use it only if r109 is unavailable.
 
 
 `fastboot boot shim/out/nura-debugshell.img` (Nura kernel + initramfs, `pmos.debug-shell`): telnet on 172.16.42.1, nothing mounted. `tools/pmos-shell.py 'cmd'`, `tools/pmos-shell.py --raw 'dd if=/dev/mmcblk1 ...' > file`. In that kernel the eMMC is `mmcblk1`, userdata `mmcblk1p69` (start 23855104, 37216223 sectors). Use it to read the persistent log (last 4 MiB + 4 KiB of userdata) and to compare the GPT with the backup after read-write sessions.
@@ -417,3 +447,12 @@ Old manual loop:
 - Under Nura's Linux, sustained eMMC reads hung the controller (CQE timeout, "cqhci: Failed to halt") and twice `reboot bootloader` from Nura hung. Linux sdhci-msm CQE on this Hynix eMMC; our XNU driver keeps CQE off.
 - Shim speed probe: Gold looks 55x slower than Silver with the MMU off; under Linux Gold is about Silver's speed, so it is an MMU-off artifact, but the Gold clock is probably lowish (no CPU clock driver).
 - jasmine ABL does not honor IMEM restart reasons (fixed with 0138).
+
+## CPU clock handoff update (2026-10-23)
+
+- j0048 live tool: a paired voltage-neutral SAW transaction reset SAW and set VCTL plus PMIC_DATA_3 to `0x364`. PMIC_STS read `0x364`; the corrected read-only poll for low-byte level `0x64` passed. Rails stayed S1 872 mV, S2/S3 868 mV; TSENS 56–65 C; Gold stayed at 1747 MHz. This verifies the paired register/status path, not a voltage change.
+- Reference `spm-regulator.c` converts FTS426 microvolts to millivolts (`roundup(uV, step)/1000`); `msm-spm.c` masks SAW VCTL/PMIC_DATA_3 with `0x700ff`, so 988 mV has low-byte vlevel `0xdc`. Existing live observations show low-byte-only requests did not update the PMIC's valid voltage; determine the upper-byte/commit behavior before relying on that mapping for a live increase.
+- A request to set 988 mV was blocked by automatic approval review: it said the explicit user approval applied only to the earlier voltage-neutral transaction. A later explicit user approval authorized one 988 mV request; see the measured results below. No build or CI was started. Next: resolve SAW's PMIC commit semantics read-only before changing the clock.
+- After explicit user approval (2026-10-23), one request set SAW VCTL and PMIC_DATA_3 masked field to `0xdc`; SAW status became `0x3dc`. S2/S3 setpoints read 988 mV, but valid remained 868 mV immediately and after 100 ms; TSENS was 54.3–62.8 C on the delayed check, and Gold stayed at 1747 MHz. The PMIC did not confirm the higher voltage, so no frequency increase was attempted. At that point, SAW requested 988 mV while the PMIC valid voltage remained 868 mV; a later user-authorized rollback restored both to 868 mV (see below).
+- After user authorized rollback, restored VCTL and PMIC_DATA_3 masked field to `0x64`; PMIC_STS returned `0x364`. S2/S3 set and valid both read 868 mV (S1 872 mV); TSENS 53.7–61.5 C; Gold remained at 1747 MHz. Device is back at the pre-experiment rail readings.
+- Read-only interpretation: after the 988 mV SAW request, APM control/status stayed `0` (MX mode) while Gold RCG remained on its manual PLL at 1747 MHz. Since OSM's stock crossover is 872 mV, the unchanged S2/S3 valid readings may be because the array mux was still on MX; that is a hypothesis, not yet verified. Any follow-up should sequence the PMIC target and APM switch together, then confirm both status and rail validity before touching PLL frequency.
