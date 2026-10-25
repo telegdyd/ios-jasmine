@@ -1,4 +1,4 @@
-From 3ced633660eabf1448c9011c70bdd234c13f5449 Mon Sep 17 00:00:00 2001
+From 6316a3c13314014c8c9cb262d69ffdc219aa8528 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Sun, 25 Oct 2026 02:02:43 +0100
 Subject: [PATCH] jasmine-j0096: reboot watchdog: step lines in
@@ -8,9 +8,9 @@ Subject: [PATCH] jasmine-j0096: reboot watchdog: step lines in
 
 ---
  bsd/dev/sweet_sample.c   | 106 +++++++++++++++++++++++++++++++++++++++
- bsd/kern/kern_shutdown.c |  30 +++++++++++
+ bsd/kern/kern_shutdown.c |  29 +++++++++++
  osfmk/kern/exception.c   |  69 +++++++++++++++++++++++++
- 3 files changed, 205 insertions(+)
+ 3 files changed, 204 insertions(+)
 
 diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
 index b40eccd..a33299e 100644
@@ -134,7 +134,7 @@ index b40eccd..a33299e 100644
 +	}
 +}
 diff --git a/bsd/kern/kern_shutdown.c b/bsd/kern/kern_shutdown.c
-index 20d9d47..0ea45d2 100644
+index 20d9d47..29f3067 100644
 --- a/bsd/kern/kern_shutdown.c
 +++ b/bsd/kern/kern_shutdown.c
 @@ -87,6 +87,12 @@ static void sd_log(vfs_context_t, const char *, ...);
@@ -247,18 +247,17 @@ index 20d9d47..0ea45d2 100644
  	host_reboot(host_priv_self(), hostboot_option);
  	/*
  	 * should not be reached
-@@ -542,6 +562,10 @@ sd_callback3(proc_t p, void * args)
+@@ -542,6 +562,9 @@ sd_callback3(proc_t p, void * args)
  		} else {
  			p->exit_thread = current_thread();
  			printf(".");
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
-+			printf("SDW forced exit1 %s[%d]
-+", p->p_comm, proc_getpid(p));
++			printf("SDW forced exit1 %s[%d]\n", p->p_comm, proc_getpid(p));
 +#endif
  
  			sd_log(ctx, "%s[%d] had to be forced closed with exit1().\n", p->p_comm, proc_getpid(p));
  
-@@ -613,6 +637,7 @@ sigterm_loop:
+@@ -613,6 +636,7 @@ sigterm_loop:
  
  	error = 0;
  	/* post a SIGTERM to all that catch SIGTERM and not marked for delay */
@@ -266,7 +265,7 @@ index 20d9d47..0ea45d2 100644
  	proc_rebootscan(sd_callback1, (void *)&sdargs, sd_filt1, (void *)&sfargs);
  
  	if (sdargs.activecount != 0 && proc_shutdown_exitcount != 0) {
-@@ -625,6 +650,7 @@ sigterm_loop:
+@@ -625,6 +649,7 @@ sigterm_loop:
  			 */
  			ts.tv_sec = 3;
  			ts.tv_nsec = 0;
@@ -274,7 +273,7 @@ index 20d9d47..0ea45d2 100644
  			error = msleep(&proc_shutdown_exitcount, &proc_list_mlock, PWAIT, "shutdownwait", &ts);
  			if (error != 0) {
  				for (p = allproc.lh_first; p; p = p->p_list.le_next) {
-@@ -669,6 +695,7 @@ sigterm_loop:
+@@ -669,6 +694,7 @@ sigterm_loop:
  	sdargs.activecount = 0;
  
  	/* post a SIGKILL to all that catch SIGTERM and not marked for delay */
@@ -282,7 +281,7 @@ index 20d9d47..0ea45d2 100644
  	proc_rebootscan(sd_callback2, (void *)&sdargs, sd_filt2, (void *)&sfargs);
  
  	error = 0;
-@@ -684,6 +711,7 @@ sigterm_loop:
+@@ -684,6 +710,7 @@ sigterm_loop:
  			 */
  			ts.tv_sec = 10;
  			ts.tv_nsec = 0;
@@ -290,7 +289,7 @@ index 20d9d47..0ea45d2 100644
  			error = msleep(&proc_shutdown_exitcount, &proc_list_mlock, PWAIT, "shutdownwait", &ts);
  			if (error != 0) {
  				for (p = allproc.lh_first; p; p = p->p_list.le_next) {
-@@ -731,6 +759,7 @@ sigterm_loop:
+@@ -731,6 +758,7 @@ sigterm_loop:
  
  
  	/* post a SIGTERM to all that catch SIGTERM and not marked for delay */
@@ -298,7 +297,7 @@ index 20d9d47..0ea45d2 100644
  	proc_rebootscan(sd_callback3, (void *)&sdargs, sd_filt2, (void *)&sfargs);
  	printf("\n");
  
-@@ -740,6 +769,7 @@ sigterm_loop:
+@@ -740,6 +768,7 @@ sigterm_loop:
  		goto  sigterm_loop;
  	}
  
