@@ -1,5 +1,41 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-25: first framebench device session complete; phone parked.** Supersedes
+the availability wait below. User supplied fastboot; acquired the shared phone
+lock, temporarily booted `shim/out/shim-boot-framebench99.img` once. Kernel CI
+`40160680219` passed; image SHA256
+`6ce2603f1b23ca3c9fed827dcb4e4d1115a6b21aaadb9ad854471640fd30281b`.
+Read-only retrieval confirmed installed libsweetca SHA256
+`e5fc84b1066990dbb06a6816ad5421978d84fcd2aa7c6f49d477594516847b1c`.
+Home verified visually; standard capture started 145 s after boot. Standard
+59.86 s activity / 66.28 s collection, 6,929,139-byte export; Settings 45.36 s /
+49.33 s, 4,056,047-byte export on same boot. Both exited 0; zero event/sample
+drops; no legacy 48 MiB profiler allocation. Raw ignored session directory:
+`research/framebench/20261025-first/` (`capture/`, `wallpaper/`, `boot.txt`).
+**[Full evidence and work order](PERF-FRAMEBENCH-20261025.md).** Task 20 stability
+diagnosis first: PosterBoard restart, AegirPoster crash/check-in loop, wired
+472.4->584.1 MiB and requested surfaces 289.1->394.2 MiB during Settings window.
+Only ten seconds followed Add New Wallpaper; no proven leak/exhaustion or full
+system freeze. No saved page waiters, BO allocation failures or frees in flight.
+XNU manages 1.97 GiB by existing upper-bank design. Then task 5 for sustained
+renderer CPU (Control Center primary-display Mesa ~2274 estimated ms per 4 s
+sample window); investigate task 21's trustd/accessoryupdater activity alongside
+it (22.8% of usable sampled non-idle CPU). First-use shader wait remains task 17.
+Home A zero updates makes its A/B comparison invalid. Physical counters absent:
+current mapping is topaz-only, fIntf1 null on jasmine. CTL-clear observations are
+still unvalidated proxies. Host report now excludes unresponsive motion from
+ranking and wireless display waits from primary-render categories, adds missing
+counter warning/background leads. 28 offline tests pass; both captures reanalyzed
+offline with verified library identity in manifests. No new CI/kernel boot.
+No partition flash, root replacement, plugins/clocks or installed-library change.
+Own diagnostic screenshot files removed. Per standing request, one final temporary
+boot of `shim/out/nura-r109-boot_a.img` succeeded; charging shell verified online=1,
+Charging, current +658202 uA, voltage 4171376 uV, capacity 85%. Set backlight=0,
+float=4050000. Own collector stopped and shared lock released. Next: task 20,
+capture exception/oslog + memorystatus before early gallery trigger; attribute
+surviving allocations and recovery. Existing task-5 doc edits preserved. Commit
+subject: `perf: record first framebench run and correct attribution validity`.
+
 **2026-10-25: framebench implementation; waiting for device availability.** User
 reports much worse performance after enabling wallpaper-related plugins and severe
 RAM-related freezes in Settings. Treat the current root as a fresh baseline; do

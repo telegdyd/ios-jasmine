@@ -477,7 +477,7 @@ def cpu_report(samples, stacks, out, kernel=None, libs=()):
                 thread[f'{name}:{thread_name}:{tid}'] += weight
                 if names:
                     leaf[f'{images[0]}:{names[0]}'] += weight
-                if name == 'backboardd' and 'coreanimation.display' in thread_name:
+                if name == 'backboardd' and 'coreanimation.display.primary' in thread_name:
                     if kind == 1:
                         if any(n in trace for n in ('flush_dcache', 'FlushPoC', 'sweet_gpu_flush_all', 'SweetGPUUserClient::maintain', 'IOFlushProcessorCache')):
                             categories['render-cache-maintenance-CPU'] += weight
@@ -497,7 +497,7 @@ def cpu_report(samples, stacks, out, kernel=None, libs=()):
                         categories['render-other-CPU'] += weight
                 elif name == 'SpringBoard':
                     categories['SpringBoard-CPU'] += weight
-            elif name == 'backboardd' and 'coreanimation.display' in thread_name:
+            elif name == 'backboardd' and 'coreanimation.display.primary' in thread_name:
                 if kind == 3:
                     categories['render-runnable'] += weight
                 elif 'sweet_fb_gpu_write_wait' in trace or 'AppleCLCD' in trace:
@@ -511,6 +511,7 @@ def cpu_report(samples, stacks, out, kernel=None, libs=()):
                 else:
                     categories['render-other-wait'] += weight
         phases[PHASES.get(phase, str(phase))] = dict(sample_span_seconds=duration,
+            sampled_cpu_estimated_ms=sum(process.values()),
             process_cpu_estimated_ms=dict(process.most_common(20)), thread_cpu_estimated_ms=dict(thread.most_common(20)),
             thread_state_estimated_ms=dict(state.most_common(50)), self_cpu_estimated_ms=dict(leaf.most_common(25)),
             categories_estimated_ms=dict(categories))
@@ -560,8 +561,19 @@ def rank(summary):
         elif growth > 128 * 1024 * 1024:
             candidates.append(dict(task='20', confidence='medium; growth alone does not prove pressure or leak', evidence=f'process footprint grew {growth/2**20:.1f} MiB within capture', next='Check the named growing process and post-idle recovery.', score=60))
     cats = collections.Counter()
-    for phase in summary['cpu'].get('phases', {}).values():
+    background = collections.Counter()
+    total_cpu = 0
+    ui_processes = {'backboardd', 'SpringBoard', 'kernel_task', 'PosterBoard',
+                    'Preferences', 'Spotlight', 'searchd'}
+    for name, phase in summary['cpu'].get('phases', {}).items():
+        motion = summary.get('phases', {}).get(name, {}).get('motion', {})
+        if (summary['manifest'].get('mode') == 'standard' and
+                motion.get('active_seconds', 0) and not motion.get('updates')):
+            continue  # No observed UI response: not a matched rendering workload.
         cats.update(phase['categories_estimated_ms'])
+        cpu = phase.get('process_cpu_estimated_ms', {})
+        total_cpu += phase.get('sampled_cpu_estimated_ms', sum(cpu.values()))
+        background.update({k: v for k, v in cpu.items() if k not in ui_processes})
     rules = [('render-buffer-free-wait', '14', 'Identify the blocked free/unmap operation with the captured stacks.'),
              ('render-buffer-free-CPU', '14 investigation', 'Inspect free/unmap stacks and free-inflight counts; CPU cost alone is not proof of the freeze cause.'),
              ('render-Mesa-CPU', '5', 'Split the hottest validation/emission/batch path and test one focused optimization.'),
@@ -580,6 +592,14 @@ def rank(summary):
     if cats['SpringBoard-CPU'] > 100:
         candidates.append(dict(task='19', confidence='lead; producer critical-path causality not established',
             evidence=f"{cats['SpringBoard-CPU']:.1f} estimated ms in SpringBoard", next='Correlate transaction production with slow render intervals.', score=15))
+    leaders = background.most_common(2)
+    share = sum(v for _, v in leaders) / max(total_cpu, 1)
+    if total_cpu and share >= .2:
+        candidates.append(dict(task='21 / background-service CPU investigation',
+            confidence='lead; CPU contention and critical-path effect are not established',
+            evidence=', '.join(f'{name} {ms:.0f} estimated ms' for name, ms in leaders) +
+                f'; {share:.1%} of sampled non-idle CPU together',
+            next='Inspect these services\' hot stacks and retry/crash logs; preserve the required plugin configuration.', score=18))
     if not candidates:
         candidates.append(dict(task='18 / resolve missing attribution', confidence='insufficient evidence',
             evidence='No usable pressure or symbolized critical-thread attribution; do not reuse the old task-5 ranking.',
@@ -661,6 +681,12 @@ def analyze(out, kernel=None, libs=()):
     if not (out / 'profile.meta').exists() or not (out / 'profile.meta').read_text(errors='replace').rstrip().endswith('end'):
         quality.append('profile metadata incomplete or unavailable')
     quality.append('Displayed FPS unavailable until CTL-clear observation is validated against actual scanout; timer ticks are not refresh proof.')
+    if not refresh:
+        quality.append('No physical frame-counter observations captured; the refresh signal was not validated.')
+    for name, phase in phases.items():
+        m = phase['motion']
+        if manifest['mode'] == 'standard' and m['active_seconds'] and not m['updates']:
+            quality.append(f'{name}: no swap arrivals during commanded motion; UI response/workload unverified. Excluded from task ranking and A/B overhead comparison.')
     summary = dict(manifest=manifest, quality=quality, phases=phases, memory=memory_report(progress),
         hardware_frame_counter_period_ms=refresh_ms, hardware_counter_samples=len(periods),
         cpu=cpu_report(samples, stacks, out, kernel, libs),

@@ -105,6 +105,31 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(any('overflow' in q for q in s['quality']))
         self.assertTrue((self.root / 'report.md').exists())
 
+    def test_unresponsive_motion_and_missing_refresh_are_explicit(self):
+        s = self.capture(event(0, 4, a=1) + event(100000, 4, a=0))
+        self.assertTrue(any('home-a: no swap arrivals' in q for q in s['quality']))
+        self.assertTrue(any('No physical frame-counter' in q for q in s['quality']))
+
+    def test_unresponsive_segment_does_not_choose_renderer_optimization(self):
+        s = self.capture(event(0, 4, a=1) + event(100000, 4, a=0))
+        s['cpu'] = {'phases': {'home-a': {'categories_estimated_ms': {'render-Mesa-CPU': 1000}}}}
+        self.assertNotEqual(fb.rank(s)[0]['task'], '5')
+
+    def test_background_cpu_is_an_investigation_not_proven_bottleneck(self):
+        s = self.capture()
+        s['cpu'] = {'phases': {'control-a': {
+            'categories_estimated_ms': {}, 'sampled_cpu_estimated_ms': 2000,
+            'process_cpu_estimated_ms': {'backboardd': 1000, 'trustd': 600, 'accessoryupdater': 400}}}}
+        r = fb.rank(s)[0]
+        self.assertIn('background-service CPU', r['task'])
+        self.assertIn('not established', r['confidence'])
+
+    def test_wireless_display_wait_is_not_primary_render_wait(self):
+        (self.root / 'profile.meta').write_text('period_us 2000\ncensus_us 5000\ntask 7 backboardd\nthread 9 7 com.apple.coreanimation.display.wireless0\nend\n')
+        stack = (0, 0, 0) + (0,) * 48
+        cpu = fb.cpu_report([(1000, 0, 9, 7, 0, 10, 2, 0, 0)], [stack], self.root)
+        self.assertEqual(cpu['phases']['manual-settings']['categories_estimated_ms'], {})
+
     def test_kernel_cache_work_is_not_assigned_to_mesa(self):
         import prof
         (self.root / 'profile.meta').write_text('period_us 2000\ncensus_us 5000\ntask 7 backboardd\nthread 9 7 com.apple.coreanimation.display.primary\nend\n')

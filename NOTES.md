@@ -1,5 +1,25 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 jasmine framebench first device session complete
+
+User made phone available in fastboot. [Results/priorities](jasmine/PERF-FRAMEBENCH-20261025.md).
+One temporary j0099 boot, standard capture 59.86 s / 66.28 s with export, separate
+45 s Settings capture on the same boot / 49.33 s with export; both successful,
+zero drops. Installed graphics library hash independently matched. Wallpaper
+service crashes/restarts and rapid wired/surface growth observed; exhaustion/leak
+and full-system freeze not proven. Prioritize task 20 stability diagnosis, then
+5 renderer CPU, with 21 background-service diagnosis alongside. Home A had no
+updates: invalid comparison. No physical frame-counter events: mapping is topaz-only.
+Host validity/CPU reporting corrected; 28 offline tests pass; saved captures
+reanalyzed without another boot. CI remains 40160680219, image hash in result.
+No partitions flashed or plugins/clocks/installed libraries changed. Parked once
+in r109 charging console per standing request: online/Charging, +658202 uA,
+4171376 uV, 85%; backlight 0, float 4050000. Own screenshots removed, collector
+stopped and lock released (see active jasmine handoff). Next: bounded gallery
+capture with early trigger and exception/memorystatus evidence. Commit subject:
+`perf: record first framebench run and correct attribution validity`.
+Preserve existing unrelated working edits.
+
 ### 2026-10-25 jasmine framebench implementation
 
 Active handoff and CI IDs: top of [jasmine/NOTES.md](jasmine/NOTES.md).

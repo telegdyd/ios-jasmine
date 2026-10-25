@@ -5,6 +5,14 @@ It does not boot, reboot, flash, install anything, change clocks, disable plugin
 or park the phone. The operator must first reserve the phone. Current plugin and
 wallpaper behavior is a new baseline; old task-5 results are not a fallback ranking.
 
+First device session: [results and priorities](PERF-FRAMEBENCH-20261025.md).
+Standard activity/export took 66 s; a separate Settings capture took 49 s on the
+same boot, both with no dropped records. Physical frame-counter mapping is absent
+on jasmine, so displayed FPS remains unvalidated. Zero-update motion segments are
+flagged and excluded from task ranking; only the primary display thread contributes
+to render categories. Substantial background-service CPU is surfaced as a lead,
+not proof of critical-path contention. Current offline suite: 28 tests.
+
 ## Standard run
 
 From the repository root in Windows, with the phone unlocked and settled:

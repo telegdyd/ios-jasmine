@@ -1,5 +1,14 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-25 first framebench device results:** [evidence and priorities](PERF-FRAMEBENCH-20261025.md).
+One instrumented boot, successful standard + bounded Settings captures, no drops.
+Prioritize task 20's Wallpaper instability/memory diagnosis before speed work;
+crash/restart and rapid backing growth observed, exhaustion/leak unproven. Task 5
+remains the measured sustained-rendering lead; substantial trustd/accessoryupdater
+CPU also deserves investigation. Home A unverified; physical counters absent on
+jasmine, so no confirmed displayed FPS. Host reporting corrected; 28 tests pass.
+Phone parked in verified r109 charging shell; lock released. Details in NOTES.
+
 **2026-10-25 framebench tooling:** see [FRAMEBENCH.md](FRAMEBENCH.md) and the active
 [NOTES.md](NOTES.md) handoff. j0099 adds bounded frame/GPU/CPU-stack/memory capture
 and binary export; host runner reports a new plugin-enabled baseline without
