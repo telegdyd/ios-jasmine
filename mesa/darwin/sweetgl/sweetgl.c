@@ -26,6 +26,7 @@
 #include "main/mtypes.h"
 #include "util/driconf.h"
 #include "util/simple_mtx.h"
+#include "util/sweet_profile.h"
 #include "util/format/u_format.h"
 #include "util/u_atomic.h"
 #include "util/u_inlines.h"
@@ -460,9 +461,9 @@ sgl_driver_pipe(struct sgl_context *ctx)
 
 /* on the driver thread, in order with the calls queued before it */
 static void
-sgl_kick_driver(void *data)
+sgl_submit_driver(struct pipe_context *pipe, const char *cause)
 {
-   struct pipe_context *pipe = data;
+   SWEET_BATCH_TRACE_SCOPE(trace_cause, cause);
    struct pipe_screen *screen = pipe->screen;
    struct pipe_fence_handle *fence = NULL;
 
@@ -472,6 +473,46 @@ sgl_kick_driver(void *data)
    if (fence) {
       (void)screen->fence_finish(screen, pipe, fence, 0);
       screen->fence_reference(screen, &fence, NULL);
+   }
+}
+
+static void
+sgl_kick_driver(void *data)
+{
+   sgl_submit_driver(data, "periodic-kick");
+}
+
+struct sgl_trace_frame {
+   struct pipe_context *driver;
+   unsigned frame;
+};
+
+static void
+sgl_trace_frame_driver(void *data)
+{
+   struct sgl_trace_frame *marker = data;
+   sweet_batch_trace("event=frame-end ctx=%p frame=%u", (void *)marker->driver, marker->frame);
+   FREE(marker);
+}
+
+void
+sgl_trace_frame_end(struct sgl_context *ctx, unsigned frame)
+{
+   if (!sweet_batch_trace_active())
+      return;
+   struct pipe_context *pipe = ctx->st->pipe;
+   struct sgl_trace_frame *marker = MALLOC_STRUCT(sgl_trace_frame);
+   if (!marker) {
+      sweet_batch_trace("event=frame-marker-lost ctx=%p frame=%u", (void *)pipe, frame);
+      return;
+   }
+   marker->driver = sgl_driver_pipe(ctx);
+   marker->frame = frame;
+   if (marker->driver) {
+      pipe->callback(pipe, sgl_trace_frame_driver, marker, false);
+   } else {
+      marker->driver = pipe;
+      sgl_trace_frame_driver(marker);
    }
 }
 
@@ -515,7 +556,7 @@ static void
 sgl_drain_driver(void *data)
 {
    struct sgl_drain *d = data;
-   sgl_kick_driver(d->driver);
+   sgl_submit_driver(d->driver, "frame-submit-drain");
    pthread_mutex_lock(&d->lock);
    d->error = darwin_pipeline_error();
    d->done = true;
@@ -536,7 +577,7 @@ sgl_flush_submit(struct sgl_context *ctx)
    struct pipe_context *pipe = ctx->st->pipe;
    struct pipe_context *driver = sgl_driver_pipe(ctx);
    if (!driver) {
-      sgl_kick_driver(pipe);
+      sgl_submit_driver(pipe, "frame-submit-drain");
       return darwin_pipeline_error();
    }
    struct sgl_drain *d = CALLOC_STRUCT(sgl_drain);

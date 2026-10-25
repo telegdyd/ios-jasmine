@@ -4,6 +4,10 @@
 build, CI dispatch, phone access or new measurement. Starting HEAD `b58d1c5`.
 Task 24 remains open. This document is the review deliverable requested by the user.
 
+**Implementation started:** [source audit and bounded batch diagnostic](PERF-TASK24-AUDIT.md).
+User approved proceeding. Rendering barriers and GMEM defaults are unchanged;
+the diagnostic graph precedes the first barrier-retention experiment.
+
 ## Recommendation
 
 Proceed in two independently measurable steps: retain safe texture-feedback

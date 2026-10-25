@@ -1,6 +1,6 @@
-From e88a98580d17509199361ad3b0e46a7a916063eb Mon Sep 17 00:00:00 2001
+From 12977437ed75a57ec17adab1a5734335742f1494 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Sun, 25 Oct 2026 23:27:34 +0100
+Date: Mon, 26 Oct 2026 00:55:00 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -11,7 +11,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/darwin/darwin_device.c      |  237 ++
  src/freedreno/drm/darwin/darwin_pipe.c        |  313 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  144 +
- src/freedreno/drm/darwin/sweet_profile.c      |  146 +
+ .../drm/darwin/sweet_batch_trace.inc          |  139 +
+ src/freedreno/drm/darwin/sweet_profile.c      |  147 +
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
  src/freedreno/drm/freedreno_priv.h            |    6 +
@@ -21,22 +22,23 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++
  src/gallium/frontends/sweetgl/meson.build     |   90 +
- src/gallium/frontends/sweetgl/sweetca.c       | 2673 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 2674 +++++++++++++++++
  .../frontends/sweetgl/sweetca_pass_trace.inc  |  188 ++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++
- src/gallium/frontends/sweetgl/sweetgl.c       |  655 ++++
- src/gallium/frontends/sweetgl/sweetgl.h       |  118 +
+ src/gallium/frontends/sweetgl/sweetgl.c       |  696 +++++
+ src/gallium/frontends/sweetgl/sweetgl.h       |  120 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
  .../frontends/sweetgl/sweetgpu_gltest.c       |  663 ++++
  src/gallium/meson.build                       |    5 +
- src/util/sweet_profile.h                      |   67 +
- 26 files changed, 7664 insertions(+), 6 deletions(-)
+ src/util/sweet_profile.h                      |   79 +
+ 27 files changed, 7860 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
  create mode 100644 src/freedreno/drm/darwin/darwin_pipe.c
  create mode 100644 src/freedreno/drm/darwin/darwin_priv.h
+ create mode 100644 src/freedreno/drm/darwin/sweet_batch_trace.inc
  create mode 100644 src/freedreno/drm/darwin/sweet_profile.c
  create mode 100644 src/gallium/drivers/freedreno/sweetgpu_fdtest.c
  create mode 100644 src/gallium/frontends/sweetgl/meson.build
@@ -1043,18 +1045,164 @@ index 0000000..a895301
 +extern uint32_t darwin_last_kfence, darwin_last_ufence;
 +
 +#endif /* DARWIN_PRIV_H_ */
+diff --git a/src/freedreno/drm/darwin/sweet_batch_trace.inc b/src/freedreno/drm/darwin/sweet_batch_trace.inc
+new file mode 100644
+index 0000000..419e3cc
+--- /dev/null
++++ b/src/freedreno/drm/darwin/sweet_batch_trace.inc
+@@ -0,0 +1,139 @@
++/* Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ * Bounded CPU-side batch graph. No GPU waits, timestamps or GL queries.
++ */
++#include <errno.h>
++#include <pthread.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <time.h>
++
++bool sweet_batch_trace_enabled;
++static pthread_mutex_t bt_lock = PTHREAD_MUTEX_INITIALIZER;
++static __thread const char *bt_cause;
++static struct {
++   uint64_t start_ns, delay_ns, duration_ns;
++   unsigned records, limit;
++   bool stopped, started;
++} bt;
++
++static uint64_t
++bt_now(void)
++{
++   struct timespec ts;
++   if (clock_gettime(CLOCK_MONOTONIC, &ts))
++      return 0;
++   return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + ts.tv_nsec;
++}
++
++static unsigned
++bt_option(const char *name, unsigned fallback, unsigned maximum)
++{
++   const char *s = getenv(name);
++   if (!s || !*s)
++      return fallback;
++   char *end;
++   errno = 0;
++   unsigned long value = strtoul(s, &end, 10);
++   return errno || *end || *s == '-' || value > maximum ? fallback : (unsigned)value;
++}
++
++__attribute__((constructor)) static void
++bt_init(void)
++{
++   const char *v = getenv("SWEETCA_BATCH_TRACE");
++   sweet_batch_trace_enabled = v && !strcmp(v, "1");
++   if (!sweet_batch_trace_enabled)
++      return;
++   bt.delay_ns = (uint64_t)bt_option("SWEETCA_BATCH_TRACE_DELAY", 300, 3600) * 1000000000;
++   bt.duration_ns = (uint64_t)bt_option("SWEETCA_BATCH_TRACE_SECONDS", 25, 120) * 1000000000;
++   bt.limit = bt_option("SWEETCA_BATCH_TRACE_EVENTS", 12000, 30000);
++   bt.start_ns = bt_now();
++   bt.stopped = !bt.start_ns || !bt.duration_ns || !bt.limit;
++   fprintf(stderr, "sweetca: batchtrace armed delay=%llu seconds=%llu events=%u disabled=%u\n",
++           (unsigned long long)(bt.delay_ns / 1000000000),
++           (unsigned long long)(bt.duration_ns / 1000000000), bt.limit, bt.stopped);
++}
++
++/* bt_lock held; the first and last records make incomplete windows explicit. */
++static bool
++bt_active_locked(uint64_t now)
++{
++   if (bt.stopped)
++      return false;
++   if (!now || now < bt.start_ns) {
++      bt.stopped = true;
++      fprintf(stderr, "sweetca: batchtrace stop records=%u reason=clock-error\n", bt.records);
++      return false;
++   }
++   uint64_t elapsed = now >= bt.start_ns ? now - bt.start_ns : 0;
++   if (elapsed < bt.delay_ns)
++      return false;
++   if (elapsed - bt.delay_ns >= bt.duration_ns || bt.records >= bt.limit) {
++      bt.stopped = true;
++      fprintf(stderr, "sweetca: batchtrace stop records=%u reason=%s\n", bt.records,
++              bt.records >= bt.limit ? "event-cap" : "deadline");
++      return false;
++   }
++   if (!bt.started) {
++      bt.started = true;
++      fprintf(stderr, "sweetca: batchtrace start late_ms=%llu\n",
++              (unsigned long long)((elapsed - bt.delay_ns) / 1000000));
++   }
++   return true;
++}
++
++bool
++sweet_batch_trace_active(void)
++{
++   if (!sweet_batch_trace_enabled)
++      return false;
++   pthread_mutex_lock(&bt_lock);
++   bool active = bt_active_locked(bt_now());
++   pthread_mutex_unlock(&bt_lock);
++   return active;
++}
++
++void
++sweet_batch_trace(const char *fmt, ...)
++{
++   if (!sweet_batch_trace_enabled)
++      return;
++   pthread_mutex_lock(&bt_lock);
++   uint64_t now = bt_now();
++   if (bt_active_locked(now)) {
++      char record[1400] = {0};
++      va_list ap;
++      va_start(ap, fmt);
++      int n = vsnprintf(record, sizeof(record), fmt, ap);
++      va_end(ap);
++      fprintf(stderr, "sweetca: batchtrace e=%u us=%llu cause=%s %s%s\n", ++bt.records,
++              (unsigned long long)((now - bt.start_ns) / 1000), sweet_batch_trace_cause(),
++              record, n < 0 || n >= (int)sizeof(record) ? " truncated=1" : "");
++      if (bt.records == bt.limit)
++         (void)bt_active_locked(now);
++   }
++   pthread_mutex_unlock(&bt_lock);
++}
++
++struct sweet_batch_trace_scope
++sweet_batch_trace_enter(const char *cause)
++{
++   struct sweet_batch_trace_scope scope = {bt_cause, sweet_batch_trace_enabled};
++   if (scope.active)
++      bt_cause = cause;
++   return scope;
++}
++
++void
++sweet_batch_trace_leave(struct sweet_batch_trace_scope *scope)
++{
++   if (scope->active)
++      bt_cause = scope->previous;
++}
++
++const char *
++sweet_batch_trace_cause(void)
++{
++   return bt_cause ? bt_cause : "unclassified";
++}
 diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
 new file mode 100644
-index 0000000..5a8b7db
+index 0000000..f3f05b1
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/sweet_profile.c
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,147 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT */
 +#include "util/sweet_profile.h"
 +#include <mach/mach_time.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include "sweet_batch_trace.inc"
 +
 +static bool enabled;
 +static __thread struct sweet_profile_scope *current;
@@ -1864,10 +2012,10 @@ index 0000000..ee052db
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..f068305
+index 0000000..3d3c0d8
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,2673 @@
+@@ -0,0 +1,2674 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2609,6 +2757,7 @@ index 0000000..f068305
 +         CFRelease(c->ticket_frame_surface[i]);
 +      c->ticket_surface_count = 0;
 +   }
++   sgl_trace_frame_end(c->gl, c->frame);
 +   flush_stats(now_ms() - t);
 +   if (trace_on && traced++ < 20)
 +      trace_fb("flush");
@@ -6196,10 +6345,10 @@ index 0000000..2c17092
 +	T(1035)
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
 new file mode 100644
-index 0000000..7ec5506
+index 0000000..62d13f9
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.c
-@@ -0,0 +1,655 @@
+@@ -0,0 +1,696 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -6228,6 +6377,7 @@ index 0000000..7ec5506
 +#include "main/mtypes.h"
 +#include "util/driconf.h"
 +#include "util/simple_mtx.h"
++#include "util/sweet_profile.h"
 +#include "util/format/u_format.h"
 +#include "util/u_atomic.h"
 +#include "util/u_inlines.h"
@@ -6662,9 +6812,9 @@ index 0000000..7ec5506
 +
 +/* on the driver thread, in order with the calls queued before it */
 +static void
-+sgl_kick_driver(void *data)
++sgl_submit_driver(struct pipe_context *pipe, const char *cause)
 +{
-+   struct pipe_context *pipe = data;
++   SWEET_BATCH_TRACE_SCOPE(trace_cause, cause);
 +   struct pipe_screen *screen = pipe->screen;
 +   struct pipe_fence_handle *fence = NULL;
 +
@@ -6674,6 +6824,46 @@ index 0000000..7ec5506
 +   if (fence) {
 +      (void)screen->fence_finish(screen, pipe, fence, 0);
 +      screen->fence_reference(screen, &fence, NULL);
++   }
++}
++
++static void
++sgl_kick_driver(void *data)
++{
++   sgl_submit_driver(data, "periodic-kick");
++}
++
++struct sgl_trace_frame {
++   struct pipe_context *driver;
++   unsigned frame;
++};
++
++static void
++sgl_trace_frame_driver(void *data)
++{
++   struct sgl_trace_frame *marker = data;
++   sweet_batch_trace("event=frame-end ctx=%p frame=%u", (void *)marker->driver, marker->frame);
++   FREE(marker);
++}
++
++void
++sgl_trace_frame_end(struct sgl_context *ctx, unsigned frame)
++{
++   if (!sweet_batch_trace_active())
++      return;
++   struct pipe_context *pipe = ctx->st->pipe;
++   struct sgl_trace_frame *marker = MALLOC_STRUCT(sgl_trace_frame);
++   if (!marker) {
++      sweet_batch_trace("event=frame-marker-lost ctx=%p frame=%u", (void *)pipe, frame);
++      return;
++   }
++   marker->driver = sgl_driver_pipe(ctx);
++   marker->frame = frame;
++   if (marker->driver) {
++      pipe->callback(pipe, sgl_trace_frame_driver, marker, false);
++   } else {
++      marker->driver = pipe;
++      sgl_trace_frame_driver(marker);
 +   }
 +}
 +
@@ -6717,7 +6907,7 @@ index 0000000..7ec5506
 +sgl_drain_driver(void *data)
 +{
 +   struct sgl_drain *d = data;
-+   sgl_kick_driver(d->driver);
++   sgl_submit_driver(d->driver, "frame-submit-drain");
 +   pthread_mutex_lock(&d->lock);
 +   d->error = darwin_pipeline_error();
 +   d->done = true;
@@ -6738,7 +6928,7 @@ index 0000000..7ec5506
 +   struct pipe_context *pipe = ctx->st->pipe;
 +   struct pipe_context *driver = sgl_driver_pipe(ctx);
 +   if (!driver) {
-+      sgl_kick_driver(pipe);
++      sgl_submit_driver(pipe, "frame-submit-drain");
 +      return darwin_pipeline_error();
 +   }
 +   struct sgl_drain *d = CALLOC_STRUCT(sgl_drain);
@@ -6857,10 +7047,10 @@ index 0000000..7ec5506
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
 new file mode 100644
-index 0000000..29821f1
+index 0000000..a1f9ee3
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.h
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,120 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -6973,6 +7163,8 @@ index 0000000..29821f1
 +
 +/* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 +bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
++/* Optional FIFO marker after a CA flush; does not submit or wait. */
++void sgl_trace_frame_end(struct sgl_context *ctx, unsigned frame);
 +
 +#ifdef __cplusplus
 +}
@@ -7917,10 +8109,10 @@ index 67011f5..05a144b 100644
 +endif
 diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
 new file mode 100644
-index 0000000..586e927
+index 0000000..3167e96
 --- /dev/null
 +++ b/src/util/sweet_profile.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,79 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + *
@@ -7969,6 +8161,14 @@ index 0000000..586e927
 +void sweet_profile_event(enum sweet_profile_event event, uint64_t value);
 +void sweet_profile_batch(unsigned draws);
 +void sweet_profile_report(void (*log)(const char *fmt, ...));
++/* Task 24: bounded driver batch graph, independent of DRAWPROF. */
++extern bool sweet_batch_trace_enabled;
++bool sweet_batch_trace_active(void);
++void sweet_batch_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++struct sweet_batch_trace_scope { const char *previous; bool active; };
++struct sweet_batch_trace_scope sweet_batch_trace_enter(const char *cause);
++void sweet_batch_trace_leave(struct sweet_batch_trace_scope *scope);
++const char *sweet_batch_trace_cause(void);
 +/* freedreno_gmem.c's GPU time per batch (SWEETCA_GPUPROF=1), reported with the profile */
 +extern void (*sweet_gpuprof_report)(void (*log)(const char *fmt, ...));
 +/* fd5_draw.c's GPU time per draw (SWEETCA_GPUPROF=2) */
@@ -7982,10 +8182,14 @@ index 0000000..586e927
 +   sweet_profile_enter(&(name), (id))
 +#define SWEET_EVENT(event, value) sweet_profile_event((event), (value))
 +#define SWEET_BATCH(draws) sweet_profile_batch(draws)
++#define SWEET_BATCH_TRACE_SCOPE(name, cause) \
++   struct sweet_batch_trace_scope name __attribute__((cleanup(sweet_batch_trace_leave))) = \
++      sweet_batch_trace_enter(cause)
 +#else
 +#define SWEET_SCOPE(name, id) ((void)0)
 +#define SWEET_EVENT(event, value) ((void)0)
 +#define SWEET_BATCH(draws) ((void)0)
++#define SWEET_BATCH_TRACE_SCOPE(name, cause) ((void)0)
 +#endif
 +#endif
 -- 

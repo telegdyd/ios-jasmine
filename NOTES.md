@@ -1,3 +1,21 @@
+### 2026-10-26: task 24 source audit and bounded batch graph prepared
+
+User approved starting the plan. Report: jasmine/PERF-TASK24-AUDIT.md.
+Isolated Mesa26.2.5 f9ce5e81... plus all seven patches applies cleanly.
+Full source confirms UCHE invalidate alone is not a color-cache flush;
+clear/alias/dependency handling prevents a blanket barrier removal. Added
+default-off SWEETCA_BATCH_TRACE with shared deadline/event cap, driver batch
+events/dependencies/bound views and FIFO CA-flush markers. Parser batchgraph.py
+excludes incomplete intervals and rejects gaps; aliases remain conservative.
+Eight local driver syntax checks (host/Apple guards) have no warnings; real
+trace-controller concurrency/window tests and five parser tests pass.
+No barrier optimization or GMEM policy/default change. No gain claimed.
+Next: commit/push and Mesa CI, then artifact verification and one bounded graph
+session if phone-free confirmation arrives. No phone access/lock/boot/install,
+new device capture or CI dispatch yet. Production state not freshly checked.
+Reproduction/evidence under ignored research/t24; no shared Mesa tree edited.
+Milestone subject: mesa: add bounded task 24 driver batch graph diagnostics.
+
 ### 2026-10-26: task 24 investigated; plan ready for review
 
 Plan: jasmine/PERF-TASK24-PLAN.md. Saved gm1/gd2 summaries rechecked.

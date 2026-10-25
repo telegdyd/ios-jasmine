@@ -110,6 +110,8 @@ void sgl_follow_thread(struct sgl_context *ctx);
 
 /* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
+/* Optional FIFO marker after a CA flush; does not submit or wait. */
+void sgl_trace_frame_end(struct sgl_context *ctx, unsigned frame);
 
 #ifdef __cplusplus
 }

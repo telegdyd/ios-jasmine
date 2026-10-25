@@ -1,5 +1,11 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: task 24 source audit and bounded diagnostic prepared.**
+[Findings, trace controls and validation](PERF-TASK24-AUDIT.md). Complete pinned
+source inspected; all seven patches apply. Eight local driver compile checks,
+controller concurrency/window tests and five parser tests pass. No rendering
+algorithm/default change or measured gain; iOS CI and device graph pending.
+
 **2026-10-26: task 24 plan ready for review.**
 [Investigation and staged plan](PERF-TASK24-PLAN.md). Safe in-batch sysmem
 barriers first, selective non-feedback GMEM second. Fewer batches alone does

@@ -1,0 +1,270 @@
+Subject: [PATCH] freedreno: add bounded opt-in batch graph diagnostics
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch.c b/src/gallium/drivers/freedreno/freedreno_batch.c
+--- a/src/gallium/drivers/freedreno/freedreno_batch.c
++++ b/src/gallium/drivers/freedreno/freedreno_batch.c
+@@ -14,6 +14,7 @@
+ 
+ #include "freedreno_batch.h"
+ #include "freedreno_context.h"
++#include "freedreno_batch_trace.h"
+ #include "freedreno_fence.h"
+ #include "freedreno_query_hw.h"
+ #include "freedreno_resource.h"
+@@ -222,6 +223,7 @@
+ 
+    foreach_batch (dep, cache, batch->dependents_mask) {
+       assert(dep->ctx == batch->ctx);
++      fd_bt_batch(batch, "flush-dependency", dep, NULL, 0);
+       batch_flush(dep, false);
+       fd_batch_reference(&dep, NULL);
+    }
+@@ -352,6 +354,7 @@
+       return;
+ 
+    SWEET_BATCH(batch->num_draws);
++   fd_bt_batch(batch, "flush", NULL, NULL, last_batch);
+ 
+    tc_assert_driver_thread(batch->ctx->tc);
+ 
+@@ -407,6 +410,7 @@
+    assert(!batch->nondraw);
+ 
+    util_copy_framebuffer_state(&batch->framebuffer, pfb);
++   fd_bt_batch(batch, "framebuffer", NULL, NULL, 0);
+ 
+    if (!pfb->zsbuf.texture)
+       return;
+@@ -517,6 +521,7 @@
+ fd_batch_resource_write(struct fd_batch *batch, struct fd_resource *rsc)
+ {
+    SWEET_SCOPE(sp_diag, SP_RESOURCE_WRITE);
++   SWEET_BATCH_TRACE_SCOPE(bt_scope, "resource-write");
+    struct fd_resource_tracking *track = rsc->track;
+ 
+    fd_screen_assert_locked(batch->ctx->screen);
+@@ -556,6 +561,7 @@
+             return;
+          }
+ 
++         fd_bt_batch(batch, "write-after-write", track->write_batch, rsc, 0);
+          flush_write_batch(rsc);
+       }
+ 
+@@ -568,6 +574,7 @@
+           * fd_bc_invalidate_batch()
+           */
+          fd_batch_reference(&b, dep);
++         fd_bt_batch(batch, "write-dependency", b, rsc, 0);
+          fd_batch_add_dep(batch, b);
+          fd_bc_invalidate_batch(b, false);
+          fd_batch_reference_locked(&b, NULL);
+@@ -584,6 +591,7 @@
+ fd_batch_resource_read_slowpath(struct fd_batch *batch, struct fd_resource *rsc)
+ {
+    SWEET_SCOPE(sp_diag, SP_RESOURCE_READ);
++   SWEET_BATCH_TRACE_SCOPE(bt_scope, "resource-read");
+    fd_screen_assert_locked(batch->ctx->screen);
+ 
+    if (rsc->stencil)
+@@ -608,6 +616,7 @@
+          return;
+       }
+ 
++      fd_bt_batch(batch, "read-dependency", track->write_batch, rsc, 0);
+       flush_write_batch(rsc);
+    }
+ 
+@@ -618,6 +627,7 @@
+ fd_batch_check_size(struct fd_batch *batch)
+ {
+    SWEET_SCOPE(sp_diag, SP_BATCH_SIZE);
++   SWEET_BATCH_TRACE_SCOPE(bt_scope, "capacity");
+    if (batch->num_draws > 100000) {
+       fd_batch_flush(batch);
+       return;
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch_trace.h b/src/gallium/drivers/freedreno/freedreno_batch_trace.h
+new file mode 100644
+--- /dev/null
++++ b/src/gallium/drivers/freedreno/freedreno_batch_trace.h
+@@ -0,0 +1,92 @@
++/* Copyright © 2026 ios-jasmine
++ * SPDX-License-Identifier: MIT
++ * CPU-side diagnostics only. Bound views are conservative, not proof that a
++ * shader samples the view. BO equality identifies potential storage aliases.
++ */
++#ifndef FREEDRENO_BATCH_TRACE_H
++#define FREEDRENO_BATCH_TRACE_H
++#include "util/sweet_profile.h"
++#include "freedreno_context.h"
++#include "freedreno_batch.h"
++#include "freedreno_resource.h"
++
++#ifdef __APPLE__
++static inline void
++fd_bt_batch(struct fd_batch *batch, const char *event,
++            struct fd_batch *other, struct fd_resource *resource, unsigned detail)
++{
++   if (!sweet_batch_trace_active())
++      return;
++   struct pipe_framebuffer_state *fb = &batch->framebuffer;
++   struct fd_resource *target = fb->nr_cbufs && fb->cbufs[0].texture ?
++      fd_resource(fb->cbufs[0].texture) : NULL;
++   sweet_batch_trace("event=%s screen=%p ctx=%p batch=%u other=%u resource=%p bo=%p "
++                     "detail=%u target=%p target_bo=%p fb=%ux%u draws=%u cost=%u "
++                     "nondraw=%u clear=%x restore=%x resolve=%x reason=%x deps=%x "
++                     "sc=%u,%u,%u,%u zs=%u samples=%u cbufs=%u",
++                     event, (void *)batch->ctx->screen, (void *)batch->ctx,
++                     batch->seqno, other ? other->seqno : 0, (void *)resource,
++                     resource ? (void *)resource->bo : NULL, detail, (void *)target,
++                     target ? (void *)target->bo : NULL, fb->width, fb->height,
++                     batch->num_draws, batch->cost, batch->nondraw, batch->cleared,
++                     batch->restore, batch->resolve, batch->gmem_reason,
++                     batch->dependents_mask, batch->max_scissor.minx,
++                     batch->max_scissor.miny, batch->max_scissor.maxx,
++                     batch->max_scissor.maxy, fb->zsbuf.texture != NULL,
++                     fb->samples, fb->nr_cbufs);
++}
++
++static inline void
++fd_bt_draw(struct fd_batch *batch)
++{
++   if (!sweet_batch_trace_active())
++      return;
++   struct fd_context *ctx = batch->ctx;
++   struct pipe_framebuffer_state *fb = &batch->framebuffer;
++   fd_bt_batch(batch, "draw", NULL, NULL, 0);
++   for (unsigned c = 0; c < fb->nr_cbufs; c++) {
++      struct pipe_surface *surface = &fb->cbufs[c];
++      if (!surface->texture)
++         continue;
++      struct fd_resource *r = fd_resource(surface->texture);
++      sweet_batch_trace("event=target screen=%p ctx=%p batch=%u draw=%u cbuf=%u "
++                        "resource=%p bo=%p format=%u level=%u layers=%u,%u "
++                        "size=%ux%u offset=%u pitch=%u tile=%u valid=%u",
++                        (void *)ctx->screen, (void *)ctx, batch->seqno,
++                        batch->num_draws, c, (void *)r, (void *)r->bo,
++                        surface->format, surface->level, surface->first_layer,
++                        surface->last_layer, r->b.b.width0, r->b.b.height0,
++                        fd_resource_offset(r, surface->level, surface->first_layer),
++                        fd_resource_pitch(r, surface->level),
++                        fd_resource_tile_mode(surface->texture, surface->level), r->valid);
++   }
++   u_foreach_bit (s, ctx->bound_shader_stages) {
++      struct fd_texture_stateobj *tex = &ctx->tex[s];
++      u_foreach_bit (u, tex->valid_textures) {
++         struct pipe_sampler_view *view = tex->textures[u];
++         if (!view || !view->texture)
++            continue;
++         struct fd_resource *r = fd_resource(view->texture);
++         unsigned aliases = 0;
++         for (unsigned c = 0; c < fb->nr_cbufs; c++)
++            if (fb->cbufs[c].texture &&
++                fd_resource(fb->cbufs[c].texture)->bo == r->bo)
++               aliases |= 1u << c;
++         sweet_batch_trace("event=bound-view screen=%p ctx=%p batch=%u draw=%u "
++                           "stage=%u unit=%u resource=%p bo=%p format=%u size=%ux%u "
++                           "levels=%u,%u layers=%u,%u aliases=%x",
++                           (void *)ctx->screen, (void *)ctx, batch->seqno,
++                           batch->num_draws, s, u, (void *)r, (void *)r->bo,
++                           view->format, r->b.b.width0, r->b.b.height0,
++                           view->target == PIPE_BUFFER ? 0 : view->u.tex.first_level,
++                           view->target == PIPE_BUFFER ? 0 : view->u.tex.last_level,
++                           view->target == PIPE_BUFFER ? 0 : view->u.tex.first_layer,
++                           view->target == PIPE_BUFFER ? 0 : view->u.tex.last_layer, aliases);
++      }
++   }
++}
++#else
++#define fd_bt_batch(...) ((void)0)
++#define fd_bt_draw(...) ((void)0)
++#endif
++#endif
+diff --git a/src/gallium/drivers/freedreno/freedreno_context.c b/src/gallium/drivers/freedreno/freedreno_context.c
+--- a/src/gallium/drivers/freedreno/freedreno_context.c
++++ b/src/gallium/drivers/freedreno/freedreno_context.c
+@@ -8,6 +8,7 @@
+ 
+ #include "util/sweet_profile.h"
+ #include "freedreno_context.h"
++#include "freedreno_batch_trace.h"
+ #include "ir3/ir3_cache.h"
+ #include "util/u_upload_mgr.h"
+ #include "freedreno_blitter.h"
+@@ -29,10 +30,14 @@
+                  unsigned flags) in_dt
+ {
+    SWEET_SCOPE(sp_diag, SP_CONTEXT_FLUSH);
++   SWEET_BATCH_TRACE_SCOPE(bt_scope, !strcmp(sweet_batch_trace_cause(), "unclassified") ?
++                          "context" : sweet_batch_trace_cause());
+    struct fd_context *ctx = fd_context(pctx);
+    struct pipe_fence_handle *fence = NULL;
+    struct fd_batch *batch = fd_bc_last_batch(ctx);
+ 
++   if (batch)
++      fd_bt_batch(batch, "context-flush", NULL, NULL, flags);
+    DBG("%p: %p: flush: flags=%x, fencep=%p", ctx, batch, flags, fencep);
+ 
+    if (fencep && !batch) {
+@@ -155,11 +160,15 @@
+ fd_texture_barrier(struct pipe_context *pctx, unsigned flags) in_dt
+ {
+    SWEET_SCOPE(sp_diag, SP_TEXTURE_BARRIER);
++   SWEET_BATCH_TRACE_SCOPE(bt_scope, "texture-barrier");
+    /* On devices that could sample from GMEM we could possibly do better.
+     * Or if we knew that we were doing GMEM bypass we could just emit a
+     * cache flush, perhaps?  But we don't know if future draws would cause
+     * us to use GMEM, and a flush in bypass isn't the end of the world.
+     */
++   struct fd_context *ctx = fd_context(pctx);
++   if (ctx->batch)
++      fd_bt_batch(ctx->batch, "texture-barrier", NULL, NULL, flags);
+    fd_context_flush(pctx, NULL, 0);
+ }
+ 
+diff --git a/src/gallium/drivers/freedreno/freedreno_draw.c b/src/gallium/drivers/freedreno/freedreno_draw.c
+--- a/src/gallium/drivers/freedreno/freedreno_draw.c
++++ b/src/gallium/drivers/freedreno/freedreno_draw.c
+@@ -17,6 +17,7 @@
+ 
+ #include "freedreno_blitter.h"
+ #include "freedreno_context.h"
++#include "freedreno_batch_trace.h"
+ #include "freedreno_draw.h"
+ #include "freedreno_fence.h"
+ #include "freedreno_query_acc.h"
+@@ -380,6 +381,7 @@
+    batch->cost += ctx->draw_cost;
+ 
+    ctx->draw_vbos(ctx, info, drawid_offset, indirect, draws, num_draws, index_offset);
++   fd_bt_draw(batch);
+ 
+    if (unlikely(ctx->stats_users > 0))
+       update_draw_stats(ctx, info, draws, num_draws);
+@@ -518,6 +520,7 @@
+       }
+    }
+ 
++   fd_bt_batch(batch, "clear", NULL, NULL, buffers);
+    assert(!batch->flushed);
+ 
+    if (fallback) {
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -19,6 +19,7 @@
+ #include "u_tracepoints.h"
+ 
+ #include "freedreno_context.h"
++#include "freedreno_batch_trace.h"
+ #include "freedreno_fence.h"
+ #include "freedreno_gmem.h"
+ #include "freedreno_query_hw.h"
+@@ -928,6 +929,7 @@
+       sysmem = true;
+    }
+ 
++   fd_bt_batch(batch, batch->nondraw ? "select-nondraw" : sysmem ? "select-sysmem" : "select-gmem", NULL, NULL, FD_DBG(SYSMEM));
+    fd_reset_wfi(batch);
+ 
+    ctx->stats.batch_total++;

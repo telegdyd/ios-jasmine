@@ -739,6 +739,7 @@ w_Flush(void *rctx)
          CFRelease(c->ticket_frame_surface[i]);
       c->ticket_surface_count = 0;
    }
+   sgl_trace_frame_end(c->gl, c->frame);
    flush_stats(now_ms() - t);
    if (trace_on && traced++ < 20)
       trace_fb("flush");

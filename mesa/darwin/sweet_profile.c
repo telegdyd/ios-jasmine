@@ -4,6 +4,7 @@
 #include <mach/mach_time.h>
 #include <stdlib.h>
 #include <string.h>
+#include "sweet_batch_trace.inc"
 
 static bool enabled;
 static __thread struct sweet_profile_scope *current;

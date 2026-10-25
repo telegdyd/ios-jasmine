@@ -46,6 +46,14 @@ void sweet_profile_leave(struct sweet_profile_scope *s);
 void sweet_profile_event(enum sweet_profile_event event, uint64_t value);
 void sweet_profile_batch(unsigned draws);
 void sweet_profile_report(void (*log)(const char *fmt, ...));
+/* Task 24: bounded driver batch graph, independent of DRAWPROF. */
+extern bool sweet_batch_trace_enabled;
+bool sweet_batch_trace_active(void);
+void sweet_batch_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+struct sweet_batch_trace_scope { const char *previous; bool active; };
+struct sweet_batch_trace_scope sweet_batch_trace_enter(const char *cause);
+void sweet_batch_trace_leave(struct sweet_batch_trace_scope *scope);
+const char *sweet_batch_trace_cause(void);
 /* freedreno_gmem.c's GPU time per batch (SWEETCA_GPUPROF=1), reported with the profile */
 extern void (*sweet_gpuprof_report)(void (*log)(const char *fmt, ...));
 /* fd5_draw.c's GPU time per draw (SWEETCA_GPUPROF=2) */
@@ -59,9 +67,13 @@ extern void (*sweet_gpuprof_draw_report)(void (*log)(const char *fmt, ...));
    sweet_profile_enter(&(name), (id))
 #define SWEET_EVENT(event, value) sweet_profile_event((event), (value))
 #define SWEET_BATCH(draws) sweet_profile_batch(draws)
+#define SWEET_BATCH_TRACE_SCOPE(name, cause) \
+   struct sweet_batch_trace_scope name __attribute__((cleanup(sweet_batch_trace_leave))) = \
+      sweet_batch_trace_enter(cause)
 #else
 #define SWEET_SCOPE(name, id) ((void)0)
 #define SWEET_EVENT(event, value) ((void)0)
 #define SWEET_BATCH(draws) ((void)0)
+#define SWEET_BATCH_TRACE_SCOPE(name, cause) ((void)0)
 #endif
 #endif
