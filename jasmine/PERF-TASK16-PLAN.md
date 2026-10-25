@@ -3,11 +3,12 @@
 Working plan for [PERF-TASKS](PERF-TASKS.md) task 16, written 2026-10-25 after the
 task-5 threaded context ([report](PERF-TASK5-THREADED-20261025.md)) made the
 per-frame `glFinish` the largest wait on CoreAnimation's display thread.
-**Status: S0-S3 complete; G1 PASS at 16:21 on 2026-10-25 by a runtime check**
-([G1(b) runtime check](#g1b-runtime-check-2026-10-25-1613-1621-pass)): CoreAnimation
-uses a third swap surface when the previous page is still busy. Next: S4 design
-review with the user (budget the ~1.1 ms timed SwapWait; keep write protection of
-the retiring surface). S6-S10 remain gated on S4 approval; S5 is independent.
+**Status: S0-S4 complete; G1 PASS (16:21), S4 design approved by the user (16:46)
+on 2026-10-25.** CoreAnimation uses a third swap surface when the previous page
+is still busy ([G1(b) runtime check](#g1b-runtime-check-2026-10-25-1613-1621-pass)).
+The [approved design](#s4-design-approved-2026-10-25-1646) splits the work into two
+kernel builds. **Next: build 1 (j0100) = S5 + S7, with Mesa mode 1**, then S8/S9
+and G2a. Build 2 (j0101, tickets, mode 2) only if G2a asks for it.
 Nothing here is measured yet unless a step's result says so.
 
 **How to use this file.** Each step below is sized for one agent. Take the next
@@ -28,21 +29,21 @@ first: phone lock, battery check, accessory-sync precheck, ground rules, and
 | [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | done | Codex, 2026-10-25 15:26 Budapest; three page records, dynamic Buffer allocation; third surface conditional on availability policy. 9,916 instruction and eight vtable checks pass. See S2 result; no CI/boot. |
 | [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | done | Codex, 2026-10-25 16:37 Budapest; kernel + pristine patched Mesa lifecycle audit; 51 source files inventoried, four patches apply, wrapper sources match. See S3 result. No CI/boot. |
 | [G1](#g1b-runtime-check-2026-10-25-1613-1621-pass) | Gate: is there enough overlap to win? | S1, S2 | yes | **pass** | Codex 15:42 hold (offline). Claude 16:21: runtime check with `sweetfb_swapwait=2` on framebench99, settled boot: CA scans out a third surface (IDs 2/4/9 round-robin) when page k-1 is busy, after a ~1.1 ms timed SwapWait, no tick skipping. Capture `research/framebench/20261025-t16-sw2`. Unmatched baseline, Home A had no workload, 47 held draws (no write-wait in mode 2). |
-| [S4](#s4-design-review) | Design review with the user | G1, S3 | no | draft, awaiting user approval | Codex, 2026-10-25 16:37:21 +01:00; design/test draft below; no implementation or device work. |
-| [S5](#s5-kernel-sleep-instead-of-spin-in-the-present-path) | Kernel: sleep instead of spin in the present path | S0, S3 | yes | todo | |
-| [S6](#s6-kernel-render-tickets) | Kernel: render tickets (surface pending/ready) | S4 | — | todo | |
-| [S7](#s7-kernel-present-queue) | Kernel: present queue, SwapWait on later latch | S4, S6 | — | todo | |
-| [S8](#s8-neutral-boot-of-the-new-kernel) | Neutral boot: new kernel, old library | S5-S7 | yes | todo | |
+| [S4](#s4-design-approved-2026-10-25-1646) | Design review with the user | G1, S3 | no | **done** | Codex draft 16:37, Claude review 16:40; user 16:46: "I accept your changes", "It shouldn't halt", "Two smaller is fine by me". Approved changes A1-A6: two builds (j0100 mode 1, j0101 tickets/mode 2), no `nbo=0`, never halt, G2 two captures. |
+| [S5](#s5-kernel-sleep-instead-of-spin-in-the-present-path) | Kernel: sleep instead of spin in the present path (build 1, j0100) | S0, S3, S4 | yes | todo | |
+| [S6](#s6-kernel-render-tickets) | Kernel: render tickets (build 2, j0101) | G2a | — | todo (conditional) | |
+| [S7](#s7-kernel-present-queue) | Kernel: present queue, SwapWait on later latch, submit status, full BO table (build 1, j0100) | S4 | — | todo | |
+| [S8](#s8-neutral-boot-of-the-new-kernel) | Settled baseline, neutral boot, queue-on with old library | S5, S7 | yes | todo | |
 | [S9](#s9-libsweetca-mode-1-flush-and-submit-no-gpu-wait) | libsweetca mode 1: flush + submit, no GPU wait | S8 | yes | todo | |
-| [S10](#s10-libsweetca-mode-2-no-driver-drain) | libsweetca mode 2: no driver drain (tickets) | S9 | yes | todo | |
-| [G2](#gates) | Gate: do modes 1/2 gain without regressions? | S9, S10 | — | open | |
+| [S10](#s10-libsweetca-mode-2-no-driver-drain) | libsweetca mode 2: no driver drain (tickets) | S6, G2a | yes | todo (conditional) | |
+| [G2](#gates) | Gate: do modes 1/2 gain without regressions? (G2a after S9 decides on build 2) | S9 (S10) | — | open | |
 | [S11](#s11-conditional-remove-the-swap-surface-limit) | Conditional: remove the swap-surface limit | G2 + S2 | yes | todo | |
 | [S12](#s12-matched-validation) | Matched validation, sustained run, user's look | G2 | yes | todo | |
 | [S13](#s13-make-it-the-default) | Make it the default, slot b, docs | S12 | yes | todo | |
 
-S1, S2, S3 and S5 can run in parallel (S5 is independent of the queue design and
-worth having even if G1 fails). S6 and S7 share `SweetFramebuffer.cpp`/`SweetGPU.cpp`:
-one agent, or strictly one after the other.
+S5 and S7 form build 1 (one kernel CI run, j0100) with the matching Mesa build;
+both share `SweetFramebuffer.cpp`: one agent, or strictly one after the other.
+S6 (build 2, j0101) starts only if G2a asks for it.
 
 ## What the investigation found (2026-10-25)
 
@@ -149,15 +150,41 @@ No implementation is approved.
   swap surface, *or* that a third swap surface is achievable. If only (a) holds,
   re-scope around S11 with the user. If (a) fails, stop and report; S5 still stands
   on its own.
-- **G2 (after S9 + S10):** at least one mode shows shorter presentation intervals
-  in matched captures with zero new held draws, no dropped-frame storm and bounded
-  queue latency. Otherwise record the result and stop; do not install.
+- **G2a (after S9):** decides whether build 2 (tickets, mode 2) is needed; see
+  "Approved changes" in S4.
+- **G2 (after S9, and S10 if run):** at least one mode shows shorter presentation
+  intervals in matched captures (two per variant) with zero new held draws, no
+  dropped-frame storm and bounded queue latency. Otherwise record the result and
+  stop; do not install.
 
-## S4 design (draft for approval)
+## S4 design (approved 2026-10-25 16:46)
 
-**Status:** draft, awaiting explicit approval in chat (quote/time then go in S4's
-row). This section governs S5-S12 where older prose differs. No speedup claimed. G1's three-page result is accepted, including the ~1.1 ms not-done SwapWait cost;
-asynchronous scheduling and partial-redraw correctness still need S9/S10.
+**Status: approved** by the user in chat at 16:46: "I accept your changes", with
+the answers "It shouldn't halt", "Two smaller is fine by me", budgets "OK", and
+no objection to the third surface's memory. Codex drafted the design and Claude
+reviewed it ([review](#s4-review-claude-2026-10-25-1640-medium-effort)). The
+**approved changes below take precedence** over the detailed text after them
+wherever they differ. This section governs S5-S12 where older prose differs. No
+speedup claimed. G1's three-page result is accepted, including the ~1.1 ms
+not-done SwapWait cost; asynchronous scheduling and partial-redraw correctness
+still need S9/S10.
+
+### Approved changes (take precedence over the text below)
+
+| # | Decision | Replaces |
+| --- | --- | --- |
+| A1 | **Two kernel builds.** Build 1 = **j0100**: S5 sleeping waits + S7 queue with latch-based reuse and write guards + selector-3 submit status + full BO table (A3). With the matching Mesa build it enables **mode 1**. Build 2 = **j0101** (reserved here): S6 tickets (selectors 8/9) for **mode 2**, built only if G2a says the driver drain is worth removing. | "Batch S5-S7 in one kernel CI build" |
+| A2 | **Mode 1 uses no tickets.** CA's thread drains the driver queue in `w_Flush` (ordered callback, submit status checked), then returns. The frame's last submit is then in the kernel, and each written surface's `gpuSeqno` names it. The presenter waits for those seqnos before the flip. CPU readers keep `trapLock`'s stored-seqno wait. The texture->IOSurface map, dirty sets and BEGIN/SEAL belong to mode 2 only. A failed submit is counted and logged, and the library falls back to mode 0 for the rest of the process. That is no worse than today, which ignores the error. | Mode-1 row of the `SWEETCA_PIPELINE` table |
+| A3 | **No `nbo=0` jobs.** `darwin_pipe.c:flush_submit_list` always sends the BO table: inline up to IOKit's 4 KiB struct, otherwise as a larger structure input, which the kernel maps through its memory descriptor. Selector 3 keeps accepting `nbo=0` for old libraries and counts it. In queue mode that counter must stay 0. The draft's "expand to all writable imports and reject Busy" is dropped. | `nbo=0` expansion paragraph |
+| A4 | **Never halt the display.** On 50 ms without a CTL clear: re-read CTL and accept a real clear. Otherwise keep every hold, count the event and retry for two more panel periods. After about 150 ms total with no clear, log it loudly, release by today's elapsed-time rule (`FB:retireLatched`) and **switch the rest of the boot to queue off (legacy `sweetfb_sync=1`)**. Any other protocol fault (ticket timeout, unexpected write into a protected surface, epoch error) does the same: drop or reject the affected frame, count it, fall back to legacy presentation. Never freeze the UI and never require a reboot. A late frame may look wrong once; that is preferred to a hang. | "Fault display epoch/cancel queue", "stopping producer/display on first fault", "otherwise reboot" |
+| A5 | **G2 uses two captures per variant** (queue-on mode 0 vs best mode), both on settled boots. Every other step keeps one round plus the user's eyes. | "Single rounds provide no statistical confidence" and the one-capture G2 rows |
+| A6 | Budgets as drafted: 200 ms queue admission, 100 ms ticket/drain/CPU access, 50 ms per latch check (A4). Third swap surface ~11 MB of GPU pool: accepted. | "Approval questions" |
+
+**G2a (new, after S9):** if mode 1 passes G2 and the display thread's remaining
+driver drain in `w_Flush` is below about 3 ms per arrival, stop at mode 1 and
+skip build 2 (S6/S10). If mode 1 passes and the drain is still larger, build
+j0101 and do S10. If mode 1 shows no gain, report and decide with the user
+before building j0101.
 
 ### Evidence and implementation boundary
 
@@ -261,11 +288,10 @@ error; not global `darwin_last_kfence`, old `gpuSeqno`, or zero-time poll truth.
 No-work flush needs no new ticket; dirty work with no new successful fence fails.
 "Ready" for display = sealed successful submission **plus observed GPU completion**.
 
-For nbo=0, currently no surface gpuSeqno/guard update occurs. Queue mode expands it
-conservatively to all writable imports for reservations, job holds/cache upkeep and
-seqno updates; reject Busy if that includes a protected page. Count expansion and
-rejection: oversized jobs may fail rather than bypass protection. Explicit final
-ticket fence remains required. Preserve task-5 `freedreno_context.c:fd_context_flush`
+For nbo=0, currently no surface gpuSeqno/guard update occurs. **Per A3, the library
+stops sending nbo=0 jobs** (full BO table, out-of-line when large); the kernel
+counts any nbo=0 job, and in queue mode the counter must stay zero. Explicit final
+ticket fence remains required in mode 2. Preserve task-5 `freedreno_context.c:fd_context_flush`
 old->batch/last_fence fix; retain fences, not borrowed batches. Task-14 selector-2
 freeze is not fixed by longer holds: release last references outside new locks.
 `SURF:sweet_surface_cpu_access/trapLock` must propagate pending/fence timeout errors
@@ -274,11 +300,13 @@ before existing cache upkeep; preserve read-only unlock/seed and AvoidSync seman
 | SWEETCA_PIPELINE | Who calls tickets and waits |
 | --- | --- |
 | 0 (default) | Today's full finish, no tickets; legacy finished sources accepted by queue. |
-| 1 | CA thread BEGIN at first tracked writes; ordered driver callback drains submits, checks status and SEALs/ABORTs. CA waits for callback, not GPU; tickets protect CPU readers during drain. |
-| 2 | Same BEGIN/callback/SEAL; w_Flush dispatches TC and returns without drain wait. No TC executes synchronously and reports mode-1-like fallback. |
+| 1 (build 1, A2) | No tickets. Ordered driver callback drains submits and checks their status; CA waits for the callback, not the GPU. The presenter waits for each surface's `gpuSeqno`. |
+| 2 (build 2) | CA thread BEGIN at first tracked writes; ordered driver callback drains, checks status, SEALs/ABORTs; w_Flush returns without the drain wait. No TC executes synchronously and reports mode-1-like fallback. |
 
-Both nonzero modes require QUERY version/flags and active queue+tickets. Old kernel,
-malformed/unsupported capability or queue off falls back to full finish before use.
+Mode 1 needs the queue to be active; mode 2 also needs tickets. Build 1 reports
+the queue through the existing selector-0 parameter query (a new parameter number,
+answered 0 by old kernels); build 2 adds selector 8 QUERY. Old kernel, unsupported
+capability or queue off falls back to full finish before use.
 
 ### Failure policy, observability and one-build batch
 
@@ -287,16 +315,19 @@ malformed/unsupported capability or queue off falls back to full finish before u
 | Queue admission | 200 ms; reject incoming frame with Timeout. |
 | BEGIN->SEAL; SEAL->GPU observation | 100 ms each; drop unprogrammed frame, abort generation, wake waiters with error. |
 | CPU synchronized access / mode-1 drain | 100 ms per operation; propagate Timeout, no stale-pixel success. |
-| Flip->CTL clear / retiring write guard | 50 ms; fault display epoch/cancel queue, preserve scanout references, never advance latch on elapsed time. |
+| Flip->CTL clear / retiring write guard | 50 ms per check, holds kept; after ~150 ms with no clear, release by today's elapsed-time rule, count, and fall back to legacy presentation for the boot (A4). Never halts. |
 
 Power-off, ordinary console takeover, FB/GPU client exit and ticket failure invalidate
 epochs and wake/reject work; serialize ownership/MMIO against presenter. Backlight
 off does not release scanout. Late SEAL is Aborted. Quarantine storage until writers
 cannot submit, jobs complete and actual latch or verified scanout disable releases
-it. Current `GPU:clientClose` everything=true is not quiescence proof. Bound retained
-fault memory by stopping producer/display on first fault, not accepting more frames.
-Resume only after verified drain/display transition and fresh epoch; otherwise reboot.
-Panic sets terminal ownership first, never sleeps/takes normal locks; retain storage.
+it. Current `GPU:clientClose` everything=true is not quiescence proof. **Per A4,
+a fault never stops the display:** the affected frame is dropped or rejected,
+counted and logged, and the boot falls back to legacy synchronous presentation
+(queue off), which bounds retained fault memory to the frames in flight at that
+moment. Power transitions drain or cancel queued frames and continue in the
+current mode. Panic sets terminal ownership first, never sleeps/takes normal
+locks; retain storage.
 
 Counters: ticket begin/seal/abort/stale/error/timeouts/live/high-water; queue depth
 and high-water <=1, admissions/drops by reason, admission sleep; programmed/latched/
@@ -312,23 +343,24 @@ capture: 30 BEGIN `(sid,gen_lo,gen_hi,epoch_lo)`; 31 SEAL `(gen_lo,gen_hi,seqno,
 identities. Update decoder/pairing before S8; preserve events 10..24, especially
 14 actual CTL-clear observation vs 15 timeout (never a latch).
 
-Batch **S5-S7 in one kernel CI build**, j0100, all defaults 0 through S12:
-S5 `sweetfb_sleep=1` covers swap/showDirect/write-wait **and timed swapWait**;
-S6 `sweetgpu_tickets=1` gates tickets/CPU/error support; S7 `sweetfb_queue=1` gates
-queue/guards/fail-closed retirement. Queue requires sleep+tickets; refuse inconsistent
-args. Queue forces latch reuse regardless of swapwait; queue off keeps `sweetfb_sync=1`
-and legacy rules. S5 alone preserves historical timeout policy. Queue GPU polling
-sleeps too; existing `bsd/dev/sweet_gpu.c:sweet_gpu_wait` 50 us/ring-space spins
-outside new waits remain out of S5 scope. One later Mesa build contains modes 0/1/2,
-env default 0. S11, private CA policy changes, GPU-side waits and GPU IRQ are out of scope.
-**Approval questions:** accept fail-closed epoch halt/reboot and 100/50/200 ms budgets?
-Accept latch reuse/third-page memory cost and minimal rounds below? Different visible
-latency priority or G2 thresholds desired? S4 stays draft until chat approval.
+**Builds (A1).** Build 1, **j0100**, all defaults 0 through S12: S5
+`sweetfb_sleep=1` covers swap/showDirect/write-wait **and timed swapWait**; S7
+`sweetfb_queue=1` gates queue/guards/latch-based retirement with A4's fallback,
+plus selector-3 submit status and the out-of-line BO table (A3). Queue requires
+sleep; refuse inconsistent args. Queue forces latch reuse regardless of swapwait;
+queue off keeps `sweetfb_sync=1` and legacy rules. S5 alone preserves historical
+timeout policy. Queue GPU polling sleeps too; existing
+`bsd/dev/sweet_gpu.c:sweet_gpu_wait` 50 us/ring-space spins outside new waits
+remain out of S5 scope. Mesa build 1 contains modes 0/1, env default 0. Build 2,
+**j0101**, only after G2a: S6 `sweetgpu_tickets=1` (selectors 8/9, CPU-reader
+pending waits), and Mesa mode 2. S11, private CA policy changes, GPU-side waits
+and GPU IRQ are out of scope. The approval questions were answered at 16:46
+(see "Approved changes").
 
-## S8-S12 test plan (draft for approval)
+## S8-S12 test plan (approved 2026-10-25 16:46)
 
 **Hang risk for every experimental boot/round:** new callbacks/guards/holds can
-hang or expose task 14. Warn user first; `sweetwdt=20`; recovery power + volume-down
+hang or expose task 14, although A4 removes intentional halts. Warn user first; `sweetwdt=20`; recovery power + volume-down
 to fastboot, temporary known-good image and rollback library. No live reload or
 partition flash in S8-S12. Reserve phone/check battery; every boot is `fastboot boot`.
 Every capture starts after FRAMEBENCH's 3 s trustd/accessoryupdater precheck (both
@@ -338,10 +370,10 @@ research. Do not run fresh-boot uiround's immediate measurement inside accessory
 
 | Step | Image/args; library/env | Minimum measurement and pass/fail |
 | --- | --- | --- |
-| S8 baseline/neutral | First known-good framebench99 default args; then combined j0100 image `sweetfb_sleep=0 sweetgpu_tickets=0 sweetfb_queue=0 sweetfb_sync=1 sweetfb_swapwait=1 sweetwdt=20`. Old final library `14e32aea...`, env unset (=0). | First obtain **missing settled default baseline**, one standard framebench; then one neutral capture matched same day/settings. Require UI, no new faults/held draws/hang, explain interval/CPU differences before S9. Unmatched G1 comparison is not baseline. |
-| S8 queue-on | Same combined kernel, `sweetfb_sleep=1 sweetgpu_tickets=1 sweetfb_queue=1 sweetwdt=20`; old library/mode 0. | One capture is S9 queue-on baseline; inspect surface ring, damage, counters/events, user's eyes. One 10-minute gesture soak on this boot, not ten measured rounds. Zero held draws, unexpected drops/timeouts/unsafe reuse/hang, depth <=1 and no unexplained timing/latency regression. |
-| S9 mode 1 | Same queue-on kernel; one test-library build, `SWEETCA_PIPELINE=1`, retain/hash rollback copy. Smoke mode 0 and queue-off capability fallback first. | GL 7/7 + CA tree tests, one standard capture vs S8 queue-on. Confirm callback drain but no CA GPU wait, valid fences, zero held draws/faults/drops and bounded queue; user's motion/partial-redraw look. Stop on failure. |
-| S10 mode 2 | Identical kernel/library/args, only `SWEETCA_PIPELINE=2`. | One capture vs mode 1/S8; confirm CA drain removed, sleeping timed SwapWait cost retained, real three-page damage history correct. One bounded fixture sequence below; same zero-fault criteria and coherent CPU reads. |
+| S8 baseline/neutral | First known-good framebench99 default args; then build-1 j0100 image `sweetfb_sleep=0 sweetfb_queue=0 sweetfb_sync=1 sweetfb_swapwait=1 sweetwdt=20`. Old final library `14e32aea...`, env unset (=0). | First obtain **missing settled default baseline**, one standard framebench; then one neutral capture matched same day/settings. Require UI, no new faults/held draws/hang, explain interval/CPU differences before S9. Unmatched G1 comparison is not baseline. |
+| S8 queue-on | Same build-1 kernel, `sweetfb_sleep=1 sweetfb_queue=1 sweetwdt=20`; old library/mode 0. | Two captures (A5) are the G2 queue-on baseline; inspect surface ring, damage, counters/events, user's eyes. One 10-minute gesture soak on this boot, not ten measured rounds. Zero held draws, unexpected drops/timeouts/unsafe reuse/hang, depth <=1 and no unexplained timing/latency regression. |
+| S9 mode 1 | Same queue-on kernel; Mesa build 1 (modes 0/1, full BO table), `SWEETCA_PIPELINE=1`, retain/hash rollback copy. Smoke mode 0 and queue-off capability fallback first. | GL 7/7 + CA tree tests, two standard captures (A5) vs S8 queue-on; nbo=0 counter 0; then G2a. Confirm callback drain but no CA GPU wait, valid fences, zero held draws/faults/drops and bounded queue; user's motion/partial-redraw look. Stop on failure. |
+| S10 mode 2 (only if G2a says so) | Build-2 j0101 kernel `sweetgpu_tickets=1` plus build-1 args; Mesa build 2, `SWEETCA_PIPELINE=2`. | Two captures vs mode 1/S8; confirm CA drain removed, sleeping timed SwapWait cost retained, real three-page damage history correct. One bounded fixture sequence below; same zero-fault criteria and coherent CPU reads. |
 | S11 conditional | No new image/env/round authorized here. | G1 already observed third page. Capacity/guard-wait problems require evidence and separate design/user approval; no private-policy workaround to rescue G2. |
 | S12 acceptance | Winning mode/combined kernel vs all gates off/mode 0, same test library, fixed clocks/plugins/workload on settled boots. | Reuse equivalent matched captures above; otherwise one baseline/candidate pair, no automatic repeats. One final 10-minute sustained run, GL/CA tests, one power-off/resume and rollback check, user's quality/latency review. No S13/default installation before acceptance. |
 
@@ -362,7 +394,7 @@ is an upper bound, not execution time; no displayed FPS claim. Exclude zero-work
 Home A; check animated UI state first. Proposed G2 pass: a mode lowers median proxy
 interval in valid Home **and** CC, no >5% p95 regression, added >100 ms stalls or
 increasing queue latency. Otherwise inconclusive/fail; discuss repeats only if needed.
-Single rounds provide no statistical confidence. Any normal-round held draw, unexpected
+G2 uses two captures per variant (A5); even so, no statistical claim. Any normal-round held draw, unexpected
 timeout/drop, corrupt pixels or hang blocks acceptance; intentional fixture faults
 are separate. S12 also requires user's visible quality/latency approval.
 
@@ -370,7 +402,7 @@ are separate. S12 also requires user's visible quality/latency approval.
 CTL clear remains a hardware proxy, exact G1 held-draw attribution and async damage
 correctness unknown. Source inspection only; no commit/build/CI/phone/measurement.
 
-### S4 review (Claude, 2026-10-25 16:50, medium effort)
+### S4 review (Claude, 2026-10-25 16:40, medium effort)
 
 **Checked against the copied sources and correct:** SweetGPU selectors 8/9 are free
 (`GPU:externalMethod` uses 0-7). Event kinds are `uint16_t`, and only 20..29 are
@@ -380,7 +412,7 @@ work. The selector-6 timeout ABI matches `FB:swapWait` (bit 31 poll, ms capped a
 enforces "one waiting frame": page k-1 stays busy until k latches, so CA cannot
 start k+2 early. The third surface G1 observed is exactly the one the design needs.
 
-**Changes to make before approval (my recommendation):**
+**Changes recommended (accepted 16:46, folded in as A1-A6 above):**
 
 1. **Mode 1 should not need tickets.** In mode 1 the drain finishes before SwapEnd,
    so the final submit is in the kernel when the frame is queued. The kernel
@@ -414,7 +446,7 @@ start k+2 early. The third surface G1 observed is exactly the one the design nee
    approves it in chat, so the approval-relevant parts should be short: S4's
    decisions table plus questions. Optional; not a correctness issue.
 
-**Questions for the user (S4 approval):**
+**Questions for the user (answered 16:46; see A4-A6):**
 
 1. Latch timeout: halt the display (fail-closed, reboot), or keep holds and continue
    with a counter (fail-safe for pixels, not for memory)?
@@ -503,17 +535,18 @@ ticket/queue/flip). Write the test plan for S8-S12 with the risk of hangs stated
 ### S5. Kernel: sleep instead of spin in the present path
 
 Implement S4 sleep scope, including timed SwapWait, behind `sweetfb_sleep`.
-Independent legacy timeout semantics; validate in S8's combined kernel build.
+Independent legacy timeout semantics; part of build 1 (j0100), validated in S8.
 
 ### S6. Kernel: render tickets
 
-Implement S4 selectors 8/9, successful-submit/CPU-reader contract, generations and
-cancellation behind `sweetgpu_tickets`; batch kernel CI with S5/S7.
+Conditional on G2a. Implement S4 selectors 8/9, CPU-reader pending waits, generations
+and cancellation behind `sweetgpu_tickets`, as build 2 (j0101).
 
 ### S7. Kernel: present queue
 
-Implement S4 FIFO, latch-based reuse, guards and fail-closed retirement behind
-`sweetfb_queue`. One S5-S7 kernel CI build; all gates default off through S12.
+Implement S4 FIFO, latch-based reuse, guards and A4's never-halt fallback behind
+`sweetfb_queue`, plus selector-3 submit status and out-of-line BO tables (A3).
+Build 1 (j0100) with S5; all gates default off through S12.
 
 ### S8. Neutral boot of the new kernel
 
@@ -522,13 +555,14 @@ Record exact image/hash/args/counters and outcome; warn of hangs before rounds.
 
 ### S9. libsweetca mode 1: flush and submit, no GPU wait
 
-Follow S4 ticket protocol and S9 tests; submission drain remains on CA's critical
-path. One Mesa build contains all modes, with full-finish rollback.
+Follow A2 (no tickets) and S9 tests; submission drain remains on CA's critical
+path. Mesa build 1 contains modes 0/1 and the full BO table, with full-finish
+rollback. Ends with G2a.
 
 ### S10. libsweetca mode 2: no driver drain
 
-Follow S4 ordered callbacks and S10 tests, including readers/errors/cancellation
-and three-page partial redraw. No implementation before user approval.
+Only if G2a asks for it. Follow S4 tickets/ordered callbacks and S10 tests,
+including readers/errors/cancellation and three-page partial redraw.
 
 ### S11. Conditional: remove the swap-surface limit
 
