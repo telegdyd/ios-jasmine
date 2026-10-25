@@ -1,3 +1,18 @@
+### 2026-10-26: task 23 closed at user request
+
+Task 23 moved from open performance work to closed investigations in
+jasmine/PERF-TASKS.md; task definition, plan and audit status updated.
+Observed Gaussian downsampling disproves the blanket missing-copy premise for
+that path. No optimization delivered or speedup measured; this is not proof
+that all blur rendering is optimal. Variable-blur approximation remains a
+documented limitation with unmeasured runtime impact, not scheduled work.
+User requested closure; earlier task-23 next-work guidance is superseded.
+Evidence commit b58d1c5; diagnostic e4ece21 / Mesa CI 40240384093 PASS and
+exact prior boot results remain in jasmine/PERF-TASK23-DEVICE-AUDIT.md.
+Documentation-only closure: no new build, CI, phone access, boot or install.
+Device state inherited from prior handoff (production iOS, own lock released),
+not freshly checked. Commit subject: docs: close task 23 blur investigation.
+
 ### 2026-10-25: task 23 device investigation complete; Gaussian downsampling works
 
 Report: jasmine/PERF-TASK23-DEVICE-AUDIT.md. One authorized diagnostic session,

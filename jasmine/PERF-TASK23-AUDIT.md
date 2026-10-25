@@ -1,5 +1,7 @@
 # Task 23: initial offline blur audit
 
+**Closed at user request, 2026-10-26.** Investigation complete; no optimization delivered or speedup measured. Gaussian downsampling was observed on device, disproving the blanket missing-copy premise for that path. This does not prove that no blur optimization is possible. The variable-blur approximation remains documented with unmeasured runtime impact; no further investigation or implementation is scheduled under task 23. This status supersedes open/next-work language in the historical material below.
+
 Status: investigation only. No implementation change, build, CI run or device
 access. User goal is shared UI blur correctness and performance; CC is a
 benchmark. Source base is `22ef447` (rendering code unchanged from `8bd08b9`).

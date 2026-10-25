@@ -24,7 +24,7 @@ bytes themselves.
 
 | # | Task | Expected gain | Effort | Order |
 | --- | --- | --- | --- | --- |
-| 23 | Control Center blur at reduced resolution | CC GPU ~-10 ms/frame (guess from the pass times) | Medium | 1st: small, contained |
+| 23 | Shared UI blur investigation — closed 2026-10-26 | No optimization delivered; missing-downsampling premise disproved for observed Gaussian path | Investigation complete | Closed at user request |
 | 24 | Fewer batches per frame, then GMEM for the big ones | Home GPU 32 -> ~15-20 ms/frame (estimate) | High | 2nd: the big lever |
 | 25 | Render at (or nearer) the panel resolution | ~20% of all pixel work | Investigation | Last; may be infeasible |
 
@@ -73,6 +73,8 @@ Baseline to beat (DDR 1296, mode 2, gd2 round; redo at 1804 before starting):
 | Control Center | ~193 | ~87 | barrier 36, resource-dependency 40, context 9, frame 1.3 | ~46 (1296), ~35 (1804) |
 
 ## 23. Control Center blur at reduced resolution
+
+**Closed at user request, 2026-10-26.** Investigation complete; no optimization delivered or speedup measured. Gaussian downsampling was observed on device, disproving the blanket missing-copy premise for that path. This does not prove that no blur optimization is possible. The variable-blur approximation remains documented with unmeasured runtime impact; no further investigation or implementation is scheduled under task 23. This status supersedes open/next-work language in the historical material below.
 
 **Device investigation:** [results](PERF-TASK23-DEVICE-AUDIT.md). Gaussian
 downsampling is observed on the phone, including 74x156/72x42 intermediates.

@@ -1,5 +1,7 @@
 # Task 23: Gaussian downsampling observed on the phone
 
+**Closed at user request, 2026-10-26.** Investigation complete; no optimization delivered or speedup measured. Gaussian downsampling was observed on device, disproving the blanket missing-copy premise for that path. This does not prove that no blur optimization is possible. The variable-blur approximation remains documented with unmeasured runtime impact; no further investigation or implementation is scheduled under task 23. This status supersedes open/next-work language in the historical material below.
+
 2026-10-25, one diagnostic session. **The observed Gaussian path does use
 downsampled copies.** The hypothesis that missing IOSurface mip levels force
 all Gaussian blur to full resolution is contradicted by the captured pass
@@ -7,7 +9,7 @@ chains. Variable blur remains a separate, confirmed compatibility approximation
 in source; this session did not execute its replacement shader.
 
 No blur algorithm was changed. No speed improvement or visual equivalence of a
-new blur implementation is claimed. Task 23 remains open as implementation work.
+new blur implementation is claimed. Task 23 is closed as an investigation, without an implementation.
 
 ## Exact build and baseline
 

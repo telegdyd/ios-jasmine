@@ -82,7 +82,6 @@ stays here until its remaining scope is finished and the result is on by default
 | [13](#13-thermal-limits-tsens-driven-caps-on-cpu-and-gpu-clocks) | Thermal clock limits | Open; sustained performance and heat; depends on tasks 2 and 11. | j0068 reserved |
 | [16](#16-pipeline-rendering-and-presentation-using-surface-completion-fences) | Pipeline rendering and presentation | Planned 2026-10-25: [step plan](PERF-TASK16-PLAN.md). After the threaded context, `glFinish` (GPU fence + driver drain) is the display thread's largest wait. G1 passed 2026-10-25 16:21 (CA uses a third swap surface when the previous page is busy); S4 design approved 16:46; next build 1 (S5 + S7, mode 1). Benefit unmeasured. | j0100 (build 1) and j0101 (build 2, conditional) reserved 2026-10-25 |
 | [17](#17-persistent-shader-cache) | Persistent shader cache | New, unstarted; target first-use/reboot compilation hitches, not warm lookup. Feasibility and gain unvalidated. | Mesa/build; no reservation |
-| [23](PERF-TASK23-25-GPU-TRAFFIC.md#23-control-center-blur-at-reduced-resolution) | Control Center blur at reduced resolution | New 2026-10-25: CA's CC blur runs full-size ping-pong passes (1127x2438/1131x2442), up to 11.9 ms per draw. Verify the mip-chain hypothesis first. | Mesa/libsweetca |
 | [24](PERF-TASK23-25-GPU-TRAFFIC.md#24-fewer-batches-per-frame-then-gmem-for-the-big-ones) | Fewer batches per frame, then GMEM | New 2026-10-25: GPU memory-bound (65% RAM-starved), all sysmem; ~30 batches/Home frame make GMEM lose (gm1: Home B 41 -> 56 ms). The big Home lever. | Mesa/libsweetca; kernel only if the VA pad must grow |
 
 ## Open bug fixes
@@ -125,6 +124,7 @@ Outstanding validation is called out in the detailed results below.
 | [9](#9-ddr-clock-vote-through-the-rpm--experiment-complete) | DDR clock vote and bottleneck experiment | Experiment complete 2026-10-23, j0064; 1296 -> 1804 gave no measured UI gain then (CPU-bound frame). Re-measured 2026-10-25 with the GPU the limit: -12% Home, -23% CC; 1804 now the default (task 10). Full 10-minute top-rate soak outstanding; governor is task 10. |
 | [15](#15-launchservices-store-persistence--closed-premise-disproved) | LaunchServices store persistence | Closed 2026-10-24: persisted store found in the actual InternalDaemon container, survives reboot. No persistence repair made. |
 | [22](#22-post-boot-accessory-sync-cpu--closed-normal-behavior) | Post-boot accessory sync CPU | Closed 2026-10-25: accessoryupdater + trustd sync accessory metadata from iCloud after each boot (~0.8 core), gone by 24 min. Normal; no action. Benchmarks must not start inside it. |
+| [23](PERF-TASK23-25-GPU-TRAFFIC.md#23-control-center-blur-at-reduced-resolution) | Shared UI blur / missing-downsampling investigation | Closed at user request 2026-10-26. Gaussian downsampling observed on device; proposed missing-copy premise disproved for that path. No optimization delivered or speedup measured. Variable-blur approximation remains a documented limitation with unmeasured runtime impact. [Evidence](PERF-TASK23-DEVICE-AUDIT.md). |
 
 ## Dependencies and shared files
 

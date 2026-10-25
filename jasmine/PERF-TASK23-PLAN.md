@@ -1,5 +1,7 @@
 # Task 23: shared UI blur correctness and performance plan
 
+**Closed at user request, 2026-10-26.** Investigation complete; no optimization delivered or speedup measured. Gaussian downsampling was observed on device, disproving the blanket missing-copy premise for that path. This does not prove that no blur optimization is possible. The variable-blur approximation remains documented with unmeasured runtime impact; no further investigation or implementation is scheduled under task 23. This status supersedes open/next-work language in the historical material below.
+
 Runtime investigation: [device audit](PERF-TASK23-DEVICE-AUDIT.md). Gaussian
 downsampling observed through 74x156 and 72x42 intermediates. The universal
 missing-copy premise is disproved for the observed path. Variable-blur source
