@@ -1,5 +1,19 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-25 15:14 Budapest: task 16 S1 complete, offline only.** Report commit
+`0ded7e7`; [full result and tracker](PERF-TASK16-PLAN.md#s1-result-2026-10-25-complete).
+Saved threaded2: flush drain + GPU-fence waits 19.16 ms/arrival in CC A and
+29.37 ms in Home A. B segments/repeated Spotlight have no CPU samples; no
+invented budgets. SwapEnd averages ~19 us. G1(a) supported for the saved
+fix+dump library; equivalence to S0's installed final library is source-backed
+but unmeasured. G1 remains open pending **S2: offline swap-surface feasibility**;
+S3/S4 also unfinished. Ignored reproducible analysis under `research/t16/`:
+`budget.py`, `budget.json`, `stacks.txt`; consistency assertions pass. No phone
+access, source implementation, new CI/build/boot/capture or installation. Phone
+state inherited from S0: temporary framebench99 iOS boot, no lock held; not
+rechecked. Current installed hash and source base are in S0 of the plan. This
+handoff supersedes older task ordering/device-state paragraphs below.
+
 **2026-10-25: first framebench device session complete; phone parked.** Supersedes
 the availability wait below. User supplied fastboot; acquired the shared phone
 lock, temporarily booted `shim/out/shim-boot-framebench99.img` once. Kernel CI

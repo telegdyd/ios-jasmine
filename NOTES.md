@@ -1,5 +1,25 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 15:14 Budapest: task 16 S1 complete, offline only
+
+Report committed as `0ded7e7`: [S1 result](jasmine/PERF-TASK16-PLAN.md#s1-result-2026-10-25-complete).
+Saved threaded2 capture: CC A display-thread flush drain + GPU-fence wait
+19.16 ms/arrival (36.8% sampled occupancy); Home A 29.37 ms (52.3%). SwapEnd
+itself averages ~19 us; driver surface-write protection remains measurable.
+CPU data unavailable in CC B/Home B/Spotlight repeat by capture design. Corrected
+CC flush drain from the old generic 700 ms to 670 ms; remaining queue waits are
+outside the per-frame flush or unclassified. GPU completion bounds exclude three
+Home jobs observed only after a sampling gap; their ~7 s bounds are not GPU times.
+Capture uses fix+dump `bb543dc9...`; S0 verified installed final `14e32aea...`.
+Source differs only by diagnostic 0005; final-binary performance equivalence is
+inferred, not measured. Ignored script/results: `research/t16/budget.py`,
+`budget.json`, `stacks.txt`; record/pair/CPU-summary consistency checks pass.
+No phone access, new capture, source implementation, CI, build or boot in S1;
+device state remains S0's temporary framebench99 iOS boot (not freshly checked).
+G1(a) supported with the provenance caveat; G1 stays open pending S2. Next: S2
+offline CoreAnimation swap-surface feasibility; S3/S4 unfinished. Do not infer
+implementation approval or a measured speedup from the optimistic overlap bounds.
+
 ### 2026-10-25 07:48 task 5: threaded context fixed, measured, installed
 
 Leak fix in patch 0004 (`a9e95ec`): a TC flush replacing a barrier-created fence no
