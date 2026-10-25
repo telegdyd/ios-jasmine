@@ -236,3 +236,34 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   over the command port while joined and scanning (02:00:38): scan stopped, the same clean leave, vdev
   deleted, `wlfw: wlan_mode off ok err 0`, wlan off done in 256 ms, stop-ack in 51 ms; the modem port
   still did not halt (`ack 0 idle 0`, task 2), mss_restart left alone.
+
+## 2026-10-25 02:10-02:35 (j0093-j0094): the modem port halt explained, link quality
+
+- **The modem AXI port has never halted, and that is normal.** Every reboot log since j81 says
+  `halt modem port: ack 0 idle 0`, including j81/j82/j83-wifi, which then asserted mss_restart and rebooted
+  fine (the j83-wlan note "every earlier reboot halted it" was wrong: the old code ignored the result). The
+  port reads busy even at boot, before the MBA, with the MSS in reset (`halt ports (req ack idle): q6 0 0 1,
+  modem 0 0 0, nc 0 0 1` in every log); q6 and nc read idle and are skipped. Offsets match both DTs (TCSR
+  0x1f63000/0x1f65000/0x1f64000, msm-4.4 `sdm660.dtsi` and the jasmine DTB). **Linux on this phone does the
+  same**: the Nura journal has `qcom-q6v5-mss 4080000.remoteproc: port failed halt` on every modem stop
+  (crash recovery at 4041 s and 425 s, shutdown at 4075 s and 460 s), then asserts the reset anyway and
+  even boots the modem again fine.
+- The two hung reboots (j83-wlan, j85-wlan) were the only ones with mss_restart under a joined Wi-Fi link
+  (j83: no wlan off yet; j85: WLAN firmware FATAL). Both stopped after `launchd quiesce complete`, before
+  `vfs_unmountall`. Every reboot without mss_restart worked (j86-j92), every unjoined one with it too.
+  Cause of those hangs unknown; irrelevant without a modem restart (SSR), since the board reset takes the MSS.
+- j0094: halts as Linux, no mss_restart at all (the j0086 fallback was the only path ever taken anyway).
+- **Gray Wi-Fi icon (task 3)**: iOS draws the bars from wifid's LQM (link quality metric) callbacks
+  (MobileWiFi `WiFiDeviceClientRegisterLQMCallback`, `_WiFiScaleRSSI`: 0.5 + x / (2 sqrt(x^2 + 450)),
+  x = rssi + 77.5), which come from Apple80211 **event 39** (IO80211 16.x `_dispatchlqmChangedEvent`, found
+  through the jump tables of the kernel-event dispatcher; extracted with `ipsw dyld extract`, research files
+  in WSL `~/ios-work/wifi-re/`). We never sent it. Its data (at least 180 bytes after the 16-byte name;
+  each value behind a "there" byte): rssi_there 0x00 / int32 rssi 0x04, per-core 0x08 / int8 x2 0x09,
+  snr 0x0b / int16 0x0c, noise 0x0e / int16 0x10, cca 0x12 / u8 0x13, tx fail/retrans/frames 0x14/0x18/0x1c,
+  rx retry/frames 0x20/0x24, beacons 0x28/0x2c (there 0x30), fw tx 0x34-0x3c (there 0x31), tx rate 0x40,
+  fallback rate 0x44, rx rate 0x48, QBSS 0x52-0x58 (there 0x50), flags 0x5c (bit0/1 directed, bit2/3
+  internet), roam state 0x60 (there 0x62), CCA stats (there 0xa0). 24 + 16 + 180 = 220 bytes fits MLEN 224.
+- j0093: live RSSI of the joined AP (its beacons' WMI snr, and `rx_ppdu_start.rssi_comb` of each first MPDU
+  as ath10k, both -95 dBm based, averaged over ~8), into the station state; NOISE (17) answered with -95 dBm
+  (ath10k/ath11k's default floor); the link event gets snr/noise; the wifi-station thread posts event 39
+  every 5 s while joined and idle. `wifi data:` lines now end with `signal N dBm (beacons B, ppdus P)`.
