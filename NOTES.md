@@ -1,5 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 final task-5 handoff: offline work; no new benchmark round
+
+User requests a new session to begin task 5's remaining per-draw Mesa CPU work.
+Wallpaper is outside scope. **No new benchmark round, loop, clock sweep or device
+boot is authorized for this next step.** Start from saved current captures and
+source inspection; identify one confirmed avoidable cost, implement a focused
+change and validate offline/build it. Report hardware validation as pending.
+The user rejected using the old low-GPU-clock/plugin-disabled DDR test to exclude
+RAM bandwidth on today's configuration. Retract that inference: current CPU
+samples include possible memory stalls; CPU vs RAM limitation is not conclusively
+separated. Task 5 is the strongest supported engineering recommendation, not proof
+that RAM bandwidth cannot matter. No new run or clock change was started after
+the user's objection. Latest phone state remains parked r109, own lock released.
+Fresh usable Control Center primary-thread estimates: 3550 ms on CPU in ~4 s,
+2274 ms Mesa (~64% of its CPU), 916 ms CA, 65 ms sampled GPU-fence waits. Home A
+had zero updates and is invalid. Existing raw capture and symbols are detailed
+in `jasmine/PERF-FRAMEBENCH-20261025.md`; use `capture/`, not Wallpaper, for this
+work. Installed active-sampler fix `8877ff1` / CI `40053566696` stays the baseline.
+Current report/host commits `e84104c`, `e81eeae`; no additional kernel/phone work.
+Preserve unrelated edits in jasmine/GPU.md, jasmine/NOTES.md, PERF-TASKS.md. Any
+older instruction to run new rounds or prioritize Wallpaper is superseded here.
+
 ### 2026-10-25 user scope correction: frame time first
 
 User explicitly excludes Wallpaper from the current scope. Goal: identify CPU vs
