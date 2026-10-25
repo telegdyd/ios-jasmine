@@ -1,5 +1,23 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-25 15:42 Budapest: task 16 G1 evaluated, HOLD.** Report `ed56425`;
+[decision and reproduction](PERF-TASK16-PLAN.md#g1-result-2026-10-25-hold).
+Wait opportunity reproduced: CC A 19.16 ms/arrival (36.8%), Home A 29.37 ms
+(52.3%); S1 final-binary equivalence and accessory-sync caveats remain. Third
+target overlap under the actual workload is unproven. Corrected S2 predicates:
+cooldown resets for low page flags ==2 AND input bit0 clear AND arbitration
+case false; failed wait clears availability only with input bit0 clear AND
+nonzero cooldown. Bit0 set preserves an already-counted free page. Repeated
+reset can defeat four-tick decay. All 9,916 instruction byte checks, eight
+vtable checks, S1 assertions and 26 branch cases pass. Ignored g1-audit.py and
+g1-validation.json under research/t16; no whole-program/runtime proof claimed.
+Next: S4 diagnostic/design review, collecting CA availability/target ownership
+linked to A scanning/B pending/C admitted before passing G1. S6-S10 remain gated;
+S5 independently scoped. No source implementation, CI/build, phone access/lock,
+boot, new capture or installation; no measured gain. Phone state inherited from
+S0, not freshly checked. Unrelated files preserved. This supersedes earlier
+next-step guidance; current Budapest timezone is UTC+1.
+
 **2026-10-25 16:38 Budapest: task 16 S3 complete, offline only.** Report commit
 `cbb477c`; [lifecycle audit](PERF-TASK16-PLAN.md#s3-result-2026-10-25-complete).
 Clean S0 kernel + pristine Mesa 26.2.5 with 0001-0004; 51 source-file inventory,

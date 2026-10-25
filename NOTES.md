@@ -1,5 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 15:42 Budapest: task 16 G1 evaluated, HOLD
+
+Report commit `ed56425`: [G1 decision](jasmine/PERF-TASK16-PLAN.md#g1-result-2026-10-25-hold).
+G1(a) supported with S1 provenance/accessory-sync caveats: CC A flush drain +
+GPU wait 19.16 ms/arrival (36.8%), Home A 29.37 ms (52.3%). G1(b) remains
+unproven; no substantial pre-gate work or demonstrated third-target overlap.
+Corrected two S2 branch errors against existing cache bytes: cooldown resets
+only for page low flags ==2, input bit0 clear, arbitration case false; failed
+wait clears available count only for input bit0 clear AND nonzero cooldown.
+Input bit0 set preserves the already-counted free page. Do not reuse S2's old
+opposite predicates. Repeated resets can prevent cooldown decay after four ticks.
+9,916 byte checks, eight vtable checks, S1 assertions and 26 branch cases pass.
+Ignored evidence: research/t16/g1-audit.py and g1-validation.json; existing S1/S2
+outputs regenerated. Truth tables do not prove runtime reachability.
+Next: S4 prepares a bounded availability/target diagnostic and concrete design
+review; observe A scanning/B pending/C admitted with valid damage history before
+passing G1. Generic FPS data cannot supply the missing CA flags/cooldown/Buffer
+ownership. S6-S10 remain gated; S5 independently scoped. No kernel/Mesa change,
+CI, build, phone access/lock, boot, capture or install; no gain measured. Device
+state inherited from S0, not rechecked. Unrelated files preserved. This handoff
+supersedes older next-step guidance; timestamps here use current UTC+1 Budapest.
+
 ### 2026-10-25 16:38 Budapest: task 16 S3 complete, offline only
 
 Report commit `cbb477c`: [S3 lifecycle audit](jasmine/PERF-TASK16-PLAN.md#s3-result-2026-10-25-complete).
