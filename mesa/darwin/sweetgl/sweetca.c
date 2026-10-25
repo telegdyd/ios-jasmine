@@ -35,6 +35,7 @@
 #include <objc/objc.h>
 #include <objc/runtime.h>
 #include <ctype.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -466,7 +467,7 @@ flush_stats(double wait_ms)
 }
 
 static int pipeline_mode = -1;
-static unsigned pipeline_errors;
+static unsigned pipeline_errors, pipeline_slow;
 static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
 
 static void
@@ -496,7 +497,14 @@ w_Flush(void *rctx)
    if (pipeline_enabled(c)) {
       glFlush();
       int error = sgl_flush_submit(c->gl);
-      if (error) {
+      if (error == -ETIMEDOUT) {
+         /* a slow frame (the drain took over 100 ms), not a failed submit: wait for it
+          * fully, as glFinish does, and stay in mode 1 */
+         unsigned slow = __atomic_add_fetch(&pipeline_slow, 1, __ATOMIC_RELAXED);
+         if ((slow & (slow - 1)) == 0)
+            sca_log("sweetca: pipeline drain over 100 ms (%u times); finished this frame", slow);
+         glFinish();
+      } else if (error) {
          unsigned errors = __atomic_add_fetch(&pipeline_errors, 1, __ATOMIC_RELAXED);
          if (__atomic_exchange_n(&pipeline_mode, 0, __ATOMIC_ACQ_REL) == 1)
             sca_log("sweetca: pipeline submit/drain error %d (%u errors); full finish for process", error, errors);
