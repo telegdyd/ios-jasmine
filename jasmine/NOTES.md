@@ -1,3 +1,17 @@
+### 2026-10-25: task 23 scope corrected by user
+
+Control Center is a benchmark, not the optimization boundary. Goal: higher
+frame rates across the UI; fix confirmed incorrect blur handling everywhere
+that uses the affected shared paths. Audit Gaussian and variable blur, including
+existing sca_nop/sca_vblur workarounds. Preserve intended appearance; validate
+Home/dock/folder, Notification Centre and available in-app cases alongside CC.
+CC-only improvement is insufficient for completion; report gains by workload.
+Updated task 23 definition and plan (jasmine/PERF-TASK23-PLAN.md).
+Next remains offline path/evidence audit. No implementation, build, CI, device
+access, boot or installation; no measured gain. Device state not rechecked.
+This correction supersedes the earlier CC-specific interpretation. Commit
+subject: docs: clarify task 23 targets shared UI blur paths.
+
 ### 2026-10-25: task 23 taken; pre-build plan presented
 
 Task 23 scope and sequence: [plan](PERF-TASK23-PLAN.md). Starting HEAD

@@ -74,6 +74,15 @@ Baseline to beat (DDR 1296, mode 2, gd2 round; redo at 1804 before starting):
 
 ## 23. Control Center blur at reduced resolution
 
+**User scope clarification:** Control Center is the benchmark that exposed the
+cost, not the scope boundary. Task 23 targets correct, efficient blur throughout
+the UI and higher frame rates wherever the affected paths are used. Audit shared
+Gaussian/variable-blur storage, mip and copy handling, including the existing
+variable-blur workaround. Fix confirmed defects for every caller of that path;
+preserve intended blur appearance. Validate Home/dock/folder and Notification
+Centre as well as CC, plus available in-app cases. CC-only gains do not establish
+completion. See [updated plan](PERF-TASK23-PLAN.md).
+
 **Evidence** (gd1, `logs/netlog-t16-gd1.txt` around line 4987, CC A): offscreen passes
 ping-pong between **1127x2438 and 1131x2442** buffers (the 1125x2436 frame plus a small
 border): one draw of an 87-instruction shader (8 waves) took **11.88 ms**, a 63-instruction

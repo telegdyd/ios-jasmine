@@ -1,4 +1,12 @@
-# Task 23: Control Center blur plan
+# Task 23: shared UI blur correctness and performance plan
+
+User scope clarification: Control Center is a benchmark, not the optimization
+boundary. The goal is higher frame rates across the UI. Investigate Gaussian
+and variable blur and their shared texture/storage/copy paths; fix any confirmed
+incorrect handling everywhere that uses the affected path. Do not gate a shared
+fix on which UI is visible. Preserve intended appearance and effective blur
+radius; do not lower blur quality globally as a shortcut. Correctness defects
+and performance opportunities must be distinguished in the results.
 
 Status: pre-build plan, 2026-10-25. User requested task 23 and a plan before
 building. Read root and jasmine handoffs, task 23, the GPU timing report and
@@ -43,6 +51,10 @@ explicitly, preserving blur radius in screen pixels, coordinates, edge borders,
 alpha and compositing. A substitute shader is a fallback after the path is
 understood. Do not select passes solely by framebuffer dimensions. Preserve
 notification-centre variable blur, other rendering and GL state/lifetimes.
+Audit the existing sca_nop/sca_vblur workaround as part of this investigation;
+do not assume it is correct or exempt from improvement. Prefer a shared fix
+over special treatment of CC. If multiple blur algorithms need separate
+corrections, document their coverage and validate each affected path.
 Keep a diagnostic disable switch and retain the exact production library for
 rollback; test under a separate library filename.
 
@@ -54,6 +66,10 @@ the source commit, CI run ID and artifact hash. Use temporary fastboot boot for
 the test and the same measurement configuration as baseline. Minimize rounds;
 repeat only when variance or a failure prevents a conclusion. Inspect GPU/SMMU
 faults and compare CC A/B medians plus GPU time/frame and the expensive passes.
+Use Home/dock/folder backdrops and Notification Centre alongside CC to verify
+coverage, GPU work and frame intervals. Include available in-app blur cases.
+Report benefits by workload: a shared blur fix does not imply that scenes
+without blur or with other bottlenecks improve by the same amount.
 
 ## 5. Visual review and completion
 
@@ -61,6 +77,11 @@ Ask the user to check CC and notification-centre blur, including transitions,
 edges, text and transparency. Acceptance: no full-resolution CC blur pass over
 about 2 ms in gpudraw, lower CC GPU time/frame and CC A/B medians at DDR 1804,
 and user-confirmed matching appearance. Treat these as targets, not a promised
+UI-wide speedup. CC thresholds are benchmark criteria, not sufficient proof of
+completion: confirm correct shared handling and assess other affected blur
+paths, including variable blur and already reduced-resolution backdrops.
+Record any remaining incorrect blur paths explicitly. Do not call task 23
+complete merely because CC improved. Do not promise a
 10 ms gain. Install at the production library path with the fix enabled by
 default only after validation. Follow the project's plain-reboot completion
 rule; obtain the required destructive-step confirmation before any boot_b
