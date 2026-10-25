@@ -1,0 +1,49 @@
+From 1da205cb8c7d370fab822d49fcd0c3117297512e Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 06:40:10 +0100
+Subject: [PATCH] freedreno/a5xx: use the threaded context
+
+Like a6xx: st/mesa validation runs on the application thread, freedreno draw
+emission, batch and submit work on the driver thread.  The threaded context
+needs real constant buffers, so prefer them on a5xx too.  GALLIUM_THREAD=0
+keeps the single-threaded context.
+---
+ src/gallium/drivers/freedreno/a5xx/fd5_context.c | 6 +++++-
+ src/gallium/drivers/freedreno/freedreno_screen.c | 5 +++--
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_context.c b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
+index 3fda7cb..35b0e0b 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_context.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
+@@ -96,5 +96,9 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv,
+    fd5_ctx->border_color_uploader =
+       u_upload_create(pctx, 4096, 0, PIPE_USAGE_STREAM, 0);
+ 
+-   return pctx;
++   /* As on a6xx: the frontend's validation and the driver's draw emission,
++    * batch and submit work then run on separate threads.  GALLIUM_THREAD=0
++    * keeps the single-threaded context.
++    */
++   return fd_context_init_tc(pctx, flags);
+ }
+diff --git a/src/gallium/drivers/freedreno/freedreno_screen.c b/src/gallium/drivers/freedreno/freedreno_screen.c
+index e33674e..f3bf3b6 100644
+--- a/src/gallium/drivers/freedreno/freedreno_screen.c
++++ b/src/gallium/drivers/freedreno/freedreno_screen.c
+@@ -386,9 +386,10 @@ fd_init_screen_caps(struct fd_screen *screen)
+    /* this is probably not totally correct.. but it's a start: */
+ 
+    /* Supported features (boolean caps). */
+-   if (is_a6xx(screen)) {
++   if (is_a5xx(screen) || is_a6xx(screen)) {
+       /* Direct upload is slightly faster without TC, and indirect causes
+-       * regression on at least a3xx.
++       * regression on at least a3xx.  The threaded context (a5xx, a6xx)
++       * needs real buffers.
+        */
+       caps->prefer_real_buffer_in_constbuf0 = true;
+    }
+-- 
+2.47.3
+

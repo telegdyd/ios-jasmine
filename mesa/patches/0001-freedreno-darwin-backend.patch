@@ -1,6 +1,6 @@
-From de5e6a0ed28a0d7c72c8c4db8ac24600c42268ea Mon Sep 17 00:00:00 2001
+From 2759ace6837142697332a93e68775f4f62f4a97d Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Sat, 24 Oct 2026 04:16:41 +0200
+Date: Sun, 25 Oct 2026 06:40:12 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -21,15 +21,15 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 +++
  src/gallium/frontends/sweetgl/meson.build     |   89 +
- src/gallium/frontends/sweetgl/sweetca.c       | 2108 +++++++++++++++++
- .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++++++
- src/gallium/frontends/sweetgl/sweetgl.c       |  475 ++++
- src/gallium/frontends/sweetgl/sweetgl.h       |  101 +
+ src/gallium/frontends/sweetgl/sweetca.c       | 2119 +++++++++++++++++
+ .../frontends/sweetgl/sweetca_slots.inc       | 1453 +++++++++++
+ src/gallium/frontends/sweetgl/sweetgl.c       |  552 +++++
+ src/gallium/frontends/sweetgl/sweetgl.h       |  111 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgpu_gltest.c       |  663 ++++++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   63 +
- 24 files changed, 6313 insertions(+), 6 deletions(-)
+ 24 files changed, 6411 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1691,10 +1691,10 @@ index 0000000..2841507
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..a3cf99e
+index 0000000..6978e56
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,2108 @@
+@@ -0,0 +1,2119 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -1813,6 +1813,7 @@ index 0000000..a3cf99e
 +   unsigned frame;                     /* glFlush count: CA flushes once per frame */
 +   GLuint shadows[64];                 /* textures standing in for render-target surfaces */
 +   GLuint program, fbo;
++   bool followed;                      /* Mesa's driver thread has this one's priority */
 +   GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
 +   uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
 +   uint8_t tex_swizzled[TEXMAX];
@@ -2898,19 +2899,29 @@ index 0000000..a3cf99e
 + * Merged submits (Mesa darwin: no implicit sync) reach the GPU only when a fence
 + * is needed, at CA's per-frame finish: the GPU then idles while the CPU builds the
 + * frame and the CPU waits while the GPU draws it. Every kick_every draws, a fence
-+ * checked without waiting sends what is queued, so both work at once.
-+ * SWEETCA_KICK=N (default 32, 0: off).
++ * checked without waiting sends what is queued, so both work at once. With Mesa's
++ * threaded context that check would only queue a flush, so sgl_kick has the
++ * driver thread send it. SWEETCA_KICK=N (default 32, 0: off).
++ *
++ * The driver thread does most of each draw's CPU work, so it gets the priority
++ * of the thread CA draws from (its display thread), once per context.
 + */
 +static unsigned kick_every = 32;
 +static __thread unsigned kick_draws;
 +
 +static void
-+kick_after_draw(void)
++kick_after_draw(struct sca_ctx *c)
 +{
++   if (!c->followed) {
++      c->followed = true;
++      sgl_follow_thread(c->gl);
++   }
 +   if (kick_every == 0 || ++kick_draws < kick_every)
 +      return;
 +   kick_draws = 0;
 +   SWEET_SCOPE(sp_kick, SP_KICK);
++   if (sgl_kick(c->gl))
++      return;
 +   GLsync s = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 +   if (s) {
 +      (void)glClientWaitSync(s, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
@@ -2931,7 +2942,7 @@ index 0000000..a3cf99e
 +      glDrawArrays(mode, first, count);
 +   }
 +   shadow_drawn(c);
-+   kick_after_draw();
++   kick_after_draw(c);
 +   POST(65);
 +}
 +
@@ -2948,7 +2959,7 @@ index 0000000..a3cf99e
 +      glDrawElements(mode, count, type, indices);
 +   }
 +   shadow_drawn(c);
-+   kick_after_draw();
++   kick_after_draw(c);
 +   POST(67);
 +}
 +
@@ -5264,10 +5275,10 @@ index 0000000..2c17092
 +	T(1035)
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
 new file mode 100644
-index 0000000..401f8be
+index 0000000..c3c24af
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.c
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,552 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -5279,7 +5290,9 @@ index 0000000..401f8be
 + */
 +
 +#include <fcntl.h>
++#include <pthread.h>
 +#include <stdio.h>
++#include <string.h>
 +#include <unistd.h>
 +
 +#include "pipe/p_screen.h"
@@ -5703,6 +5716,81 @@ index 0000000..401f8be
 +   _mesa_TextureBarrierNV();
 +}
 +
++/*
++ * With the threaded context (gallium's u_threaded_context, freedreno on a5xx
++ * and a6xx) st/mesa's pipe is a wrapper that queues calls for a driver thread;
++ * it has callback(), and its priv is the freedreno context the calls run on.
++ * freedreno's own context has no callback(). GALLIUM_THREAD=0 turns it off.
++ */
++static struct pipe_context *
++sgl_driver_pipe(struct sgl_context *ctx)
++{
++   struct pipe_context *pipe = ctx->st->pipe;
++   return pipe->callback ? pipe->priv : NULL;
++}
++
++/* on the driver thread, in order with the calls queued before it */
++static void
++sgl_kick_driver(void *data)
++{
++   struct pipe_context *pipe = data;
++   struct pipe_screen *screen = pipe->screen;
++   struct pipe_fence_handle *fence = NULL;
++
++   /* what a fence checked with a zero timeout does without the thread: the
++    * batch is flushed and the check sends Mesa's deferred submits to the kernel */
++   pipe->flush(pipe, &fence, 0);
++   if (fence) {
++      (void)screen->fence_finish(screen, pipe, fence, 0);
++      screen->fence_reference(screen, &fence, NULL);
++   }
++}
++
++bool
++sgl_kick(struct sgl_context *ctx)
++{
++   struct pipe_context *driver = sgl_driver_pipe(ctx);
++   if (!driver)
++      return false;
++   struct pipe_context *pipe = ctx->st->pipe;
++   pipe->callback(pipe, sgl_kick_driver, driver, false);
++   /* hand the queued calls, the kick among them, to the driver thread now */
++   pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
++   return true;
++}
++
++struct sgl_sched {
++   int policy;
++   struct sched_param param;
++};
++
++static void
++sgl_follow_driver(void *data)
++{
++   struct sgl_sched *s = data;
++   int r = pthread_setschedparam(pthread_self(), s->policy, &s->param);
++   fprintf(stderr, "sweetgl: driver thread scheduling policy %d priority %d: %s\n", s->policy,
++           s->param.sched_priority, r ? strerror(r) : "set");
++   FREE(s);
++}
++
++void
++sgl_follow_thread(struct sgl_context *ctx)
++{
++   struct pipe_context *driver = sgl_driver_pipe(ctx);
++   if (!driver)
++      return;
++   struct sgl_sched *s = CALLOC_STRUCT(sgl_sched);
++   if (!s)
++      return;
++   if (pthread_getschedparam(pthread_self(), &s->policy, &s->param)) {
++      FREE(s);
++      return;
++   }
++   struct pipe_context *pipe = ctx->st->pipe;
++   pipe->callback(pipe, sgl_follow_driver, s, false);
++}
++
 +uint32_t
 +sgl_sampled_2d_units(struct sgl_context *ctx)
 +{
@@ -5745,10 +5833,10 @@ index 0000000..401f8be
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
 new file mode 100644
-index 0000000..23b2f6c
+index 0000000..a374274
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgl.h
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,111 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -5841,6 +5929,16 @@ index 0000000..23b2f6c
 +/* Units whose 2D binding is sampled by a current graphics program. Uses Mesa's
 + * linked-program state, including sampler arrays and glUniform changes. */
 +uint32_t sgl_sampled_2d_units(struct sgl_context *ctx);
++
++/*
++ * With Mesa's threaded context (the default; GALLIUM_THREAD=0 turns it off),
++ * a driver thread does freedreno's draw, batch and submit work. sgl_kick sends
++ * what ctx has queued to the GPU without waiting, from that thread; false
++ * without the threaded context. sgl_follow_thread gives the driver thread the
++ * calling thread's scheduling policy and priority.
++ */
++bool sgl_kick(struct sgl_context *ctx);
++void sgl_follow_thread(struct sgl_context *ctx);
 +
 +/* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 +bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);

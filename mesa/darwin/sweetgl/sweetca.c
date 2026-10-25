@@ -116,6 +116,7 @@ struct sca_ctx {
    unsigned frame;                     /* glFlush count: CA flushes once per frame */
    GLuint shadows[64];                 /* textures standing in for render-target surfaces */
    GLuint program, fbo;
+   bool followed;                      /* Mesa's driver thread has this one's priority */
    GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
    uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
    uint8_t tex_swizzled[TEXMAX];
@@ -1201,19 +1202,29 @@ trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
  * Merged submits (Mesa darwin: no implicit sync) reach the GPU only when a fence
  * is needed, at CA's per-frame finish: the GPU then idles while the CPU builds the
  * frame and the CPU waits while the GPU draws it. Every kick_every draws, a fence
- * checked without waiting sends what is queued, so both work at once.
- * SWEETCA_KICK=N (default 32, 0: off).
+ * checked without waiting sends what is queued, so both work at once. With Mesa's
+ * threaded context that check would only queue a flush, so sgl_kick has the
+ * driver thread send it. SWEETCA_KICK=N (default 32, 0: off).
+ *
+ * The driver thread does most of each draw's CPU work, so it gets the priority
+ * of the thread CA draws from (its display thread), once per context.
  */
 static unsigned kick_every = 32;
 static __thread unsigned kick_draws;
 
 static void
-kick_after_draw(void)
+kick_after_draw(struct sca_ctx *c)
 {
+   if (!c->followed) {
+      c->followed = true;
+      sgl_follow_thread(c->gl);
+   }
    if (kick_every == 0 || ++kick_draws < kick_every)
       return;
    kick_draws = 0;
    SWEET_SCOPE(sp_kick, SP_KICK);
+   if (sgl_kick(c->gl))
+      return;
    GLsync s = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
    if (s) {
       (void)glClientWaitSync(s, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
@@ -1234,7 +1245,7 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
       glDrawArrays(mode, first, count);
    }
    shadow_drawn(c);
-   kick_after_draw();
+   kick_after_draw(c);
    POST(65);
 }
 
@@ -1251,7 +1262,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
       glDrawElements(mode, count, type, indices);
    }
    shadow_drawn(c);
-   kick_after_draw();
+   kick_after_draw(c);
    POST(67);
 }
 

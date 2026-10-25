@@ -91,6 +91,16 @@ void sgl_texture_barrier(void);
  * linked-program state, including sampler arrays and glUniform changes. */
 uint32_t sgl_sampled_2d_units(struct sgl_context *ctx);
 
+/*
+ * With Mesa's threaded context (the default; GALLIUM_THREAD=0 turns it off),
+ * a driver thread does freedreno's draw, batch and submit work. sgl_kick sends
+ * what ctx has queued to the GPU without waiting, from that thread; false
+ * without the threaded context. sgl_follow_thread gives the driver thread the
+ * calling thread's scheduling policy and priority.
+ */
+bool sgl_kick(struct sgl_context *ctx);
+void sgl_follow_thread(struct sgl_context *ctx);
+
 /* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
 bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
 

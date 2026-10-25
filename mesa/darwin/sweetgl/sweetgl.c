@@ -9,7 +9,9 @@
  */
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "pipe/p_screen.h"
@@ -431,6 +433,81 @@ void
 sgl_texture_barrier(void)
 {
    _mesa_TextureBarrierNV();
+}
+
+/*
+ * With the threaded context (gallium's u_threaded_context, freedreno on a5xx
+ * and a6xx) st/mesa's pipe is a wrapper that queues calls for a driver thread;
+ * it has callback(), and its priv is the freedreno context the calls run on.
+ * freedreno's own context has no callback(). GALLIUM_THREAD=0 turns it off.
+ */
+static struct pipe_context *
+sgl_driver_pipe(struct sgl_context *ctx)
+{
+   struct pipe_context *pipe = ctx->st->pipe;
+   return pipe->callback ? pipe->priv : NULL;
+}
+
+/* on the driver thread, in order with the calls queued before it */
+static void
+sgl_kick_driver(void *data)
+{
+   struct pipe_context *pipe = data;
+   struct pipe_screen *screen = pipe->screen;
+   struct pipe_fence_handle *fence = NULL;
+
+   /* what a fence checked with a zero timeout does without the thread: the
+    * batch is flushed and the check sends Mesa's deferred submits to the kernel */
+   pipe->flush(pipe, &fence, 0);
+   if (fence) {
+      (void)screen->fence_finish(screen, pipe, fence, 0);
+      screen->fence_reference(screen, &fence, NULL);
+   }
+}
+
+bool
+sgl_kick(struct sgl_context *ctx)
+{
+   struct pipe_context *driver = sgl_driver_pipe(ctx);
+   if (!driver)
+      return false;
+   struct pipe_context *pipe = ctx->st->pipe;
+   pipe->callback(pipe, sgl_kick_driver, driver, false);
+   /* hand the queued calls, the kick among them, to the driver thread now */
+   pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
+   return true;
+}
+
+struct sgl_sched {
+   int policy;
+   struct sched_param param;
+};
+
+static void
+sgl_follow_driver(void *data)
+{
+   struct sgl_sched *s = data;
+   int r = pthread_setschedparam(pthread_self(), s->policy, &s->param);
+   fprintf(stderr, "sweetgl: driver thread scheduling policy %d priority %d: %s\n", s->policy,
+           s->param.sched_priority, r ? strerror(r) : "set");
+   FREE(s);
+}
+
+void
+sgl_follow_thread(struct sgl_context *ctx)
+{
+   struct pipe_context *driver = sgl_driver_pipe(ctx);
+   if (!driver)
+      return;
+   struct sgl_sched *s = CALLOC_STRUCT(sgl_sched);
+   if (!s)
+      return;
+   if (pthread_getschedparam(pthread_self(), &s->policy, &s->param)) {
+      FREE(s);
+      return;
+   }
+   struct pipe_context *pipe = ctx->st->pipe;
+   pipe->callback(pipe, sgl_follow_driver, s, false);
 }
 
 uint32_t
