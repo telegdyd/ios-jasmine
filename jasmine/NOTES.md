@@ -1,5 +1,25 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-25 16:38 Budapest: task 16 S3 complete, offline only.** Report commit
+`cbb477c`; [lifecycle audit](PERF-TASK16-PLAN.md#s3-result-2026-10-25-complete).
+Clean S0 kernel + pristine Mesa 26.2.5 with 0001-0004; 51 source-file inventory,
+four-patch application and wrapper-source checks pass twice. Shared Mesa has
+unrelated edits and was not treated as final production source. Hold ledger,
+state machine, cache/CPU-reader contracts and exceptional paths documented.
+S4 must resolve dirty-target identity, submission error propagation, ticket
+generation/connection ownership, cancellation/late-ready, and actual latch-based
+retirement or proven equivalent protection. Current shown-write exception and
+timeout fallthrough cannot be inherited as safe async behavior. Task 14 is still
+open; retain task 5's old-fence batch-reference fix. G1 remains open because S2's
+private availability policy is unobserved; S1's binary-equivalence caveat remains.
+Next: S4 concrete design/test plan and user review before S6/S7. S5 remains an
+independent, narrowly scoped sleep change; it does not fix all lifecycle gaps.
+No implementation, CI/build, phone access, boot, capture or install; no speedup
+claimed. Phone inherited from S0: temporary framebench99 iOS boot, lock not held,
+not freshly checked. Ignored reproduction/evidence: research/t16/s3-audit.py,
+s3-validation.json, s3-sites.txt, s3-patch-apply.txt and s3-mesa* source subsets.
+This supersedes older next-step ordering below. Unrelated files preserved.
+
 **2026-10-25 15:27 Budapest: task 16 S2 complete, offline only.** Report commit
 `8d72bb7`; [S2 result](PERF-TASK16-PLAN.md#s2-result-2026-10-25-complete).
 20H392 AppleCLCD has three page records and dynamic Buffer allocation; historical

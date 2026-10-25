@@ -1,5 +1,24 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 16:38 Budapest: task 16 S3 complete, offline only
+
+Report commit `cbb477c`: [S3 lifecycle audit](jasmine/PERF-TASK16-PLAN.md#s3-result-2026-10-25-complete).
+Audited clean S0 kernel `bfb61629...` and pristine Mesa 26.2.5 + patches 0001-0004;
+51 source files inventoried; patch/source/provenance checks pass twice. Shared
+Mesa modifications were not used as the final patched source. Full hold ledger,
+state machine and invariants recorded. Required S4 work: durable dirty-target
+identity, successful submission/error propagation, generation/connection ownership,
+cancel/late-ready handling, physical latch retirement and fail-closed timeouts.
+Current shown-write exception, ignored wait failures and legacy queue are not a
+safe async protocol; task 14 freeze remains unresolved. G1 remains open on S2's
+unobserved availability flags/cooldown; S1 provenance caveat unchanged. Next: S4
+concrete design/test plan and user review before S6/S7; no implementation approved.
+Ignored evidence: research/t16/s3-audit.py, s3-validation.json, s3-sites.txt,
+s3-patch-apply.txt and s3-mesa* source subsets. No source implementation, CI run,
+build, phone access, boot, capture or installation; no measured gain. Phone state
+inherited from S0: temporary framebench99 iOS boot, no lock held; not rechecked.
+This supersedes the S3-next handoff below; unrelated files preserved.
+
 ### 2026-10-25 15:27 Budapest: task 16 S2 complete, offline only
 
 Report commit `8d72bb7`: [S2 result](jasmine/PERF-TASK16-PLAN.md#s2-result-2026-10-25-complete).
