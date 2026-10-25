@@ -1,0 +1,66 @@
+From 7adcf55dee65d22dfe6d586aeb3f0d08a917dedb Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 07:02:09 +0100
+Subject: [PATCH] freedreno: dump batch cache slots when no batch can be had
+ (diagnostic)
+
+---
+ .../drivers/freedreno/freedreno_batch_cache.c | 32 +++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch_cache.c b/src/gallium/drivers/freedreno/freedreno_batch_cache.c
+index dc308d2..0ebaf46 100644
+--- a/src/gallium/drivers/freedreno/freedreno_batch_cache.c
++++ b/src/gallium/drivers/freedreno/freedreno_batch_cache.c
+@@ -499,6 +499,35 @@ fd_bc_alloc_batch(struct fd_context *ctx, bool nondraw)
+    return batch;
+ }
+ 
++#include <stdio.h>
++#include "freedreno_fence.h"
++
++/* ios-jasmine diagnostic (task 5): the cache has no batch to give and none to
++ * flush; say what holds its slots */
++static void
++sweet_dump_batches(struct fd_context *ctx)
++{
++   struct fd_batch_cache *cache = &ctx->screen->batch_cache;
++   fprintf(stderr, "fdbc: no batch: mask %08x ctx %p batch %p nondraw %p last_fence %p (batch %p)\n",
++           cache->batch_mask, ctx, ctx->batch, ctx->batch_nondraw, ctx->last_fence,
++           ctx->last_fence ? ctx->last_fence->batch : NULL);
++   for (unsigned i = 0; i < ARRAY_SIZE(cache->batches); i++) {
++      struct fd_batch *b = cache->batches[i];
++      if (!b)
++         continue;
++      uint32_t held_by = 0;
++      for (unsigned j = 0; j < ARRAY_SIZE(cache->batches); j++)
++         if (cache->batches[j] && (cache->batches[j]->dependents_mask & (1u << i)))
++            held_by |= 1u << j;
++      fprintf(stderr, "fdbc: %2u %p ctx %s flushed %d ref %d draws %u needs %d nondraw %d seq %u "
++              "deps %08x held_by %08x fence %p fence_batch %p key %p\n",
++              i, b, b->ctx == ctx ? "same" : "other", b->flushed, b->reference.count, b->num_draws,
++              b->needs_flush, b->nondraw, b->seqno, b->dependents_mask, held_by, b->fence,
++              b->fence ? b->fence->batch : NULL, b->key);
++   }
++   fflush(stderr);
++}
++
+ static struct fd_batch *
+ batch_from_key(struct fd_context *ctx, struct fd_batch_key *key) assert_dt
+ {
+@@ -586,9 +615,12 @@ fd_batch_from_fb(struct fd_context *ctx,
+    key->num_surfs = idx;
+ 
+    struct fd_batch *batch = NULL;
++   unsigned tries = 0;
+    while (!batch) {
+       fd_screen_lock(ctx->screen);
+       batch = batch_from_key(ctx, key);
++      if (!batch && ++tries == 100000)
++         sweet_dump_batches(ctx);
+       fd_screen_unlock(ctx->screen);
+    }
+ 
+-- 
+2.47.3
+
