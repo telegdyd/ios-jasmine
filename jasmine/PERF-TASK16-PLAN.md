@@ -1382,3 +1382,35 @@ surface in the ring. Swap IDs are consecutive (747 gaps of 1).
 
 Phone parked afterwards in the r109 charging shell. No CI run, build, flash or
 install. No speedup claimed.
+
+## Where a mode-2 frame's time goes (m2a, 2026-10-25 21:30)
+
+User at 21:20: mode 2 looks right (no flicker, tearing or stale content) but does
+not feel faster. Mode 2's ticket events time each frame's path: BEGIN (first
+tracked draw) -> SwapEnd -> SEAL (driver drain done) -> GPU done (presenter ready)
+-> flip. `research/t16/m2-timeline.py research/t16/s8/m2a/cap1 ...`; median/p90 ms:
+
+| Phase | BEGIN->SwapEnd | SwapEnd->SEAL | SEAL->GPU done | GPU busy per frame | Interval |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Home B (cap 1 / 2) | 12.1 / 12.2 | 0.4 / 0.3 | 43.6 / 44.8 | **39.3 / 39.9** | 42.6 / 42.0 |
+| Home A (cap 2) | 11.8 | 0.3 | 42.8 | **38.9** | 41.8 |
+| CC A | 25.6 / 25.8 | 0.8 / 0.8 | 20.0 / 23.7 | 20.0 / 23.6 | 50.9 / 54.0 |
+| CC B | 24.9 / 24.9 | 0.9 / 0.7 | 22.7 / 22.1 | 22.2 / 22.1 | 51.5 / 52.3 |
+
+"GPU busy per frame" = GPU done(N) - max(SEAL(N), GPU done(N-1)): an upper bound
+on the frame's GPU execution (in-order GPU, 1 ms presenter polling, other
+backboardd jobs included).
+
+- **Home is GPU-bound**: about 39 ms of GPU work per frame against a 42 ms
+  interval. No CPU or presentation change can lift Home past ~25 fps until the
+  GPU work per frame shrinks. This is why mode 2 does not feel faster on Home.
+- **Control Center is serialized**: CA's recording (~25 ms from the first draw)
+  and the GPU (~22 ms) run back to back (sum ~47 of ~52 ms). Something in CC makes
+  CA wait for the previous frame's GPU work before recording the next (not yet
+  identified: a backdrop/blur source, a readback or a surface wait).
+- The driver drain is no longer on the path (SEAL 0.3-0.9 ms after SwapEnd).
+- For 60 fps every stage must fit 16.7 ms: GPU work per Home frame must drop
+  ~2.4x, and CA's CC recording ~1.5x as well (task 5).
+
+Next: per-job GPU timing (CP timestamps around each submit) to find what makes a
+Home frame cost ~40 ms of GPU, then attack the largest pass.
