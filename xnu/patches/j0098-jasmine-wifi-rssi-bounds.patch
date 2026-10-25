@@ -1,0 +1,39 @@
+From a60e5f01a6d78b76a64c26e046d63a3829dd54d3 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 03:55:17 +0100
+Subject: [PATCH] jasmine-j0098: answer RSSI_BOUNDS (106): min -100, max 0,
+ auto-join threshold -80 dBm (unanswered, wifid's threshold stayed 0 dBm and
+ CoreWiFi refused every known network: 'Below minimum RSSI threshold')
+
+---
+ bsd/dev/redwood_apple80211.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/bsd/dev/redwood_apple80211.c b/bsd/dev/redwood_apple80211.c
+index 705a287..9a352ac 100644
+--- a/bsd/dev/redwood_apple80211.c
++++ b/bsd/dev/redwood_apple80211.c
+@@ -345,6 +345,20 @@ get(struct apple80211req *request)
+ 
+ 		return give(request, &answer, sizeof(answer));
+ 	}
++	case 106: {
++		/*
++		 * The signal range and the weakest network worth joining by itself, dBm (IO80211 of 16.5 reads the
++		 * three after the version into RSSI_MIN, RSSI_MAX, RSSI_THRESHOLD). Unanswered, wifid's auto-join
++		 * threshold stays 0 dBm and every known network is refused ("Below minimum RSSI threshold").
++		 * -80: a weak but usable link, our choice; the range is what the radio reports.
++		 */
++		struct {
++			uint32_t version;
++			int32_t min, max, threshold;
++		} answer = { .version = 1, .min = -100, .max = 0, .threshold = -80 };
++
++		return give(request, &answer, sizeof(answer));
++	}
+ 	case 15:                                /* the mode: a station (APPLE80211_M_STA) */
+ 		request->req_val = 1;
+ 		return 0;
+-- 
+2.47.3
+
