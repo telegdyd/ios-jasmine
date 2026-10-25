@@ -1,5 +1,23 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 task-5 offline implementation: empty trace-worker jobs
+
+Implemented one focused Mesa change; [evidence and correctness](jasmine/PERF-TASK5-EMPTY-TRACE-20261025.md).
+Current Control Center A primary thread: 65 on-CPU samples / 130 estimated ms
+in `u_trace_context_process` (60 kernel wakeup samples), eight / 16 ms in
+`u_trace_flush`. Source confirms default disabled/empty traces still allocate
+and queue a job per finalized batch. Patch 0003 skips only those calls; any
+enabled tracing or recorded events retains legacy behavior. GPU commands,
+barriers, batch boundaries and fence/resource lifetimes unchanged. No claimed
+frame-time gain: these inclusive samples are an opportunity, not savings.
+Host compilation of changed gmem and matching u_trace units passed; all three
+patches apply in order and resulting tree matches isolated implementation.
+CI build pending at this milestone. Implementation commit subject:
+`perf: avoid empty Mesa trace jobs when tracing is disabled`.
+No phone access, clock/plugin changes, boot or new benchmark. Device validation
+pending. Shared WSL source and unrelated edits in jasmine/GPU.md, jasmine/NOTES.md
+and PERF-TASKS.md remain untouched/uncommitted. Continue build validation only.
+
 ### 2026-10-25 final task-5 handoff: offline work; no new benchmark round
 
 User requests a new session to begin task 5's remaining per-draw Mesa CPU work.

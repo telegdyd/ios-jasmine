@@ -1,0 +1,33 @@
+From f34a1580972ee984ddaea705f36b829a78a070db Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 05:55:56 +0100
+Subject: [PATCH] freedreno: skip empty batch trace flushes when tracing is
+ disabled
+
+---
+ src/gallium/drivers/freedreno/freedreno_gmem.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index 2ee9b0b..02acefd 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -799,7 +799,14 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+ 
+    flush_ring(batch);
+ 
+-   u_trace_flush(&batch->trace, NULL, U_TRACE_FRAME_UNKNOWN, false);
++   /* With tracing disabled there is nothing to hand to the trace worker.
++    * u_trace_flush() still allocates and queues an empty flush, so avoid that
++    * per-batch work.  Keep empty batches when tracing is enabled (for trace
++    * frame/batch accounting), and drain recorded events even if tracing was
++    * disabled after they were emitted.  No flush_data ownership is involved.
++    */
++   if (u_trace_enabled(&ctx->trace_context) || u_trace_has_points(&batch->trace))
++      u_trace_flush(&batch->trace, NULL, U_TRACE_FRAME_UNKNOWN, false);
+ }
+ 
+ /* Determine a worst-case estimate (ie. assuming we don't eliminate an
+-- 
+2.47.3
+
