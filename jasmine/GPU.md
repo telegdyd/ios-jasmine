@@ -1,5 +1,16 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-25 16:37 Budapest: task 16 S3 offline lifecycle audit complete.**
+[Full state machine, ownership ledger and hazards](PERF-TASK16-PLAN.md#s3-result-2026-10-25-complete).
+Audited clean S0 kernel and pristine Mesa 26.2.5 + 0001-0004; 51 source-file
+inventory and patch/source checks pass twice. Current shown-surface write guard,
+timeout fallthrough and missing in-place target identity cannot be assumed safe
+for an asynchronous queue. S4 must specify target/fence identity, submission error
+propagation, cancellation and physical retirement; task 14 remains unresolved.
+G1 remains open on S2's private-policy uncertainty. No implementation, CI/build,
+phone access, boot, capture or install; no performance gain claimed. Next: S4
+concrete design and user review, before S6/S7. Active handoff is in NOTES.md.
+
 **2026-10-25 first framebench device results:** [evidence and priorities](PERF-FRAMEBENCH-20261025.md).
 One instrumented boot, successful standard + bounded Settings captures, no drops.
 Prioritize task 20's Wallpaper instability/memory diagnosis before speed work;

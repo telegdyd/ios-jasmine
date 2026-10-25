@@ -3,7 +3,7 @@
 Working plan for [PERF-TASKS](PERF-TASKS.md) task 16, written 2026-10-25 after the
 task-5 threaded context ([report](PERF-TASK5-THREADED-20261025.md)) made the
 per-frame `glFinish` the largest wait on CoreAnimation's display thread.
-**Status: S0-S2 complete (2026-10-25); S3 next. G1 remains open (conditional S2 feasibility).**
+**Status: S0-S3 complete (2026-10-25); S4 design review next. G1 remains open (conditional S2 feasibility).**
 Nothing here is measured yet unless a step's result says so.
 
 **How to use this file.** Each step below is sized for one agent. Take the next
@@ -22,7 +22,7 @@ first: phone lock, battery check, accessory-sync precheck, ground rules, and
 | [S0](#s0-establish-the-baseline-and-bases) | Establish the baseline, source bases and patch number | — | read-only | done | Codex, 2026-10-25 15:01 Budapest; installed SHA256 `14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261`; slot b recorded j0070; base `bfb61629aa90e9e44d85ea929ddffbe6a5a78222`, `/home/teleg/xnu-t16` (`t16`); j0100 reserved. See S0 result. |
 | [S1](#s1-critical-path-budget-from-existing-captures) | Critical-path budget from existing captures | S0 | no | done | Codex, 2026-10-25 15:14 Budapest; `research/t16/budget.py`, `budget.json`, `stacks.txt`; CC A flush drain + GPU wait 19.16 ms/arrival (36.8% occupancy), Home A 29.37 ms (52.3%). B/repeat unsampled. See S1 result. No new CI/boot. |
 | [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | done | Codex, 2026-10-25 15:26 Budapest; three page records, dynamic Buffer allocation; third surface conditional on availability policy. 9,916 instruction and eight vtable checks pass. See S2 result; no CI/boot. |
-| [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | todo | |
+| [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | done | Codex, 2026-10-25 16:37 Budapest; kernel + pristine patched Mesa lifecycle audit; 51 source files inventoried, four patches apply, wrapper sources match. See S3 result. No CI/boot. |
 | [G1](#gates) | Gate: is there enough overlap to win? | S1, S2 | — | open | (a) supported by saved fix+dump capture, with final-library equivalence caveat; (b) S2 found conditional third-buffer feasibility; current-workload private flags/cooldown unverified. Resolve in S3/S4 before implementation. |
 | [S4](#s4-design-review) | Design review with the user | G1, S3 | no | todo | |
 | [S5](#s5-kernel-sleep-instead-of-spin-in-the-present-path) | Kernel: sleep instead of spin in the present path | S0, S3 | yes | todo | |
@@ -735,3 +735,221 @@ has a conditional allocation path but no proof of the required private state in
 the current workload. Keep G1 open, resolve this in the S3/S4 design work, and do
 not start S6-S10 from the optimistic overlap ceiling. S5 remains independently
 scoped by its own dependencies. No speedup or device validation claimed.
+
+## S3 result (2026-10-25, complete)
+
+**Offline lifecycle audit complete; implementation is still gated.** The current
+synchronous path has references that keep scanout storage alive, but it is not a
+general asynchronous ownership protocol. A ticket/queue implementation must handle
+submission errors, cancellation and late completion as well as normal rendering.
+The proposed invariant list above is a design target, not a description of what
+today's code guarantees. S3 does not establish CA's private availability state;
+**G1 stays open** with S1/S2's caveats. Next: S4 prepares the concrete design and
+resolves conditional feasibility with the user before S6/S7.
+
+### Evidence and reproduction
+
+Kernel: S0's clean `/home/teleg/xnu-t16`, commit
+`bfb61629aa90e9e44d85ea929ddffbe6a5a78222`. Kernel paths below are relative to
+that tree; `FB` = `iokit/Kernel/arm/SweetFramebuffer.cpp`, `GPU` =
+`iokit/Kernel/arm/SweetGPU.cpp`, `SURF` = `iokit/Kernel/arm/SweetSurface.cpp`.
+Mesa: **mesa-26.2.5**, tag commit `f9ce5e81f30cd694726bff6d8197e509a8374ea7`,
+with repository patches **0001-0004**. The shared `~/ios-work/mesa` tree has
+unrelated modifications and its current `freedreno_context.c` lacks the final
+0004 fence fix; it was not treated as the production source. Reconstructed the
+patch inputs from the pristine tag into ignored research storage instead.
+
+Run in WSL from the repository root: `python3 research/t16/s3-audit.py`.
+It creates a fresh `research/t16/s3-mesa-*` source subset, applies all four patches,
+and writes `s3-validation.json` (51 file hashes, base and patch hashes),
+`s3-patch-apply.txt` and `s3-sites.txt` (numbered ownership/synchronization sites).
+Checks pass: kernel inputs equal their committed bytes, four patches apply,
+reconstructed sweetca/sweetgl equal tracked `mesa/darwin/sweetgl/` sources, and
+0004's old-fence batch-reference release is present. These are source provenance
+checks, not a compile, model checker or device test. No Apple material added to git.
+Reproduction passed twice; script SHA256
+`7320b1fe53ea551f208f5eeb3d89613d0f1014ed347bcf88db99d1d6f4c76720`.
+
+### State machine: distinguish storage, rendering and presentation
+
+The states below are a required model for S4, not new implemented fields. An
+IOSurface can be alive through a Mesa import after CA removes its table entry;
+an in-use counter alone neither owns its storage nor prevents a GPU write.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Reusable
+    Reusable --> Rendering: retain target and create generation
+    Rendering --> Submitted: driver work drained / successful final seqno
+    Submitted --> Ready: GPU completion confirmed
+    Ready --> Scanning: flip programmed
+    Scanning --> Retiring: replacement flip programmed
+    Retiring --> Reusable: replacement latch confirmed
+    Rendering --> Cancelled: error / owner exit / timeout
+    Submitted --> Cancelled: drop / power transition
+    Ready --> Cancelled: drop / power transition
+    Cancelled --> Reusable: all writers quiesced and holds released
+```
+
+Queue admission is orthogonal: a retained frame can be queued while Rendering or
+Submitted, but cannot be shown until Ready. A programmed flip is not yet a latch:
+the old scanning surface remains protected in Retiring. A copied/composed frame
+uses the kernel back buffer for scanout; its source surfaces may be released after
+the synchronized copy, while the back buffer remains protected until replacement
+latches. Timeout means failure/quarantine, not proof of Reusable.
+
+### Current ownership ledger (every hold-array mutation path)
+
+| Owner / state | Acquisition and transfer | Release / limitation |
+| --- | --- | --- |
+| Surface ID table and client views | `SURF:sweet_surface_publish`, `sweet_surface_copy` (412), `sweet_surface_held`; lookup retains under the surface-table lock. | `sweet_surface_put` (397) removes the table entry on the last user; `SweetSurfaceRef::free` releases its view reference. A retained pointer can remain alive after ID lookup stops working. Queue/ticket records must retain the object, not just its numeric ID. |
+| Swap-local `held[4]` | `FB:swap` (1206) copies each of up to four enabled surfaces and increments shared state +0x18 through `sweet_hold`. | `sweet_hold_set(...,false)` (160) decrements in-use and releases each object. `sweetfb_nohold` bypasses in-use accounting, not the object reference; disable this diagnostic in correctness tests. |
+| Sync `fShowHold` / `fRetireHold` | `FB:swap` (1250): prior shown -> retiring; direct/scaled frame's local holds -> shown; copied frame gets no source shown holds. | Previous retire set released outside `fLock`; copied sources released after `present`. `retireLatched` (1458) clears retiring. The prior-flip poll is capped at 25 ms and does not report failure. |
+| `fQHeld[2][4]` legacy queue | `FB:swap` (1285) copies holds into the two-slot queue under `fQLock`; `presenter` (1321) copies the head to local ownership. | Queue-full sleep capped at 200 ms drops the incoming holds. Slot remains counted through presentation; stale pointer bytes are left after dequeue and are not additional references. No general queue-cancel/teardown drain exists in this path. |
+| Legacy `showDirect` | Drops pending holds, calls `present`, polls latch, installs local holds as shown and clears retiring (1348-1376). | Releases prior shown/retiring after the capped poll. It ignores `present`'s copy/direct result and is not the j0058 sync rotation protocol. Do not enable this queue as the new design without replacing that behavior. |
+| `fPendHold` / timer path | `showPending` (1385) replaces pending holds and releases superseded ones; timer transfers pending -> local `taken` and clears pending only when record allocation succeeds (981-982). | Timer (985-1003) clears old retiring on a non-sync tick, calls `present`/`noteShown`, then transfers shown -> retiring and taken -> shown. This path assumes timer pacing rather than confirmed retirement for its non-sync release. Sync `swap` and `showDirect` also clear/drop pending. |
+| GPU imports and jobs | `GPU:SweetGPUBuffer::import` (315) prepares/retains the descriptor and retains the surface; selector 3 obtains retained buffers for its job. | `retireJobs` (628) unlinks completed jobs under client lock, does upkeep and drops job references outside it; import `free` unmaps/completes/releases memory and surface (366). Frame holds and job holds are independent. |
+| Pool and wrapped storage | `SURF:create` pool block (1032) reserves `allocSize + 64*bytesPerRow` for tile overrun padding. `GPU:sweet_gpu_pool_take/give` serialize the shared allocator. Wrapped imports prepare the descriptor; `sweet_surface_pin/unpin` (1659/1672) are separate wiring holds. | `SURF:SweetSurface::free` (302) returns pool storage only at last reference; allocation rollback gives it back at 1055. Owned GPU buffers allocate/return through their own poolPA paths in `GPU:create/free`. A new queue/ticket must balance both object and wiring holds, including failure paths. |
+
+All assignments/clears of `fPendHold`, `fShowHold`, `fRetireHold`, `fQHeld` in this
+base occur in the ledger's swap, timer, presenter, show and retire paths; the saved
+site inventory includes each one. There is no extra power-off hold drain to rely on.
+
+`gpuSeqno` starts at zero (`SweetSurface.h:init`); successful selector-3 submission
+sets it for every listed non-readonly imported surface (`GPU:908`). It is **not
+cleared on completion**, and it does not describe work still in TC or deferred
+submits. Readonly here is the import's access permission, not precise per-job GL
+write tracking. When the inline BO list cannot fit, Darwin sends nbo=0; the kernel
+job's `all` mode maintains caches but has no listed surfaces to update/protect.
+S4 needs a successful explicit final frame fence even in that case.
+
+`drawn` is separate: initialized zero, set by RedwoodGPU's submit to its own fence
+(`RedwoodGPU.cpp:1132`). `topaz_surface_drawn` (227) consults it only with nonnull
+`gGPULock`; jasmine's SweetGPU does not populate it. It is no substitute for
+SweetGPU completion or render tickets.
+
+### Flush ordering and the target identity gap
+
+`sweetca.c:w_Flush` (469) calls `shadow_write_back`, then `glFinish`; `w_Finish`
+and `w_FinishObjectAPPLE` retain that same full synchronization. A successful
+shadow write-back locks the destination IOSurface, binds its temporary readback
+FBO, does synchronous `glReadPixels`, unlocks and restores the previous FBO
+(`shadow_write_back`, 1508). Multiple dirty shadow targets can be processed.
+Those CPU copies and readbacks remain synchronous even in a pipeline mode.
+
+For in-place targets, `w_FramebufferTexture2D` (777) records **FBO -> texture**;
+`bind_surface` (1589) imports by IOSurface ID but does **not** save a durable
+texture -> IOSurface map. It calls `copy_forget` for a successful in-place import.
+Only copied/shadow textures retain `sca_copy.s`. Therefore `w_Flush` cannot today
+reliably identify the presented IOSurface from its wrapper state. The current FBO
+can also be an offscreen target or restored FBO; assuming it is the scanout target
+is unproven. S4 must define attachment/import/delete/rebind/context handling and
+collect the actual dirty surface set, with a synchronous fallback for unknown
+targets; marking whichever surface happens to be bound is insufficient.
+
+The exact Mesa sequence, checked in the pristine patched files:
+
+1. `u_threaded_context.c:tc_callback` (5303) queues fn/data in command order
+   (`asap=false`); it does not own or free arbitrary callback data for the caller.
+   `tc_flush` (3666) with `PIPE_FLUSH_ASYNC` dispatches a TC batch and can return
+   before driver execution. Deferred fences may not yet have a kernel seqno.
+2. `sweetgl.c:sgl_kick` (469) queues `sgl_kick_driver`, then async-flushes TC.
+   The callback flushes the **underlying driver pipe**, obtains a fence, checks
+   it with timeout zero, and releases it. Calling the TC wrapper recursively from
+   that callback would be wrong.
+3. `freedreno_fence.c:fence_flush` (33) resolves TC readiness and flushes its
+   batch; `fd_fence_flush` in `drm/freedreno_pipe.c` (278) calls
+   `fd_pipe_sp_flush` and waits for the submit-ready queue fence. The latter
+   flushes the merged deferred submits and, if threaded submits are enabled,
+   waits for the submit worker's kernel-call progress. This is a **submission
+   drain**, despite the zero GPU timeout; it is not a no-wait operation.
+4. `darwin_pipe.c:flush_submit_list` (103) merges BOs/IBs, calls selector 3 and
+   stores the returned kernel fence. The zero-time fence result can be false
+   simply because the GPU is busy. Worse, `freedreno_ringbuffer_sp.c:
+   fd_submit_sp_flush_execute` (233) ignores the backend return status and still
+   advances `last_submit_fence`. S4 needs an explicit error/status path; neither
+   callback return nor `darwin_last_kfence` (a global diagnostic) proves this
+   frame submitted successfully. A failed or no-op flush must not reuse an old
+   fence as proof for a new generation.
+
+A mode-2 completion callback must run after **all frame writes and shadow work**,
+drain the correct pipe, publish successful fence+generation with proper locking,
+and own its data/surfaces until acknowledged or cancelled. For mode 1 the same
+successful drain must finish before SwapEnd; the GPU wait may then move to the
+presenter. `glFlush` alone satisfies neither contract. Tickets marked at `w_Flush`
+can protect the later SwapEnd, but cannot retroactively protect an external CPU
+reader between earlier asynchronous draws/kicks and that mark. S4 must scope
+that promise or mark pending before the first affected asynchronous write.
+Marking pending before a same-thread shadow `IOSurfaceLock` can self-deadlock;
+shadow write-back must finish first or have a defined owner-aware protocol.
+
+### Invariants checked against current code; required coverage
+
+| Invariant | Current evidence / gap | Required mechanism for S4-S7 |
+| --- | --- | --- |
+| Fully submitted and complete before display reads/flip | `SURF:sweet_surface_cpu_access` (1705), `FB:directPresent` (1833), `present`/`composeFit`: only stored seqno is checked. The 100 ms GPU wait's return is discarded and helper returns void. | Pending generation + successful final fence; fallible ready/completion check shared by direct scanout and every copy source. A timed-out frame must not be shown/copied as complete. |
+| No GPU write while scanning/retiring | `FB:sweet_fb_gpu_write_wait` (1510) only applies to scaler + swapwait=1, waits retiring up to 50 ms, and immediately returns **2 for shown**. `GPU:selector 3` counts it but still submits. | Couple CA reuse permission to flip progress and protect retiring until confirmed latch. Define rejection/recovery for unexpected shown writes; blindly sleeping the only driver thread can deadlock the later frame that would replace it. Cover unlisted-BO submissions too. |
+| Correct SwapWait tokens | `FB:swapWait` (1481) mode 1 compares `fEndID`, mode 2 `fShownID`, with signed wrap differences. `noteShown` (1443) sets end at present, not Begin. Begin alone increments `fSwapID` (2173). | In queue mode enqueue is not completion. Track successful flip, actual latch and dropped tokens separately. Keep zero/initial/wrap behavior explicit; zero is also a latch-field sentinel. A future ID currently succeeds via never-begun exception; genuine pending Begin IDs must never use that escape. Dropped last frame cannot remain busy forever waiting for an unrelated later ID. |
+| Separate reuse authorization from physical retirement | Mode-1 older-than-`fEndID` can authorize CA while replacement latch is outstanding; retiring write wait bridges it today. Mode 2 waits for a later `fShownID`. | Either use latch-based reuse or prove program-based reuse plus effective write guard. Queueing a third frame must not overwrite outstanding latch state. Preserve all scanning/retiring references across timeouts. |
+| Storage and in-use held until every consumer ends | Ledger above: references prevent last-free; +0x18 only reports in-use. Pool give is tied to last-free. No ticket owner yet. | Separate render/job, queue, scanout and pin references; one release per transfer/cancel. A dropped ticket is not quiescent GPU work: retain/quarantine until late submissions/completion cannot touch freed storage. |
+| CPU access and cache coherency | `SURF:trapLock` (1737) waits stored seqno unless AvoidSync; trapUnlock marks cpuDirty/seed for writes. `GPU:sweet_gpu_upkeep` (585) handles lazy cpuDirty/gpuDirty; `darwin_bo_cpu_prep` does no cross-process implicit sync. | Pending wait before normal CPU access, then completion and existing cache upkeep. Preserve AvoidSync and read-only unlock behavior; do not treat IOSurfaceLock as a scanout writer mutex. Define simultaneous producers and ticket owner access. |
+| Bounded queue/latency and explicit failure | Legacy queue depth 2 includes active head and silently drops on 200 ms admission timeout; SwapEnd wrapper returns success because `swap` is void. | One waiting frame beyond the active display transaction, with explicit in-progress/latch accounting and bounded admission. Carry error/drop state and wake CA/ticket waiters, with counters; no success watermark for a frame never programmed. |
+| Every wait sleeps; no locks held across dependencies | Current FB polls 100 us; `bsd/dev/sweet_gpu.c:sweet_gpu_wait` polls 50 us. Submit can spin for ring space under `gpu_lock` up to 200000*10 us. | S5 covers its stated FB polling scope only. GPU/ticket waits need separate sleep work; do not claim invariant 7 achieved by S5. Test/recheck conditions under the same lock as wait registration to prevent lost wakeups. Never hold FB/queue/client/pool locks while waiting for another path to progress. |
+| Both pipeline modes can be disabled | Existing boot-args and GALLIUM_THREAD fallback are not a versioned ticket capability handshake. | Boot-arg/env gating plus capability negotiation: new library on old kernel falls back to full finish. Context/connection teardown must cancel/wake tickets. Keep Finish/readback/shadow semantics intact. |
+
+### Exceptional paths and prior failures
+
+- **Latch timeout is not latch evidence.** `retireLatched` uses CTL clear or
+  **50 ms elapsed**, then releases retiring and advances shown. `swap` and
+  `showDirect` also stop polling after 25 ms. S5 preserves historical timeouts
+  for its isolated sleep change; the new asynchronous protocol must specify a
+  fail-closed recovery/quarantine policy. Never relabel event 15 as a real latch.
+  Existing event 14 observes CTL clear; jasmine still has no physical frame-counter
+  mapping. The audit cannot validate the hardware signal from source alone.
+- **Power-off/on:** selector 12 sets `fPowerOff`, `fFadeStep`, `fDirty` and controls
+  panel/WLED (`FB:2246`). Jasmine's off timer keeps the last frame and returns
+  before normal retirement (`FB:906`); it does not cancel a queue or release all
+  display ownership. WLED off alone does not prove scanout stopped. Sync `swap`
+  has no universal power-off rejection. S4 needs a serialized display epoch,
+  explicit drain/cancel and resume behavior; no holding a lock while joining the
+  presenter or waiting for a callback that needs that lock.
+- **Console/panic:** normal console tick flips kernel buffers; `present` toggles
+  `fConsShown`/console-paused state. `sweet_cons_show` (1772) programs console MMIO
+  without locks. New presenter work must not undo a takeover; use a normal-path
+  ownership epoch and a panic escape that never sleeps/acquires ordinary locks.
+  Panic is terminal, so retaining storage is preferable to unsafe cleanup there.
+- **Multiple layers / partial redraw:** `present` synchronizes each enabled source
+  before `composeFit`; direct scanout accepts one whole compatible GPU-pool surface.
+  Tickets must cover all source writes, and queue records must own all four layers.
+  Copied frames protect the kernel back buffer separately from those sources.
+  S2's third-buffer allocation does not prove that untouched pixels/history for
+  partial redraw are valid: preserve CA's page/seed semantics and test damage
+  reuse; do not rotate in an arbitrary freshly allocated target.
+- **Task 14 remains open:** `fd_bo_fini_common` invokes Darwin buffer free under
+  Mesa `table_lock`; kernel selector 2 replaces a client table entry under `fLock`,
+  which can invoke `SweetGPUBuffer::free`/SMMU unmap. Longer queue/ticket lifetimes
+  can move last-free to a presenter, callback or job-retirement thread; they do
+  not fix the observed minutes-long selector-2 freeze. Defer last-reference release
+  outside new state/queue locks, keep exact buffer/pool/job accounting and capture
+  the existing census on a freeze. No new root cause is claimed.
+- **Task 5 fix must survive:** patched `freedreno_context.c:fd_context_flush`
+  transfers the old fence to the replacement through `last_fence` and explicitly
+  clears `old->batch`. `fd_fence_destroy` does not do that cleanup. Do not keep a
+  batch alive via new frame-fence ownership or replace a fence without this fix;
+  retain references rather than borrowing raw fence/batch pointers.
+- **Client exit, cancellation and wrap:** current `GPU:clientClose` (470) retires
+  all jobs with `everything=true` and flushes buffers without a new completion
+  wait. New tickets need connection ownership, a generation/epoch and a terminal
+  error path for missing callbacks; late ready must not clear newer pending or
+  revive a cancelled frame. Numeric surface ID and global last seqno are
+  insufficient identity. Swap/token arithmetic must stay within a defined signed
+  half-range; avoid zero-sentinel collision at wrap/reset.
+
+**S4 handoff:** revise the proposed design using these requirements, decide
+flip-versus-latch reuse and cancellation semantics, define a reliable dirty-target
+and successful-submit contract, then present the concrete design/test plan for
+user approval. Include a bounded way to resolve S2's private-policy uncertainty;
+do not declare G1 passed from allocation possibility alone. S5's isolated sleep
+change remains independently scoped; it cannot be represented as fixing all
+these lifecycle gaps. No source implementation, CI run, build, phone access,
+capture, boot or installation occurred in S3. No measured speedup claimed.
