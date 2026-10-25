@@ -1,5 +1,16 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 user scope correction: frame time first
+
+User explicitly excludes Wallpaper from the current scope. Goal: identify CPU vs
+GPU vs RAM-speed limitation and the highest-payoff frame-time improvement. Task 5
+is first for this goal; do not continue the Wallpaper investigation from the prior
+handoff. Latest usable Control Center sample: primary display on CPU ~89% of its
+4 s window, Mesa ~64% of that CPU; GPU fence waits ~65 ms. Home A invalid. DDR
+1296->1804 previously gave no measurable UI gain (historical, not a fresh sweep).
+Next: remaining per-draw state/program emission and batch setup/finalization CPU
+cost after the already-installed active-sampler fix. No phone access in this turn.
+
 ### 2026-10-25 jasmine framebench first device session complete
 
 User made phone available in fastboot. [Results/priorities](jasmine/PERF-FRAMEBENCH-20261025.md).

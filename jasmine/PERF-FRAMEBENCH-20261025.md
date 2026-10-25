@@ -1,11 +1,13 @@
 # First framebench device session — 2026-10-25
 
-**Priority: investigate task 20's Wallpaper stability/memory problem first.**
-The user reports system freezes, and this session confirms wallpaper-service
-crashes/restarts with rapid growth in surface backing and wired memory. The
-captured window does **not** prove exhaustion or a leak. For sustained animation,
-task 5 remains the strongest measured renderer opportunity. Investigate background
-service CPU alongside it, before committing to scheduler or presentation changes.
+**User scope clarification: frame time is the goal; task 5 is first.** Wallpaper
+was incidental context, and the user explicitly excludes it from the current work.
+The usable Control Center sample strongly supports CPU-side rendering as the main
+limit: primary display on CPU ~89% of the sampled four seconds, Mesa ~64% of that
+CPU time. Prioritize remaining per-draw state/program emission and batch setup/
+finalization after the already-installed active-sampler fix. Background-service
+CPU is a secondary lead. Wallpaper observations below are separate diagnostic
+history, not the priority for this task.
 
 ## What ran
 
@@ -127,7 +129,8 @@ substantial background CPU as an investigation lead. Both saved captures were
 reanalyzed offline with verified library identity recorded in their manifests.
 **28 offline tests pass.** No further kernel build or benchmark run was needed.
 
-Recommended work order for this current root: **20 stability/memory diagnosis**,
-then **5 renderer CPU**, with **21 background-service diagnosis** alongside that
-work; **17 shader-cache feasibility** addresses first-use hitches. The old task
-ranking is not proof against the current plugin-enabled configuration.
+For the user's frame-time goal, prioritize **5 renderer CPU**, then reassess the
+remaining critical path. **21 background-service diagnosis** is a secondary lead;
+**17 shader-cache feasibility** addresses first-use hitches. Task 20 is outside
+the current scope. The old task ranking is not proof against the current
+plugin-enabled configuration.
