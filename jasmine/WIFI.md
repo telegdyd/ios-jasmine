@@ -308,3 +308,42 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   3 s teardown (`launchd quiesce complete` before `vfs_unmountall`), so something there took > 3 s;
   j93 printed no `didn't act on SIGTERM/SIGKILL` within ~17 s. The j0096 dump will say what, on the
   next hang. All images from now on carry it.
+
+## 2026-10-25 03:10-04:00 CET (j0098): no auto-join explained, a reboot stall caught
+
+- Known networks are stored fine: `/private/var/preferences/SystemConfiguration/com.apple.wifi.plist`,
+  "List of known networks" holds TelekNet (WPA2, ch 13, password date, lastJoined), and wifid loads it
+  after the first unlock ("Fetched 1 known networks from the plist").
+- **wifid's own log file**: `LoggingFileEnabled = true` in that plist (wifid notices the change live) makes it
+  write `/private/var/logs/wifimanager.log` (WFLog lines). It showed auto-join running on every trigger and
+  ending in `__WiFiDeviceManagerPostAutoJoinNotification: auto-join failed with no network found. Unsuitable
+  network count:0`, while the driver heard TelekNet (-52 dBm) in every scan.
+- CoreWiFi's `AUTO-JOIN:` lines go only to os_log. Not reachable on stderr: `applog_name`/`sweetnull`,
+  `OS_ACTIVITY_DT_MODE`, `ACTIVITY_LOG_STDERR` in the launchd job with `StandardErrorPath` to a file (file made,
+  stays empty); `applog=1` (all daemons' stdio to the console) killed the USB log after ~17 s.
+  **What works: the persisted unified log.** `tools/tracev3-strings.py` decompresses a tracev3
+  (LZ4 `bv41` chunksets) and prints its strings; the arguments (`%@`) are plain text, so CoreWiFi's lines come
+  out nearly whole. Files: `/private/var/db/diagnostics/{Persist,Special}/*.tracev3` (pull with sweet-fs).
+- **The cause**: `AUTO-JOIN: Found matching network (TelekNet ... rssi=-57 ...)`, then `Join candidate
+  'wifi.network.ssid.TelekNet' is not allowed (error=(1 'Below minimum RSSI threshold') ... rssi=-54`.
+  wifid's check (`sub_10010b0a0`, the one that logs `__WiFiDeviceManagerGetAutoJoinThreshold`) compares the
+  network's RSSI with a threshold that `WiFiDeviceOpen` copies from Apple80211 **RSSI_BOUNDS (106)**, which we
+  refused (`wifid gets 106 (RSSI_BOUNDS), value 0, 16 bytes: REFUSED`): the threshold stayed 0 dBm.
+  IO80211 (`Apple80211CopyValue` -> per-type getter, jump tables at 0x1d3ef54a0 / 0x1d3ef565e, type 106 at
+  0x1d3ec6394) reads 16 bytes: u32 version 1, then s32 RSSI_MIN, RSSI_MAX, RSSI_THRESHOLD (keys checked
+  through the CFString pointers).
+- j0098: 106 answered: min -100, max 0, threshold -80 dBm (our choice). Build run 40156300246.
+  **j98-wlan (04:02-04:07): auto-join works.** `wifid gets 106 (RSSI_BOUNDS) ... answered`; nobody touched
+  the phone: wifid sent ASSOCIATE itself (TelekNet, the stored key as a 32-byte PMK), joined at t=11.8 s after
+  the Wi-Fi start (keys in 58 ms), DHCP, then traffic (`wifi data` at t=101 s: 3125 sent, all ok; 3397 up to
+  en0; -54 dBm). The reboot while joined was clean (wlan off 251 ms, stop-ack 49 ms); parked 82%.
+- **Reboot stall caught by j0096 (round j97-aj2, unjoined, 03:2x)**: `RootUnmount notification` took 30 s
+  (IOKit's timeout, then the reboot went on). The reboot thread waits in `IOSystemShutdownNotification ->
+  IOService::waitQuietWithOptions`; an exiting process (pid 57, at the second dump pid 26) sits in
+  `IOSurfaceRootUserClient::clientClose -> OSArray::flushCollection -> SweetSurfaceRef::free ->
+  IOMemoryMap::taggedRelease -> IORecursiveLockLock -> lck_mtx_lock_contended`. So a surface client's close
+  blocks on a lock someone holds during shutdown: the lead for handoff task 2 (log
+  `ios-jasmine/logs/netlog-j97-aj2-reboot.txt`, kernel `xnu/out-jasmine-j97`, slide 0).
+- Phone state changed for these rounds (to undo when done): com.apple.wifi.plist `LoggingFileEnabled` true
+  (original in `ios-jasmine/research/wifi/autojoin/com.apple.wifi-orig-j97.plist`, gitignored); launchd.plist was changed for wifid's
+  stderr and **put back** (original `ios-jasmine/research/wifi/autojoin/launchd-orig.plist`, 793735 bytes, root:80 0644).

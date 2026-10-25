@@ -1,7 +1,8 @@
-# Wi-Fi on jasmine: handoff (2026-10-25, 02:57 CET)
+# Wi-Fi on jasmine: handoff (2026-10-25, 04:10 CET)
 
 Status: **Wi-Fi works under iOS: joined, DHCP address, internet (round j86-wlan, 23:35, user-confirmed).**
-wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms, it rejoins by itself on boot),
+wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms) and, since j0098 (round j98,
+04:03), **auto-joins the known network on boot** with no tap,
 configd runs DHCP on en0, traffic both ways. The factory MAC comes from persist. Still test images only
 (`wifi=1` boot arg, nothing flashed). The USB link runs on 192.168.7.0/24 (j0088/j0089: the phone hands
 the PC 192.168.7.1 over DHCP) and **survives Wi-Fi** (j89c, 01:02). **Leaving while joined works** (j0092,
@@ -81,7 +82,9 @@ Details of every round are in `jasmine/WIFI.md`; this file is the summary plus w
 | j0095 | one LQM event with the link-up event (j93: bars gray ~15 s after the join until the first 5 s tick); built (run 40147609435), not yet on the phone |
 | j0096 | reboot watchdog: `SDW step` lines in reboot_kernel/proc_shutdown, a dump with kernel backtraces when a step takes 6 s; rounds j96a-d (joined) all clean |
 | j0097 | no sweet_sample samples during a reboot or of exiting processes; `sdw_sample=1` forces one into the kill phase (j97-smp: fine, so not the cause) |
+| j0098 | **auto-join**: RSSI_BOUNDS (106) answered (min -100, max 0, threshold -80 dBm); unanswered, wifid's auto-join threshold was 0 dBm and CoreWiFi refused every known network ("Below minimum RSSI threshold"); j98: joined by itself at t=11.8 s |
 | j0092 | **the leave fix**: mac80211's order (`ieee80211_set_disassoc`): deauth, tx drain, PEER_DELETE until HTT unmap + PEER_DELETE_RESP, then VDEV_DOWN, VDEV_STOP until VDEV_STOPPED (VDEV_DOWN with the peer still there asserted in wlan_vdev.c) |
+| tools (branch `wifi`) | `tools/tracev3-strings.py`: strings of a pulled unified-log tracev3 (LZ4 chunksets decompressed); CoreWiFi/wifid os_log arguments come out as text (WIFI.md, j0098) |
 | tools (branch `jasmine`, 8fda077) | `mkadt.py --wlan`: the `/arm-io/wlan` node launchd needs to start wifid; `mkimg.sh` passes it when EXTRA_ARGS has `wifi=1` |
 | phone rootfs (23:19) | configd's default network configuration written to `/private/var/preferences/SystemConfiguration/preferences.plist` (Set "Automatic", service "Wi-Fi" on en0, DHCP + IPv6 automatic); configd never made it because it starts before en0 exists |
 
@@ -163,13 +166,16 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
    stuck step and the blocked threads (symbolicate: address - slide against
    `xnu/out-jasmine-<tag>/kernel.development.sweet`). Rounds no longer need a dedicated test: any
    joined round's reboot is one. Blocks task 8 until understood.
+   **Lead (j97-aj2, 2026-10-25 ~03:23, an unjoined reboot)**: `RootUnmount notification` took 30 s (IOKit's
+   timeout saved it): the reboot thread in `IOSystemShutdownNotification -> waitQuietWithOptions`, an exiting
+   process in `IOSurfaceRootUserClient::clientClose -> SweetSurfaceRef::free -> IOMemoryMap::taggedRelease ->
+   IORecursiveLockLock` (contended). Details in WIFI.md (j0098 section); find who holds that lock.
 3. (Done 02:40, j0093/j0095: gray Wi-Fi icon.) The bars come from Apple80211 event 39 (LQM), see WIFI.md.
    j0095 (bars right at the join) is built but not yet tested.
-4. **No auto-join** (user, 00:00): wifid does not rejoin TelekNet on boot; every join was a tap in Settings
-   (the j85 note said otherwise, corrected). Look at how wifid stores known networks (com.apple.wifi.plist in
-   /private/var/preferences/SystemConfiguration, the keychain for the password, which needs our AKS/securityd
-   shims) and which Apple80211 requests or events it waits for before an auto-join (e.g. the refused 383/386,
-   link events, a scan with the network's name).
+4. (Done 2026-10-25 04:03, j0098: auto-join.) wifid refused TelekNet as "Below minimum RSSI threshold"
+   because RSSI_BOUNDS was unanswered. Left on the phone from the search: com.apple.wifi.plist
+   `LoggingFileEnabled` true (wifid writes `/private/var/logs/wifimanager.log`; useful, set it false to undo).
+   Not tried: a second known network (preference order), the AP going away and coming back.
 5. **configd's default configuration on a fresh rootfs**: the live write (23:19) fixed this phone. For other
    installs either put the same `preferences.plist` into the rootfs setup (`tools/sweet-root-tweaks.py` or the
    install script), or make en0 exist before configd starts. Both versions are kept in
