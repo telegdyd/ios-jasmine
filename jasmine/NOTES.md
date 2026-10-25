@@ -1,5 +1,21 @@
 # jasmine (Mi A2) working notes
 
+**2026-10-25 15:27 Budapest: task 16 S2 complete, offline only.** Report commit
+`8d72bb7`; [S2 result](PERF-TASK16-PLAN.md#s2-result-2026-10-25-complete).
+20H392 AppleCLCD has three page records and dynamic Buffer allocation; historical
+two IOSurface IDs do not establish a hard allocation limit. A third surface is
+conditional on can_update_ flags/cooldown; its use by today's workload is unproven.
+Main layer preparation/rendering follows the availability gate, so no independent
+pre-gate overlap established. SwapWait uses Begin-issued page IDs; SwapEnd returns
+status with no selector out-data. G1 stays open; no implementation approval or
+speedup claimed. 9,916 instruction encodings and eight relevant vtable slots
+verified against the local cache. Ignored reproduction: research/t16/s2-reproduce.py,
+s2-tables.py, s2-*.txt, s2-validation.json. No phone access, source implementation,
+CI/build/boot/capture/install. Phone state inherited from S0, not checked: temporary
+framebench99 iOS boot; no lock held. S1's final-library equivalence caveat remains.
+Next: S3 lifecycle audit, then S4 resolves conditional feasibility before S6/S7.
+This supersedes older task ordering below.
+
 **2026-10-25 15:14 Budapest: task 16 S1 complete, offline only.** Report commit
 `0ded7e7`; [full result and tracker](PERF-TASK16-PLAN.md#s1-result-2026-10-25-complete).
 Saved threaded2: flush drain + GPU-fence waits 19.16 ms/arrival in CC A and

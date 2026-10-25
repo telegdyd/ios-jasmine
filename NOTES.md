@@ -1,5 +1,23 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### 2026-10-25 15:27 Budapest: task 16 S2 complete, offline only
+
+Report commit `8d72bb7`: [S2 result](jasmine/PERF-TASK16-PLAN.md#s2-result-2026-10-25-complete).
+Existing 20H392 cache: AppleCLCD inherits a normal three-page ring, not a fixed
+two-IOSurface allocation limit. Dynamic Buffer allocation can supply a third
+surface, conditional on can_update_ policy (input flags, page flags, +0x364
+cooldown); current-workload private state is unobserved. Main layer preparation
+and render work follow the availability gate; no substantial pre-gate overlap
+established. SwapWait uses stored SwapBegin IDs; SwapEnd has status but no
+selector out-data. G1 remains open, neither failed nor implementation-approved.
+Reproduction/evidence ignored under research/t16/s2-*: 9,916 selected instruction
+encodings match cache bytes and eight relevant vtable slots pass. No phone access,
+new capture, source implementation, CI, build, boot, install or measured speedup.
+Phone state inherited from S0: temporary framebench99 iOS boot, no lock held;
+not freshly checked. S1 provenance caveat remains. Next: S3 lifecycle audit,
+then resolve conditional G1 feasibility with the user in S4 before S6/S7. This
+supersedes the earlier S2-next handoff; no unrelated worktree files changed.
+
 ### 2026-10-25 15:14 Budapest: task 16 S1 complete, offline only
 
 Report committed as `0ded7e7`: [S1 result](jasmine/PERF-TASK16-PLAN.md#s1-result-2026-10-25-complete).
