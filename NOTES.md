@@ -1,3 +1,18 @@
+### 2026-10-25: task 23 taken; pre-build plan presented
+
+Task 23 scope and sequence: [plan](jasmine/PERF-TASK23-PLAN.md). Starting HEAD
+`8bd08b9`, branch `jasmine`, tracked worktree clean before documentation.
+Read current GPU report/task rules; older task-16 HOLD entries below are historical
+and do not describe the later mode-2 GPU measurement rounds. Blur mip-chain
+failure remains a hypothesis. Source observation: storage/mipmap/attachment
+wrappers forward levels; TRACE=2 stops after 60 draws and may miss CC.
+Next: offline saved-pass/source/QuartzCore audit, then a concrete bounded
+capture design before building. User requested plan before build. No source
+implementation, local build, CI dispatch, phone lock/access, boot, capture or
+installation in this milestone; no measured gain. Device state not rechecked.
+Plan/handoff commit uses subject `docs: plan task 23 Control Center blur work`.
+Untracked local evidence preserved; task 23 remains open.
+
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
 ### 2026-10-25 15:42 Budapest: task 16 G1 evaluated, HOLD
