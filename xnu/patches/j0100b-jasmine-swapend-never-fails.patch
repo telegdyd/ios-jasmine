@@ -1,0 +1,99 @@
+From a3384d1df9881daf48436848fa289f7e8634650c Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 18:29:40 +0100
+Subject: [PATCH] jasmine: SwapEnd never fails in queue mode (j0100b)
+
+j0100 refused a SwapEnd whose record had layer-mask bits above the four layers
+(CoreAnimation first frame after boot) with kIOReturnBadArgument, then fell back
+to synchronous presentation. CoreAnimation stops presenting after a failed
+SwapEnd, so the screen stayed black for the whole boot, and since the check also
+ran after the fallback, every later SwapEnd failed the same way. Records the
+queue cannot take are now only non-candidates and go the synchronous way. A token
+mismatch, a GPU readiness timeout or an admission timeout falls back and still
+shows the frame; if the presenter is still busy 200 ms after the fallback, the
+frame is dropped as in the legacy queue, and SwapEnd returns success.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 35 ++++++++++++++-------------
+ 1 file changed, 18 insertions(+), 17 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index c51e845..07d7bb5 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1309,18 +1309,14 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		}
+ 	}
+ 	SweetPresentScope scope = { this, false };
++	/*
++	 * CoreAnimation stops presenting after a SwapEnd error (black screen): a protocol fault
++	 * falls back to the synchronous path and still shows this frame. Records the queue cannot
++	 * take (several layers, a missing surface) are not queue candidates and go that way too.
++	 */
+ 	if (fProtocol) {
+-		if ((mask & ~15u) != 0) {
+-			sweet_hold_set(held, false);
+-			return rejectFrame(get32(rec, 0x50), 12, kIOReturnBadArgument);
+-		}
+-		for (uint32_t i = 0; i < 4; i++) {
+-			if ((mask & (1u << i)) && held[i] == NULL) {
+-				sweet_hold_set(held, false);
+-				return rejectFrame(get32(rec, 0x50), 12, kIOReturnNotFound);
+-			}
+-		}
+ 		uint64_t start = mach_absolute_time(), ns = 0;
++		bool fellBack = false;
+ 		for (;;) {
+ 			IOLockLock(fLock);
+ 			bool token = !fQueueActive;
+@@ -1330,8 +1326,8 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			}
+ 			if (!token || (fQueueActive && serial <= fAcceptedSerial)) {
+ 				IOLockUnlock(fLock);
+-				sweet_hold_set(held, false);
+-				return rejectFrame(get32(rec, 0x50), 11, kIOReturnAborted);
++				rejectFrame(get32(rec, 0x50), 11, kIOReturnAborted);
++				continue;
+ 			}
+ 			bool queued = fQueueActive && queueCandidate(rec, held);
+ 			bool writers = false;
+@@ -1376,8 +1372,8 @@ AppleCLCD::swap(const uint8_t *rec)
+ 					}
+ 					if (ready) { break; }
+ 					if (mach_absolute_time() >= until) {
+-						sweet_hold_set(held, false);
+-						return rejectFrame(get32(rec, 0x50), 2, kIOReturnTimeout);
++						rejectFrame(get32(rec, 0x50), 2, kIOReturnTimeout);
++						break;
+ 					}
+ 					sweet_fb_pause(1000);
+ 				}
+@@ -1386,8 +1382,13 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			IOLockUnlock(fLock);
+ 			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+ 			if (ns >= 200 * NSEC_PER_MSEC) {
+-				sweet_hold_set(held, false);
+-				return rejectFrame(get32(rec, 0x50), 1, kIOReturnTimeout);
++				if (fellBack) {
++					sweet_hold_set(held, false);    /* (the presenter is stuck: this frame is lost) */
++					return kIOReturnSuccess;
++				}
++				rejectFrame(get32(rec, 0x50), 1, kIOReturnTimeout);
++				fellBack = true;
++				start = mach_absolute_time();
+ 			}
+ 			sweet_fb_pause(1000);
+ 		}
+@@ -2788,7 +2789,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				}
+ 			}
+ 			IOLockUnlock(fFB->fLock);
+-			if (ret != kIOReturnSuccess) { ret = fFB->rejectFrame(get32(rec, 0x50), 11, ret); break; }
++			if (ret != kIOReturnSuccess) { fFB->rejectFrame(get32(rec, 0x50), 11, ret); }
+ 		}
+ 		ret = fFB->swap(rec);
+ 		break;
+-- 
+2.47.3
+
