@@ -279,3 +279,32 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   reboot_kernel between proc_shutdown(TRUE) and vfs_unmountall: the rest of proc_shutdown, audit_shutdown,
   sync(), or IOSystemShutdownNotification(RootUnmount). The USB log dying within seconds suggests the whole
   system froze (a CPU stuck on a bus access?), not one blocked thread.
+
+## 2026-10-25 02:00-02:57 CET (j0096-j0097): reboot watchdog, no hang caught
+
+(Clock note: DST ended at 03:00 CEST tonight; times in this section are CET, the j93 section above is CEST.)
+- **The "USB log dies within seconds" was the capture, not the phone**: `modem-round.sh` recorded the
+  reboot with `sweet-netlog.py --for 20`. Now `--for 150`, and it greps the `SDW` lines.
+- j0096: reboot watchdog. `reboot_kernel` and `proc_shutdown` name each step (`SDW step NAME at +N ms`); a
+  kernel thread prints `SDW in NAME for N ms` every 2 s (lines stop = whole system stopped); 6 s in one
+  step it dumps the reboot thread's kernel backtrace and every process left with its threads (state,
+  wait event, frame-pointer kernel backtrace, raw addresses + slide), 20 s in also kernel_task.
+  (`exception.c` `sweet_sample_kthread`/`_ktask`, `sweet_sample.c` `sweet_shutdown_step`.)
+- Good reboot, every round: SIGTERM wait ends at ~0.65 s, sync 0.19 s, vfs_unmountall(nonsystem) at
+  ~0.87 s, vfs_unmountall(system) at ~0.9 s, then the USB link goes with the hfs unmount.
+- **j96 (02:20), j96b (02:27), j96c (02:34), j96d (02:42): four joined reboots, all clean** (user joined
+  TelekNet each time). Joined reboots overall: 3 hung (j83, j85, j93), 6 fine (j89c, j92, j96a-d).
+- Lead tested and dropped: in j83 and j85 the last logged line is `SMP --- sample N` (sweet_sample.c,
+  every 120 s) printed right after `launchd quiesce complete`, with no process line after it. j96c/d
+  timed the reboot onto a sample from the PC (landed in the modem stop, ~1 s jitter). j0097 adds
+  `sdw_sample=1`, one forced sample 100 ms into the SIGTERM wait: **j97-smp (02:54) sampled backboardd and
+  SpringBoard mid-kill and rebooted fine.** So the sampler was a victim of an already stuck shutdown (its
+  header came >= 3 s in, then it blocked too, before `vm_shared_region_get`/task lock), not the cause.
+  j0097 also stops sampling once a reboot starts and skips exiting processes (harmless; its comment
+  overstates the j83/j85 link).
+- Also not it: UsageTrackingAgent's SIGTRAP at shutdown (in most good reboots too), configd sig 9,
+  `ifnet_detach_final ... utun2` (every reboot).
+- What the hung ones share: the kernel's kill phase was still running when launchd finished its own
+  3 s teardown (`launchd quiesce complete` before `vfs_unmountall`), so something there took > 3 s;
+  j93 printed no `didn't act on SIGTERM/SIGKILL` within ~17 s. The j0096 dump will say what, on the
+  next hang. All images from now on carry it.

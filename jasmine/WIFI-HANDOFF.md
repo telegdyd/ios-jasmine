@@ -1,4 +1,4 @@
-# Wi-Fi on jasmine: handoff (2026-10-25, 02:45)
+# Wi-Fi on jasmine: handoff (2026-10-25, 02:57 CET)
 
 Status: **Wi-Fi works under iOS: joined, DHCP address, internet (round j86-wlan, 23:35, user-confirmed).**
 wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms, it rejoins by itself on boot),
@@ -79,6 +79,8 @@ Details of every round are in `jasmine/WIFI.md`; this file is the summary plus w
 | j0093 | **status bar bars**: Apple80211 LQM event 39 every 5 s while joined (layout from IO80211 `_dispatchlqmChangedEvent`), live RSSI (joined AP's beacons + `rx_ppdu_start.rssi_comb`), NOISE (17) answered -95 dBm; j93 (02:38): bars white (user) |
 | j0094 | modem stop without mss_restart: the modem AXI port never halts on sdm660 (Linux: "port failed halt" on every stop), the board reset takes the MSS |
 | j0095 | one LQM event with the link-up event (j93: bars gray ~15 s after the join until the first 5 s tick); built (run 40147609435), not yet on the phone |
+| j0096 | reboot watchdog: `SDW step` lines in reboot_kernel/proc_shutdown, a dump with kernel backtraces when a step takes 6 s; rounds j96a-d (joined) all clean |
+| j0097 | no sweet_sample samples during a reboot or of exiting processes; `sdw_sample=1` forces one into the kill phase (j97-smp: fine, so not the cause) |
 | j0092 | **the leave fix**: mac80211's order (`ieee80211_set_disassoc`): deauth, tx drain, PEER_DELETE until HTT unmap + PEER_DELETE_RESP, then VDEV_DOWN, VDEV_STOP until VDEV_STOPPED (VDEV_DOWN with the peer still there asserted in wlan_vdev.c) |
 | tools (branch `jasmine`, 8fda077) | `mkadt.py --wlan`: the `/arm-io/wlan` node launchd needs to start wifid; `mkimg.sh` passes it when EXTRA_ARGS has `wifi=1` |
 | phone rootfs (23:19) | configd's default network configuration written to `/private/var/preferences/SystemConfiguration/preferences.plist` (Set "Automatic", service "Wi-Fi" on en0, DHCP + IPv6 automatic); configd never made it because it starts before en0 exists |
@@ -153,14 +155,14 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 1. (Done 2026-10-25 02:00, j0090-j0092: the leave while joined. Peer before vdev, as mac80211; see WIFI.md
    j90-j92. Also done: the USB link with Wi-Fi joined, j0087-j0089.) Not tried yet: the AP ending the link
    (deauth from the AP, peer kickout) and a failed join (wrong password), which run the same leave.
-2. **Reboot while joined hangs, about 3 in 5** (j83, j85, j93 hung; j89c, j92 fine; unjoined never).
-   The modem port part is settled (j0094): the port never halts on sdm660 and Linux logs `port failed
-   halt` on every stop too, so no mss_restart. But j93 hung **without** mss_restart, so the reset was not the
-   cause. The hang is after `launchd quiesce complete` and before `vfs_unmountall(nonsystem) start`
-   (reboot_kernel: rest of proc_shutdown, audit_shutdown, sync(), IOSystemShutdownNotification RootUnmount),
-   and the USB log dies within seconds (whole system frozen?). Next: log lines around each of those
-   steps (and per IOService shutdown handler), then joined reboot rounds (each hang = the user's button reset).
-   Blocks task 8: a default image would hang on about half the reboots while joined.
+2. **Reboot while joined hangs, 3 of 9** (j83, j85, j93 hung; j89c, j92, j96a-d fine; unjoined never).
+   Not the modem port (j0094), not the sweet_sample sampler (j97-smp forced a sample into the kill
+   phase: fine). The hung ones had a kill phase > 3 s (launchd quiesced first); good ones finish the
+   whole kernel sequence in < 1 s. **j0096's watchdog is in every image now**: on the next hang wait
+   ~2 min (the round records 150 s), the `SDW dump` lines in `logs/netlog-<tag>-reboot.txt` name the
+   stuck step and the blocked threads (symbolicate: address - slide against
+   `xnu/out-jasmine-<tag>/kernel.development.sweet`). Rounds no longer need a dedicated test: any
+   joined round's reboot is one. Blocks task 8 until understood.
 3. (Done 02:40, j0093/j0095: gray Wi-Fi icon.) The bars come from Apple80211 event 39 (LQM), see WIFI.md.
    j0095 (bars right at the join) is built but not yet tested.
 4. **No auto-join** (user, 00:00): wifid does not rejoin TelekNet on boot; every join was a tap in Settings
