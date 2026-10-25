@@ -7,10 +7,19 @@ Like a6xx: st/mesa validation runs on the application thread, freedreno draw
 emission, batch and submit work on the driver thread.  The threaded context
 needs real constant buffers, so prefer them on a5xx too.  GALLIUM_THREAD=0
 keeps the single-threaded context.
+
+Fix a batch leak that the threaded context exposes: a flush without TC (each
+texture barrier) can give a batch a fence holding a reference to it without
+flushing; a later TC flush then replaced batch->fence, destroying that fence
+with its batch reference still held, so the flushed batch kept its batch-cache
+slot forever.  CoreAnimation's barriers filled all 32 slots within its first
+frames and fd_batch_from_fb() spun.  The replaced fence now drops the reference
+and follows the new fence.
 ---
  src/gallium/drivers/freedreno/a5xx/fd5_context.c | 6 +++++-
+ src/gallium/drivers/freedreno/freedreno_context.c | 15 +++++++++++++++
  src/gallium/drivers/freedreno/freedreno_screen.c | 5 +++--
- 2 files changed, 8 insertions(+), 3 deletions(-)
+ 3 files changed, 23 insertions(+), 3 deletions(-)
 
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_context.c b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
 index 3fda7cb..35b0e0b 100644
@@ -19,7 +28,7 @@ index 3fda7cb..35b0e0b 100644
 @@ -96,5 +96,9 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv,
     fd5_ctx->border_color_uploader =
        u_upload_create(pctx, 4096, 0, PIPE_USAGE_STREAM, 0);
- 
+
 -   return pctx;
 +   /* As on a6xx: the frontend's validation and the driver's draw emission,
 +    * batch and submit work then run on separate threads.  GALLIUM_THREAD=0
@@ -27,13 +36,38 @@ index 3fda7cb..35b0e0b 100644
 +    */
 +   return fd_context_init_tc(pctx, flags);
  }
+diff --git a/src/gallium/drivers/freedreno/freedreno_context.c b/src/gallium/drivers/freedreno/freedreno_context.c
+--- a/src/gallium/drivers/freedreno/freedreno_context.c
++++ b/src/gallium/drivers/freedreno/freedreno_context.c
+@@ -56,6 +56,21 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
+     * one created earlier
+     */
+    if ((flags & TC_FLUSH_ASYNC) && fencep) {
++      /* A flush without TC (e.g. fd_texture_barrier()) may already have
++       * given this batch a fence, holding a reference to the batch, and
++       * returned without flushing it.  Replacing batch->fence would destroy
++       * that fence with the reference still held (fd_fence_destroy() does
++       * not drop it), so the flushed batch would keep its batch-cache slot
++       * forever.  Drop the reference here, on the driver thread, and let
++       * the old fence wait for the new one, which covers the same batch.
++       */
++      struct pipe_fence_handle *old = batch->fence;
++      if (old && old != *fencep && old->batch == batch) {
++         assert(!old->last_fence);
++         fd_pipe_fence_ref(&old->last_fence, *fencep);
++         fd_pipe_fence_set_batch(old, NULL);
++      }
++
+       fd_pipe_fence_set_batch(*fencep, batch);
+       fd_pipe_fence_ref(&batch->fence, *fencep);
+
 diff --git a/src/gallium/drivers/freedreno/freedreno_screen.c b/src/gallium/drivers/freedreno/freedreno_screen.c
 index e33674e..f3bf3b6 100644
 --- a/src/gallium/drivers/freedreno/freedreno_screen.c
 +++ b/src/gallium/drivers/freedreno/freedreno_screen.c
 @@ -386,9 +386,10 @@ fd_init_screen_caps(struct fd_screen *screen)
     /* this is probably not totally correct.. but it's a start: */
- 
+
     /* Supported features (boolean caps). */
 -   if (is_a6xx(screen)) {
 +   if (is_a5xx(screen) || is_a6xx(screen)) {
@@ -44,6 +78,6 @@ index e33674e..f3bf3b6 100644
         */
        caps->prefer_real_buffer_in_constbuf0 = true;
     }
--- 
+--
 2.47.3
 
