@@ -8,11 +8,14 @@ approved by the user on 2026-10-24; implementation has not started.
 
 ## Current state and priorities
 
+- **2026-10-25: the GPU is now the limit for Home and memory-bound** (65% of busy cycles RAM-starved, every batch in
+  sysmem at 1125x2436): [GPU time report](PERF-GPU-TIME-20261025.md), new **tasks 23-25** in
+  [PERF-TASK23-25-GPU-TRAFFIC.md](PERF-TASK23-25-GPU-TRAFFIC.md). DDR 1804 is the default since then (task 10).
 - Sustained UI motion is still mainly limited by CPU rendering work. Continue **task 5**;
   its first optimization is installed, but the remaining work is open. Investigate
   **task 16** after task 18 measures the linked CPU/GPU/swap/latch timeline.
 - The latest documented default is **4 Gold cores at 1747 MHz, GPU 588 MHz,
-  DDR about 1296 MHz**. Slot b is j0070 since 05:58 (kernel CI `40059091430`);
+  DDR 1804 MHz** (since 2026-10-25 22:57; was the bootloader's 1296). Slot b is j0070 (kernel CI `40059091430`), rebuilt with `sweetddr=1804`;
   installed Mesa is `8877ff1` / CI `40053566696`. Earlier profiles use j69b;
   record the actual software and workload when making a new comparison.
 - The old 49.3 ms/frame breakdown below predates tasks 1, 4, 7 and the first task-5
@@ -73,12 +76,14 @@ stays here until its remaining scope is finished and the result is on by default
 | [3](#3-gpu-clock-and-validation) | GPU stock clock levels and validation | Levels up to 647 MHz work; default is 588. Historical GPU-wait gain ~0.5-0.6 ms; long top-level validation open, task 14 unresolved. | j0060 |
 | [5](#5-cut-mesas-per-draw-cpu-cost) | Cut Mesa per-draw CPU cost | Partial: active-sampler barrier fix installed; +3% home / +5% Control Center swap arrivals, not confirmed display FPS. More CPU work open. | Mesa only |
 | [6](#6-make-8-cores-beat-4-j0052-tuning) | Make 8 cores beat 4 | Older rounds: 96-128 ms vs 81 ms on 4 Gold; repeat on the current baseline. | j0061 reserved |
-| [10](#10-load-based-ddr-governor-ceiling-1804-mhz-on-by-default) | Load-based DDR governor | Open; latency/power opportunity, no measured UI gain from fixed 1804. | j0065 reserved |
+| [10](#10-load-based-ddr-governor-ceiling-1804-mhz-on-by-default) | Load-based DDR governor | Partial: **fixed 1804 is the default since 2026-10-25 22:57** (`mkimg.sh` `sweetddr=1804`, slot b): with the GPU memory-bound it cut Home B 37.5 -> 32.9 ms and CC 53 -> 41 ms. The load-following governor (idle power) is still open. | j0065 reserved |
 | [11](#11-gpu-power-management-hardware-clock-gating-idle-power-down-load-based-clock) | GPU clock gating, idle power-down and DCVS | Open; power/heat target. Clock transitions must account for task 14. | j0066 reserved |
 | [12](#12-cpu-idle-power-power-collapse-instead-of-wfi-unused-cores-off) | CPU/cluster power collapse; unused cores off | Open; idle power target. | j0067 reserved |
 | [13](#13-thermal-limits-tsens-driven-caps-on-cpu-and-gpu-clocks) | Thermal clock limits | Open; sustained performance and heat; depends on tasks 2 and 11. | j0068 reserved |
 | [16](#16-pipeline-rendering-and-presentation-using-surface-completion-fences) | Pipeline rendering and presentation | Planned 2026-10-25: [step plan](PERF-TASK16-PLAN.md). After the threaded context, `glFinish` (GPU fence + driver drain) is the display thread's largest wait. G1 passed 2026-10-25 16:21 (CA uses a third swap surface when the previous page is busy); S4 design approved 16:46; next build 1 (S5 + S7, mode 1). Benefit unmeasured. | j0100 (build 1) and j0101 (build 2, conditional) reserved 2026-10-25 |
 | [17](#17-persistent-shader-cache) | Persistent shader cache | New, unstarted; target first-use/reboot compilation hitches, not warm lookup. Feasibility and gain unvalidated. | Mesa/build; no reservation |
+| [23](PERF-TASK23-25-GPU-TRAFFIC.md#23-control-center-blur-at-reduced-resolution) | Control Center blur at reduced resolution | New 2026-10-25: CA's CC blur runs full-size ping-pong passes (1127x2438/1131x2442), up to 11.9 ms per draw. Verify the mip-chain hypothesis first. | Mesa/libsweetca |
+| [24](PERF-TASK23-25-GPU-TRAFFIC.md#24-fewer-batches-per-frame-then-gmem-for-the-big-ones) | Fewer batches per frame, then GMEM | New 2026-10-25: GPU memory-bound (65% RAM-starved), all sysmem; ~30 batches/Home frame make GMEM lose (gm1: Home B 41 -> 56 ms). The big Home lever. | Mesa/libsweetca; kernel only if the VA pad must grow |
 
 ## Open bug fixes
 
@@ -101,6 +106,7 @@ performance work, with its own implementation and validation.
 | [19](#19-profile-springboards-cpu-work) | Profile SpringBoard CPU work | Home-swipe main-thread load ~711-743 ms/s in the earlier baseline; identify layout/animation/IPC costs and whether they delay output. |
 | [20](#20-investigate-memory-and-cache-growth) | Investigate memory and cache growth | Buffer/surface/memory high-water marks, allocation stalls and pressure across repeated transitions; Wallpaper exhaustion remains a hypothesis. |
 | [21](#21-profile-cold-start-boot-and-storage-waits) | Profile cold-start, boot and storage waits | Separate storage, service/IOKit waits and compilation; five-second syscfg fallback waits are an existing lead. |
+| [25](PERF-TASK23-25-GPU-TRAFFIC.md#25-render-at-or-nearer-the-panel-resolution) | Render at (or nearer) the panel resolution | CA renders 1125x2436 for a 1080x2160 panel (fitted to 997x2160): ~27% unseen pixel work. Feasibility and options for the user. |
 
 Task 6's initial 4/8-core comparison is also diagnostic, but its scheduler implementation
 remains under performance. Task 16's shared timeline measurement is tracked in task 18;
@@ -116,7 +122,7 @@ Outstanding validation is called out in the detailed results below.
 | [1](#1-move-the-display-scale-off-the-cpu--done) | Display scaling off the CPU | Done 2026-10-23, j0058, default on phone; present 7-40 us. Original same-day before/after profile not captured. |
 | [4](#4-make-mesas-buffer-caches-hit--done) | Mesa buffer caches | Done 2026-10-23, default on phone; buffer-path profile share 17.8% -> ~6%; 12-minute handle counts flat. |
 | [7](#7-stop-the-xpc-retry-loops--done) | XPC retry loops | Done 2026-10-24, root changes installed; idle daemon load 2.16 cores -> ~0.003, TSENS ~8 C lower. Moving-frame gain not isolated. |
-| [9](#9-ddr-clock-vote-through-the-rpm--experiment-complete) | DDR clock vote and bottleneck experiment | Experiment complete 2026-10-23, j0064; 1296 -> 1804 gave no measured UI gain. Full 10-minute top-rate soak outstanding; governor is task 10. |
+| [9](#9-ddr-clock-vote-through-the-rpm--experiment-complete) | DDR clock vote and bottleneck experiment | Experiment complete 2026-10-23, j0064; 1296 -> 1804 gave no measured UI gain then (CPU-bound frame). Re-measured 2026-10-25 with the GPU the limit: -12% Home, -23% CC; 1804 now the default (task 10). Full 10-minute top-rate soak outstanding; governor is task 10. |
 | [15](#15-launchservices-store-persistence--closed-premise-disproved) | LaunchServices store persistence | Closed 2026-10-24: persisted store found in the actual InternalDaemon container, survives reboot. No persistence repair made. |
 | [22](#22-post-boot-accessory-sync-cpu--closed-normal-behavior) | Post-boot accessory sync CPU | Closed 2026-10-25: accessoryupdater + trustd sync accessory metadata from iCloud after each boot (~0.8 core), gone by 24 min. Normal; no action. Benchmarks must not start inside it. |
 
@@ -136,7 +142,7 @@ Outstanding validation is called out in the detailed results below.
 
 Gold is fixed at 1747 MHz on XBL's voltage and Silver at XBL's 1382 MHz; no CPU DVFS or thermal
 throttling is implemented. CPU idle uses WFI. The GPU now defaults to 588 MHz and has no normal idle
-power-down or hardware clock gating. DDR is fixed at about 1296 MHz. Task 7 removed the large daemon
+power-down or hardware clock gating. DDR is fixed at 1804 MHz since 2026-10-25 (the bootloader leaves 1296), the RPM buses at their maximum. Task 7 removed the large daemon
 retry load, but tasks 2 and 10-13 still cover power and heat.
 
 Record idle and moving power before/after: PM660 fuel-gauge battery current (j0010;
@@ -327,6 +333,10 @@ faster writes and copies, and halves the GPU's RAM-starved time (task 9, round j
 gain, but other work (app launch, decompression, anything memory-heavy) may. Fixed 1804 holds the DDR and, after
 j0064's handoff, every RPM bus at maximum even when idle. Stock Android scales instead, and so should we: full rate
 while busy, lower while idle.
+
+**Since 2026-10-25 22:57 the images vote a fixed 1804 MHz** (`tools/g2/mkimg.sh` `sweetddr=1804`, slot b rebuilt):
+the GPU became the limit and is memory-bound ([PERF-GPU-TIME-20261025.md](PERF-GPU-TIME-20261025.md): Home B
+37.5 -> 32.9 ms, Control Center 53 -> 41 ms). What remains here is the governor, for idle power.
 
 **Now (j0064, `bsd/dev/sweet_ddr.c`, GPU.md "j0064").** The DDR rate is fixed: the bootloader's 1296 MHz, or whatever
 the last `ddr MHZ` / `sweetddr=` vote set. The RPM does not watch load itself; it applies the highest vote of its

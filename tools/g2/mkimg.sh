@@ -5,6 +5,8 @@
 # shim/out/shim-boot-TAG-gpu.img (sweetgpu=4 at 266 MHz, debug logging on). 588 MHz (the top level at the
 # bootloader's CX corner) freezes backboardd at startup in 2 of 4 boots above 266 (j60b, t4d2; 0 of 54 at 266):
 # back to 266 until PERF-TASKS task 14 fixes that stall; a live "gpu clk 588" after startup is fine (j60a).
+# DDR at its stock top rate, 1804 MHz (sweetddr=, j0064): the GPU is memory-bound during motion
+# (PERF-GPU-TIME-20261025.md: Home B 37.5 -> 32.9 ms, Control Center 53 -> 41 ms over 1296).
 # EXTRA_ARGS="..." appends boot-args (e.g. sweetenv=...), GPUDBG=0 turns sweetgpu_debug off,
 # VARIANT=name writes shim/out/shim-boot-TAG-name.img instead of -gpu.
 # RO=1: root read-only (no ufsrw=1 rootrw=1), for a first boot of a risky kernel.
@@ -18,7 +20,7 @@ B="debug=0xc serial=3 cpus=$CPUS keepsyms=1 -noprogress rd=ufsroot0 ufsroot=user
 [ "${RO:-0}" = 1 ] && B=${B/ ufsrw=1 rootrw=1/}
 # wifi=1 in EXTRA_ARGS: the ADT gets the wlan node (launchd starts wifid only with it)
 python3 tools/mkadt.py shim/out/jasmine-$T.adt --highmem $([ "${AMP:-0}" = 1 ] && echo --amp) $(case " ${EXTRA_ARGS:-} " in *" wifi=1 "*) echo --wlan;; esac) >/dev/null
-for v in ${VARIANT:-gpu}:" sweetgpu=4 gpumhz=588 sweetwdt=20 sweetgpu_debug=${GPUDBG:-1}${EXTRA_ARGS:+ $EXTRA_ARGS}"; do n=${v%%:*}; extra=${v#*:}
+for v in ${VARIANT:-gpu}:" sweetgpu=4 gpumhz=588 sweetddr=1804 sweetwdt=20 sweetgpu_debug=${GPUDBG:-1}${EXTRA_ARGS:+ $EXTRA_ARGS}"; do n=${v%%:*}; extra=${v#*:}
   python3 tools/mkpayload.py $K shim/out/jasmine-$T.adt shim/out/payload-$T-$n.bin --cmdline "$B$extra" >/dev/null
   bash shim/build.sh shim/out/payload-$T-$n.bin 2>&1 | grep -E "warn|error" || true
   cp shim/out/shim-boot.img shim/out/shim-boot-$T-$n.img; ls -la shim/out/shim-boot-$T-$n.img

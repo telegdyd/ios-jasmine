@@ -216,6 +216,12 @@ Read this first. Plan: [PLAN.md](PLAN.md). Hardware: [HARDWARE.md](HARDWARE.md).
   first boot `logs/netlog-j70-slotb.txt`: boot_b marked successful, no panic, GPU self-test OK). PosterBoard starts
   Gradient/Collections/Extragalactic/Emoji/Pride/Unity/Photos/Aegir posters at boot; CollectionsPoster renders
   7400 (WWDC_2022) and PosterBoard saves gallery snapshots (`research/wp-j70-posters.txt`).
+- **Slot b = j0070 + DDR 1804 since 2026-10-25 22:57** (`shim/out/shim-boot-j70-slotb.img` rebuilt by `mkimg.sh`
+  with its new default `sweetddr=1804`; cmdline otherwise identical; the previous image is
+  `shim-boot-j70-slotb-ddr1296.img`). First boot `logs/netlog-j70ddr-slotb.txt`: `SWEET DDR: sweetddr=1804: ok,
+  1296 -> 1804 MHz`, GPU self-test OK, UI drawn, boot_b marked successful, no panic. Why: the GPU is memory-bound
+  during motion (PERF-GPU-TIME-20261025.md: Home B 37.5 -> 32.9 ms, Control Center 53 -> 41 ms). Cost: DDR and the
+  RPM buses stay at their top rate when idle too (power not measured; the load-following governor is task 10).
 - **OPEN, new on j0070: Settings > Wallpaper freezes the phone** (user, ~06:01). `logs/netlog-j70-freeze2.txt`:
   PosterBoard[188] and AegirPoster abort (SIGABRT, uncaught ObjC exception on the main queue: `_objc_terminate`
   <- `_dispatch_client_callout` <- `FBSSerialQueue`); AegirPoster respawns and aborts 5x, then jetsam-style SIGKILLs;
