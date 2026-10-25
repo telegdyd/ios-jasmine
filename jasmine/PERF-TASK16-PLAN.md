@@ -1414,3 +1414,8 @@ backboardd jobs included).
 
 Next: per-job GPU timing (CP timestamps around each submit) to find what makes a
 Home frame cost ~40 ms of GPU, then attack the largest pass.
+
+Done 2026-10-25 22:20 (`PERF-GPU-TIME-20261025.md`): the GPU is memory-bound (65% of
+busy cycles RAM-starved) because every batch renders in sysmem at 1125x2436; DDR 1804
+cuts Home B to 32.9 ms and CC to 40.9 ms; GMEM loses until a frame has far fewer
+batches; Control Center's blur runs at full resolution.
