@@ -1,4 +1,4 @@
-# Wi-Fi on jasmine: handoff (2026-10-25, 04:10 CET)
+# Wi-Fi on jasmine: handoff (2026-10-25, 05:20 CET)
 
 Status: **Wi-Fi works under iOS: joined, DHCP address, internet (round j86-wlan, 23:35, user-confirmed).**
 wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms) and, since j0098 (round j98,
@@ -14,8 +14,8 @@ Details of every round are in `jasmine/WIFI.md`; this file is the summary plus w
 
 | What | Where |
 |---|---|
-| Patches | `xnu/patches/j0080*.patch` (j0080 .. j0080z), `j0081-*.patch`, branch `wifi` of telegdyd/ios-jasmine, worktree `ios-jasmine-wifi/` |
-| XNU source | WSL `~/xnu-wifi`, branch `wifi`, HEAD = j0081 (one commit per patch; `git format-patch -1 --stdout` > the patch file) |
+| Patches | `xnu/patches/j0080*.patch` (j0080 .. j0080z), `j0081-*.patch` .. `j0099-*.patch`, branch `wifi` of telegdyd/ios-jasmine, worktree `ios-jasmine-wifi/` |
+| XNU source | WSL `~/xnu-wifi`, branch `wifi`, HEAD = j0099 (one commit per patch; `git format-patch -1 --stdout` > the patch file) |
 | Main code | `iokit/Kernel/arm/TopazModem.cpp` (topaz's modem/Wi-Fi stack, made per board by `board_setup()` / `soc.jasmine`) |
 | Other touched files | `bsd/dev/sweet_rpm.c` (per-client rail votes, `sweet_rpm_kvp`), `osfmk/arm64/sleh.c` (SError details in the panic line), `osfmk/arm64/sweet_osm.c` (MSS regs on the command port) |
 | Test scripts | `ios-jasmine/research/wifi/` (gitignored): `modem-round.sh`, `linux-modem-life.sh`, `nura-extract.sh`, `nura-journal.sh`, `fatls.py`, `rd32.c` |
@@ -83,6 +83,7 @@ Details of every round are in `jasmine/WIFI.md`; this file is the summary plus w
 | j0096 | reboot watchdog: `SDW step` lines in reboot_kernel/proc_shutdown, a dump with kernel backtraces when a step takes 6 s; rounds j96a-d (joined) all clean |
 | j0097 | no sweet_sample samples during a reboot or of exiting processes; `sdw_sample=1` forces one into the kill phase (j97-smp: fine, so not the cause) |
 | j0098 | **auto-join**: RSSI_BOUNDS (106) answered (min -100, max 0, threshold -80 dBm); unanswered, wifid's auto-join threshold was 0 dBm and CoreWiFi refused every known network ("Below minimum RSSI threshold"); j98: joined by itself at t=11.8 s |
+| j0099 | **reboot stall fix**: IOSurfaceAddress wraps no longer wired for the surface's life (persistent descriptor, prepare+complete as the check; SweetGPU import and RedwoodGPU `sweet_surface_pin` wire while they use it); reboot dump: mutex owners, gIOMemoryLock owner, VM object paging/activity + pager, 32-frame backtraces 8 a line, `SDW pinned client memory` at RootUnmount; build run 40159794543, j99 clean |
 | j0092 | **the leave fix**: mac80211's order (`ieee80211_set_disassoc`): deauth, tx drain, PEER_DELETE until HTT unmap + PEER_DELETE_RESP, then VDEV_DOWN, VDEV_STOP until VDEV_STOPPED (VDEV_DOWN with the peer still there asserted in wlan_vdev.c) |
 | tools (branch `wifi`) | `tools/tracev3-strings.py`: strings of a pulled unified-log tracev3 (LZ4 chunksets decompressed); CoreWiFi/wifid os_log arguments come out as text (WIFI.md, j0098) |
 | tools (branch `jasmine`, 8fda077) | `mkadt.py --wlan`: the `/arm-io/wlan` node launchd needs to start wifid; `mkimg.sh` passes it when EXTRA_ARGS has `wifi=1` |
@@ -158,7 +159,16 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 1. (Done 2026-10-25 02:00, j0090-j0092: the leave while joined. Peer before vdev, as mac80211; see WIFI.md
    j90-j92. Also done: the USB link with Wi-Fi joined, j0087-j0089.) Not tried yet: the AP ending the link
    (deauth from the AP, peer kickout) and a failed join (wrong password), which run the same leave.
-2. **Reboot while joined hangs, 3 of 10** (j83, j85, j93 hung; j89c, j92, j96a-d, j98 fine; unjoined: one 30 s stall, below).
+2. **(Done 2026-10-25 05:10, j0099; counted solved until it recurs.)** The j97-aj2 stall was not Wi-Fi: backboardd's and
+   SpringBoard's IOSurface closes waited for IOKit's `gIOMemoryLock` while a kernel thread sat in `vm_object_destroy`
+   waiting for an object's paging/activity count; the only long-lived such count in our code was the lifetime wire of
+   IOSurfaceAddress wraps. j0099 unwires them (GPU users wire while they use them) and makes the dump name mutex
+   owners, the gIOMemoryLock owner and VM object counts; every reboot prints `SDW pinned client memory` at RootUnmount
+   (j99: 0 / 0 / 0, joined reboot clean, home screen fine). Not proven that j83/j85/j93 were the same. If a stall
+   comes back, the `SDW dump` names the holder. Side issue left open (user: only if it repeats): after j99's reboot
+   the phone **powered off** instead of resetting; likely the PMIC PS_HOLD reset type, which our reset never sets
+   (WIFI.md, j0099 section). Old notes for this task below.
+   Reboot while joined hung 3 of 10 (j83, j85, j93 hung; j89c, j92, j96a-d, j98 fine; unjoined: one 30 s stall, below).
    Not the modem port (j0094), not the sweet_sample sampler (j97-smp forced a sample into the kill
    phase: fine). The hung ones had a kill phase > 3 s (launchd quiesced first); good ones finish the
    whole kernel sequence in < 1 s. **j0096's watchdog is in every image now**: on the next hang wait
@@ -193,4 +203,5 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
 7. Cosmetic: en0's link is named `wcn3988` (topaz's chip) and the ADT node says `jasmine,wcn3990`; name it per board.
 8. **Done means on the phone**: make Wi-Fi the default (no `wifi=1`, ADT wlan node always on jasmine), drop or gate
    the diagnostics (j0080o trace, j0080y SMMU step lines, j0084 frame lines), build, and flash slot b **with the
-   user's OK**. Only after task 2 is solid: a reboot hang on the default image would need a button reset every time.
+   user's OK**. Task 2 is counted solved (j0099), so this is unblocked; a reboot hang on the default image would
+   need a button reset every time, so watch the `SDW pinned client memory` line on the first default boots.

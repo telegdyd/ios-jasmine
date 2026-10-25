@@ -347,3 +347,55 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 - Phone state changed for these rounds (to undo when done): com.apple.wifi.plist `LoggingFileEnabled` true
   (original in `ios-jasmine/research/wifi/autojoin/com.apple.wifi-orig-j97.plist`, gitignored); launchd.plist was changed for wifid's
   stderr and **put back** (original `ios-jasmine/research/wifi/autojoin/launchd-orig.plist`, 793735 bytes, root:80 0644).
+
+## 2026-10-25 (j0099): the j97-aj2 stall read, wrapped surfaces unwired
+
+Not a Wi-Fi bug: the stall is between our IOSurface code and IOKit's memory lock (aj2 was an unjoined reboot).
+Whether j83/j85/j93's joined hangs are the same is not proven (their capture ended at 20 s).
+- **Symbolicated dump** (`netlog-j97-aj2-reboot.txt`, j97 kernel, slide 0; `ipsw macho a2s` per address):
+  - reboot thread tid 209 = `ud_cmd_thread -> reboot_kernel -> IOSystemShutdownNotification -> waitQuietWithOptions`.
+  - pid 57 = **backboardd**, pid 26 = **SpringBoard** (SMP lines in the boot log). Both: `IOSurfaceRootUserClient::clientClose
+    -> OSArray::flushCollection -> SweetSurfaceRef::free -> IOMemoryMap::taggedRelease -> IORecursiveLockLock ->
+    lck_mtx_lock_contended`, the same lock (wait 0xfffffff3d94e3c48, hint 1 = kernel mutex): `gIOMemoryLock`.
+    backboardd's last `SSDROP` was surface **1**, the panel framebuffer (physical 0x9d400000, device memory).
+  - kernel tid 110 (an early thread_call thread, by its tid): `mach_memory_entry_no_senders -> vm_map_copy_discard ->
+    vm_object_deallocate -> device_pager_last_unmap -> (device_pager_deallocate -> memory_object_destroy) ->
+    vm_object_destroy -> vm_object_paging_wait`, wait 0xfffffff0da277102 = object 0x...100 + event 2
+    (PAGING_IN_PROGRESS: paging_in_progress or activity_in_progress not 0). Frames past 8 were cut.
+  - vm_object_reaper (tid 217) waits the same way on object 0xfffffff0da0ef300.
+  - No thread in a page fault, nobody visibly holding the lock.
+- **Reading** (inference, not proven): kernel no-senders run inline, and every IOKit path to a device object's destroy holds
+  `gIOMemoryLock` (`IOMemoryMap::taggedRelease`/`unmap` wrap the whole free). Device mappings are filled completely at
+  map time (`populateDevicePager`), so faults never take the lock. A count that never drops with no thread in a fault is a
+  **UPL** (`vm_object_iopl_request` holds `activity_in_progress` until commit/abort; device-memory UPLs drop it fine).
+  In our code only two things keep one: `sweet_surface_use_task_memory` (IOSurfaceAddress wraps: prepared for the
+  surface's life; two in that boot, backboardd 512 B at 0x107ffc000 and 5 MB at 0x10fd78000) and `SweetGPUBuffer::import`.
+  A wrap's UPL ends only in `SweetSurface::free`, and every way there releases an `IOMemoryMap` first (`SweetSurfaceRef::free`
+  maps before the surface, `SweetSurface::free` its kernelMap before `complete()`): lock -> UPL -> free -> lock.
+  Not identified: whose UPL tid 110 waited for (8 frames, no lock owners).
+- **j0099** (`xnu/patches/j0099-jasmine-unwired-wraps-reboot-dump.patch`, `~/xnu-wifi` f7c66dd):
+  - wraps: `withAddressRange(... | kIOMemoryPersistent)` (memory entries made at creation, so the pages stay referenced
+    when the task unmaps them), `prepare()` + `complete()` only as the writable/read-only check. No lifetime wire.
+  - GPU users wire while they use it: SweetGPU import already did (`complete()` first in its free); RedwoodGPU (topaz)
+    pins with the new `sweet_surface_pin`/`unpin` around its physical-address use.
+  - dump: header, then `SDW <tag> waits: mutex owner tid N` or `waits: vm object ... paging P activity A pager NAME
+    contig/private/named`, then the backtrace 8 frames a line up to 32 (aj2: lines past ~270 characters lost their ends).
+    Each dump also prints `SDW IOKit memory lock: owner tid N, count C`.
+  - `SDW pinned client memory (RootUnmount notification): W wrapped surfaces alive, wired by G GPU imports and P pins`
+    on every reboot: G = P = 0 means no surface free can be what a VM object's destroy waits for.
+- Build run 40159794543 (j0099 applied; only the 4 usual blacktop patches skipped), image `shim-boot-j99-wlan.img`
+  (same arguments as j98). **j99-wlan (05:03-05:09)**: home screen, icons, wallpaper, dock drawn normally (user);
+  wraps without the lifetime wire: 6 logged (backboardd's 512 B LUT, five 180x180 icons, a 28x28); auto-join
+  TelekNet at t=12.2 s. **Joined reboot clean**: leave in 26 ms, wlan off 258 ms, stop-ack 51 ms, kill phase 0.92 s,
+  `SDW pinned client memory (RootUnmount notification): 0 wrapped surfaces alive, wired by 0 GPU imports and 0 pins`,
+  RootUnmount 1 ms, vfs_unmountall(system) at +1124 ms, log ends with the hfs unmount as in every good reboot.
+- **After that reboot the phone powered off** instead of resetting to fastboot (user: never happened before in this
+  project). The first j99 attempt at 05:01 already found it unreachable (no fastboot, no command port, r109 shell
+  172.16.42.1 silent). j0099 does not touch the reset. Likely, not checked: `sweet_reset_now`
+  (SweetPlatformExpert.cpp) does PSCI SYSTEM_RESET, then drops PS_HOLD, and writes only PON SOFT_RB_SPARE (0x88f,
+  fastboot); it never sets the PMIC's PS_HOLD reset type (pm660 PON 0x85a type, 0x85b enable bit 7; Linux's
+  pm8941-pwrkey writes HARD_RESET there on reboot and SHUTDOWN on poweroff). After a Linux poweroff the type stays
+  SHUTDOWN, and a PS_HOLD drop powers the phone off (memory: the 2026-10-02 Linux power-off had POFF reason PS_HOLD).
+  To confirm: PON regs in the r109 shell (`/sys/kernel/debug/regmap/0-00/registers`: 0x85a/0x85b, 0x8c0 PON_REASON1,
+  0x8c5 POFF_REASON1, 0x8c7 OFF_REASON). Fix if it is that: write HARD_RESET into 0x85a (0x85b off, wait, type, on)
+  before the reset. User: leave it until it happens again.
