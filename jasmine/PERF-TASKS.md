@@ -197,11 +197,15 @@ The new library is used from the next boot.
 - `bash tools/g2/profround.sh <ktag> <tag> "<boot-args>"` does the same with the j0057 sampling profile; the report
   is `tools/g2/prof.py` / `profsplit.py`. Keep profile windows short: the download runs at about 20 KB/s.
 - Compare against a baseline round from the same script on the same day. Rounds vary: use 2 rounds per variant.
-- **Mind the time since boot.** For the first minutes after every boot, accessoryupdater and
-  trustd sync accessory metadata from iCloud (~0.8 of the 4 Gold cores, gone by 24 minutes;
-  task 22). Rounds that boot fresh (`uiround.sh`, `profround.sh`) measure inside it: compare
-  only rounds started the same time after boot. For absolute numbers start 25+ minutes after
-  boot, and record the delay. All 2026-10-25 framebench captures started inside it.
+- **Check that the post-boot accessory sync has finished** before measuring. After every boot
+  accessoryupdater and trustd sync accessory metadata from iCloud for some minutes (~0.8 of
+  the 4 Gold cores; task 22). Take the phone lock, sample them for 3 s:
+  `python tools/g2/prof.py fetch research/<run>/precheck --secs 3 --tasks trustd,accessoryupdater`,
+  then in WSL `python3 tools/g2/prof.py report research/<run>/precheck --kernel <kernel symbols>`.
+  If either shows more than ~20 ms/s in "CPU time per process", wait a minute and check
+  again; start the round when both are idle, and note the check in the results. Fresh-boot
+  round scripts (`uiround.sh`, `profround.sh`) boot and play at once, inside the sync: use
+  them only to compare variants run the same way. All 2026-10-25 framebench captures ran inside the sync.
 - `osm-round.sh` already adds `sweetfb_sync=1` (the flicker fix) to every image.
 - Ask the user only for a final visual check.
 
@@ -741,4 +745,4 @@ boot (`research/t22/at-boot-plus`, 07:59:57) showed neither process busy.
 This is ordinary post-boot work that ends by itself, not a cause of slow frames once
 the phone has settled. Not investigated: the exact end time, and whether a stock iPhone
 also redoes the full sync on every boot. No change made. What remains is the benchmark
-rule under "Measuring": do not compare rounds started at different times after boot.
+check under "Measuring": sample the two processes and start only once they are idle.

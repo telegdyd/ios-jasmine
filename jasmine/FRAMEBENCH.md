@@ -21,12 +21,14 @@ From the repository root in Windows, with the phone unlocked and settled:
 python tools/g2/framebench.py run --out research/framebench/current --ui-ready --kernel xnu/out-jasmine-framebench99/kernel.development.sweet --lib xnu/out-mesa-t5active/libsweetca.dylib
 ```
 
-**Mind the time since boot.** For the first minutes after every boot, accessoryupdater
-and trustd sync accessory metadata from iCloud and take about 0.8 of the 4 Gold cores;
-it is gone by 24 minutes ([PERF-TASKS](PERF-TASKS.md) task 22, closed as normal).
-All 2026-10-25 captures started 2.5-4 minutes after boot, inside it. Compare only
-captures started the same time after boot; for absolute numbers start 25+ minutes
-after boot. Record the delay either way.
+**First check that the post-boot accessory sync has finished.** After every boot,
+accessoryupdater and trustd sync accessory metadata from iCloud for some minutes and take
+about 0.8 of the 4 Gold cores ([PERF-TASKS](PERF-TASKS.md) task 22, closed as normal). All
+2026-10-25 captures ran inside it. With the phone lock held, sample them for 3 s:
+`python tools/g2/prof.py fetch research/<run>/precheck --secs 3 --tasks trustd,accessoryupdater`,
+then in WSL `python3 tools/g2/prof.py report research/<run>/precheck --kernel <kernel symbols>`.
+If either shows more than ~20 ms/s, wait a minute and check again; start framebench when
+both are idle and note the check in the results.
 
 Use the actual installed library's matching symbol file; the example is the last
 documented production library, not independent verification of what is installed.
