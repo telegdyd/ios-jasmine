@@ -3,7 +3,7 @@
 Working plan for [PERF-TASKS](PERF-TASKS.md) task 16, written 2026-10-25 after the
 task-5 threaded context ([report](PERF-TASK5-THREADED-20261025.md)) made the
 per-frame `glFinish` the largest wait on CoreAnimation's display thread.
-**Status: S0 complete (2026-10-25); S1 not started.**
+**Status: S0 and S1 complete (2026-10-25); S2 next. G1 remains open.**
 Nothing here is measured yet unless a step's result says so.
 
 **How to use this file.** Each step below is sized for one agent. Take the next
@@ -20,10 +20,10 @@ first: phone lock, battery check, accessory-sync precheck, ground rules, and
 | Step | Work | Needs | Phone | Status | Owner / result |
 | --- | --- | --- | --- | --- | --- |
 | [S0](#s0-establish-the-baseline-and-bases) | Establish the baseline, source bases and patch number | — | read-only | done | Codex, 2026-10-25 15:01 Budapest; installed SHA256 `14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261`; slot b recorded j0070; base `bfb61629aa90e9e44d85ea929ddffbe6a5a78222`, `/home/teleg/xnu-t16` (`t16`); j0100 reserved. See S0 result. |
-| [S1](#s1-critical-path-budget-from-existing-captures) | Critical-path budget from existing captures | S0 | no | todo | |
+| [S1](#s1-critical-path-budget-from-existing-captures) | Critical-path budget from existing captures | S0 | no | done | Codex, 2026-10-25 15:14 Budapest; `research/t16/budget.py`, `budget.json`, `stacks.txt`; CC A flush drain + GPU wait 19.16 ms/arrival (36.8% occupancy), Home A 29.37 ms (52.3%). B/repeat unsampled. See S1 result. No new CI/boot. |
 | [S2](#s2-how-coreanimation-uses-its-swap-surfaces) | How CoreAnimation uses its swap surfaces | — | no | todo | |
 | [S3](#s3-surface-lifecycle-audit-and-invariants) | Surface lifecycle audit and invariants | — | no | todo | |
-| [G1](#gates) | Gate: is there enough overlap to win? | S1, S2 | — | open | |
+| [G1](#gates) | Gate: is there enough overlap to win? | S1, S2 | — | open | (a) supported by saved fix+dump capture, with final-library equivalence caveat; (b) awaits S2. No implementation approval inferred. |
 | [S4](#s4-design-review) | Design review with the user | G1, S3 | no | todo | |
 | [S5](#s5-kernel-sleep-instead-of-spin-in-the-present-path) | Kernel: sleep instead of spin in the present path | S0, S3 | yes | todo | |
 | [S6](#s6-kernel-render-tickets) | Kernel: render tickets (surface pending/ready) | S4 | — | todo | |
@@ -417,3 +417,152 @@ no collectors left running, no lock held. No flash, software installation,
 benchmark, clock change or new CI run. Accessory-sync profiling was unnecessary:
 S0 reads identity only and makes no performance measurement. S1 has not started.
 Results are kept here, per the user's instruction; NOTES.md files are unchanged.
+
+## S1 result (2026-10-25, complete)
+
+**G1(a): the saved capture supports a substantial wait opportunity.** In Control
+Center A, the display thread spends an estimated 1,475 ms of its 4 s window in
+`w_Flush`'s GPU-fence wait plus driver drain (36.8% of sampled display-thread
+occupancy); Home A spends 2,085 ms (52.3%). This supports continuing the offline
+feasibility investigation. It does not pass G1: S2 must establish useful work on
+the next frame or an achievable third surface. No kernel/Mesa change, phone
+access, new capture, build, CI run or boot was performed for S1.
+
+### Inputs, reproduction and limits
+
+- Capture: ignored `research/framebench/20261025-threaded2/`, kernel CI
+  `40160680219`, kernel SHA256 `f4f3695dc93c35acb5828140fb849d93640f5f94735d25ee6a8a6959929fb4af`.
+  Matching library: `xnu/out-mesa-t5tcfix/libsweetca.dylib`, CI `40169317271`,
+  SHA256 `bb543dc9b37fa10411ce87f609d34eec633575909257b5b98e0e7ef8949e0363`.
+  These agree with the capture manifest. Zero event/sample drops recorded.
+- S0's installed final library is **different bytes**: CI `40170072509`,
+  SHA256 `14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261`.
+  `git diff a9e95ec d400e26 --stat` identifies only diagnostic patch 0005:
+  a retry counter and batch-cache dump after 100,000 failed allocation attempts.
+  The task-5 report records no dump firing in this capture. The render/fence
+  implementation is equivalent by source; **performance equivalence to the
+  currently installed final binary is an inference, not a measurement of it**.
+- Reproduce from the repository root in WSL:
+  `python3 research/t16/budget.py`. Ignored outputs: `research/t16/budget.json`
+  (input hashes, counts, windows, job matches and totals) and `stacks.txt`
+  (symbolized supporting stacks). Script SHA256:
+  `cafd22f6320109b8228389c3e287d67536caa7fa59179a2c7fc013b1a75dfe7b`.
+  It uses existing `framebench.py` decoders and `prof.py` with local shared-cache
+  symbols; it never contacts the phone. Script and data remain outside git.
+- Event 2's `b` field specifies the sampling duration: 4,000 ms for Home A and
+  CC A; **zero for Home B, CC B and Spotlight repeat**. Missing CPU and detailed
+  job data in those three segments cannot be reconstructed offline. Their
+  presentation/write-wait events remain usable. Do not substitute A's CPU budget
+  for B or Spotlight repeat.
+- This capture started about 210 s after boot, during the now-understood
+  accessory-sync workload (task 22). Runnable estimates describe that contested
+  boot, not a settled-system performance prediction. Saved motion-only arrivals
+  are unvalidated presentation proxies, not measured display FPS.
+
+### Sample-window budget
+
+Normalize each sampled occupancy by **all swap arrivals in the same requested
+4 s window**, not by whole-phase or motion-only arrivals. Windows relative to
+capture start: Home A `[13.421073,17.421073)` s (71 arrivals), CC A
+`[24.531845,28.531845)` s (77). Observed sample spans are 3,998.156 and
+3,999.187 ms. Occupancy estimates use 2 ms per on-CPU sample and 5 ms per
+blocked/runnable census. These are average costs per arrival, not individually
+timed frames; asynchronous work and boundary-crossing frames prevent a literal
+additive critical-path interpretation.
+
+| Estimated ms per arrival | CC A | Home A | CC B / Home B / Spotlight repeat |
+| --- | ---: | ---: | --- |
+| Display thread on CPU, all code | 22.94 | 14.39 | unavailable |
+| Display thread driver drain inside `w_Flush` | 8.70 | 11.83 | unavailable |
+| Display thread GPU-fence wait inside `w_Flush` | 10.45 | 17.54 | unavailable |
+| Display thread runnable | 6.36 | 10.77 | unavailable |
+| Display thread other waits | 3.18 | 1.62 | unavailable |
+| Display thread other TC sync / other queue wait | 0.32 / 0.06 | 0 / 0 | unavailable |
+| `gdrv0` on CPU | 17.74 | 11.27 | unavailable |
+| `gdrv0` runnable | 7.92 | 7.32 | unavailable |
+| `gdrv0` write protection, event 19 wall time | 1.58 | 2.67 | see phase table below |
+| Inside SwapEnd, events 11->12 wall time | 0.0187 | 0.0192 | see phase table below |
+
+The last two rows **overlap** CPU/runnable/wait estimates and must not be added
+to them. Write protection currently spins and therefore need not appear as a
+blocked stack. Census and timer estimates have different sampling error: e.g.
+`gdrv0`'s CPU plus all census states sum to 4,376 ms in CC A, exceeding the
+4,000 ms window. Treat those states as approximate occupancy estimates.
+
+Driver drain is specifically a blocked `util_queue_fence_wait -> fence_flush ->
+fd_pipe_fence_finish -> st_glFinish -> w_Flush` stack (134 CC / 168 Home census
+samples). GPU-fence wait is `darwin_pipe_wait -> fd_pipe_fence_finish ->
+st_glFinish -> w_Flush` (161 CC / 249 Home). This corrects the old generic
+"shader-worker-wait" label: CC's 700 ms comprises **670 ms flush drain**, 25 ms
+TC texture-upload synchronization outside `w_Flush`, and 5 ms other queue wait.
+Only the 670 ms is attributed to the proposed per-frame drain removal.
+
+CC A totals: display CPU 1,766 ms, flush drain 670 ms, GPU wait 805 ms,
+runnable 490 ms; driver CPU 1,366 ms. Home A: 1,022 / 840 / 1,245 / 765 ms;
+driver CPU 800 ms. These match the saved summary's CPU/fence totals after
+refining its queue-wait classification.
+
+### Presentation and surface protection across all requested segments
+
+These use **whole phase-marker intervals**, including pauses/settling outside
+commanded motion. Arrivals therefore differ from the original motion-only
+report. SwapEnd pairs match both caller thread and swap ID; no unmatched pair
+exists in these phases. Event 18 is emitted only for calls taking **over 100 us**:
+zero events does not prove zero fast unsuccessful polls. Event 19 has the same
+threshold; every recorded event here belongs to `backboar:gdrv0`.
+
+| Phase | Arrivals | SwapEnd mean / p95 ms | Recorded unsuccessful SwapWait calls / total ms | Driver write-waits: calls / total ms | Write-wait ms per arrival |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CC A | 188 | 0.0189 / 0.021 | 0 / 0 | 71 / 265.265 | 1.411 |
+| CC B | 151 | 0.0192 / 0.021 | 0 / 0 | 41 / 146.039 | 0.967 |
+| Home A | 210 | 0.0191 / 0.021 | 0 / 0 | 124 / 694.517 | 3.307 |
+| Home B | 206 | 0.0198 / 0.021 | 1 / 0.350 | 113 / 462.213 | 2.244 |
+| Spotlight repeat | 38 | 0.0186 / 0.021 | 0 / 0 | 11 / 65.305 | 1.719 |
+
+Within the sampled windows alone, CC A has 29 write-waits / 121.415 ms and
+Home A has 39 / 189.665 ms. Thus event 19 is measurable even though SwapEnd
+itself is negligible. S5 can still reduce driver-thread spin; this is not
+evidence that the display thread spends milliseconds inside SwapEnd today.
+
+### GPU job observation bounds and overlap ceiling
+
+Events 20/21 measure submission to **observed completion**, including queueing,
+execution and observation delay. Match completion watermarks to all outstanding
+older sequence numbers using uint32 wrap ordering. Jobs are not frames; their
+latencies overlap and must not be summed into a per-frame GPU cost.
+
+| Submit phase | Jobs observed within the same sampling window | Median / p95 / max upper bound ms | Censored or delayed observations |
+| --- | ---: | ---: | --- |
+| CC A | 539 | 16.891 / 33.557 / 46.273 | 5 final submissions lack a later recorded completion |
+| Home A | 311 | 31.118 / 37.848 / 40.727 | 3 final submissions observed only at next sampled phase |
+| CC B / Home B / Spotlight repeat | unavailable | unavailable | detailed GPU events disabled |
+
+The three Home tail jobs have apparent bounds of 7,155-7,160 ms because event
+21 recording stops between sampled phases; exclude them from the same-window
+distribution. Their true completion times are unknown. This prevents interpreting
+the existing raw summary's 7 s outlier as GPU execution or a GPU hang.
+
+Let `G` be unknown GPU service time per frame and `P` the panel period. With
+unlimited useful preparation, correct surface reuse, no extra CPU contention
+and unchanged work, the ideal interval floor is `max(display CPU, driver CPU,
+G, P)`: **max(22.94, 17.74, G, P) ms for CC A** and
+**max(14.39, 11.27, G, P) ms for Home A**. These optimistic floors correspond
+to CPU-only speedup ceilings of about 2.27x and 3.91x against 4,000/77 =
+51.95 and 4,000/71 = 56.34 ms per arrival. They are mathematical bounds, not
+predictions; the job-observation distributions do not determine `G`.
+
+A less aggressive sensitivity calculation removes only sampled flush drain
+and GPU-wait occupancy while holding everything else fixed: CC A 51.95 ->
+32.79 ms, Home A 56.34 -> 26.97 ms. Even that assumes all those waits can
+overlap useful next-frame work, which S2 has not established. The earlier
+25-30 ms CC discussion remains a hypothetical target, not a measured ceiling.
+There is no defensible per-frame overlap estimate for CC B, Home B or repeated
+Spotlight from their missing CPU samples.
+
+**Validation:** script assertions pass for binary record alignment, all phase
+SwapEnd pairs, independent saved-summary display/driver CPU and GPU-wait totals,
+and absence of samples in zero-duration windows. Source checked against S0's
+`/home/teleg/xnu-t16`: `SweetFramebuffer.cpp:swap/swapWait/sweet_fb_gpu_write_wait`,
+`bsd/dev/sweet_gpu.c:sweet_gpu_completed/sweet_gpu_wait` and
+`osfmk/arm64/sweet_bench.inc:sweet_bench_event`. Next task: **S2**, offline
+CoreAnimation swap-surface feasibility. G1 stays open; S3 and S4 remain unfinished.
