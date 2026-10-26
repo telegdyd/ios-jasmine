@@ -335,6 +335,12 @@ Silver. Use j0052's per-cluster stats and the j0057 profile.
 **Baseline note (2026-10-24):** those timings predate tasks 4, 7 and the first task-5 fix;
 repeat the 4/8-core comparison on the installed software before attributing the remaining gap.
 
+**2026-10-26 repeat:** [current matched baseline](PERF-CPU-BASELINE-20261026.md)
+has two settled captures each at Gold1747/Silver1382/GPU588/DDR1804. The old
+twofold regression is absent, but no clear eight-core gain is established. The
+sampled CA render thread stayed entirely on Gold. Continue with task2 scaling
+and thermal work; no broad scheduler change or new default is justified yet.
+
 **Done when:** 8 cores are at least as fast as `cpus=4` in 2+2 scripted rounds, and the 8-core image becomes the
 default.
 

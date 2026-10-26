@@ -1,0 +1,104 @@
+From 12fd8730d19b495b37a1ade6f6e987890dca17ad Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Mon, 26 Oct 2026 23:36:08 +0100
+Subject: [PATCH] jasmine-j0102: gated atomic voltage-neutral CPU RPM probe
+
+---
+ bsd/dev/sweet_rpm.c     | 43 +++++++++++++++++++++++++++++++++++++++++
+ osfmk/arm64/sweet_osm.c |  8 ++++++++
+ 2 files changed, 51 insertions(+)
+
+diff --git a/bsd/dev/sweet_rpm.c b/bsd/dev/sweet_rpm.c
+index 4b5eb65..40564d1 100644
+--- a/bsd/dev/sweet_rpm.c
++++ b/bsd/dev/sweet_rpm.c
+@@ -25,10 +25,13 @@
+ #include <kern/clock.h>
+ #include <kern/locks.h>
+ #include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ bool sweet_rpm_level(uint32_t type, uint32_t level);
+ bool sweet_rpm_kvp(unsigned sets, uint32_t type, uint32_t id, uint32_t key, uint32_t value);
++bool sweet_rpm_cpu_probe(uint32_t id);
++extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
+ bool sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz);
+ int sweet_rpm_clk_scaling(void);
+ 
+@@ -448,6 +451,46 @@ sweet_rpm_kvp(unsigned sets, uint32_t type, uint32_t id, uint32_t key, uint32_t
+ 	return ok;
+ }
+ 
++/*
++ * Task 2 diagnostic: can RPM commit the existing boot voltage to a CPU rail?
++ * Stock DT names smpa1/2/3 but disables their Linux RPM consumers in favour of
++ * OSM. Firmware support is therefore unproven. Opt in explicitly and send UV
++ * and enable in ONE request, never a partial first vote with an implicit zero
++ * voltage or disabled state. This probe cannot request a different voltage,
++ * a sleep vote, a mode change or a disable. No PLL/APM/SAW writes.
++ */
++bool
++sweet_rpm_cpu_probe(uint32_t id)
++{
++	uint32_t enabled = 0;
++	(void)PE_parse_boot_argn("sweetcpurpm", &enabled, sizeof(enabled));
++	if (enabled != 1 || id < 1 || id > 3) {
++		return false;
++	}
++	uint32_t base = 0x1400u + (id - 1u) * 0x300u;
++	uint32_t mv = id == 1 ? 872u : 868u;
++	uint32_t expected = mv | mv << 16;
++	uint32_t before = 0, enable_before = 0;
++	if (sweet_pmic_peek(1, base + 0x40, 4, &before) != 0 ||
++	    sweet_pmic_peek(1, base + 0x46, 1, &enable_before) != 0 ||
++	    before != expected || enable_before != 0x80u) {
++		printf("SWEET CPURPM: S%u precondition failed (set/valid %#x enable %#x)\n",
++		    id, before, enable_before);
++		return false;
++	}
++	const uint32_t kv[] = { 0x00007675u, mv * 1000u, KEY_SWEN, 1u }; /* uv, swen */
++	lck_mtx_lock(&sweet_rpm_lock);
++	bool ok = rpm_request("CPU neutral", 0, 0x61706d73u, id, kv, 2); /* smpa */
++	lck_mtx_unlock(&sweet_rpm_lock);
++	uint32_t after = 0, enable_after = 0;
++	bool same = sweet_pmic_peek(1, base + 0x40, 4, &after) == 0 &&
++	    sweet_pmic_peek(1, base + 0x46, 1, &enable_after) == 0 &&
++	    after == before && enable_after == enable_before;
++	printf("SWEET CPURPM: neutral S%u %u mV: RPM %s, readback %s (set/valid %#x enable %#x)\n",
++	    id, mv, ok ? "ACK" : "FAILED", same ? "unchanged" : "MISMATCH", after, enable_after);
++	return ok && same;
++}
++
+ /*
+  * Clock rate vote in the sleep and the active set (clk-smd-rpm.c, a clock
+  * without an _a twin): "KHz ", rate in kHz, the RPM rounds to a supported
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 5542a44..878551c 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -282,6 +282,7 @@ static struct {
+ 
+ static uint64_t fuse_rows[80];
+ static uint32_t osm_mode;
++extern bool sweet_rpm_cpu_probe(uint32_t id);
+ 
+ static uint64_t
+ fuse_param(const struct fuse_seg *s)                    /* cpr3_read_fuse_param */
+@@ -1432,6 +1433,13 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		printf("SWEET OSM: ctl tw %#llx %#llx st %#llx\n", a, b, st);
+ 		return snprintf(out, len, "tz %#llx <- %#llx: st %#llx, reads st %#llx val %#llx\n", a, b, st, st2, r);
+ 	}
++	if (!strcmp(c, "cpurpm")) {
++		if (argc != 2 || a < 1 || a > 3) {
++			return snprintf(out, len, "cpurpm: use cpurpm 1|2|3 (neutral only, sweetcpurpm=1)\n");
++		}
++		bool ok = sweet_rpm_cpu_probe((uint32_t)a);
++		return snprintf(out, len, "cpurpm S%u: %s (see console)\n", (uint32_t)a, ok ? "ACK + unchanged" : "REFUSED/FAILED");
++	}
+ 	if (!strcmp(c, "check")) {
+ 		uint64_t ns, t0 = mach_absolute_time();
+ 		uint64_t r = osm_workload(OSM_WORK);
+-- 
+2.47.3
+

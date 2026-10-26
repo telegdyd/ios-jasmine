@@ -1,3 +1,36 @@
+### 2026-10-26 23:36: CPU baseline complete; checker CI PASS; RPM probe prepared
+
+Report jasmine/PERF-CPU-BASELINE-20261026.md. Accepted kernel d42bfb4 used for
+two settled4 and two settled8 captures; no event/sample drops, matching symbols.
+HomeB4:21.84/21.57 arrivals/s versus8:22.10/20.28; CCB4:20.23/21.19 versus
+8:20.50/19.97. No clear8coreUIgain established; these are swap arrivals, not FPS.
+CA primary render onCPU samples Gold-only1103/1552 (4),1646/1666 (8); no Silver.
+8-a excluded for post-unlock sync; repeated8-b/c have no Home/CC syncCPU samples.
+User confirmed artifacts absent from physical display, present only in dumps.
+Baseline8 clean actual fastboot, parkedr109/backlight0:98%,34C,+162597uA,
+4265614uV,Full. Own phone lock held, no newclock/voltage/root/library/flash change.
+
+Checker CI40410605951/e74a086 PASS. Kernel SHA256
+13a35267c329e36dbc06036a6d14bd164c5485fb03f43dd0cc67684fcf4ee6b2 verified against
+CI SHA256SUMS. Actual-function4scenario CI test PASS, WiFi/source/symbol/framebench
+gates PASS, only4 expected upstream skips. Kernel/log/run metadata and packaged
+4/8 images ignored research/cpu-dvfs/{ci-40410605951,checker-images}/. Actual ARM
+compile PASS; device check pending. Existing publication bec6e41 includes images
+tool and interim handoff. Need commit/push this completed baseline milestone.
+
+New lead: stock DT declares RPM smpa1/2/3 CPU resources, but Linux consumers are
+disabled for OSM. Firmware support unknown. RPM transport works sincej60/j64,
+after the original SAW investigation. Raw single-key RPM writes are unsuitable
+for a first CPU supply vote: voltage+enable must be explicit in one request.
+Prepared late patchj0102 (free; afterRPMj60/j64 dependencies), WSL source12fd873
+on ~/xnu-cpu-dvfs. Opt-in sweetcpurpm=1, command cpurpm1|2|3 (with a space).
+Only reasserts S1872/S2-S3868mV, active set, uv+swen1 atomically. Prechecks exact
+set/valid and enable; verifies unchanged readback; no PLL/APM/SAW/sleep/mode or
+increased-voltage request possible.12 actual-function host-CC scenarios PASS,
+CI source/linked-symbol/test gate prepared. No live CPU-RPM request yet. Next
+publish/build probe, validate checker at4/8 normal clocks, then one neutral
+CPU-RPM resource at a time with full console/status capture; stop on failure.
+
 ### 2026-10-26 23:29: Task 2 current baseline capture; diagnostic CI running
 
 User explicitly authorized pushing CPU DVFS milestones and building/testing as

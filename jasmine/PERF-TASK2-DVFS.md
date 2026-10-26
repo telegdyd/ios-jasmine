@@ -11,6 +11,21 @@ actual-function host-compiler tests PASS; pre-fix source fails the same test.
 ARM CI build and device validation pending. AMP ADT generation already overrides
 Silver's generic maximum with the correct Jasmine1843.2MHz; verified, no change.
 
+CI40410605951/e74a086 now PASS: actual ARM compile, four host scenarios and
+integration guards passed. Kernel hash and artifacts recorded in root NOTES.md;
+checker device validation pending. [Current 2+2 CPU baseline](PERF-CPU-BASELINE-20261026.md)
+found no clear eight-core UI gain, with sampled CA render work entirely on Gold.
+
+New voltage lead: the stock DT declares RPM `smpa` IDs1/2/3 for CPU supplies,
+though their Linux consumers are disabled for OSM. The now-working RPM transport
+postdates the old SAW investigation. j0102 adds an opt-in **neutral-only** probe:
+`sweetcpurpm=1`, `cpurpm 1` / `cpurpm 2` / `cpurpm 3`. It checks existing
+set/valid/enable, sends explicit UV+enable together, then checks unchanged
+readback. It cannot request a voltage increase, disable, mode change, sleep
+vote or clock change. Twelve host scenarios PASS; CI/device gate pending.
+Firmware support remains unknown; an ACK at the same voltage would not prove
+voltage scaling. Never send an implicit single-key first CPU-rail vote.
+
 ## Findings and first milestone
 
 - Eight-core bring-up already passed on 2026-10-22 (CI 39798911718,

@@ -1,5 +1,12 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: current 4/8 CPU baseline captured; CPU checker build PASS.**
+[Matched two-repeat report](PERF-CPU-BASELINE-20261026.md): no clear8core UI gain
+at current clocks, sampled CA render thread on Gold in all valid runs. No CPU/GPU/
+DDR default change. CI40410605951/e74a086 compiles j0059a live-check reference
+repair; device validation pending. Gated neutral CPU-RPM probe prepared because
+the working j60/j64 transport postdates the old voltage investigation.
+
 **2026-10-26: task2 CPU DVFS restarted for both clusters.**
 [Active CPU plan and validation](PERF-TASK2-DVFS.md). Offline model now covers
 Gold/Silver; six input checks PASS, Gold output unchanged, Silver stock table
