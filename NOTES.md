@@ -1,3 +1,19 @@
+### 2026-10-26: README refreshed on jasmine for publication
+
+User explicitly requested the approved README update on jasmine and origin.
+Original review/update commits 4448775 and 9fc68dc were mistakenly left local
+on codex/wifi-integration. Applied only the README to jasmine, without merging
+Wi-Fi code or unrelated integration handoffs. Wi-Fi guides are linked to the
+published integration branch because those files are not yet present on jasmine.
+README now covers accelerated CA/Mesa, MDP scaling, optional 4K/eight-core builds,
+four-Gold default, GPU 588/DDR 1804, tested versus pending Wi-Fi results, charging
+and graphics limitations, build/library injection steps and current roadmap.
+Checked local link targets, balanced code fences and git diff whitespace.
+Documentation only: no CI/build, phone access, boot, install or partition write.
+Task24/charging work below unchanged. Publish this documentation commit to
+origin/jasmine and verify its remote SHA. Commit subject:
+docs: refresh README with current GPU Wi-Fi and build status.
+
 ### 2026-10-26 02:13: replug check shows net battery discharge
 
 User replugged and requested another measurement. Three read-only samples at
