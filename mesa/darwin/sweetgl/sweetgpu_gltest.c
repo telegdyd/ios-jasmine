@@ -537,6 +537,7 @@ iosurface_texture(struct sgl_context *ctx)
    CFRelease(s);
    return check("iosurface texture", iosurface_tex_expected, 0);
 }
+#include "sweetgpu_feedback_test.inc"
 #endif
 
 /* Active sampler state must describe the next draw, even before validation.
@@ -598,8 +599,19 @@ sampler_units(struct sgl_context *ctx)
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
+   for (int i = 1; i < argc; i++) {
+      if (!strcmp(argv[i], "--sysbarrier-on") || !strcmp(argv[i], "--sysbarrier-off")) {
+         setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" : "0", 1);
+         setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
+      } else if (!strcmp(argv[i], "--no-tc")) {
+         setenv("GALLIUM_THREAD", "0", 1);
+      } else {
+         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-off] [--no-tc]\n");
+         return 2;
+      }
+   }
    setvbuf(stdout, NULL, _IONBF, 0);
    printf("step: display\n");
    struct sgl_display *dpy = sgl_display_create();
@@ -650,7 +662,9 @@ main(void)
    ok &= iosurface_target(dpy, ctx, surf);
    printf("step: iosurface texture\n");
    ok &= iosurface_texture(ctx);
-   steps += 2;
+   printf("step: ordered framebuffer feedback\n");
+   ok &= feedback(ctx);
+   steps += 3;
 #endif
    printf("%u steps in %.1f ms\n", steps, (os_time_get_nano() - t0) / 1e6);
 

@@ -1,3 +1,21 @@
+### 2026-10-26: task 24 default-off sysmem barrier candidate prepared
+
+Concrete design/test gate: jasmine/PERF-TASK24-CANDIDATE.md. New patch0008,
+SWEETCA_SYS_BARRIER=1 only with forcedsysmem. Retains small1-5 draw linear8-bit
+color-only batches; rejects clears/prologues, depth/MSAA, queries/streamout,
+other pending batches and large islands. Existing a5xx CCU publish/completion/
+invalidate + UCHE sequence; hardware correctness not yet proved. Durable
+bypass veto and split-before-later-clear added. Dependencies/fences/kicks and
+production defaults preserved. Real GPU pixel-reference tests added for repeated
+feedback, clear/scissor, pending-target switches/revisits and imported aliases;
+on/off x TC on/off matrix required, with retained-path marker in on cases.
+All eight patches apply. Twelve GCC source checks (host/Apple guards) pass
+without warnings; controller tests and six parser tests pass. iOS CI next.
+No new device access since diagnostic cleanup; phone remains ordinary production
+iOS, no lock held. No candidate installed/tested, no gain claimed, GMEM default
+unchanged. User has standing Task24 push/CI approval; next phone use needs fresh
+coordination for the concrete correctness matrix, before any speed benchmark.
+
 ### 2026-10-26: task 24 first batch graph collected; ordinary phone restored
 
 Report: jasmine/PERF-TASK24-DEVICE-AUDIT.md. Source ccd9a88 + ad9d787;

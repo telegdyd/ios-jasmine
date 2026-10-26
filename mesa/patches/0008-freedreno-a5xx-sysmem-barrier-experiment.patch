@@ -1,0 +1,185 @@
+Subject: [PATCH] freedreno/a5xx: experimental small sysmem batch barriers
+
+Default off; requires SWEETCA_SYS_BARRIER=1 and forced sysmem.
+Preserve large islands, global drains, clears, and unsupported state.
+
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_context.c b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_context.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
+@@ -54,6 +54,7 @@
+    if (!fd5_ctx)
+       return NULL;
+ 
++   fd5_ctx->sysmem_barrier_enabled = debug_get_bool_option("SWEETCA_SYS_BARRIER", false);
+    pctx = &fd5_ctx->base.base;
+    pctx->screen = pscreen;
+ 
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_context.h b/src/gallium/drivers/freedreno/a5xx/fd5_context.h
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_context.h
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_context.h
+@@ -17,6 +17,9 @@
+ 
+ struct fd5_context {
+    struct fd_context base;
++
++   bool sysmem_barrier_enabled;
++   unsigned sysmem_barriers;
+ 
+    /* This only needs to be 4 * num_of_pipes bytes (ie. 32 bytes).  We
+     * could combine it with another allocation.
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -14,6 +14,7 @@
+ 
+ #include "freedreno_resource.h"
+ #include "freedreno_state.h"
++#include "freedreno_batch_trace.h"
+ 
+ #include "fd5_context.h"
+ #include "fd5_draw.h"
+@@ -554,10 +555,75 @@
+    return true;
+ }
+ 
++/* Experimental and default off. Preserve large islands for future GMEM.
++ * All commands stay on the driver thread. Do not replace a global drain while
++ * another batch has work: an untracked BO alias could otherwise lose ordering.
++ */
++static bool
++fd5_texture_barrier(struct fd_context *ctx, unsigned flags) in_dt
++{
++   struct fd5_context *fd5_ctx = fd5_context(ctx);
++   struct fd_batch *batch = ctx->batch;
++   if (!fd5_ctx->sysmem_barrier_enabled || !FD_DBG(SYSMEM) ||
++       flags != PIPE_TEXTURE_BARRIER_SAMPLER || !batch || batch->flushed ||
++       batch->nondraw || !batch->num_draws || batch->num_draws > 5 ||
++       batch->cleared || batch->prologue || batch->tessellation ||
++       batch->dependents_mask || ctx->last_fence || ctx->stats_users ||
++       ctx->occlusion_queries_active || ctx->streamout.num_targets ||
++       !list_is_empty(&ctx->acc_active_queries) ||
++       !list_is_empty(&ctx->hw_active_queries))
++      return false;
++
++   struct pipe_framebuffer_state *fb = &batch->framebuffer;
++   if (fb->nr_cbufs != 1 || !fb->cbufs[0].texture || fb->zsbuf.texture ||
++       fb->samples != 1 || fb->layers > 1)
++      return false;
++   struct pipe_surface *surface = &fb->cbufs[0];
++   struct pipe_resource *texture = surface->texture;
++   if (surface->level || surface->first_layer || surface->last_layer ||
++       texture->target != PIPE_TEXTURE_2D || texture->nr_samples > 1 ||
++       (surface->format != PIPE_FORMAT_B8G8R8A8_UNORM &&
++        surface->format != PIPE_FORMAT_R8G8B8A8_UNORM) ||
++       fd_resource_tile_mode(texture, 0) != 0)
++      return false;
++
++   bool other_work = false;
++   fd_screen_lock(ctx->screen);
++   struct fd_batch_cache *cache = &ctx->screen->batch_cache;
++   for (unsigned i = 0; i < ARRAY_SIZE(cache->batches); i++) {
++      struct fd_batch *other = cache->batches[i];
++      if (other && other != batch && other->ctx == ctx &&
++          !other->flushed && other->needs_flush) {
++         other_work = true;
++         break;
++      }
++   }
++   fd_screen_unlock(ctx->screen);
++   if (other_work)
++      return false;
++
++   struct fd_ringbuffer *ring = batch->draw;
++   /* Existing a5xx primitives, now in draw order rather than at batch end:
++    * publish color writes; complete prior work; invalidate sampler storage.
++    * Hardware pixel tests are required before enabling this experiment.
++    */
++   fd5_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
++   fd5_emit_flush(ctx, ring); /* CACHE_FLUSH_TS then WAIT_FOR_IDLE */
++   fd5_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
++   fd5_cache_flush(batch, ring); /* UCHE invalidate then WAIT_FOR_IDLE */
++   batch->a5xx_sysmem_barrier = true;
++   fd_batch_needs_flush(batch);
++   fd_bt_batch(batch, "sysbarrier-retained", NULL, NULL, flags);
++   if (++fd5_ctx->sysmem_barriers == 1)
++      fprintf(stderr, "sweetca: sysbarrier retained (experimental forced-sysmem-only)\n");
++   return true;
++}
++
+ void
+ fd5_draw_init(struct pipe_context *pctx) disable_thread_safety_analysis
+ {
+    struct fd_context *ctx = fd_context(pctx);
+    ctx->draw_vbos = fd5_draw_vbos;
+    ctx->clear = fd5_clear;
+-}
++   ctx->texture_barrier = fd5_texture_barrier;
++}
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch.h b/src/gallium/drivers/freedreno/freedreno_batch.h
+--- a/src/gallium/drivers/freedreno/freedreno_batch.h
++++ b/src/gallium/drivers/freedreno/freedreno_batch.h
+@@ -114,6 +114,7 @@
+    bool needs_flush : 1;
+    bool flushed : 1;
+    bool tessellation : 1; /* tessellation used in batch */
++   bool a5xx_sysmem_barrier : 1; /* draw IB contains a bypass-only barrier */
+ 
+    /* Keep track if WAIT_FOR_IDLE is needed for registers we need
+     * to update via RMW:
+diff --git a/src/gallium/drivers/freedreno/freedreno_context.c b/src/gallium/drivers/freedreno/freedreno_context.c
+--- a/src/gallium/drivers/freedreno/freedreno_context.c
++++ b/src/gallium/drivers/freedreno/freedreno_context.c
+@@ -169,6 +169,8 @@
+    struct fd_context *ctx = fd_context(pctx);
+    if (ctx->batch)
+       fd_bt_batch(ctx->batch, "texture-barrier", NULL, NULL, flags);
++   if (ctx->texture_barrier && ctx->texture_barrier(ctx, flags))
++      return;
+    fd_context_flush(pctx, NULL, 0);
+ }
+ 
+diff --git a/src/gallium/drivers/freedreno/freedreno_context.h b/src/gallium/drivers/freedreno/freedreno_context.h
+--- a/src/gallium/drivers/freedreno/freedreno_context.h
++++ b/src/gallium/drivers/freedreno/freedreno_context.h
+@@ -545,6 +545,9 @@
+    void (*emit_sysmem)(struct fd_batch *batch) dt;
+    void (*emit_sysmem_fini)(struct fd_batch *batch) dt;
+ 
++   /* Optional retained sampler barrier; true means ordered in the draw IB. */
++   bool (*texture_barrier)(struct fd_context *ctx, unsigned flags) dt;
++
+    /* draw: */
+    void (*draw_vbos)(struct fd_context *ctx, const struct pipe_draw_info *info,
+                      unsigned drawid_offset,
+diff --git a/src/gallium/drivers/freedreno/freedreno_draw.c b/src/gallium/drivers/freedreno/freedreno_draw.c
+--- a/src/gallium/drivers/freedreno/freedreno_draw.c
++++ b/src/gallium/drivers/freedreno/freedreno_draw.c
+@@ -479,6 +479,14 @@
+ 
+    struct fd_batch *batch = fd_context_batch_draw(ctx);
+ 
++   /* Keep fast clears out of a retained-barrier IB, including later clears. */
++   if (batch->a5xx_sysmem_barrier) {
++      fd_bt_batch(batch, "sysbarrier-clear-split", NULL, NULL, buffers);
++      fd_batch_flush(batch);
++      fd_batch_reference(&batch, NULL);
++      batch = fd_context_batch_draw(ctx);
++   }
++
+    batch_clear_tracking(batch, buffers);
+ 
+    while (unlikely(batch->flushed)) {
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -928,6 +928,10 @@
+       assert(ctx->emit_sysmem_prep);
+       sysmem = true;
+    }
++
++   /* A retained a5xx feedback barrier reads system memory, never GMEM. */
++   if (batch->a5xx_sysmem_barrier)
++      sysmem = true;
+ 
+    fd_bt_batch(batch, batch->nondraw ? "select-nondraw" : sysmem ? "select-sysmem" : "select-gmem", NULL, NULL, FD_DBG(SYSMEM));
+    fd_reset_wfi(batch);
