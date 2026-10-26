@@ -1,3 +1,17 @@
+### 2026-10-26 02:13: replug check shows net battery discharge
+
+User replugged and requested another measurement. Three read-only samples at
+02:13:39/45/51: capacity12%, battery current -85449/-107910/-83496uA,
+voltage3702383/3701650/3710195uV,temp340. Charger online1/statusCharging,
+healthGood, usb_type selectsSDP, current_max500000uA,float4050000; backlight0.
+Battery current is negative despite Charging label: net discharge at those
+samples. Reported500mA current_max is a charger/USB policy reading, not measured
+input current or proof of physical supply capacity. Charger current_now still
+No data available and voltage_now times out. No settings changed, no boot/test.
+Own shared lock released. Ignored evidence research/t24/charge-replug-20261026-021339/.
+Task24 GPU session remains deferred; charging problem now needs diagnosis before
+further iOS runs. Do not assume r109 statusCharging proves net energy gain.
+
 ### 2026-10-26 02:12: requested charging recheck
 
 Three read-only charging-shell samples5s apart: capacity13% all three,
