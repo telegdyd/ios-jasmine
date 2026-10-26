@@ -134,6 +134,20 @@ phone free, own shared lock acquired, exact production library backed up and
 verified as `14e32aea...`; baseline GPU588/DDR1804 observed. No test install or
 boot yet. Current session state is in root NOTES.md.
 
+**CI/boot milestone, 01:12 Budapest:** repair `ad9d787`, Mesa CI `40247556888`
+passed (first failed run retained above). Signed library SHA256
+`0a8d5fac5e28f6a92798bc176d6a373367f2fc67d99dcf44a10ffba4076e102f`,
+20,442,096 bytes; diagnostic strings and exact installed test-name readback
+verified. New GL test passes all seven steps, including sampler subchecks,
+104.8 ms, exit0. Temporary image SHA256
+`8d1b50d51c7855efa19345a3ae59b02d9c695f071991d8a6019bf29e7514c9ec`
+booted at01:10:53; pipeline0/GPU588/DDR1804 and original j70 slot-b kernel/ADT.
+Home swap-surface screenshot checked visually. Trace configured300s delay,
+40s window,30000 ordinary events. Session/precheck/graph and restoration are
+in progress, not yet results. Production library is untouched and backed up;
+own shared phone lock remains held. No partition flash or optimization/default
+change. Startup self-test FSR0x400 matches the baseline.
+
 Next: build this diagnostic with Mesa CI, verify the artifact and prepare one
 test-name library/temporary boot session once the phone is free. Run only a
 bounded Home/CC/NC graph after the accessory-sync precheck; use the current

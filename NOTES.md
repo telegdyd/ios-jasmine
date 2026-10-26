@@ -1,3 +1,23 @@
+### 2026-10-26: task 24 diagnostic CI passed; authorized session starting
+
+Repair ad9d787; Mesa CI40247556888 PASSED. First run40247120431 failed only
+the missing assert_dt annotation. User granted standing Task24 push/CI approval
+and confirmed phone free for one bounded diagnostic. Own phone lock remains
+held; owner in ignored research/t24/lock-owner.txt. Test-name library installed
+at /usr/local/bin/libsweetca-t24graph.dylib; exact installed readback SHA256
+0a8d5fac5e28f6a92798bc176d6a373367f2fc67d99dcf44a10ffba4076e102f.
+New GL test 7/7 PASS, active-sampler subchecks included, 104.8ms, exit0.
+Production library14e32aea... untouched; exact backup research/t24/production-before.dylib.
+Temporary image shim/out/shim-boot-t24graph.img SHA2568d1b50d5... preserves
+j70 slot-b kernel/ADT, pipeline0/GPU588/DDR1804. Trace300s delay/40s/30000 events.
+Temporary boot succeeded at01:10:53 Budapest. Test library armed, EAGL context
+created; Home swap-surface screenshot visually verified at01:12. Startup FSR0x400
+matches production baseline; no new runtime fault observed so far.
+Session script research/t24/session.py is running one bounded Home/CC/NC graph
+after accessory-sync precheck. This is not a speed test. No rendering defaults
+changed, no partition flash. Next: collect, analyze, remove own test files,
+restore ordinary slot-b boot, verify production hash/UI and release own lock.
+
 ### 2026-10-26: task 24 diagnostic CI annotation repair; phone lock held
 
 Implementation ccd9a88 pushed with explicit user approval. Mesa CI40247120431
