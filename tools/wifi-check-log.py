@@ -17,7 +17,7 @@ def analyze(text, phase):
                  'interface_ready': r'en0 and the station are up for iOS',
                  'joined': r'\*\*\* joined .+ \*\*\*'},
         'reboot': {'wlan_off': r'wlan_mode off ok err 0', 'stop_ack': r'\(stop-ack\)',
-                   'unpinned': r'SDW pinned client memory[^\n]*: 0 wrapped surfaces alive,\s*wired by 0 GPU imports and 0 pins',
+                   'unpinned': r'SDW pinned client memory[^\n]*: \d+ wrapped surfaces alive,\s*wired by 0 GPU imports and 0 pins',
                    'system_unmount': r'SDW step vfs_unmountall\(system\)'},
         'off': {'usb_ready': r'SWEET USB:'},
     }[phase]

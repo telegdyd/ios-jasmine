@@ -2,33 +2,33 @@
 
 Branch: `codex/wifi-integration`, based on jasmine `d34f5ca` plus wifi `daf1e6d`.
 This document supersedes WIFI-HANDOFF task 8's preparation instructions.
-It does not mark device acceptance complete or authorize partition flashing.
+The agreed device acceptance passed; partition flashing remains a separate step.
 
-## Ready for the device session (2026-10-26)
+## Accepted device build (2026-10-26)
 
-**Combined kernel CI40358833912 passed. All three images are prepared and
-verified. No phone access or device test has occurred.**
+**Repaired kernel CI40398100808 passed, followed by device acceptance.**
+See [the device report](WIFI-ACCEPTANCE-20261026.md) for the Settings power-off
+bug found and fixed, exact results, hashes and remaining untested cases.
 
 Use the original checkout's
-`research/wifi-integration/ci-40358833912/images/manifest.json` for exact paths,
+`research/wifi-integration/ci-40398100808/images/manifest.json` for exact paths,
 command lines and hashes. Images are `wifi-default.img`, `wifi-diagnostic.img`
-and `wifi-off.img`, each17,403,904 bytes. Kernel SHA256:
-`2c281ee61aec20187df365d1b07d6f2b121109ad5bc4e06458e93dabd38051be`.
+and `wifi-off.img`; the manifest records their sizes. Kernel SHA256:
+`4f9c55643af4913da5fda53556a3f835a2a705d1d07a6f4e4516509b1b184589`.
 The manifest and NOTES.md record all image hashes. CI checksum, plain arm64,
 integration symbols, baseline shim/ADT preservation, payload roundtrips,
 independent Android header digests and variant arguments pass.
 
-Only device acceptance remains: default auto-join/internet/USB + GL control,
-disconnect/failure recovery, two joined reboots, and the off fallback. Use a
-WPA2 test AP/hotspot for recovery cases; WPA3 support is not claimed.
-No new configuration write should be needed on this already configured phone.
+Default auto-join/internet/USB, GL control, Settings off/on recovery, two joined
+reboots and the off fallback passed. AP-loss, wrong-password and spare-network
+cases were skipped at the user's request. WPA3 support is not claimed.
 
 ## Prepared offline
 
 - Both j0099 patches coexist. A real SweetGPU cleanup hunk conflict was fixed
   by reducing trailing context in the Wi-Fi patch; framebench accounting and
   wrapped-import accounting both remain. No behavioral workaround was removed.
-- All 47 patches from j0080 through j0100 apply in CI filename order against
+- All 48 patches from j0080 through j0100b apply in CI filename order against
   the Wi-Fi source base (`~/xnu-wifi`, parent of `544ee9f`). Evidence stays in
   ignored `research/wifi-integration/patch-application.log`.
 - j0100 defaults jasmine's radio and modem on, retaining the tested 45-second
@@ -56,13 +56,15 @@ No new configuration write should be needed on this already configured phone.
 Workflow `xnu.yml`, `topaz_4k=1`. Runs `40353134781` and `40354341764` were
 cancelled while queued; neither compiled. The first was superseded by a corrected
 C++ symbol check; the second was blocked by the active macOS14 brownout.
-Supported Intel-runner build: **40358833912**, source **8405096**. ARM run
-40357619511 was cancelled while queued without compiling. The Intel build
-passed in24m25s including the cold build and artifact steps. Do not equate CI
+Accepted Intel-runner build: **40398100808**, source **d42bfb4**, passed in12m27s.
+Initial build40358833912/source8405096 passed compilation but failed device
+Settings off/on; it is superseded by the repair. ARM run
+40357619511 was cancelled while queued without compiling. The initial Intel
+build passed in24m25s including the cold build and artifact steps. Do not equate CI
 with device success.
 
 GitHub's [macOS14 retirement notice](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/)
-lists the Oct26 14:00UTC–Oct27 00:00UTC brownout and Nov2 retirement. The kernel
+lists the Oct26 14:00UTCâ€“Oct27 00:00UTC brownout and Nov2 retirement. The kernel
 job now uses `macos-15-intel`. Xcode16's IIG emits a different RPC layout, so
 `tools/xnu-legacy-iig.py` preserves the exact Xcode15-generated headers and
 implementations from successful Wi-Fi CI40159794543. A pinned manifest checks
@@ -80,7 +82,7 @@ round trips. Default/diagnostic ADTs must remain byte-identical to j99.
 The off image removes only `/arm-io/wlan`. No GPU library is installed/replaced.
 
 ```powershell
-python tools/g2/wifi-build-kit.py --run 40358833912 --expected-head 84050968075304307e93f16baeb7f507725e8d70 --baseline "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/shim/out/shim-boot-j99-wlan.img" --out "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/research/wifi-integration/ci-40358833912"
+python tools/g2/wifi-build-kit.py --run 40398100808 --expected-head d42bfb40f41e4859f9955db15c50406b5b1a181d --baseline "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/shim/out/shim-boot-j99-wlan.img" --out "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/research/wifi-integration/reproduce-40398100808"
 ```
 
 The downloader refuses queued, failed or mismatched builds and requires the CI integration-gate output before
@@ -94,7 +96,7 @@ Images: `wifi-default.img` exercises defaults without modem/wifi/delay arguments
 `modem=0 wifi=0` and omits the WLAN node. `manifest.json` records full hashes,
 kernel/source/CI provenance and exact command lines. Nothing auto-boots.
 
-## Device session when the user is home
+## Repeat device session procedure
 
 Coordinate availability and take the shared phone lock for the entire session.
 Use the established lock helper in `tools/g2/framebench.py` or the exact shared
@@ -127,7 +129,7 @@ No unattended retry, flashing or destructive step is authorized by this runbook.
    run with no options, then remove that test file. Do not install its library.
    This exercises the kernel's GPU/IOSurface import path using the established
    control, without Task24's unrelated experimental eighth step.
-3. **Disconnect/recovery (about 3–5 minutes).** Toggle Wi-Fi off/on in Settings;
+3. **Disconnect/recovery (about 3â€“5 minutes).** Toggle Wi-Fi off/on in Settings;
    expect clean leave and auto-rejoin with working traffic. With a controllable
    test AP/hotspot, remove and restore the AP while joined, then verify recovery.
    On a spare test network attempt a wrong password, then the correct one;
@@ -144,7 +146,7 @@ No unattended retry, flashing or destructive step is authorized by this runbook.
 5. **Default-on repeat / joined reboot #2.** Boot the same default image again,
    verify auto-join and USB/internet, then repeat the joined reboot. This is a
    practical smoke test of the intermittent stall fix, not a statistical proof.
-6. **Off fallback (about 1–2 minutes).** Temporary boot `wifi-off.img`. Verify UI,
+6. **Off fallback (about 1â€“2 minutes).** Temporary boot `wifi-off.img`. Verify UI,
    USB command/file access and framebench status with no modem/radio startup.
    Capture its clean reboot, then park in r109 with backlight off. Verify fresh
    charging state and production library hash matches preflight; release own lock.

@@ -1,3 +1,28 @@
+### 2026-10-26: Wi-Fi acceptance passed after power-off repair; merge ready
+
+Report: jasmine/WIFI-ACCEPTANCE-20261026.md. Accepted kernel d42bfb4,
+CI40398100808 PASS (12m27s job). All48 patches/source/symbol/skip guards pass.
+Initial8405096 failed Settings off/on; j0100b now calls normal leave on power-off.
+On device: actual leave26ms, fresh rejoin, HTTPS browser access and USB coexistence
+PASS; GL7/7 +9sampler controls PASS83.9ms,exit0. Home/Settings/browser/CC/NC checked.
+Two repaired joined reboots PASS: system unmount+1130/+956ms, GPU imports/pins0,
+actual fastboot22:07:19/22:13:16 Budapest. Off fallback: no modem/radio/wifid,
+USB/sweetd/file/bench and lock-screen UI work, clean reset/fastboot22:18:39.
+No new runtime GPU/SMMU/modem fault/panic; baseline startup FSR0x400 unchanged.
+AP-loss/wrong-password/spare-network cases NOT RUN per user's skip instruction.
+
+Accepted kit original research/wifi-integration/ci-40398100808/images/manifest.json:
+kernelSHA4f9c55643af4913da5fda53556a3f835a2a705d1d07a6f4e4516509b1b184589;
+default9a16325f...; diagnostic1c074e86...; offa6f3db0a... (full hashes in report).
+Device raw logs/screens/scripts/hashes original research/wifi-integration/device/.
+Production library before/after14e32aea... identical. Test GL/screenshot files
+removed; own collectors ended; own shared lock released22:22:13.
+Phone r109 charging shell, backlight0,slot_b,78%,+802245uA/4163075uV,34C,
+online1/Charging/Good at final read. No partition flash/GPT change.
+Code/tests complete for agreed gate; direct source merge can proceed. Slot-b
+installation is not done and still requires explicit confirmation. No own
+phone/background task remains. Task24 library/defaults were not changed.
+
 ### 2026-10-26: Device test found Settings power-off bug; repair building
 
 User home, phone in charging shell, authorized tests. Own shared phone lock

@@ -11,7 +11,7 @@ This is a port of [MakrSas/ios-topaz](https://github.com/MakrSas/ios-topaz) (its
 
 As of **2026-10-26**, the phone boots iOS from slot b to the **lock screen and home screen**, with touch, power and volume keys, date and time, battery reporting, and the backlight switching off with the display. **CoreAnimation renders on the Adreno 512 GPU** through `libsweetca` and Mesa freedreno; the display uses MDP hardware scaling. Settings, the App Library and the keyboard work. USB Ethernet provides live logs, commands and file transfer.
 
-**Wi-Fi has demonstrated scanning, WPA2 connection, DHCP, internet access and automatic reconnection in test boots.** Acceptance of the combined Wi-Fi/performance integration build remains pending; these results do not mean Wi-Fi is installed in the standalone image. UI performance, graphics correctness, stability, charging and power management remain active work.
+**Wi-Fi has demonstrated scanning, WPA2 connection, DHCP, internet access and automatic reconnection in test boots.** The combined Wi-Fi/performance build passed the agreed device acceptance, including Settings off/on recovery, two joined reboots and the off fallback. The standalone installed image has not been upgraded. UI performance, graphics correctness, stability, charging and power management remain active work.
 
 > Experimental bring-up, not a usable phone OS. Many things are missing or stubbed, and Apple's security model is mostly switched off. iOS installs into the `userdata` partition and so **erases Android's user data**, and the standalone boot replaces `boot_b` / `vbmeta_b`. Keep a backup of every partition before you start.
 
@@ -31,7 +31,7 @@ As of **2026-10-26**, the phone boots iOS from slot b to the **lock screen and h
 | Battery | PM660 charger support and fuel-gauge voltage/current/temperature readout; percentage shown in iOS. PM660L WLED backlight switches off with the display. Reliable net charging is unresolved: recent charging-shell samples showed discharge despite the Charging label |
 | USB | The DWC3 (set up by the kernel itself after a normal boot, j0023) is a **CDC-NCM Ethernet gadget** (Windows, Linux and macOS drivers built in). The kernel log streams live over TCP (`tools/sweet-netlog.py`, 192.168.7.2 or 169.254.7.2 port 5140); a command port (5141) reboots the phone into fastboot on request, so `tools/sweet-run.py IMAGE LOG` runs a whole test round (reboot, `fastboot boot`, live log) without touching the phone; `tools/sweet-fs.py` copies files into and out of the iOS root (port 5142) |
 | GPU | Adreno 512 through the SweetGPU kernel driver, Mesa freedreno (Gallium/a5xx), sweetgl and injected `libsweetca.dylib`. CoreAnimation's GLES renderer runs on the GPU. Documented defaults: **GPU 588 MHz, DDR 1804 MHz**; graphics and power-management limitations remain |
-| Wi-Fi (test boots) | WCN3990 via the modem DSP and Apple80211 integration: Settings scans, WPA2 join, DHCP, internet, auto-join and leave/rejoin demonstrated; USB Ethernet coexists. See [tested results](https://github.com/telegdyd/ios-jasmine/blob/codex/wifi-integration/jasmine/WIFI-HANDOFF.md) and the [combined integration acceptance gate](https://github.com/telegdyd/ios-jasmine/blob/codex/wifi-integration/jasmine/WIFI-INTEGRATION.md) |
+| Wi-Fi (test boots) | WCN3990 via the modem DSP and Apple80211 integration: Settings scans, WPA2 join, DHCP, internet, auto-join and leave/rejoin demonstrated; USB Ethernet coexists. See [tested results](jasmine/WIFI-HANDOFF.md) and the [combined device acceptance report](jasmine/WIFI-ACCEPTANCE-20261026.md) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## What does not work (yet)
@@ -89,7 +89,7 @@ The steps below outline the build and installation flow. Use [root NOTES.md](NOT
    gh run download RUN_ID -R YOU/ios-jasmine -n xnu-kernel -D xnu/out-jasmine
    ```
    Add `-f topaz_4k=1` to the dispatch for the 4K-page/AMP kernel. Pair it with `--amp` when generating the ADT; `cpus=4` keeps Gold only, while `cpus=8` enables both clusters. The workflow defaults to the 16K build. Match kernel, ADT and boot arguments rather than mixing artifacts from different builds.
-2. **iOS root**: from the iPhone X (iPhone10,3) iOS 16.7.16 (20H392) IPSW, `bash tools/build-ios-root.sh IPSW WORKDIR` builds `WORKDIR/ios16-root.simg`, adjusted by `tools/sweet-root-tweaks.py`. Linux needs HFS+ support, `apfs-fuse`, `hfsprogs`, `lzfse`, `img2simg`, `unzip` and `sudo`. The script extracts the device tree to `research/ipsw-x/d22ap.adt`; `mkadt.py` uses its `/product` node. For fresh Wi-Fi-enabled roots, see [offline provisioning](https://github.com/telegdyd/ios-jasmine/blob/codex/wifi-integration/jasmine/WIFI-INTEGRATION.md); existing installs should not have all root tweaks reapplied just to add Wi-Fi.
+2. **iOS root**: from the iPhone X (iPhone10,3) iOS 16.7.16 (20H392) IPSW, `bash tools/build-ios-root.sh IPSW WORKDIR` builds `WORKDIR/ios16-root.simg`, adjusted by `tools/sweet-root-tweaks.py`. Linux needs HFS+ support, `apfs-fuse`, `hfsprogs`, `lzfse`, `img2simg`, `unzip` and `sudo`. The script extracts the device tree to `research/ipsw-x/d22ap.adt`; `mkadt.py` uses its `/product` node. For fresh Wi-Fi-enabled roots, see [offline provisioning](jasmine/WIFI-INTEGRATION.md); existing installs should not have all root tweaks reapplied just to add Wi-Fi.
 3. **Boot image** (`aarch64-linux-gnu-gcc`, AOSP `mkbootimg`):
    ```sh
    python3 tools/mkadt.py shim/out/jasmine.adt --highmem
@@ -106,7 +106,7 @@ The steps below outline the build and installation flow. Use [root NOTES.md](NOT
    python3 tools/sweet-fs.py put xnu/out-mesa/libsweetca.dylib /usr/local/bin/libsweetca.dylib --mode 0755
    ```
    Back up an existing library before replacing it. Rebuild the boot image with `sweetgpu=4 gpumhz=588 sweetddr=1804 gpudelay=1 gpupause=0 sweetfb_sync=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib sweetcmd=1` appended to the command line, then temporarily boot and validate it. Installing the library alone does not enable injection into an already running backboardd. See [GPU history and validation](jasmine/GPU.md) and [Mesa sources](mesa/README.md); experimental Task 24 options remain off.
-6. **Wi-Fi integration**: use the [integration runbook](https://github.com/telegdyd/ios-jasmine/blob/codex/wifi-integration/jasmine/WIFI-INTEGRATION.md) for the combined branch, firmware prerequisites, image preparation, recovery and acceptance checks. It is not yet an accepted standalone upgrade. On the integration branch, radio/modem startup and the WLAN ADT node default on; `wifi=0`/`modem=0` and an ADT without WLAN provide the off fallback.
+6. **Wi-Fi integration**: use the [integration runbook](jasmine/WIFI-INTEGRATION.md) for firmware prerequisites, image preparation and recovery. The combined build passed [device acceptance](jasmine/WIFI-ACCEPTANCE-20261026.md); standalone installation remains separate. Radio/modem startup and the WLAN ADT node default on; `wifi=0`/`modem=0` and an ADT without WLAN provide the off fallback.
 7. **Standalone**: only after temporary-boot validation, rebuild with `abmark=b`, write the approved image to `boot_b`, use a `vbmeta_b` with verification disabled, and select slot b. These writes are separate from `fastboot boot` and require explicit approval on the shared device.
 
 `tools/g2/mkimg.sh` wraps the accelerated-image recipe but includes local WSL paths and a device-specific RTC offset; adapt those before reuse. Do not treat a successful CI build as device acceptance.
@@ -133,10 +133,10 @@ The steps below outline the build and installation flow. Use [root NOTES.md](NOT
 
 1. **Charging and power**: diagnose net discharge, then CPU DVFS/thermal limits, GPU idle power and a DDR governor. Higher clocks need validated voltage and thermal handling.
 2. **Graphics correctness and performance**: resolve the [Task 24 pixel-test failure](jasmine/PERF-TASK24-PIXEL-GATE.md) before evaluating batch-retention gains. Continue work on CPU driver cost, GPU traffic and presentation synchronization; GMEM and pipelining are not established default improvements. The shared-blur investigation closed without an optimization or measured gain.
-3. **Wi-Fi**: build and validate the combined integration, including auto-join, USB coexistence, joined reboot and the radio-off fallback, before considering a standalone installation.
+3. **Wi-Fi**: the combined integration passed the agreed device gate. AP-loss, wrong-password and spare-network cases remain untested; broader robustness and power management remain work. Standalone installation is a separate step.
 4. **Stability and hardware coverage**: diagnose the GPU buffer-free freeze and app crashes; improve eight-core scheduling, brightness control and unsupported peripherals.
 
-Detailed status and evidence: [performance tasks](jasmine/PERF-TASKS.md), [GPU measurements](jasmine/PERF-GPU-TIME-20261025.md), [framebench](jasmine/FRAMEBENCH.md), [Wi-Fi integration](https://github.com/telegdyd/ios-jasmine/blob/codex/wifi-integration/jasmine/WIFI-INTEGRATION.md), and the active handoffs in [NOTES.md](NOTES.md) and [jasmine/NOTES.md](jasmine/NOTES.md). Reports use specific workloads and software revisions; swap-arrival rates are not measured distinct displayed FPS.
+Detailed status and evidence: [performance tasks](jasmine/PERF-TASKS.md), [GPU measurements](jasmine/PERF-GPU-TIME-20261025.md), [framebench](jasmine/FRAMEBENCH.md), [Wi-Fi integration](jasmine/WIFI-INTEGRATION.md), and the active handoffs in [NOTES.md](NOTES.md) and [jasmine/NOTES.md](jasmine/NOTES.md). Reports use specific workloads and software revisions; swap-arrival rates are not measured distinct displayed FPS.
 
 ## Repository layout
 
@@ -152,7 +152,7 @@ Detailed status and evidence: [performance tasks](jasmine/PERF-TASKS.md), [GPU m
 | `tools/build-ios-root.sh`, `tools/sweet-root-tweaks.py`, `tools/launchd-disable-inplace.py` | Build and adjust the HFS+ iOS root |
 | `tools/sweet-netlog.py`, `tools/sweet-cmd.py`, `tools/sweet-run.py`, `tools/sweet-fs.py` | Live log, kernel commands, a one-round test runner and file transfer over USB Ethernet |
 | `tools/pmos-shell.py`, `tools/pmos-push.py`, `tools/sweet-log.py` | The postmarketOS initramfs shell over USB (commands, file copy) and the persistent-log reader |
-| `tools/g2/` | Graphics build and measurement helpers; Wi-Fi image/provisioning/log tools are currently on `codex/wifi-integration` |
+| `tools/g2/` | Graphics build and measurement helpers, plus Wi-Fi image packaging and acceptance tools |
 | `NOTES.md` (root) | Active cross-task handoff, current blockers and artifact/build references, followed by historical sweet/topaz notes |
 
 Not in git: partition backups, live device trees, Apple and Qualcomm firmware, root images, build trees.
@@ -186,7 +186,7 @@ The early board patches below are followed by the GPU, scheduler, display and ra
 | j0058 | MDP hardware scaling and presentation synchronization; [GPU/display history](jasmine/GPU.md) |
 | j0060, j0064 | GPU clock levels/RPM votes and DDR clock control; [current measurements](jasmine/PERF-GPU-TIME-20261025.md) |
 | j0070 | AMFI service support for extension registration; wallpaper stability remains unresolved |
-| Wi-Fi series and integration | Modem DSP, WLAN transport, Apple80211, USB coexistence and reboot fixes; [tested history](https://github.com/telegdyd/ios-jasmine/blob/codex/wifi-integration/jasmine/WIFI.md), [combined acceptance](https://github.com/telegdyd/ios-jasmine/blob/codex/wifi-integration/jasmine/WIFI-INTEGRATION.md) |
+| Wi-Fi series and integration | Modem DSP, WLAN transport, Apple80211, USB coexistence and reboot fixes; [tested history](jasmine/WIFI.md), [combined acceptance](jasmine/WIFI-INTEGRATION.md) |
 
 ## Key hardware facts (jasmine)
 
