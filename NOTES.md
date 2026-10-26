@@ -1,3 +1,22 @@
+### 2026-10-26: approved branch cleanup completed
+
+User approved deletion only for branches with the plain Delete recommendation.
+Deleted origin branches jasmine-prof, jasmine-sched, t14-census, j0058-display,
+j0064-ddr and main in one atomic push, each guarded by its audited tip lease.
+Deleted the five corresponding local branches (no local main existed).
+Profiler/scheduler worktrees preserved at their existing commits as detached
+HEADs d7e7047/8620435; no directory or ignored artifact removed.
+Prior audit committed as 67fdae4. Remaining six origin branches: jasmine, wifi,
+codex/framebench-build, t16-build1, t5tc-diag, topaz (still default).
+Remaining local branches: same except topaz, plus codex/wifi-integration.
+Topaz requires default change before retirement; t5tc-diag requires archive
+preservation first; neither was approved for this deletion and both retained.
+Current integration worktree already had four unrelated tracked modifications
+(.github/workflows/xnu.yml, tools/g2/mkimg.sh, tools/mkadt.py, j0099 patch);
+left untouched and excluded from this documentation commit. No new CI/build/
+boot/device action. Task24/charging handoff below unchanged.
+Milestone commit subject: docs: record approved branch deletions.
+
 ### 2026-10-26: branch cleanup audit (recommendations only)
 
 Fetched all three remotes; GitHub origin has 12 branches, local has 11.
