@@ -1,3 +1,41 @@
+### 2026-10-26: branch cleanup audit (recommendations only)
+
+Fetched all three remotes; GitHub origin has 12 branches, local has 11.
+GitHub default remains topaz; gh pr list --state all returned no PRs.
+Audit HEAD codex/wifi-integration 6a88ed5; jasmine/origin d34f5ca.
+No branches/tags/worktrees deleted, no push/default-branch change, no device
+access/build/boot/CI run. Existing Task24/charging handoff below unchanged.
+
+Cleanup candidates (local and origin where present):
+- jasmine-prof: local d7e7047 is ancestor of jasmine; remote a0c952b is
+  patch-equivalent to a commit in jasmine (git cherry reports minus).
+- jasmine-sched: local 8620435 is ancestor; remote ed43ab3 has two unique
+  commits, but its entire changed patch matches jasmine's code, with only
+  patch header/commit-message differences. No missing scheduler code found.
+- t14-census 55b791b: ancestor of jasmine.
+- j0064-ddr 23617b1: three unique commits, but only changed file is byte-for-byte
+  identical to jasmine's j0064 patch.
+- j0058-display 48d3dd3: four unique commits, but only changed file differs
+  from jasmine's j0058 patch in embedded commit hash/file-mode metadata only.
+- origin/main 347e190 and origin/topaz e3d156a: ancestors of jasmine;
+  change GitHub default before deleting topaz. These are origin refs only;
+  do not delete branches in the separate upstream sweet/topaz repositories.
+- t5tc-diag d400e26: three unique temporary diagnostic commits, not merged;
+  0004 matches current jasmine exactly, unique 0005 is batch-cache diagnostics.
+  Recommend preserve tip in an archive tag before retiring this branch.
+
+Keep jasmine; wifi daf1e6d (67 commits outside jasmine); current local-only
+codex/wifi-integration (merge includes all jasmine and wifi); framebench-build
+7ee9cb8 and t16-build1 18d59f1. Against integration, framebench has six unique
+commits and t16 has five; neither tip contains the other. Consolidate/validate
+before retiring these. Integration tip is not on origin; preserve before removal.
+Five other registered worktrees inspected read-only: no tracked changes or
+non-ignored untracked files. Ignored build artifacts were not inventoried;
+branch cleanup is not authorization to delete their worktree directories.
+Next if user requests cleanup: recheck tips, preserve diagnostic tip, retire
+reviewed branches and handle occupied worktrees without losing ignored artifacts.
+Milestone commit subject: docs: record branch cleanup audit and preservation needs.
+
 ### 2026-10-26 02:13: replug check shows net battery discharge
 
 User replugged and requested another measurement. Three read-only samples at
