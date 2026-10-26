@@ -1,3 +1,20 @@
+### 2026-10-26: approved README refresh completed
+
+User approved the README proposal recorded in 4448775. Updated README status to
+October 26: accelerated CA via Mesa/libsweetca, MDP hardware scaling, four-Gold
+default versus available 4K/eight-core builds, GPU 588/DDR 1804 documented defaults,
+tested Wi-Fi versus pending combined acceptance, charging and stability limits.
+Build outline now includes optional topaz_4k=1, matching ADT, Mesa artifact and
+library transfer/injection, Wi-Fi runbook and separate standalone installation.
+Updated roadmap, repository map, selected kernel milestones and Mesa credit.
+No displayed-FPS, fresh Safari result, Task24 gain or accepted combined Wi-Fi
+claim. Commands/artifact names checked against local scripts/workflow; local
+Markdown targets, code fences and git diff whitespace checked. Documentation
+only: no new CI/build, phone access, boot, library install or partition write.
+Existing Task24/charging and Wi-Fi integration next actions unchanged. Earlier
+proposal handoff below is historical. Commit subject:
+docs: refresh README with current GPU Wi-Fi and build status.
+
 ### 2026-10-26: README freshness review; proposed changes only
 
 User requested review and a proposal before updating README.md. README remains
