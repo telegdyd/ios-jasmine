@@ -1,0 +1,23 @@
+From: telegdyd <telegdyd93@gmail.com>
+Subject: [PATCH] wifi: leave the AP when the station power is switched off
+
+The modem keeps the WLAN firmware powered, but Settings power-off must still
+run the normal asynchronous leave sequence. A no-op kept the firmware joined
+after the station framework announced link-down and prevented a clean rejoin.
+
+diff --git a/bsd/dev/topaz_sta.c b/bsd/dev/topaz_sta.c
+--- a/bsd/dev/topaz_sta.c
++++ b/bsd/dev/topaz_sta.c
+@@ -49,9 +49,10 @@ static const uint16_t sta_freqs[] = {
+ };
+ 
+ static int
+-sta_power(__unused bool on)
++sta_power(bool on)
+ {
+-	return 0;                               /* the radio stays up with the modem */
++	/* Keep the firmware loaded, but power-off must drop the association. */
++	return on ? 0 : topaz_wlan_leave();
+ }
+ 
+ static int

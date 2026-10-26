@@ -1,3 +1,33 @@
+### 2026-10-26: Device test found Settings power-off bug; repair building
+
+User home, phone in charging shell, authorized tests. Own shared phone lock
+acquired; ownership original research/wifi-integration/device/owner.json.
+Preflight r109 kernel6.19.10-sdm660,77%,34C,slot_b. First temporary default
+8405096 boot21:26:45 Budapest succeeded. Auto-joined known home network without
+network selection (join t11497ms after modem start), USB command/file/sweetd
+work while joined, bench stat idle. Production readback SHA14e32aea... exact.
+Home/Settings screenshots render correctly. Safari example.net loaded and en0
+DHCP lease read over USB. Production-matched GL control7/7 PASS,111.7ms,exit0,
+test-name file removed. No new runtime GPU/SMMU/modem fault observed.
+
+FAIL: Settings Wi-Fi off emitted framework link0/power0 but no firmware leave;
+on emitted power1 and did not restore association in Settings. Source confirms
+topaz_sta.c sta_power was unconditional0, leaving firmware S_UP while framework
+said link-down. This is not counted as passing off/on recovery.
+Stopped test matrix. Reboot captured in boot1.txt (initial collector retained
+the stream; second collector got no payload). Actual fastboot return verified
+21:40:16; temporary r109 parking succeeded. Charging73%,+717773uA,4084462uV,34C,
+backlight0. Lock still held for this authorized repair/retest session.
+
+Added j0100b: power-off invokes existing asynchronous topaz_wlan_leave, power-on
+keeps firmware loaded. Actual callback extracted and host-GCC checked: on does
+not leave, off leaves, error propagation preserved. Patch applies; source gate
+requires the callback. New kernel CI pending. No partition flash or production
+library change. User requested skipping spare-AP cases; AP-loss/wrong-password
+will be explicitly NOT RUN. Need repaired off/on+internet/USB, two clean joined
+reboots, off fallback, cleanup screenshots, production hash check and park.
+All raw evidence/scripts remain ignored under original research/wifi-integration/device/.
+
 ### 2026-10-26: Wi-Fi offline preparation complete; three verified images ready
 
 Combined 4KiB kernel CI40358833912 PASS, source84050968075304307e93f16baeb7f507725e8d70.

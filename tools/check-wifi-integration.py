@@ -27,6 +27,7 @@ def check(source, log=None):
         'iokit/Kernel/arm/SweetSurface.cpp': [
             'kIOMemoryPersistent', 'SDW pinned client memory', 'sweet_surface_pin', 'sweet_bench_alloc(2, -1)'],
         'bsd/dev/redwood_apple80211.c': ['RSSI_BOUNDS'],
+        'bsd/dev/topaz_sta.c': ['return on ? 0 : topaz_wlan_leave();'],
         'osfmk/arm64/sweet_bench.inc': ['BC_SAMPLES 65536u'],
     }
     for name, required in markers.items():
