@@ -1,4 +1,4 @@
-### 2026-10-26: Wi-Fi acceptance passed after power-off repair; merge ready
+### 2026-10-26: Wi-Fi acceptance passed; merged directly into jasmine
 
 Report: jasmine/WIFI-ACCEPTANCE-20261026.md. Accepted kernel d42bfb4,
 CI40398100808 PASS (12m27s job). All48 patches/source/symbol/skip guards pass.
@@ -19,7 +19,9 @@ Production library before/after14e32aea... identical. Test GL/screenshot files
 removed; own collectors ended; own shared lock released22:22:13.
 Phone r109 charging shell, backlight0,slot_b,78%,+802245uA/4163075uV,34C,
 online1/Charging/Good at final read. No partition flash/GPT change.
-Code/tests complete for agreed gate; direct source merge can proceed. Slot-b
+Code/tests complete for agreed gate. Origin jasmine fast-forwarded from e4ac03c
+to acceptance commit168cdea; tested kernel source remains d42bfb4. Optional
+draft PR1 is superseded by the direct merge. Slot-b
 installation is not done and still requires explicit confirmation. No own
 phone/background task remains. Task24 library/defaults were not changed.
 

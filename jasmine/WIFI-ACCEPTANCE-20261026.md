@@ -94,6 +94,6 @@ chargeronline1/statusCharging/healthGood. Own lock released22:22:13 Budapest.
 These are point measurements, not a charge-rate estimate.
 
 Only temporary `fastboot boot` images were used. No partition flashing/GPT
-change or production library replacement occurred. Source can be merged
-directly into jasmine; installing an accepted image into slot b remains a
+change or production library replacement occurred. Source was merged directly
+into jasmine at `168cdea`; installing an accepted image into slot b remains a
 separate step requiring explicit confirmation.

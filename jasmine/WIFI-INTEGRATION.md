@@ -1,6 +1,6 @@
 # Wi-Fi integration and device acceptance
 
-Branch: `codex/wifi-integration`, based on jasmine `d34f5ca` plus wifi `daf1e6d`.
+Integrated into `jasmine` at `168cdea`, based on jasmine `d34f5ca` plus wifi `daf1e6d`.
 This document supersedes WIFI-HANDOFF task 8's preparation instructions.
 The agreed device acceptance passed; partition flashing remains a separate step.
 
