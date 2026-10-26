@@ -55,8 +55,83 @@ feedback_check(const char *name, unsigned r, unsigned g, unsigned b,
    return check(name, feedback_expected, 1);
 }
 
+/* Separate diagnostic controls. Never insert these waits/readbacks into the
+ * acceptance sequence below: a control can hide exactly the bug it diagnoses.
+ */
 static bool
-feedback(struct sgl_context *ctx)
+feedback_diagnostic_target(const char *kind, GLuint solid, GLuint sample,
+                           const GLuint textures[3], const GLuint fbos[2])
+{
+   bool ok = true;
+   char name[128];
+   glBindFramebuffer(GL_FRAMEBUFFER, fbos[0]);
+   glDisable(GL_SCISSOR_TEST);
+   glClearColor(32 / 255.0f, 64 / 255.0f, 96 / 255.0f, 1);
+   glClear(GL_COLOR_BUFFER_BIT);
+   snprintf(name, sizeof(name), "diagnostic %s clear only", kind);
+   ok &= feedback_check(name, 32, 64, 96, 0, false);
+
+   /* Draw->clear, clear->sample and feedback->clear, then controls which
+    * complete before/after clear or replace only clear with a solid draw.
+    */
+   for (unsigned variant = 0; variant < 6; variant++) {
+      feedback_solid(solid, 16, 32, 64);
+      if (variant >= 2)
+         feedback_draws(sample, textures[0], 2);
+      if (variant == 3)
+         glFinish();
+      if (variant == 5) {
+         feedback_solid(solid, 32, 64, 96);
+      } else {
+         glClearColor(32 / 255.0f, 64 / 255.0f, 96 / 255.0f, 1);
+         glClear(GL_COLOR_BUFFER_BIT);
+      }
+      if (variant == 4)
+         glFinish();
+      if (variant >= 1) {
+         glEnable(GL_SCISSOR_TEST);
+         glScissor(16, 16, 32, 32);
+         feedback_draws(sample, textures[0], 3);
+      }
+      static const char *labels[] = {
+         "draw then clear", "clear then sample", "feedback then clear then sample",
+         "finish before clear control", "finish after clear control", "solid replaces clear control",
+      };
+      snprintf(name, sizeof(name), "diagnostic %s %s", kind, labels[variant]);
+      ok &= feedback_check(name, 32, 64, 96, variant ? 3 : 0, variant != 0);
+   }
+
+   /* The final switch/revisit is identical across alias/same-name controls.
+    * The checkpoint variant intentionally reads the target BEFORE sampling
+    * its alias; it tells us whether the old patch already exists at that point.
+    */
+   for (unsigned variant = 0; variant < 3; variant++) {
+      glBindFramebuffer(GL_FRAMEBUFFER, fbos[0]);
+      feedback_solid(solid, 48, 80, 112);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbos[1]);
+      feedback_solid(solid, 24, 40, 56);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbos[0]);
+      if (variant == 2) {
+         snprintf(name, sizeof(name), "diagnostic %s before alias checkpoint", kind);
+         ok &= feedback_check(name, 48, 80, 112, 0, false);
+      }
+      feedback_draws(sample, textures[variant ? 2 : 0], 3);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbos[1]);
+      feedback_draws(sample, textures[1], 2);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbos[0]);
+      feedback_draws(sample, textures[0], 2);
+      snprintf(name, sizeof(name), "diagnostic %s revisit %s", kind,
+               variant == 0 ? "same texture name" : variant == 1 ? "alias" : "alias after checkpoint control");
+      ok &= feedback_check(name, 48, 80, 112, 5, false);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbos[1]);
+      snprintf(name, sizeof(name), "diagnostic %s other target variant %u", kind, variant);
+      ok &= feedback_check(name, 24, 40, 56, 2, false);
+   }
+   return ok;
+}
+
+static bool
+feedback(struct sgl_context *ctx, bool diagnostic)
 {
    uint32_t pitch[2];
    IOSurfaceRef surfaces[2] = {iosurface_new(&pitch[0]), iosurface_new(&pitch[1])};
@@ -102,6 +177,35 @@ feedback(struct sgl_context *ctx)
    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
    glViewport(0, 0, W, H);
 
+   if (diagnostic) {
+      ok &= feedback_diagnostic_target("imported", solid, sample, textures, fbos);
+      /* Ordinary GL allocations are a separate control for the imported
+       * linear path. Their third name is deliberately the first name again,
+       * not a claim to exercise independent imported aliases.
+       */
+      GLuint native_textures[3], native_fbos[2];
+      glGenTextures(2, native_textures);
+      native_textures[2] = native_textures[0];
+      glGenFramebuffers(2, native_fbos);
+      for (unsigned i = 0; i < 2; i++) {
+         glBindTexture(GL_TEXTURE_2D, native_textures[i]);
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+         glBindFramebuffer(GL_FRAMEBUFFER, native_fbos[i]);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, native_textures[i], 0);
+         ok &= glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+      }
+      ok &= feedback_diagnostic_target("GL allocation (no imported alias)", solid, sample,
+                                       native_textures, native_fbos);
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glDeleteFramebuffers(2, native_fbos);
+      glDeleteTextures(2, native_textures);
+      goto cleanup;
+   }
+
    glBindFramebuffer(GL_FRAMEBUFFER, fbos[0]);
    feedback_solid(solid, 16, 32, 64);
    feedback_draws(sample, textures[0], 8);
@@ -133,6 +237,7 @@ feedback(struct sgl_context *ctx)
    glBindFramebuffer(GL_FRAMEBUFFER, fbos[1]);
    ok &= feedback_check("feedback other pending target preserved", 24, 40, 56, 2, false);
 
+cleanup:;
    GLenum error = glGetError();
    if (error != GL_NO_ERROR) {
       printf("FAIL: feedback GL error %#x\n", error);

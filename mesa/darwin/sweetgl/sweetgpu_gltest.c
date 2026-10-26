@@ -601,16 +601,24 @@ sampler_units(struct sgl_context *ctx)
 int
 main(int argc, char **argv)
 {
+   bool feedback_diagnostics = false;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--sysbarrier-on") || !strcmp(argv[i], "--sysbarrier-off")) {
          setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" : "0", 1);
          setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
       } else if (!strcmp(argv[i], "--no-tc")) {
          setenv("GALLIUM_THREAD", "0", 1);
+      } else if (!strcmp(argv[i], "--feedback-diagnostics")) {
+         feedback_diagnostics = true;
       } else {
-         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-off] [--no-tc]\n");
+         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-off] [--no-tc] [--feedback-diagnostics]\n");
          return 2;
       }
+   }
+   if (feedback_diagnostics) {
+      /* Diagnostics isolate the disabled baseline, never enable retention. */
+      setenv("SWEETCA_SYS_BARRIER", "0", 1);
+      setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
    }
    setvbuf(stdout, NULL, _IONBF, 0);
    printf("step: display\n");
@@ -662,8 +670,8 @@ main(int argc, char **argv)
    ok &= iosurface_target(dpy, ctx, surf);
    printf("step: iosurface texture\n");
    ok &= iosurface_texture(ctx);
-   printf("step: ordered framebuffer feedback\n");
-   ok &= feedback(ctx);
+   printf("step: %s\n", feedback_diagnostics ? "feedback diagnostic controls (barrier off)" : "ordered framebuffer feedback");
+   ok &= feedback(ctx, feedback_diagnostics);
    steps += 3;
 #endif
    printf("%u steps in %.1f ms\n", steps, (os_time_get_nano() - t0) / 1e6);

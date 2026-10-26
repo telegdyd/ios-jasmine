@@ -18,6 +18,10 @@ on:
       build:
         description: kernel, ios (the ios/*.c userland tools only), both, or mesa (Mesa freedreno for iOS, mesa/)
         default: kernel
+      mesa_task24_controls:
+        description: Also build the Task 24 GL test without experimental patch0008 (Mesa only)
+        type: boolean
+        default: false
       topaz_4k:
         description: 1 = 4 KiB pages + AMP (TOPAZ_4K, all eight cores with mkadt.py --amp), 0 = 16 KiB pages, Gold only
         default: "0"
@@ -128,6 +132,24 @@ jobs:
           xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 mesa/darwin/sweetgl/sweet_shot.m -o out/sweet_shot -framework Foundation -framework IOSurface
           codesign -f -s - --entitlements ios/entitlements.plist out/sweet_shot
           ls -la out
+      - name: Task 24 pre-experiment control
+        if: ${{ inputs.mesa_task24_controls }}
+        run: |
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          cd mesa-src
+          git apply --reverse --check ../mesa/patches/0008-freedreno-a5xx-sysmem-barrier-experiment.patch
+          git apply --reverse ../mesa/patches/0008-freedreno-a5xx-sysmem-barrier-experiment.patch
+          ninja -C build src/gallium/frontends/sweetgl/sweetgpu_gltest > ../task24-control-build.log 2>&1 || {
+            tail -100 ../task24-control-build.log
+            exit 1
+          }
+          cp build/src/gallium/frontends/sweetgl/sweetgpu_gltest ../out/sweetgpu_gltest-pre-sysbarrier
+          codesign -f -s - --entitlements ../ios/entitlements.plist ../out/sweetgpu_gltest-pre-sysbarrier
+          {
+            echo "source=$GITHUB_SHA"
+            echo "control=all current patches except patch0008; identical diagnostic test source"
+            shasum -a 256 ../out/sweetgpu_gltest ../out/sweetgpu_gltest-pre-sysbarrier
+          } > ../out/task24-control-provenance.txt
       - uses: actions/upload-artifact@v4
         with:
           name: mesa-ios

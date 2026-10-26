@@ -77,6 +77,45 @@ Those are audit leads, not evidence sufficient to change the driver.
 No automatic repeat phone session is authorized by this stopped matrix.
 No CA library replacement, clock/default change or GMEM enablement occurred.
 
+## Offline diagnostic prepared after the failed gate
+
+`sweetgpu_gltest --feedback-diagnostics [--no-tc]` forces the barrier OFF and
+sysmem/nofp16 before display creation. It preserves the seven existing steps,
+then runs separate diagnostic controls instead of the acceptance feedback step.
+Without that flag the original uninterrupted acceptance sequences and pixel
+expectations are unchanged. Diagnostics report all mismatches and still fail
+their process if any check fails; they do not reinterpret a known failure as
+a successful correctness gate.
+
+For both imported BGRA targets and ordinary GL RGBA allocations, it checks:
+
+- Clear-only, draw->clear, clear->sample, feedback->clear->sample.
+- Explicit completion before clear and after clear as separate controls.
+- A solid draw replacing only the clear operation as a separate control.
+- Target switches/revisits using the same texture name or its alias.
+- The target immediately before alias sampling as an intentional readback
+  checkpoint control, then the same switch/revisit sequence.
+- Preservation of the other target for each switch/revisit control.
+
+The ordinary allocation control reuses the first texture name where the
+imported control uses its third imported name; it does not claim to test an
+independent alias. The imported third name shares the wrapper's cached pipe
+resource with its first name. The 28 diagnostic checks are neither a speed
+test nor a substitute for the four-case acceptance gate.
+
+Optional workflow input `mesa_task24_controls=true` saves the normal signed
+artifacts, reverses only patch0008 in the disposable CI source tree, rebuilds
+and signs `sweetgpu_gltest-pre-sysbarrier`, and exports both binary hashes and
+source identity in `task24-control-provenance.txt`. The original signed library
+is retained untouched in the artifact directory. This control is not a build
+of the installed production revision; it isolates patch0008 only.
+
+Local GCC syntax check uses real Mesa GLES2/sweetgl declarations with external
+IOSurface/CoreFoundation function declarations; this does not validate Darwin
+linking or GPU behavior. All eight regenerated patches apply; reversing0008
+also passes its application check. Actual iOS compile/sign remains the CI gate.
+No driver fix has been made, and no further phone session has run.
+
 ## Cleanup and final phone state
 
 Removed the sole test binary. Production before/after bytes have identical

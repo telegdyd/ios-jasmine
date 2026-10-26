@@ -1,3 +1,21 @@
+### 2026-10-26: task24 baseline diagnostic controls prepared offline
+
+See jasmine/PERF-TASK24-PIXEL-GATE.md diagnostic section. Added explicit
+--feedback-diagnostics mode, forced barrierOFF/sysmem/nofp16, preserving the
+original acceptance sequence.28 checks compare imported vs GL allocation,
+clear/draw/feedback stages, finish-before/after-clear and solid-clear controls,
+same-name vs imported-name revisit and pre-alias readback checkpoint. Reports
+all failures; no lowered expectations. Existing seven steps retained.
+Optional Mesa CI input mesa_task24_controls builds/signs an otherwise identical
+test with patch0008 removed, plus hashes/source provenance, after saving normal
+signed outputs. This isolates0008, not installed production revision.
+Regenerated0001; all8patches apply, reverse0008 check passes; GCC include syntax
+with real GL/sweetgl declarations passes. iOS CI pending. No driver fix/gain.
+Phone untouched this turn; inherits verified r109 charging shell16% from prior
+session, own lock released. No automatic device repeat; coordinate once paired
+artifacts ready. Standing Task24 push/CI approval. Next commit/build controls,
+verify signed artifacts, then bounded diagnostic TC on/off per source variant.
+
 ### 2026-10-26: task 24 GPU gate stopped on disabled-baseline pixel failure
 
 Report/next diagnostic: jasmine/PERF-TASK24-PIXEL-GATE.md. Source8b6f7e0,
