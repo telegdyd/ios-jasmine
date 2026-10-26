@@ -1,3 +1,37 @@
+### 2026-10-26: Wi-Fi runner migration prepared; isolated build checkout
+
+User requested all preparation possible without the phone. Draft integration
+PR1 https://github.com/telegdyd/ios-jasmine/pull/1 is attached. Shared checkout
+was switched to jasmine by another active chat; continuation moved to managed
+worktree C:/Users/teleg/.codex/worktrees/wifi-integration-build/ios-jasmine,
+branch codex/wifi-integration-build, based on published integration8768726.
+Captured own workflow edits were removed from shared jasmine unchanged; no
+other agent's work was reset. Original ignored evidence remains under
+C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/research/wifi-integration/.
+
+GitHub macos14 retirement notice lists active brownout Oct26 14:00UTC through
+Oct27 00:00UTC, retirement Nov2. Runs40353134781 and40354341764 cancelled while
+queued; neither compiled. Prepared kernel job migration to supported macos15.
+Preserve xnu8796 RPC ABI: tools/xnu-legacy-iig.py replays exact Xcode15 generated
+header/implementation pairs from successful Wi-Fi CI40159794543 /37f54b1.
+Pinned manifest08a1ba9244a14654a2b12ccaeecf470b26e94b20396931590fda2e62e0aad0ee:
+1922 source header/definition hashes,34 output hashes. Private SweetSurface.h
+(not an IIG input) and2 independent SDK TargetConditionals copies excluded.
+Definition set/flags/output destinations strictly checked. No Apple generated
+files in git; workflow refreshes verified seed as90-day artifact. Offline source
+validation and exact IOUserClient replay PASS. Local reference source aligned
+with3 existing blacktop header edits absent from WSL snapshot; CRLF normalized.
+No kernel RPC-layout change. Supported-runner compile remains pending.
+
+32 framebench tests and extracted intern concurrency/capacity check PASS;
+3 provisioning tests, offline backup/idempotency fixture, ADT on/off and negative
+skipped-patch/old-kernel checks pass. tools/g2/wifi-build-kit.py checks exact
+successful CI head, downloads log/kernel and packages default/diagnostic/off.
+Actual images await CI. No phone command/lock/boot/install/flash or new device
+result. Charging observation inherited12% net discharge; fresh>=30% and shared
+availability coordination before later device session. Next commit/build runner
+repair, verify artifacts/package images, then update PR and handoff.
+
 ### 2026-10-26: t5tc-diag archived and retired
 
 User approved the proposed archive-and-delete procedure. Annotated tag

@@ -1,5 +1,9 @@
 name: xnu
 
+permissions:
+  contents: read
+  actions: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -161,9 +165,9 @@ jobs:
 
   build:
     if: ${{ inputs.build != 'ios' && inputs.build != 'mesa' }}
-    # macos-14 still ships Xcode 15.x: its iig matches the xnu-8796 IORPC ABI
-    # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks)
-    runs-on: macos-14
+    # macos-14 is in retirement brownouts. Preserve xnu-8796's RPC ABI by
+    # replaying pinned Xcode15 IIG output; compile/link on a supported runner.
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -216,6 +220,31 @@ jobs:
           key: ccache-${{ env.MACHINE_CONFIG }}-${{ env.KERNEL_CONFIG }}-${{ env.TOPAZ_4K == '1' && '4k-' || '' }}${{ hashFiles('xnu/patches/**', '.github/workflows/xnu.yml') }}
           restore-keys: |
             ccache-${{ env.MACHINE_CONFIG }}-${{ env.KERNEL_CONFIG }}-${{ env.TOPAZ_4K == '1' && '4k-' || '' }}
+
+      - name: Restore pinned Xcode15 IIG generation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Refresh a 90-day artifact on each kernel build. If no refreshed
+          # copy exists yet, bootstrap from the last verified Wi-Fi buildtree.
+          cached_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=xnu8796-iig-xcode15&per_page=100" --jq '[.artifacts[] | select(.expired == false)][0].workflow_run.id // empty')
+          if [ -n "$cached_run" ]; then
+            gh run download "$cached_run" -n xnu8796-iig-xcode15 -D legacy-iig
+          else
+            gh run download 40159794543 -n xnu-buildtree -D legacy-buildtree
+            python3 tools/xnu-legacy-iig.py seed legacy-buildtree/buildtree.tgz legacy-iig
+          fi
+          echo "LEGACY_IIG_CACHE=$GITHUB_WORKSPACE/legacy-iig" >> "$GITHUB_ENV"
+          printf '#!/bin/sh\nexec python3 "%s/tools/xnu-legacy-iig.py" replay --cache "$LEGACY_IIG_CACHE" -- "$@"\n' "$GITHUB_WORKSPACE" > legacy-iig-wrapper
+          chmod +x legacy-iig-wrapper
+          echo "IIG=$GITHUB_WORKSPACE/legacy-iig-wrapper" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xnu8796-iig-xcode15
+          path: legacy-iig/
+          retention-days: 90
 
       - name: Build
         working-directory: dxb
