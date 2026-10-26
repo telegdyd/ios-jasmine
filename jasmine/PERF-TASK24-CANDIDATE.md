@@ -71,9 +71,22 @@ or new GPU/SMMU fault stops validation and precludes a performance trial.
 
 Local checks: all eight patches apply to the pinned source; six driver files
 pass twelve GCC syntax checks (host and Apple guards), with no warnings.
-Trace-controller tests and six batch-parser tests pass. iOS CI, GPU test matrix
-and retained-path pixel correctness remain pending. The previous seven-step
+Trace-controller tests and six batch-parser tests pass. iOS CI now passes;
+the GPU test matrix and retained-path pixel correctness remain pending. The previous seven-step
 device pass belongs to diagnostic `ad9d787`, not this new candidate.
+
+**Build ready:** source `8b6f7e0`, Mesa CI `40250210168` PASS. Signed library
+SHA256 `4b7eb493bde16938979679d7a714036fc70cb5f41a31a4884368ed23ebe13311`;
+signed GPU test SHA256
+`68fcde5cf3232193e75a9ad2be8eda3f6e4a16004641af42b479eba2bb57fae3`.
+Both Mach-O headers and expected experimental/test strings checked. Artifacts
+under ignored `research/t24/barrier-ios/`; exact CI provenance and hashes in
+`barrier-ci.json` and `barrier-artifact.json`. The bounded matrix runner is
+`research/t24/barrier-test.py`: acquires a fresh shared lock, installs only the
+test-name GL binary, checks its readback hash, runs the four processes, verifies
+production bytes unchanged and removes its own binary/lock. On failure it stops
+and keeps its own lock for recovery. No planned reboot or CA library replacement.
+Fresh phone-free authorization requested; no candidate phone access yet.
 
 After the GPU gate, separately coordinate matched baseline/candidate performance
 captures using the current pipeline0/GPU588/DDR1804, same kernel, test-name

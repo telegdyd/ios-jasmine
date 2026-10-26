@@ -1,3 +1,23 @@
+### 2026-10-26: task 24 candidate CI passed; awaiting GPU correctness session
+
+Candidate8b6f7e0, Mesa CI40250210168 PASS. Design/gate:
+jasmine/PERF-TASK24-CANDIDATE.md. Signed library SHA2564b7eb493...;
+signed GPU-test SHA25668fcde5c...; exact artifacts/provenance under ignored
+research/t24/barrier-ios/, barrier-ci.json, barrier-artifact.json.
+Both are compile/sign results only: no GPU correctness or gain established.
+Default off SWEETCA_SYS_BARRIER; production still ordinary14e32aea... library,
+slot-b j70/pipeline0/GPU588/DDR1804. Phone restored after the sole diagnostic,
+all own test files removed; no phone lock held. No candidate installed/booted.
+Fresh phone-free approval requested for on/off x TC on/off GPU pixel matrix.
+Prepared runner research/t24/barrier-test.py (not yet run) installs only a new
+test-name GL binary, no CA library replacement or planned reboot. Positive
+cases must show retained-path marker and all eight steps PASS. Stop on any
+failure/hang/fault and recover before benchmarking. User has standing Task24
+push/CI approval. Next: after phone-free reply, run the bounded matrix; only
+after it passes coordinate matched performance captures. Task24 remains open,
+GMEM not enabled by default and no speed claim. Parser report distinguishes
+zero-draw batches from zero-work; some captured mask tails remain incomplete.
+
 ### 2026-10-26: task 24 default-off sysmem barrier candidate prepared
 
 Concrete design/test gate: jasmine/PERF-TASK24-CANDIDATE.md. New patch0008,

@@ -1,5 +1,13 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: task24 guarded sysmem-barrier candidate builds.**
+[Candidate, exact eligibility and GPU gate](PERF-TASK24-CANDIDATE.md).
+Source8b6f7e0 / Mesa CI40250210168 PASS; default off, forced-sysmem-only,
+small batches only, preserves other pending work and larger GMEM islands.
+Eight-step GPU feedback tests added; four-process matrix awaits fresh phone
+coordination. No candidate installed, production phone restored/unchanged;
+no measured gain or GMEM default change.
+
 **2026-10-26: task24 first batch graph, phone restored.**
 [Device evidence and limitations](PERF-TASK24-DEVICE-AUDIT.md).20960 consecutive
 events,40 complete CA-flush intervals; barriers and resource reads dominate.

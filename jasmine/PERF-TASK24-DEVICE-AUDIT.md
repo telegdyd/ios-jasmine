@@ -30,8 +30,8 @@ context-flush calls in these intervals; they ended616 batches. The separate
 barrier call.
 
 The1125x2436 main-target class has667 batches and2171 draws. Of these batches,
-356 have a bound view whose BO aliases a target;311 do not, including46 empty
-batches. There are **84 batches of6-13 draws without observed bound-alias evidence**,
+356 have a bound view whose BO aliases a target;311 do not, including46 zero-draw
+batches (not necessarily zero-work batches). There are **84 batches of6-13 draws without observed bound-alias evidence**,
 none with an observed clear event. Their scissor unions cover the target, but
 that does not establish actual pixel coverage or profitability. Some13-draw
 non-alias batches end at a barrier, before the following feedback draw.
