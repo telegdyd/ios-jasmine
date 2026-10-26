@@ -1,3 +1,46 @@
+### 2026-10-26: Task 2 restarted for both CPU clusters; offline milestone
+
+User requested eight cores, stock-max availability, demand scaling and heat
+control. Active plan jasmine/PERF-TASK2-DVFS.md combines task2 backend/governor,
+task13 thermal caps and task6 placement/comparisons; task12 idle collapse remains
+separate. Existing eight-core bring-up is historical PASS CI39798911718/m4kf;
+no new device result. Kernel baseline d42bfb4, current repo handoff d88af7e.
+
+Implemented --cluster gold|silver|both in tools/cpuclk/cpuclk_model.py using
+saved stock DT and downstream CPRh maps; missing fuse rows now fail, as do
+conflicting captures and >64-bit rows. Six input-integrity tests PASS. Existing
+j39f capture + local stock DT generate both tables; Gold before/after output
+byte-identical SHA2567cbbfc65d76eb1ba5670cd06fdd9843e72867666f6e0429d1b3fe6d8e20e7927
+(saved PowerShell output). Synthetic --zero both PASS, explicitly labelled.
+Derived top: Gold2208MHz floor908/open948/adjusted ceiling948mV; Silver1843.2
+floor860/open900/ceiling900mV. These are model results, not validated OPPs.
+Ignored artifacts research/cpu-dvfs/{stock.dts,gold-before.txt,gold-after.txt,
+both.txt,silver.txt,zero.txt}; no dumps added to git. Reference hashes in active plan.
+
+Voltage blocker unchanged: prior988mV request changed target, not valid868mV;
+rollback previously restored868mV. APM link is hypothesis. Do not reuse988mV
+as an arbitrary target; scaled-open-loop ceiling is below raw DT ceiling.
+Source audit found two diagnostic traps: sweetosm8 skips sweetgold; sweetcmd
+alone leaves live check's osm_ref unset. Use sweetcmd without sweetosm for
+read-only state/rails/tsens/r baseline; repair check initialization before relying
+on it. State is Gold-only; Silver requires explicit reads. Historical broad
+sweetosm1 probes hit SError on some CPRh registers. Existing startup Gold
+checker covers online cores. Next: current4K 4/8-core baseline, then audited
+PMIC multibyte commit/APM/MEM-ACC transition at an already-supported low clock,
+with delayed valid/status checks and rollback before any higher PLL setting.
+
+No new kernel patch/build/CI dispatch/boot/phone command/voltage or clock change,
+root write/flash. Phone remains in inherited charging-shell state; availability
+and battery not rechecked here. Task24 and accepted Wi-Fi defaults untouched.
+Implementation commit 0c52b12: cpuclk: model both clusters and restart thermal
+DVFS plan. Six input tests and diff whitespace PASS after final edits; Gold,
+Silver, combined and synthetic CLI modes exercised. No CI run required for this
+host-tool/docs change. Remaining backend/governor/thermal/device gates are open.
+Publication pending: automatic approval review rejected the combined handoff/
+pull/push command before execution, calling origin an unverified publication
+destination without specific user export authorization. Committed handoff locally
+in a separate command. No push occurred; ask user approval before publishing.
+
 ### 2026-10-26: Wi-Fi acceptance passed; merged directly into jasmine
 
 Report: jasmine/WIFI-ACCEPTANCE-20261026.md. Accepted kernel d42bfb4,
