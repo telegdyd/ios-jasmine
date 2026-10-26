@@ -1,7 +1,15 @@
 # Task 24: small sysmem batch barrier experiment
 
 2026-10-26. Prepared after the [first batch graph](PERF-TASK24-DEVICE-AUDIT.md).
-**Default off; not installed or GPU-validated. No measured gain.**
+**Default off; GPU gate failed in the disabled baseline. No measured gain.**
+
+Latest: [2026-10-26 pixel gate and next diagnostic](PERF-TASK24-PIXEL-GATE.md).
+The first `--sysbarrier-off`/TC-default case failed clear/scissor (4096 pixels)
+and imported-alias revisit (112 pixels). Matrix stopped before any enabled case;
+retained path remains untested. Production library unchanged, test binary
+removed, phone restored to verified r109 charging shell and own lock released.
+Resolve the disabled baseline failure before any performance trial. This result
+supersedes the build-ready/pending-session text below.
 
 ## Concrete change
 

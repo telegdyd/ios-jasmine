@@ -1,3 +1,26 @@
+### 2026-10-26: task 24 GPU gate stopped on disabled-baseline pixel failure
+
+Report/next diagnostic: jasmine/PERF-TASK24-PIXEL-GATE.md. Source8b6f7e0,
+Mesa CI40250210168 PASS; one approved bounded session. User supplied charging
+shell; existing slot-b iOS boot01:49:11 (no flash). Test-name binary readback
+matches CI68fcde5c... First --sysbarrier-off/TC-default case exit1,8steps97.9ms:
+existing7steps pass; repeated feedback passes, clear/scissor4096/4096 wrong,
+target revisit/imported alias112/4096 wrong, other target preserved. Matrix
+stopped before any enabled case; retained path untested. No benchmark/gain.
+No nonzero GL error or new runtime GPU/SMMU fault/panic observed; known startup
+self-testFSR0x400 persists. Do not infer installed production reproduces failure:
+the test embeds candidate Mesa, and baseline failure root cause is unresolved.
+Raw case SHA0a2750c5..., evidence ignored research/t24/barrier-session/.
+Own test removed, before/after production14e32aea... identical, collectors exited.
+Temporary r109 parking boot succeeded, activeb verified;01:54:12 online1/Charging,
+qcom-battery +162597uA/3701650uV/16%, backlight0/float4050000. Charger current/
+voltage sysfs reads errored; quoted values are battery reads. Own lock released.
+Next offline diagnostic design isolates clear-only/draw-clear/feedback-clear,
+target contents before alias and explicit-completion controls; preserve original
+acceptance sequence. Compare pre0008/disabled candidate and TC modes in a fresh
+coordinated phone session before root-cause fix or four-case repeat. Candidate
+default off, production unchanged, Task24 open. Standing Task24 push/CI approval.
+
 ### 2026-10-26: task 24 candidate CI passed; awaiting GPU correctness session
 
 Candidate8b6f7e0, Mesa CI40250210168 PASS. Design/gate:

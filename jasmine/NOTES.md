@@ -1,3 +1,19 @@
+### 2026-10-26: task24 disabled GPU baseline failed; charging shell restored
+
+See PERF-TASK24-PIXEL-GATE.md and root NOTES active handoff. Source8b6f7e0 /
+Mesa CI40250210168; first --sysbarrier-off with TC default exit1. Existing7steps
+pass; new repeated-feedback passes, clear/scissor4096 pixels and imported-alias
+revisit112 pixels wrong. Other pending target passes. Stopped before any enabled
+case; retained path untested, no speed trial/gain. Cause unresolved; do not claim
+installed production reproduced it. No nonzero GL error/new runtime GPU/SMMU
+fault/panic in captured log; startupFSR0x400 known. Test binary removed, production
+before/after14e32aea... identical, own collectors exited. Existing slotb reboot
+01:49:11, then temporary r109 restored;01:54:12 chargeronline1/Charging, battery
++162597uA/3701650uV/16%, backlight0/float4050000. Own lock released, no flash.
+Next isolate baseline clear/import/ordering with preserved acceptance tests and
+pre0008/disabled/TC controls; fresh phone coordination required before rerunning.
+Candidate default off; Task24 open. User standing Task24 push/CI approval applies.
+
 ### 2026-10-26: task 23 closed at user request
 
 Task 23 moved from open performance work to closed investigations in

@@ -1,5 +1,14 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: task24 disabled baseline fails new pixel tests.**
+[Exact results and next diagnostic gate](PERF-TASK24-PIXEL-GATE.md).
+Source8b6f7e0 / CI40250210168, first off/TC-default case: repeated feedback
+passes; clear/scissor4096 and imported-alias112 pixels wrong. Stopped before
+enabled cases; retained path untested, no speed trial or gain. Production hash
+unchanged, own test removed, collectors stopped, r109 charging verified and
+shared lock released. Next isolate clear/import/ordering baseline before fixes
+or further device matrix. Task24 open; defaults unchanged.
+
 **2026-10-26: task24 guarded sysmem-barrier candidate builds.**
 [Candidate, exact eligibility and GPU gate](PERF-TASK24-CANDIDATE.md).
 Source8b6f7e0 / Mesa CI40250210168 PASS; default off, forced-sysmem-only,
