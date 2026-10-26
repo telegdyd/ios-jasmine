@@ -229,7 +229,7 @@ jobs:
           if [ -f patches/j0100-jasmine-wifi-defaults.patch ]; then
             python3 ../tools/check-wifi-integration.py --source xnu --log kernel-build.log
             nm fakeroot/System/Library/Kernels/kernel.development.sweet > wifi-symbols.txt
-            for symbol in topaz_modem_init topaz_modem_stop sweet_surface_pin sweet_surface_unpin; do
+            for symbol in topaz_modem_init topaz_modem_stop sweet_surface_pinned_note _Z17sweet_surface_pinP12SweetSurface _Z19sweet_surface_unpinP12SweetSurface; do
               grep -E "[[:space:]][TtSs][[:space:]]_$symbol$" wifi-symbols.txt
             done
           fi

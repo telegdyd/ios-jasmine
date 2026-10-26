@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Apply the SWEET bring-up changes to an iOS root made by tools/mkiosroot.sh.
 
-  sudo sweet-root-tweaks.py MOUNTED_ROOT
+  sudo sweet-root-tweaks.py MOUNTED_ROOT [--wifi]
 
 MOUNTED_ROOT is the HFS+ image mounted read-write (Linux: run
 `fsck.hfsplus -fy` on the image, then `mount -t hfsplus -o loop,force`).
@@ -32,7 +32,7 @@ screen (image versions v8-v14 in NOTES.md):
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
 """
-import glob, os, plistlib, shutil, sys
+import glob, os, plistlib, runpy, shutil, sys
 
 BUILD, VERSION = '20H392', '16.7.16'
 MOBILE = 501
@@ -144,9 +144,14 @@ def audio(root):
 
 
 def main():
-    if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
+    args = sys.argv[1:]
+    wifi = '--wifi' in args
+    args = [arg for arg in args if arg != '--wifi']
+    if len(args) != 1 or not os.path.isdir(os.path.join(args[0], 'System/Library/xpc')):
         sys.exit(__doc__)
-    root = sys.argv[1]
+    root = args[0]
+    if wifi:
+        runpy.run_path(os.path.join(os.path.dirname(__file__), 'wifi-root-config.py'))['apply'](root)
     launchd(root)
     containers(root)
     activation(root)

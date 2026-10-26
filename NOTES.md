@@ -74,6 +74,21 @@ Next if user requests cleanup: recheck tips, preserve diagnostic tip, retire
 reviewed branches and handle occupied worktrees without losing ignored artifacts.
 Milestone commit subject: docs: record branch cleanup audit and preservation needs.
 
+### 2026-10-26: Wi-Fi offline test kit ready; CI guard corrected before build
+
+Integration implementation341b28f pushed to codex/wifi-integration. First CI
+40353134781 remained queued (no build steps); cancellation requested to include
+correct C++-mangled pin/unpin names in the symbol guard, checked against the
+prior j99 kernel symbol table. Replacement combined CI still pending.
+Prepared tools/g2/wifi-images.py (default/diagnostic/off, baseline j99 shim+ADT,
+plain-arm64/symbol/roundtrip/hash checks), tools/wifi-check-log.py (offline
+evidence gate), jasmine/WIFI-INTEGRATION.md (bounded acceptance/recovery/merge
+runbook), and --wifi opt-in in sweet-root-tweaks.py. Prior j99 boot/reboot logs
+pass analyzer; missing-evidence/off-with-radio negative controls reject.
+Generated default/off ADTs verify wlan present/absent;3 configd tests pass.
+Images need successful combined kernel before packaging; no device test claim.
+No phone commands/lock/boot/install/flash. Charging observation inherited only.
+
 ### 2026-10-26: Wi-Fi integration prepared offline; combined CI pending
 
 User requested all preparation possible without phone access. Working branch
