@@ -63,6 +63,21 @@ class GraphTest(unittest.TestCase):
                       'event=frame-end ctx=a frame=bad'):
             self.assertFalse(analyze(log([event]))['valid'])
 
+    def test_device_console_concatenation_and_damaged_tail(self):
+        text = ('|backboardd| sweetca: batchtrace e=1 us=1 cause=test event=frame-end ctx=a frame=1\n'
+                '|backboardd| sweetca: batchtrace e=2 us=2 cause=test event=draw ctx=a '
+                'screen=s batch=1 draws=1 clear=0 |backboardd| e=4\n'
+                '|backboardd| sweetca: batchtrace e=3 us=3 cause=test event=target ctx=a batch=1 '
+                'valid=|backboardd| sweetca: batchtrace e=4 us=4 cause=test '
+                'event=flush ctx=a screen=s batch=1 draws=1\n'
+                '|backboardd| sweetca: batchtrace e=5 us=5 cause=test event=frame-end ctx=a frame=2\n')
+        result = analyze(text)
+        self.assertTrue(result['valid'])
+        self.assertEqual(result['records'], 5)
+        self.assertFalse(result['complete_record_fields'])
+        self.assertEqual(result['contexts']['a']['draw_records'], 1)
+        self.assertEqual(result['contexts']['a']['flushes'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

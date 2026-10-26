@@ -1,3 +1,30 @@
+### 2026-10-26: task 24 first batch graph collected; ordinary phone restored
+
+Report: jasmine/PERF-TASK24-DEVICE-AUDIT.md. Source ccd9a88 + ad9d787;
+Mesa CI40247556888 PASS. 20960 consecutive event prefixes;40 complete CA-flush
+intervals,3970 draws/1575 sysmem batches. Barrier616/resource-read646 endings;
+121 actual periodic-kick flush calls ended186 batches. Preserve real dependencies.
+Main-target667 batches;84 have6-13 draws and no observed bound alias or clear.
+Some large alias-free islands end at barriers: blanket retention can destroy
+GMEM opportunities. Bound views/scissor unions are conservative, not active
+sampling/actual shaded area. Diagnostic timings are not speed results.
+Console fragments/concatenates long records and damages some tail fields.
+Host parser repaired/tested (6 tests); all IDs and interior draw sequences pass.
+Counts/alias fields survive; exact restore/resolve mask completeness is unproven.
+Trace raw SHA2560dac2345...; ignored evidence/scripts under research/t24.
+One authorized temporary boot01:10:53, pipeline0/GPU588/DDR1804, no partition flash.
+Precheck zero on-CPU samples for named sync tasks, zero drops. No new runtime
+GPU/SMMU fault/panic; startup FSR0x400 matches production. GL test7/7 PASS.
+Ordinary slot-b boot restored01:17:54; production injection/DDR1804 verified,
+lock-screen screenshot checked. Production before/after SHA25614e32aea... identical.
+Own test files removed; own collectors ended, profiler idle, own lock released.
+Phone in ordinary production iOS. No additional device round scheduled.
+Next: default-off narrow sysmem barrier candidate plus GPU pixel-reference tests,
+preserving large islands and global drain when other batches are pending; improve
+future trace framing. No optimization/default GMEM change or gain claimed.
+User granted standing approval for Task24 pushes/CI; further device validation
+must be concrete and separately coordinated. Task24 remains open.
+
 ### 2026-10-26: task 24 diagnostic CI passed; authorized session starting
 
 Repair ad9d787; Mesa CI40247556888 PASSED. First run40247120431 failed only

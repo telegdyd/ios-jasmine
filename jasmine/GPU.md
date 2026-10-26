@@ -1,5 +1,13 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: task24 first batch graph, phone restored.**
+[Device evidence and limitations](PERF-TASK24-DEVICE-AUDIT.md).20960 consecutive
+events,40 complete CA-flush intervals; barriers and resource reads dominate.
+Large non-alias islands can end at barriers: preserve them for future GMEM.
+Parser repaired for console fragmentation; some tail masks remain unproved.
+Ordinary slot-b boot/production hash/UI restored; own test files/lock removed.
+No speed claim, optimization or GMEM default change; task remains open.
+
 **2026-10-26: task 24 source audit and bounded diagnostic prepared.**
 [Findings, trace controls and validation](PERF-TASK24-AUDIT.md). Complete pinned
 source inspected; all seven patches apply. Eight local driver compile checks,

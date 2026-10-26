@@ -15,10 +15,17 @@ def analyze(text):
     records = []
     errors = []
     previous = 0
-    for line in text.splitlines():
-        if 'batchtrace e=' not in line:
-            continue
-        fields = dict(re.findall(r'(\w+)=([^\s]+)', line))
+    fragmented = 0
+    # The device console can concatenate successive records and insert its
+    # process prefix inside a long record. Frame by our explicit prefix, never
+    # by newlines, and never let a damaged tail overwrite the header sequence.
+    chunks = re.split(r'(?=sweetca: batchtrace e=\d+)', text)[1:]
+    for chunk in chunks:
+        line = chunk.splitlines()[0]
+        fragmented += '|backboardd|' in line or '|SpringBoard|' in line
+        fields = {}
+        for key, value in re.findall(r'(\w+)=([^\s|]+)', line):
+            fields.setdefault(key, value)
         try:
             number = int(fields['e'])
         except (ValueError, KeyError):
@@ -74,6 +81,8 @@ def analyze(text):
         'records': len(records), 'complete_flush_intervals': len(frames),
         'errors': errors, 'valid': bool(records) and not errors,
         'stop_seen': 'batchtrace stop ' in text,
+        'console_fragmented_records': fragmented,
+        'complete_record_fields': not fragmented,
         'interpretation': 'CA flush intervals; bound aliases conservative; no GPU timing or displayed FPS',
         'contexts': {},
     }
