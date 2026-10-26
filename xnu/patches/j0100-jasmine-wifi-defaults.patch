@@ -1,0 +1,125 @@
+From: telegdyd <telegdyd93@gmail.com>
+Subject: [PATCH] jasmine: default Wi-Fi on with explicit fallback and quiet diagnostics
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -33,6 +33,9 @@
+ extern "C" int sweet_board_is(const char *compat);   /* bsd/dev/sweet_board.c */
+ 
+ #define LOG(fmt, ...)       IOLog("TopazModem: " fmt "\n", ##__VA_ARGS__)
++
++/* j0100: opt-in packet/QRTR/SMMU diagnostics; state and fault logs stay on. */
++static uint32_t wifi_diag;
+ 
+ /*
+  * SoC addresses: topaz's (SM6225) by default, jasmine's (SDM660, mainline sdm630.dtsi and the
+@@ -1299,7 +1302,7 @@
+ static void
+ late_trace(const char *dir, uint32_t type, uint32_t sport, uint32_t dport, const uint8_t *d, uint32_t len)
+ {
+-	if (g_ms < 3000 || late_lines >= 250) {
++	if (!wifi_diag || g_ms < 3000 || late_lines >= 250) {
+ 		return;
+ 	}
+ 	late_lines++;
+@@ -4292,8 +4295,9 @@
+ wifi_enabled(void)
+ {
+ 	if (wifi_on < 0) {
+-		uint32_t v = 0;
+-		wifi_on = PE_parse_boot_argn("wifi", &v, sizeof(v)) && v != 0;
++		uint32_t v = sweet_board_is("xiaomi,jasmine") ? 1 : 0;
++		(void)PE_parse_boot_argn("wifi", &v, sizeof(v));
++		wifi_on = v != 0;
+ 	}
+ 	return wifi_on > 0;
+ }
+@@ -4346,12 +4350,14 @@
+ 		return false;
+ 	}
+ 	volatile uint8_t *gr1 = s + psize, *cbp = s + (uint64_t)npage * psize + (uint64_t)cb * psize;
++	if (wifi_diag) {
+ 	/* step lines (j0080y): on jasmine this hung after the ID line (j80x), without a panic */
+ 	LOG("smmu: SMR%u CB%u free (used %llx); reading GR1 CBAR", slot, cb, used);
+ 	uint32_t cbar = r32(gr1, 0x000 + 4 * cb);
+ 	LOG("smmu: CBAR%u %08x; reading the bank's SCTLR", cb, cbar);
+ 	uint32_t sctlr = r32(cbp, 0x0);
+ 	LOG("smmu: CB%u SCTLR %08x FSR %08x; writing the bank", cb, sctlr, r32(cbp, 0x58));
++	}
+ 	w32(cbp, 0x58, 0xFFFFFFFF);                 /* FSR: clear */
+ 	w32(cbp, 0x20, 0);                          /* TTBR0 */
+ 	w32(cbp, 0x24, 0);
+@@ -4362,11 +4368,11 @@
+ 	w32(gr1, 0x800 + 4 * cb, CB_CLONE_CBA2R);
+ 	w32(gr1, 0x000 + 4 * cb, CB_CLONE_CBAR);
+ 	w32(cbp, 0x0, CB_CLONE_SCTLR);              /* SCTLR last */
+-	LOG("smmu: bank written (SCTLR reads %08x); writing S2CR%u", r32(cbp, 0x0), slot);
++	if (wifi_diag) { LOG("smmu: bank written (SCTLR reads %08x); writing S2CR%u", r32(cbp, 0x0), slot); }
+ 	w32(s, 0xC00 + 4 * slot, cb);               /* S2CR: type 0 (translate), this bank */
+-	LOG("smmu: S2CR%u reads %08x; writing SMR%u", slot, r32(s, 0xC00 + 4 * slot), slot);
++	if (wifi_diag) { LOG("smmu: S2CR%u reads %08x; writing SMR%u", slot, r32(s, 0xC00 + 4 * slot), slot); }
+ 	w32(s, 0x800 + 4 * slot, (1u << 31) | (mask << 16) | sid);   /* SMR valid last */
+-	LOG("smmu: SMR%u reads %08x", slot, r32(s, 0x800 + 4 * slot));
++	if (wifi_diag) { LOG("smmu: SMR%u reads %08x", slot, r32(s, 0x800 + 4 * slot)); }
+ 	/*
+ 	 * No global TLB sync (j0080aa): nothing was invalidated (the bank does not translate), and
+ 	 * Linux's arm_smmu_write_sme does none either. On jasmine's anoc2 it never returned (j80y/z).
+@@ -6116,6 +6122,7 @@
+ static void
+ eth_note(const char *dir, uint32_t n, const uint8_t *e, size_t len)
+ {
++	if (!wifi_diag || len < 14) { return; }
+ 	uint16_t et = (uint16_t)(e[12] << 8 | e[13]);
+ 	if (et == 0x0800 && len >= 14 + 20 && e[23] == 17 && len >= 14 + (size_t)(e[14] & 15) * 4 + 4) {
+ 		const uint8_t *u = e + 14 + (e[14] & 15) * 4;
+@@ -6879,7 +6886,7 @@
+ 	const uint8_t *llc = f + hl;
+ 	rx_data++;
+ 	if (len < hl + 8 || llc[0] != 0xAA || llc[1] != 0xAA || llc[2] != 0x03) {
+-		if (rx_nonllc++ < 4) {
++		if (wifi_diag && len >= hl + 4 && rx_nonllc++ < 4) {
+ 			LOG("t=%u ms: wifi rx: no LLC/SNAP: fc %02x%02x, %u bytes, at %u: %02x %02x %02x %02x", g_ms, f[0], f[1],
+ 			    len, hl, llc[0], llc[1], llc[2], llc[3]);
+ 		}
+@@ -7198,7 +7205,7 @@
+ 		}
+ 		w_tx_pump();
+ 	}
+-	if (s_state == S_UP && g_ms >= data_stat_ms) {
++	if (wifi_diag && s_state == S_UP && g_ms >= data_stat_ms) {
+ 		data_stat_ms = g_ms + 10000;
+ 		LOG("t=%u ms: wifi data: tx queued %u sent %u done %u (ok %u, st1 %u st2 %u st3 %u st4+ %u) drops %u; "
+ 		    "rx msdus %u data %u (eapol %u, up %u, not up %u, no snap %u); signal %d dBm (beacons %u, ppdus %u)", g_ms,
+@@ -8439,8 +8446,9 @@
+ 	unsigned watch = 0;                         /* 0: serve the modem for the whole session */
+ 
+ 	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
+-	unsigned delay = 0;                         /* modem_delay=S: start late, e.g. once the USB log is connected */
+-	if (PE_parse_boot_argn("modem_delay", &delay, sizeof(delay)) && delay != 0) {
++	unsigned delay = sweet_board_is("xiaomi,jasmine") ? 45 : 0; /* retain validated startup timing */
++	(void)PE_parse_boot_argn("modem_delay", &delay, sizeof(delay));
++	if (delay != 0) {
+ 		LOG("modem_delay=%u: waiting", delay);
+ 		IOSleep(delay * 1000);
+ 	}
+@@ -8479,14 +8487,16 @@
+ topaz_modem_init(void)
+ {
+ 	static bool started;
+-	uint32_t on = 0;
++	uint32_t on = sweet_board_is("xiaomi,jasmine") && wifi_enabled();
+ 	thread_t thread;
+ 
+-	if (started || !PE_parse_boot_argn("modem", &on, sizeof(on)) || on == 0) {
++	(void)PE_parse_boot_argn("modem", &on, sizeof(on));
++	(void)PE_parse_boot_argn("wifi_diag", &wifi_diag, sizeof(wifi_diag));
++	if (started || on == 0) {
+ 		return;
+ 	}
+ 	started = true;
+-	/* jasmine: en0 only with the radio path on (wifi=1, scans since j0081); it attaches once WMI is ready */
++	/* jasmine defaults to Wi-Fi; wifi=0 disables it, modem=0 skips the DSP too. */
+ 	if (!sweet_board_is("xiaomi,jasmine") || wifi_enabled()) {
+ 		topaz_sta_init();                       /* private: bsd/dev/topaz_sta.c (en0 + Apple80211 for wifid) */
+ 	}

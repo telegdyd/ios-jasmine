@@ -224,7 +224,15 @@ jobs:
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
         run: |
           ccache -z
-          bash build.sh
+          set -o pipefail
+          bash build.sh 2>&1 | tee kernel-build.log
+          if [ -f patches/j0100-jasmine-wifi-defaults.patch ]; then
+            python3 ../tools/check-wifi-integration.py --source xnu --log kernel-build.log
+            nm fakeroot/System/Library/Kernels/kernel.development.sweet > wifi-symbols.txt
+            for symbol in topaz_modem_init topaz_modem_stop sweet_surface_pin sweet_surface_unpin; do
+              grep -E "[[:space:]][TtSs][[:space:]]_$symbol$" wifi-symbols.txt
+            done
+          fi
           # The upstream wrapper can skip a non-applying patch and still build.
           # A framebench image is unusable unless the hooks are actually linked.
           if [ -f patches/j0099-jasmine-framebench.patch ]; then

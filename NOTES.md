@@ -36,6 +36,31 @@ Next if user requests cleanup: recheck tips, preserve diagnostic tip, retire
 reviewed branches and handle occupied worktrees without losing ignored artifacts.
 Milestone commit subject: docs: record branch cleanup audit and preservation needs.
 
+### 2026-10-26: Wi-Fi integration prepared offline; combined CI pending
+
+User requested all preparation possible without phone access. Working branch
+codex/wifi-integration merges jasmine d34f5ca and wifi daf1e6d (merge6a88ed5).
+Found real patch-stack conflict despite clean Git merge: Wi-Fi j0099's
+SweetGPU::free context collided with framebench accounting. Trimmed only the
+conflicting trailing context; both behaviors preserved. All47 j0080..j0100
+patches replay successfully in CI filename order on an isolated source base
+(~/xnu-wifi 544ee9f^); evidence research/wifi-integration/patch-application.log.
+No shared WSL source modified. Local Apple clang unavailable; CI compilation
+still required. Source integration markers pass.
+
+New j0100 defaults Wi-Fi/modem on for jasmine with validated45s startup delay;
+wifi=0 disables radio/default DSP start, modem=0 explicitly disables DSP.
+wifi_diag=1 opts into QRTR/packet/SMMU step diagnostics. State/fault/reboot
+logs remain. mkadt defaults WLAN node on; --no-wlan is the fallback. mkimg
+omits it for explicit wifi=0/modem=0 and now propagates shim build failure.
+Offline tools/wifi-root-config.py seeds configd en0 on fresh mounted roots,
+preserving existing services/configuration;3 provisioning tests pass.
+CI now rejects skipped repository patches and verifies combined source/symbols.
+Build/images/PR/device checklist still pending this milestone.
+No phone command, lock, boot, install, partition write or new device result.
+Latest charging observation remains prior12% net discharge; do not boot until
+fresh capacity>=30% and coordinated phone availability. Nothing flashed.
+
 ### 2026-10-26 02:13: replug check shows net battery discharge
 
 User replugged and requested another measurement. Three read-only samples at

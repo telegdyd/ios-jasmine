@@ -33,9 +33,9 @@ SOC_BASE = 0x01000000
 BOARD = sys.argv[sys.argv.index('--board') + 1] if '--board' in sys.argv else 'jasmine'
 if BOARD not in ('jasmine', 'topaz'):
     raise SystemExit(f'unknown --board {BOARD}')
-# --wlan: the /arm-io/wlan node on jasmine too, for kernels with the Wi-Fi radio on (boot-arg wifi=1,
-# en0 since ios-jasmine-wifi j0083); without a radio wifid would only wait for an interface
-WLAN = BOARD == 'topaz' or '--wlan' in sys.argv
+# j0100: Wi-Fi defaults on for jasmine too. --wlan remains accepted for old callers;
+# --no-wlan packages a modem=0 wifi=0 fallback without starting wifid.
+WLAN = '--no-wlan' not in sys.argv
 
 # interrupt-controller@f200000 (redistributor-stride 0x20000, 8 cores)
 GICD, GICD_SIZE = 0x0f200000, 0x10000

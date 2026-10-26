@@ -220,7 +220,7 @@ index d8d2749..ebcbbec 100644
  	b->kva = surface->kernelAddress();
  	if (b->kva == 0 || !b->mapGPU(readonly)) {
  		if (told++ < 20) {
-@@ -365,6 +370,9 @@ SweetGPUBuffer::free()
+@@ -365,4 +370,7 @@ SweetGPUBuffer::free()
  			poolPA = 0;
  		}
  	}
@@ -228,8 +228,6 @@ index d8d2749..ebcbbec 100644
 +		OSDecrementAtomic(&sweet_gpu_wrapped_imports);
 +	}
  	OSSafeReleaseNULL(surface);
- 	OSObject::free();
- }
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
 index 7be0214..9bfceda 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
