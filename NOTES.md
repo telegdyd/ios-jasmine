@@ -1,3 +1,14 @@
+### 2026-10-26 02:12: requested charging recheck
+
+Three read-only charging-shell samples5s apart: capacity13% all three,
+Charging/online1; battery current +36621,+27832,+28808uA, voltage3720937,
+3720205,3719961uV, temperature340 (34C). Backlight0/float4050000 unchanged.
+Positive reported battery current is only28-37mA; this10s check does not establish
+a rising capacity trend. No settings/boot/install/test changed. Own shared lock
+released. Ignored evidence research/t24/charge-recheck-20261026-021215/.
+Task24 diagnostic still deferred below30%; paired artifacts ready and session
+approval recorded in handoff below. No automatic follow-up scheduled.
+
 ### 2026-10-26: task24 diagnostic session approved but deferred at13% battery
 
 User approved phone-free paired baseline diagnostic session. Acquired own shared
