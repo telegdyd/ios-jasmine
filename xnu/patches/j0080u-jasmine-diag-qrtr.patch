@@ -1,0 +1,147 @@
+From 2210eb3398d4d6d6141223f662ea1fb17cc5e5c1 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 19:57:02 +0200
+Subject: [PATCH] jasmine-j0080u: diag over QRTR: publish service 4097 (modem
+ CNTL/DATA/DCI) and answer the modem diag control channel as diag-router
+ peripheral-qrtr does
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 63 ++++++++++++++++++++++++++++-----
+ 1 file changed, 54 insertions(+), 9 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 0a2e56c..fab3031 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -1013,11 +1013,10 @@ glink_send(const void *data, uint32_t len)
+ 
+ /*
+  * Besides IPCRTR the modem opens channels Linux answers in the kernel or in userspace:
+- * "glink_ssr" (qcom_glink_ssr, opened back at once) and the diag channels "DIAG_CNTL", "DIAG",
+- * "DIAG_CMD" (diag-router; Nura's journal has the modem's feature mask from it on every boot).
+- * Without them the modem never opened DIAG here and its diag task starved (dog_hb, ~101 s).
+- * Each is opened back as qcom_glink_create_remote does (OPEN_ACK, our OPEN, a base set of
+- * intents); DIAG_CNTL gets diag-router's minimal answers, data on the others is dropped.
++ * "glink_ssr" (qcom_glink_ssr, opened back at once) and, on older firmware, the diag channels
++ * "DIAG_CNTL", "DIAG", "DIAG_CMD". Each is opened back as qcom_glink_create_remote does (OPEN_ACK,
++ * our OPEN, a base set of intents); DIAG_CNTL gets diag-router's minimal answers, data on the
++ * others is dropped. jasmine's modem never opens them: its diag runs over QRTR (j0080u, below).
+  */
+ #define AUX_INTENTS         5
+ #define AUX_TXQ             8
+@@ -1168,10 +1167,27 @@ aux_close(struct aux_chan *c)
+ #define DIAG_FEATURE_LOCAL          (0x1u | 0x2u | 0x40u | 0x8000u | 0x80000u)   /* MASK_SUPPORT, MASTER_SETS_COMMON_MASK,
+                                                                                * APPS_HDLC_ENCODE, DIAG_ID, DIAG_ID_FEATURE_MASK */
+ #define DIAG_FEATURE_REQ_RSP        0x10u
++#define DIAG_FEATURE_SOCKETS        0x2000u
+ #define DIAG_CTRL_MASK_ALL_DISABLED 1
+ 
++/*
++ * Diag over QRTR (j0080u), diag-router router/peripheral-qrtr.c: the host publishes service 4097
++ * with the diag instance in the version byte (modem base 0: CNTL 0, DATA 2, DCI 4) and the modem's
++ * diag connects to those servers. Nura's diag-router reached the modem this way on every boot
++ * ("Connecting CMD socket to 0:28"); unpublished here, the modem's diag task starved (dog_hb, ~101 s).
++ * c == NULL in diag_cntl_put/diag_cntl_rx means this transport.
++ */
++#define DIAG_SERVICE_ID             4097
++#define PORT_DIAG_CNTL              0x4005
++#define PORT_DIAG_DATA              0x4006
++#define PORT_DIAG_DCI               0x4007
++
++static void qrtr_send(uint32_t type, uint32_t src_port, uint32_t dst_node, uint32_t dst_port, const void *payload, uint32_t len);
++
+ static uint32_t diag_last_id = 1;               /* DIAG_ID_APPS */
+ static unsigned diag_cntl_other;
++static uint32_t diag_q_node, diag_q_port;       /* the modem's CNTL client */
++static unsigned diag_q_cntl, diag_q_data, diag_q_dci;
+ 
+ static void
+ diag_cntl_put(struct aux_chan *c, uint32_t cmd, const void *payload, uint32_t plen)
+@@ -1183,7 +1199,11 @@ diag_cntl_put(struct aux_chan *c, uint32_t cmd, const void *payload, uint32_t pl
+ 	memcpy(b, &cmd, 4);
+ 	memcpy(b + 4, &plen, 4);
+ 	memcpy(b + 8, payload, plen);
+-	aux_send(c, b, plen + 8);
++	if (c == NULL) {
++		qrtr_send(QRTR_TYPE_DATA, PORT_DIAG_CNTL, diag_q_node, diag_q_port, b, plen + 8);
++	} else {
++		aux_send(c, b, plen + 8);
++	}
+ }
+ 
+ static void
+@@ -1200,9 +1220,12 @@ diag_cntl_rx(struct aux_chan *c, const uint8_t *d, uint32_t len)
+ 		if (cmd == DIAG_CNTL_FEATURE_MASK && plen >= 8) {
+ 			uint32_t theirs, local = DIAG_FEATURE_LOCAL;
+ 			memcpy(&theirs, p + 4, 4);
+-			if (aux[AUX_DIAG_CMD].remote_open) {
++			if (c == NULL || aux[AUX_DIAG_CMD].remote_open) {
+ 				local |= DIAG_FEATURE_REQ_RSP;
+ 			}
++			if (c == NULL) {
++				local |= DIAG_FEATURE_SOCKETS;
++			}
+ 			uint32_t ours = theirs & local;
+ 			LOG("t=%u ms: diag: modem feature mask %x, ours %x", g_ms, theirs, ours);
+ 			/* diag_cntl_send_feature_mask: mask_len 4, mask, 2 spare bytes */
+@@ -1341,6 +1364,7 @@ svc_name(uint32_t svc)
+ 	case 0x03: return "nas";
+ 	case 0x0B: return "uim";
+ 	case 0x1A: return "wda";
++	case DIAG_SERVICE_ID: return "diag";
+ 	default:   return "";
+ 	}
+ }
+@@ -6725,12 +6749,15 @@ svc_announce(void)
+ 		{ 0x40, 0x101, PORT_PDM },              /* servreg-locator, version 0x101 instance 0 */
+ 		{ 4096, 1,     PORT_TFTP },             /* tftp */
+ 		{ 14,   1,     PORT_RMTFS },            /* rmtfs */
++		{ DIAG_SERVICE_ID, 0, PORT_DIAG_CNTL }, /* diag: modem CNTL, DATA, DCI */
++		{ DIAG_SERVICE_ID, 2, PORT_DIAG_DATA },
++		{ DIAG_SERVICE_ID, 4, PORT_DIAG_DCI },
+ 	};
+-	for (unsigned i = 0; i < 3; i++) {
++	for (unsigned i = 0; i < sizeof(svc) / sizeof(svc[0]); i++) {
+ 		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, svc[i][0], svc[i][1], QRTR_NODE_APPS, svc[i][2] };
+ 		qrtr_send(QRTR_TYPE_NEW_SERVER, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &c, sizeof(c));
+ 	}
+-	LOG("t=%u ms: announced pd-mapper 0x40, tftp 0x1000, rmtfs 0x0e", g_ms);
++	LOG("t=%u ms: announced pd-mapper 0x40, tftp 0x1000, rmtfs 0x0e, diag 0x1001 (cntl, data, dci)", g_ms);
+ }
+ 
+ static bool
+@@ -6746,6 +6773,23 @@ svc_rx(uint32_t src_node, uint32_t src_port, uint32_t dst_port, const uint8_t *d
+ 		wlfw_rx(data, len);
+ 		return true;
+ 	}
++	if (dst_port == PORT_DIAG_CNTL) {
++		if (diag_q_cntl++ == 0 || src_port != diag_q_port) {
++			LOG("t=%u ms: diag: CNTL from %u:%x, %u bytes", g_ms, src_node, src_port, len);
++		}
++		diag_q_node = src_node;
++		diag_q_port = src_port;
++		diag_cntl_rx(NULL, data, len);
++		return true;
++	}
++	if (dst_port == PORT_DIAG_DATA || dst_port == PORT_DIAG_DCI) {
++		unsigned *n = dst_port == PORT_DIAG_DATA ? &diag_q_data : &diag_q_dci;
++		if ((*n)++ == 0) {
++			LOG("t=%u ms: diag: first %s message from %u:%x, %u bytes (dropped)", g_ms,
++			    dst_port == PORT_DIAG_DATA ? "DATA" : "DCI", src_node, src_port, len);
++		}
++		return true;
++	}
+ 	if (dst_port >= PORT_SESS && dst_port < PORT_SESS + 0x10000) {
+ 		return tftp_session(dst_port, data, len);
+ 	}
+@@ -6772,6 +6816,7 @@ svc_summary(void)
+ 	LOG("WLFW: %s%s", w_step, w_fw_ready ? " (firmware ready)" : "");
+ 	LOG("services: pd-mapper %u reqs; tftp %u reqs (%u missing, %u writes); rmtfs reads %u writes %u (not kept) errors %u",
+ 	    pd_reqs, tftp_reqs, tftp_missing, tftp_writes, rmtfs_reads, rmtfs_writes, rmtfs_err);
++	LOG("diag (qrtr): cntl %u msgs, data %u, dci %u", diag_q_cntl, diag_q_data, diag_q_dci);
+ }
+ 
+ /*
+-- 
+2.47.3
+

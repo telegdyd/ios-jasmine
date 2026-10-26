@@ -1,0 +1,73 @@
+From 09c7abdbbca43ee6e71fea8d92cb363d7b264e8b Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 17:43:14 +0200
+Subject: [PATCH] jasmine-j0080m: WLFW handshake once the WCN3990 is powered
+ (wlfw=0 skips); DT quirks snoc-host-cap-8bit and no-msa-ready-indicator
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 21 +++++++++++++++++----
+ 1 file changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 96d9cef..3672754 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3436,6 +3436,7 @@ static bool w_msa_ind, w_cap_done, w_bdf_started, w_fw_ready, w_mission;
+ static int w_bdf_fi = -1;
+ static uint32_t w_bdf_len, w_bdf_off;
+ static const char *w_step = "not started";
++static bool w_chip_powered;                     /* jasmine: WCN3990 LDOs on (wcn_power_on) */
+ 
+ struct wmsg { uint8_t *b; uint32_t n; };
+ 
+@@ -3666,9 +3667,11 @@ wlfw_arrive(uint32_t node, uint32_t port)
+ 	if ((w_node != 0 || w_port != 0) && w_node == node && w_port == port) {
+ 		return;
+ 	}
+-	if (soc.jasmine && !wifi_enabled()) {
+-		/* no radio (WCN3990 unpowered): no handshake, as Linux without ath10k; with one the modem died in 13 s */
+-		LOG("t=%u ms: WLFW up, radio off: no handshake", g_ms);
++	uint32_t wlfw = 1;
++	(void)PE_parse_boot_argn("wlfw", &wlfw, sizeof(wlfw));
++	if (soc.jasmine && (!w_chip_powered || wlfw == 0)) {
++		/* WCN3990 unpowered: no handshake, as Linux without ath10k; with one the modem died in 13 s (j0080j) */
++		LOG("t=%u ms: WLFW up, no handshake (%s)", g_ms, w_chip_powered ? "wlfw=0" : "WCN3990 not powered");
+ 		w_node = node;
+ 		w_port = port;
+ 		return;
+@@ -3736,7 +3739,11 @@ wlfw_rx(const uint8_t *d, uint32_t len)
+ 		}
+ 		LOG("t=%u ms: wlfw: ind_register %s err %u, fw_status %llx", g_ms, ok ? "ok" : "FAILED", err, st);
+ 		if (wm_new(&m, WLFW_HOST_CAP)) {
+-			wm_u32(&m, 0x10, 0);                /* daemon_support = 0 */
++			if (soc.jasmine) {
++				wm_u8(&m, 0x10, 0);             /* DT qcom,snoc-host-cap-8bit-quirk: daemon_support as a u8 */
++			} else {
++				wm_u32(&m, 0x10, 0);            /* daemon_support = 0 */
++			}
+ 			wm_send(&m);
+ 			w_step = "host_cap sent";
+ 		}
+@@ -3761,6 +3768,11 @@ wlfw_rx(const uint8_t *d, uint32_t len)
+ 		break;
+ 	case WLFW_MSA_READY:
+ 		LOG("wlfw: msa_ready %s err %u", ok ? "ok" : "FAILED", err);
++		if (ok && soc.jasmine && !w_msa_ind) {
++			/* DT qcom,no-msa-ready-indicator: this firmware never sends MSA_READY_IND, the response is it */
++			LOG("wlfw: no MSA_READY indication on this firmware (DT quirk): taken as ready");
++			w_msa_ind = true;
++		}
+ 		w_simple(WLFW_CAP, "cap sent");
+ 		break;
+ 	case WLFW_CAP:
+@@ -6686,6 +6698,7 @@ wcn_power_on(void)
+ 		LOG("wcn3990: %s (pm660 L%u) %u uV: %s", vreg[i].name, vreg[i].ldo, vreg[i].uv, v ? "on" : "FAILED");
+ 		ok = ok && v;
+ 	}
++	w_chip_powered = ok;
+ 	return ok;
+ }
+ 
+-- 
+2.47.3
+

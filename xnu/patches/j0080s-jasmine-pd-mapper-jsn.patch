@@ -1,0 +1,70 @@
+From d851b4ea8743eff9331480e5bb4d69ca1db6a742 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 19:03:35 +0200
+Subject: [PATCH] jasmine-j0080s: pd-mapper table from the jasmine jsn files
+ (no tms/pdr_enabled, ADSP/CDSP domains, per-domain instance ids)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 38 +++++++++++++++++++++++++--------
+ 1 file changed, 29 insertions(+), 9 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 3cae1ba..4dc4760 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -2842,13 +2842,30 @@ qm_string(const uint8_t *d, uint32_t len, uint8_t type, char *out, size_t max)
+ }
+ 
+ /* pd-mapper */
+-static const struct { const char *svc, *domain; } pd_map[] = {
+-	{ "tms/servreg",       "msm/modem/root_pd" },
+-	{ "tms/pdr_enabled",   "msm/modem/root_pd" },
+-	{ "gps/gps_service",   "msm/modem/root_pd" },
+-	{ "kernel/elf_loader", "msm/modem/wlan_pd" },
+-	{ "tms/servreg",       "msm/modem/wlan_pd" },
+-	{ "wlan/fw",           "msm/modem/wlan_pd" },
++struct pd_entry { const char *svc, *domain; uint32_t inst; };
++static const struct pd_entry pd_map_topaz[] = {
++	{ "tms/servreg",       "msm/modem/root_pd", 180 },
++	{ "tms/pdr_enabled",   "msm/modem/root_pd", 180 },
++	{ "gps/gps_service",   "msm/modem/root_pd", 180 },
++	{ "kernel/elf_loader", "msm/modem/wlan_pd", 180 },
++	{ "tms/servreg",       "msm/modem/wlan_pd", 180 },
++	{ "wlan/fw",           "msm/modem/wlan_pd", 180 },
++};
++/*
++ * jasmine (j0080s): what pd-mapper builds from the modem partition jsn files (image/adspr, adsps,
++ * adspua, cdspr, modemr, modemuw). No "tms/pdr_enabled" there: the topaz table told the modem PD
++ * restart was on.
++ */
++static const struct pd_entry pd_map_jasmine[] = {
++	{ "tms/servreg",       "msm/adsp/root_pd",   74 },
++	{ "tms/servreg",       "msm/adsp/sensor_pd", 74 },
++	{ "tms/servreg",       "msm/adsp/audio_pd",  74 },
++	{ "avs/audio",         "msm/adsp/audio_pd",  74 },
++	{ "tms/servreg",       "msm/cdsp/root_pd",   76 },
++	{ "tms/servreg",       "msm/modem/root_pd", 180 },
++	{ "kernel/elf_loader", "msm/modem/wlan_pd", 180 },
++	{ "tms/servreg",       "msm/modem/wlan_pd", 180 },
++	{ "wlan/fw",           "msm/modem/wlan_pd", 180 },
+ };
+ static unsigned pd_reqs;
+ 
+@@ -2869,9 +2886,12 @@ pdm_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t *
+ 		return;
+ 	}
+ 	qm_string(d, len, 1, name, sizeof(name));
+-	for (unsigned i = 0; i < sizeof(pd_map) / sizeof(pd_map[0]); i++) {
++	const struct pd_entry *pd_map = soc.jasmine ? pd_map_jasmine : pd_map_topaz;
++	unsigned pd_count = soc.jasmine ? sizeof(pd_map_jasmine) / sizeof(pd_map_jasmine[0]) :
++	    sizeof(pd_map_topaz) / sizeof(pd_map_topaz[0]);
++	for (unsigned i = 0; i < pd_count; i++) {
+ 		if (strcmp(pd_map[i].svc, name) == 0) {
+-			uint32_t dl = (uint32_t)strlen(pd_map[i].domain), inst = 180, zero = 0;
++			uint32_t dl = (uint32_t)strlen(pd_map[i].domain), inst = pd_map[i].inst, zero = 0;
+ 			list[n++] = (uint8_t)dl;
+ 			memcpy(list + n, pd_map[i].domain, dl);
+ 			n += dl;
+-- 
+2.47.3
+

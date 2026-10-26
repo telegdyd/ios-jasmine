@@ -1,0 +1,50 @@
+From b2996e4fb351082fd1d9c4ce0680bd19532e384a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 18:24:04 +0200
+Subject: [PATCH] jasmine-j0080q: modem stopped on FATAL (ports halted, reset,
+ clocks off, memory back); modem_nowlan=1 keeps the WLAN PD from starting
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 376a0b6..c4384a2 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3156,7 +3156,11 @@ tftp_request(uint32_t node, uint32_t port, const uint8_t *d, uint32_t len)
+ 		s->size = rw_files[s->rw].size;
+ 		LOG("t=%u ms: tftp RRQ %s (RAM, %llu B)", g_ms, file, s->size);
+ 	} else {
+-		if (!tftp_map(file, path, sizeof(path)) || (s->fi = fw_all_find(path)) < 0) {
++		uint32_t nowlan = 0;
++		(void)PE_parse_boot_argn("modem_nowlan", &nowlan, sizeof(nowlan));
++		if (!tftp_map(file, path, sizeof(path)) || (nowlan != 0 && strncmp(path, "image/wlanmdsp", 14) == 0) ||
++		    (s->fi = fw_all_find(path)) < 0) {
++			/* modem_nowlan=1 (j0080q): no wlanmdsp.mbn, so the modem never starts its WLAN PD */
+ 			tftp_missing++;
+ 			LOG("t=%u ms: tftp RRQ %s: not found", g_ms, file);
+ 			tftp_error(s, 1, "file not found");
+@@ -6429,6 +6433,7 @@ svc_summary(void)
+  */
+ static void mba_started(void);
+ static void mba_handover(void);
++static void mss_reclaim(void);
+ 
+ static void
+ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+@@ -6499,6 +6504,11 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 				if (glink) {
+ 					glink_summary();
+ 				}
++				if (soc.jasmine) {
++					/* rproc crash handling, q6v5_stop without the restart (j0080q): a crashed modem with the
++					 * WLAN firmware in mission mode froze the next reboot (j0080p) */
++					mss_reclaim();
++				}
+ 				return;
+ 			}
+ 		}
+-- 
+2.47.3
+

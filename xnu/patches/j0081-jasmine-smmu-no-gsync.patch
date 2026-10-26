@@ -1,0 +1,54 @@
+From 8186ff3f971fd00537c71911360726a99bb369a6 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 21:45:37 +0200
+Subject: [PATCH] jasmine-j0080aa: no global TLB sync after the WLAN stream
+ setup (none is needed; on anoc2 it never returned, j80y/z)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/TopazModem.cpp | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 5ad7887..0e87e41 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -4352,13 +4352,17 @@ smmu_identity(uint32_t sid, uint32_t mask, const char *name)
+ 	w32(s, 0xC00 + 4 * slot, cb);               /* S2CR: type 0 (translate), this bank */
+ 	LOG("smmu: S2CR%u reads %08x; writing SMR%u", slot, r32(s, 0xC00 + 4 * slot), slot);
+ 	w32(s, 0x800 + 4 * slot, (1u << 31) | (mask << 16) | sid);   /* SMR valid last */
+-	LOG("smmu: SMR%u reads %08x; TLB sync", slot, r32(s, 0x800 + 4 * slot));
+-	w32(s, 0x70, 0);                            /* sTLBGSYNC */
+-	uint32_t n;
+-	for (n = 0; n < 100000 && (r32(s, 0x74) & 1) != 0; n++) {
+-		IODelay(1);
++	LOG("smmu: SMR%u reads %08x", slot, r32(s, 0x800 + 4 * slot));
++	/*
++	 * No global TLB sync (j0080aa): nothing was invalidated (the bank does not translate), and
++	 * Linux's arm_smmu_write_sme does none either. On jasmine's anoc2 it never returned (j80y/z).
++	 */
++	if (!soc.jasmine) {
++		w32(s, 0x70, 0);                        /* sTLBGSYNC */
++		for (uint32_t n = 0; n < 100000 && (r32(s, 0x74) & 1) != 0; n++) {
++			IODelay(1);
++		}
+ 	}
+-	LOG("smmu: sync %s after %u us", n < 100000 ? "done" : "TIMEOUT", n);
+ 	smr = r32(s, 0x800 + 4 * slot);
+ 	s2cr = r32(s, 0xC00 + 4 * slot);
+ 	bool ok = (smr >> 31) != 0 && smmu_sid_match(smr, sid, mask) && ((s2cr >> 16) & 3) == 0 && (s2cr & 0x3F) == cb;
+@@ -7966,9 +7970,8 @@ topaz_modem_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ 	LOG("SMEM version %u", *(volatile uint32_t *)(smem + 64 + 7 * 4) >> 16);
+ 	/*
+-	 * jasmine: the WCN3990 rails first (j0080z), as ath10k powers the chip before any DMA setup. With
+-	 * the chip still unpowered the anoc2 SMMU's global TLB sync after the WLAN stream setup never
+-	 * returned (j80y: SMR, S2CR and bank written and read back, then nothing).
++	 * jasmine: the WCN3990 rails first (j0080z), as ath10k powers the chip before any DMA setup
++	 * (powered, the anoc2 global TLB sync still hung, j80z: see smmu_identity).
+ 	 */
+ 	if (soc.jasmine) {
+ 		(void)wcn_power_on();
+-- 
+2.47.3
+

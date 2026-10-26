@@ -1,0 +1,41 @@
+From d58d122507ea60ed2277a89417d54aa272d53021 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 07:15:01 +0200
+Subject: [PATCH] jasmine-j0080f: ESR/FAR/ELR/LR in the
+ implementation-specific-error panic line (the j0080d printf panicked: console
+ I/O with interrupts off)
+
+---
+ osfmk/arm64/sleh.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 706b0b0..5e3d5ff 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -395,14 +395,17 @@ static void
+ arm64_implementation_specific_error(arm_saved_state_t *state, uint32_t esr, vm_offset_t far)
+ {
+ #if defined(SWEET)
+-	/* jasmine j0080d: what kind of error, and where (no panic buffer on this board, only this line) */
+-	printf("SWEET SERROR: esr 0x%x far 0x%lx elr 0x%llx (unslid 0x%llx) lr 0x%llx cpu %d\n", esr, far,
+-	    (unsigned long long)get_saved_state_pc(state), (unsigned long long)VM_KERNEL_UNSLIDE(get_saved_state_pc(state)),
+-	    (unsigned long long)get_saved_state_lr(state), cpu_number());
++	/*
++	 * jasmine j0080f: what kind of error, and where, in the panic line itself (no panic buffer on
++	 * this board; a printf here panics with "Console I/O from interrupt-disabled context")
++	 */
++	panic_plain("Unhandled implementation specific error: esr 0x%x far 0x%lx elr 0x%llx (unslid 0x%llx) lr 0x%llx\n",
++	    esr, far, (unsigned long long)get_saved_state_pc(state),
++	    (unsigned long long)VM_KERNEL_UNSLIDE(get_saved_state_pc(state)), (unsigned long long)get_saved_state_lr(state));
+ #else
+ #pragma unused (state, esr, far)
+-#endif
+ 	panic_plain("Unhandled implementation specific error\n");
++#endif
+ }
+ 
+ #if CONFIG_KERNEL_INTEGRITY
+-- 
+2.47.3
+

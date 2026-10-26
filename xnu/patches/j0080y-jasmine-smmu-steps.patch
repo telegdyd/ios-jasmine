@@ -1,0 +1,62 @@
+From 739d712d85efabc6c75d7ff0f5707ee1a37a273d Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 21:14:43 +0200
+Subject: [PATCH] jasmine-j0080y: step lines in smmu_identity (j80x hung after
+ the ID line), anoc2 SMMU on the command port
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/TopazModem.cpp | 10 ++++++++++
+ osfmk/arm64/sweet_osm.c         |  1 +
+ 2 files changed, 11 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 4d60375..71ee45d 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -4332,6 +4332,12 @@ smmu_identity(uint32_t sid, uint32_t mask, const char *name)
+ 		return false;
+ 	}
+ 	volatile uint8_t *gr1 = s + psize, *cbp = s + (uint64_t)npage * psize + (uint64_t)cb * psize;
++	/* step lines (j0080y): on jasmine this hung after the ID line (j80x), without a panic */
++	LOG("smmu: SMR%u CB%u free (used %llx); reading GR1 CBAR", slot, cb, used);
++	uint32_t cbar = r32(gr1, 0x000 + 4 * cb);
++	LOG("smmu: CBAR%u %08x; reading the bank's SCTLR", cb, cbar);
++	uint32_t sctlr = r32(cbp, 0x0);
++	LOG("smmu: CB%u SCTLR %08x FSR %08x; writing the bank", cb, sctlr, r32(cbp, 0x58));
+ 	w32(cbp, 0x58, 0xFFFFFFFF);                 /* FSR: clear */
+ 	w32(cbp, 0x20, 0);                          /* TTBR0 */
+ 	w32(cbp, 0x24, 0);
+@@ -4342,13 +4348,17 @@ smmu_identity(uint32_t sid, uint32_t mask, const char *name)
+ 	w32(gr1, 0x800 + 4 * cb, CB_CLONE_CBA2R);
+ 	w32(gr1, 0x000 + 4 * cb, CB_CLONE_CBAR);
+ 	w32(cbp, 0x0, CB_CLONE_SCTLR);              /* SCTLR last */
++	LOG("smmu: bank written (SCTLR reads %08x); writing S2CR%u", r32(cbp, 0x0), slot);
+ 	w32(s, 0xC00 + 4 * slot, cb);               /* S2CR: type 0 (translate), this bank */
++	LOG("smmu: S2CR%u reads %08x; writing SMR%u", slot, r32(s, 0xC00 + 4 * slot), slot);
+ 	w32(s, 0x800 + 4 * slot, (1u << 31) | (mask << 16) | sid);   /* SMR valid last */
++	LOG("smmu: SMR%u reads %08x; TLB sync", slot, r32(s, 0x800 + 4 * slot));
+ 	w32(s, 0x70, 0);                            /* sTLBGSYNC */
+ 	uint32_t n;
+ 	for (n = 0; n < 100000 && (r32(s, 0x74) & 1) != 0; n++) {
+ 		IODelay(1);
+ 	}
++	LOG("smmu: sync %s after %u us", n < 100000 ? "done" : "TIMEOUT", n);
+ 	smr = r32(s, 0x800 + 4 * slot);
+ 	s2cr = r32(s, 0xC00 + 4 * slot);
+ 	bool ok = (smr >> 31) != 0 && smmu_sid_match(smr, sid, mask) && ((s2cr >> 16) & 3) == 0 && (s2cr & 0x3F) == cb;
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 540d27b..127aa3b 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1256,6 +1256,7 @@ static const struct { uint64_t lo, hi; } osm_ranges[] = {
+ 	{ 0x01f63000, 0x01f66000 },     /* TCSR: MSS AXI halt ports q6/nc/modem (j0080g) */
+ 	{ 0x04080000, 0x04081000 },     /* MSS QDSP6SS (j0080g) */
+ 	{ 0x04180000, 0x04180040 },     /* MSS RMB (j0080g) */
++	{ 0x016c0000, 0x01700000 },     /* anoc2 SMMU, the WLAN stream (j0080y) */
+ };
+ 
+ static int
+-- 
+2.47.3
+

@@ -1,0 +1,27 @@
+From 50f7e8d4d1ad5bc71c3b088301076b544d60b108 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 22:29:57 +0200
+Subject: [PATCH] jasmine-j0083: en0 + Apple80211 for wifid on jasmine with
+ wifi=1 (topaz_sta_init)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index f47d6d8..616fbcb 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -8215,7 +8215,8 @@ topaz_modem_init(void)
+ 		return;
+ 	}
+ 	started = true;
+-	if (!sweet_board_is("xiaomi,jasmine")) {    /* jasmine: no radio yet, so no en0 for wifid either */
++	/* jasmine: en0 only with the radio path on (wifi=1, scans since j0081); it attaches once WMI is ready */
++	if (!sweet_board_is("xiaomi,jasmine") || wifi_enabled()) {
+ 		topaz_sta_init();                       /* private: bsd/dev/topaz_sta.c (en0 + Apple80211 for wifid) */
+ 	}
+ 	if (kernel_thread_start(topaz_modem_thread, NULL, &thread) == KERN_SUCCESS) {
+-- 
+2.47.3
+

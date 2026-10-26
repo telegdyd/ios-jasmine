@@ -1,0 +1,453 @@
+From 6137680c13594de6eb6d6f824e3acaefccfa3735 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 19:12:19 +0200
+Subject: [PATCH] jasmine-j0080t: GLINK channels besides IPCRTR: glink_ssr
+ opened back, DIAG_CNTL/DIAG/DIAG_CMD with a minimal diag-router (feature
+ mask, masks off, real time, streaming, DIAG_ID)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 344 +++++++++++++++++++++++++++++++-
+ 1 file changed, 336 insertions(+), 8 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 4dc4760..0a2e56c 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -1009,6 +1009,260 @@ glink_send(const void *data, uint32_t len)
+ 	txq_pump();
+ }
+ 
++/* ---------------------------------------------------------------- GLINK: the other channels (j0080t) */
++
++/*
++ * Besides IPCRTR the modem opens channels Linux answers in the kernel or in userspace:
++ * "glink_ssr" (qcom_glink_ssr, opened back at once) and the diag channels "DIAG_CNTL", "DIAG",
++ * "DIAG_CMD" (diag-router; Nura's journal has the modem's feature mask from it on every boot).
++ * Without them the modem never opened DIAG here and its diag task starved (dog_hb, ~101 s).
++ * Each is opened back as qcom_glink_create_remote does (OPEN_ACK, our OPEN, a base set of
++ * intents); DIAG_CNTL gets diag-router's minimal answers, data on the others is dropped.
++ */
++#define AUX_INTENTS         5
++#define AUX_TXQ             8
++
++struct aux_chan {
++	const char *name;
++	uint16_t lcid;
++	uint32_t rcid;
++	bool remote_open, open_sent, open_acked, intents_sent, intent_req_sent;
++	struct { uint32_t id, size; bool used; } ri[32];
++	unsigned ri_count, rx_msgs;
++	struct { uint8_t *p; uint32_t len; } q[AUX_TXQ];
++	unsigned qh, qt;
++};
++static struct aux_chan aux[] = {
++	{ "glink_ssr", 2 }, { "DIAG_CNTL", 3 }, { "DIAG", 4 }, { "DIAG_CMD", 5 },
++};
++#define AUX_COUNT           (sizeof(aux) / sizeof(aux[0]))
++#define AUX_DIAG_CMD        3
++
++static struct aux_chan *
++aux_by_name(const char *name)
++{
++	for (unsigned i = 0; i < AUX_COUNT; i++) {
++		if (strcmp(aux[i].name, name) == 0) {
++			return &aux[i];
++		}
++	}
++	return NULL;
++}
++
++static struct aux_chan *
++aux_by_rcid(uint32_t rcid)
++{
++	for (unsigned i = 0; i < AUX_COUNT; i++) {
++		if (aux[i].remote_open && aux[i].rcid == rcid) {
++			return &aux[i];
++		}
++	}
++	return NULL;
++}
++
++static struct aux_chan *
++aux_by_lcid(uint32_t lcid)
++{
++	for (unsigned i = 0; i < AUX_COUNT; i++) {
++		if (aux[i].lcid == lcid) {
++			return &aux[i];
++		}
++	}
++	return NULL;
++}
++
++static void
++aux_send_open(struct aux_chan *c)
++{
++	struct { struct glink_msg m; char name[32]; } __attribute__((packed)) req = {};
++	uint32_t nl = (uint32_t)strlen(c->name) + 1;
++	req.m.cmd = CMD_OPEN;
++	req.m.p1 = c->lcid;
++	req.m.p2 = nl;
++	memcpy(req.name, c->name, nl);
++	tx_write(&req, (uint32_t)sizeof(req.m) + nl, NULL, 0);
++	c->open_sent = true;
++}
++
++static void
++aux_advertise(struct aux_chan *c, uint32_t count, uint32_t size)
++{
++	struct { struct glink_msg m; uint32_t pair[2 * AUX_INTENTS]; } __attribute__((packed)) m = {};
++	count = MIN(count, (uint32_t)AUX_INTENTS);
++	m.m.cmd = CMD_INTENT;
++	m.m.p1 = c->lcid;
++	m.m.p2 = count;
++	for (uint32_t i = 0; i < count; i++) {
++		m.pair[2 * i] = size;
++		m.pair[2 * i + 1] = g_next_intent++;
++	}
++	tx_write(&m, sizeof(struct glink_msg) + 8 * count, NULL, 0);
++}
++
++static bool
++aux_try_send(struct aux_chan *c, const void *data, uint32_t len)
++{
++	unsigned i;
++	for (i = 0; i < c->ri_count; i++) {
++		if (!c->ri[i].used && c->ri[i].size >= len) {
++			break;
++		}
++	}
++	if (i == c->ri_count) {
++		if (!c->intent_req_sent) {
++			send_cmd(CMD_RX_INTENT_REQ, c->lcid, len);
++			c->intent_req_sent = true;
++		}
++		return false;
++	}
++	struct glink_data_hdr h = { { CMD_TX_DATA, c->lcid, c->ri[i].id }, len, 0 };
++	c->ri[i].used = true;
++	return tx_write(&h, sizeof(h), data, len);
++}
++
++static void
++aux_pump(struct aux_chan *c)
++{
++	while (c->qh != c->qt && aux_try_send(c, c->q[c->qh % AUX_TXQ].p, c->q[c->qh % AUX_TXQ].len)) {
++		IOFree(c->q[c->qh % AUX_TXQ].p, c->q[c->qh % AUX_TXQ].len);
++		c->qh++;
++	}
++}
++
++static void
++aux_send(struct aux_chan *c, const void *data, uint32_t len)
++{
++	uint8_t *p;
++	if (c->qt - c->qh >= AUX_TXQ || (p = (uint8_t *)IOMalloc(len)) == NULL) {
++		LOG("t=%u ms: glink %s: TX queue full, %u bytes dropped", g_ms, c->name, len);
++		return;
++	}
++	memcpy(p, data, len);
++	c->q[c->qt % AUX_TXQ].p = p;
++	c->q[c->qt % AUX_TXQ].len = len;
++	c->qt++;
++	aux_pump(c);
++}
++
++static void
++aux_close(struct aux_chan *c)
++{
++	while (c->qh != c->qt) {
++		IOFree(c->q[c->qh % AUX_TXQ].p, c->q[c->qh % AUX_TXQ].len);
++		c->qh++;
++	}
++	if (c->open_sent) {
++		send_cmd(CMD_CLOSE, c->lcid, 0);
++	}
++	c->remote_open = c->open_sent = c->open_acked = c->intents_sent = c->intent_req_sent = false;
++	c->ri_count = 0;
++}
++
++/* linux-msm diag router/diag_cntl.c, the part a peripheral needs from the host */
++#define DIAG_CNTL_REGISTER          1
++#define DIAG_CNTL_DIAG_MODE         3
++#define DIAG_CNTL_FEATURE_MASK      8
++#define DIAG_CNTL_MSG_MASK          11
++#define DIAG_CNTL_BUFFERING_TX_MODE 17
++#define DIAG_CNTL_DIAG_ID           33
++#define DIAG_FEATURE_LOCAL          (0x1u | 0x2u | 0x40u | 0x8000u | 0x80000u)   /* MASK_SUPPORT, MASTER_SETS_COMMON_MASK,
++                                                                               * APPS_HDLC_ENCODE, DIAG_ID, DIAG_ID_FEATURE_MASK */
++#define DIAG_FEATURE_REQ_RSP        0x10u
++#define DIAG_CTRL_MASK_ALL_DISABLED 1
++
++static uint32_t diag_last_id = 1;               /* DIAG_ID_APPS */
++static unsigned diag_cntl_other;
++
++static void
++diag_cntl_put(struct aux_chan *c, uint32_t cmd, const void *payload, uint32_t plen)
++{
++	uint8_t b[96];
++	if (plen + 8 > sizeof(b)) {
++		return;
++	}
++	memcpy(b, &cmd, 4);
++	memcpy(b + 4, &plen, 4);
++	memcpy(b + 8, payload, plen);
++	aux_send(c, b, plen + 8);
++}
++
++static void
++diag_cntl_rx(struct aux_chan *c, const uint8_t *d, uint32_t len)
++{
++	for (uint32_t off = 0; off + 8 <= len;) {
++		uint32_t cmd, plen;
++		memcpy(&cmd, d + off, 4);
++		memcpy(&plen, d + off + 4, 4);
++		if (off + 8 + plen > len) {
++			break;
++		}
++		const uint8_t *p = d + off + 8;
++		if (cmd == DIAG_CNTL_FEATURE_MASK && plen >= 8) {
++			uint32_t theirs, local = DIAG_FEATURE_LOCAL;
++			memcpy(&theirs, p + 4, 4);
++			if (aux[AUX_DIAG_CMD].remote_open) {
++				local |= DIAG_FEATURE_REQ_RSP;
++			}
++			uint32_t ours = theirs & local;
++			LOG("t=%u ms: diag: modem feature mask %x, ours %x", g_ms, theirs, ours);
++			/* diag_cntl_send_feature_mask: mask_len 4, mask, 2 spare bytes */
++			uint32_t fm[3] = { 4, ours, 0 };
++			diag_cntl_put(c, DIAG_CNTL_FEATURE_MASK, fm, 10);
++			/* the message masks, all disabled (dummy range), then real time and streaming */
++			uint8_t mm[11] = { 1, DIAG_CTRL_MASK_ALL_DISABLED, 0 };
++			diag_cntl_put(c, DIAG_CNTL_MSG_MASK, mm, sizeof(mm));
++			uint32_t mode[9] = { 1, 1, 1, 0, 0, 0, 0, 0, 0 };   /* version, sleep_vote, real_time, ... */
++			diag_cntl_put(c, DIAG_CNTL_DIAG_MODE, mode, sizeof(mode));
++			uint8_t tx[6] = { 1, 0, 0, 0, 0, 0 };              /* version 1, stream 0, streaming */
++			diag_cntl_put(c, DIAG_CNTL_BUFFERING_TX_MODE, tx, sizeof(tx));
++		} else if (cmd == DIAG_CNTL_DIAG_ID && plen >= 9) {
++			uint32_t version, id;
++			char name[48] = {};
++			memcpy(&version, p, 4);
++			memcpy(&id, p + 4, 4);
++			memcpy(name, p + 8, MIN(plen - 8, (uint32_t)sizeof(name) - 1));
++			id = version >= 3 ? id : ++diag_last_id;
++			LOG("t=%u ms: diag: DIAG_ID v%u \"%s\" -> %u", g_ms, version, name, id);
++			uint8_t r[8 + sizeof(name)];
++			uint32_t one = 1, nl = (uint32_t)strlen(name) + 1;
++			memcpy(r, &one, 4);
++			memcpy(r + 4, &id, 4);
++			memcpy(r + 8, name, nl);
++			diag_cntl_put(c, DIAG_CNTL_DIAG_ID, r, 8 + nl);
++		} else if (cmd != DIAG_CNTL_REGISTER && diag_cntl_other++ < 16) {
++			LOG("t=%u ms: diag: control packet %u (%u bytes) not handled", g_ms, cmd, plen);
++		}
++		off += 8 + plen;
++	}
++}
++
++static void
++aux_rx(struct aux_chan *c, const uint8_t *d, uint32_t len)
++{
++	if (c->rx_msgs++ == 0) {
++		LOG("t=%u ms: glink %s: first message, %u bytes", g_ms, c->name, len);
++	}
++	if (c == &aux[1]) {
++		diag_cntl_rx(c, d, len);
++	}
++}
++
++/* in the watch loop: intents once a channel is open both ways, then the TX queues */
++static void
++aux_poll(void)
++{
++	for (unsigned i = 0; i < AUX_COUNT; i++) {
++		struct aux_chan *c = &aux[i];
++		if (c->remote_open && c->open_acked && !c->intents_sent) {
++			aux_advertise(c, AUX_INTENTS, OUR_INTENT_SIZE);
++			c->intents_sent = true;
++			LOG("t=%u ms: glink %s open both ways (lcid %u rcid %u), %u intents sent", g_ms, c->name, c->lcid, c->rcid,
++			    AUX_INTENTS);
++		}
++		aux_pump(c);
++	}
++}
++
+ /* ---------------------------------------------------------------- QRTR */
+ 
+ /*
+@@ -1198,6 +1452,7 @@ rx_one(void)
+ 		rx_peek(8, name, MIN(m.p2, 32u));
+ 		rx_advance(n);
+ 		LOG("t=%u ms: glink modem OPEN \"%s\" rcid %u", g_ms, name, m.p1);
++		struct aux_chan *c;
+ 		if (strcmp(name, CHAN_NAME) == 0) {
+ 			g_rcid = m.p1;
+ 			g_remote_open = true;
+@@ -1205,33 +1460,57 @@ rx_one(void)
+ 			if (!g_open_sent) {
+ 				send_open();
+ 			}
++		} else if ((c = aux_by_name(name)) != NULL) {
++			if (c->remote_open) {
++				aux_close(c);                   /* reopened: start over */
++			}
++			c->rcid = m.p1;
++			c->remote_open = true;
++			send_cmd(CMD_OPEN_ACK, (uint16_t)c->rcid, 0);
++			aux_send_open(c);
+ 		}
+ 		break;
+ 	}
+-	case CMD_OPEN_ACK:
++	case CMD_OPEN_ACK: {
+ 		rx_advance(8);
+ 		LOG("t=%u ms: glink OPEN_ACK lcid %u", g_ms, m.p1);
++		struct aux_chan *c;
+ 		if (m.p1 == CHAN_LCID) {
+ 			g_open_acked = true;
++		} else if ((c = aux_by_lcid(m.p1)) != NULL) {
++			c->open_acked = true;
+ 		}
+ 		break;
+-	case CMD_CLOSE:
++	}
++	case CMD_CLOSE: {
+ 		rx_advance(8);
+ 		LOG("t=%u ms: glink modem CLOSE rcid %u", g_ms, m.p1);
+ 		send_cmd(CMD_CLOSE_ACK, m.p1, 0);
++		struct aux_chan *c;
+ 		if (m.p1 == g_rcid) {
+ 			g_remote_open = false;
++		} else if ((c = aux_by_rcid(m.p1)) != NULL) {
++			aux_close(c);
+ 		}
+ 		break;
+-	case CMD_INTENT:
++	}
++	case CMD_INTENT: {
+ 		n = (8 + 8 * m.p2 + 7) & ~7u;
+ 		if (avail < n) {
+ 			return false;
+ 		}
++		struct aux_chan *c = m.p1 != g_rcid ? aux_by_rcid(m.p1) : NULL;
+ 		for (uint32_t i = 0; i < m.p2; i++) {
+ 			uint32_t pair[2];
+ 			rx_peek(8 + 8 * i, pair, 8);
+-			if (m.p1 == g_rcid && g_ri_count < sizeof(g_ri) / sizeof(g_ri[0])) {
++			if (c != NULL) {
++				if (c->ri_count < sizeof(c->ri) / sizeof(c->ri[0])) {
++					c->ri[c->ri_count].size = pair[0];
++					c->ri[c->ri_count].id = pair[1];
++					c->ri[c->ri_count].used = false;
++					c->ri_count++;
++				}
++			} else if (m.p1 == g_rcid && g_ri_count < sizeof(g_ri) / sizeof(g_ri[0])) {
+ 				g_ri[g_ri_count].size = pair[0];
+ 				g_ri[g_ri_count].id = pair[1];
+ 				g_ri[g_ri_count].used = false;
+@@ -1239,11 +1518,30 @@ rx_one(void)
+ 			}
+ 		}
+ 		rx_advance(n);
+-		g_intent_req_sent = false;
++		if (c != NULL) {
++			c->intent_req_sent = false;
++		} else {
++			g_intent_req_sent = false;
++		}
+ 		break;
++	}
+ 	case CMD_RX_DONE:
+ 	case CMD_RX_DONE_W_REUSE:
+ 		rx_advance(8);
++		if (m.p1 != g_rcid && aux_by_rcid(m.p1) != NULL) {
++			struct aux_chan *c = aux_by_rcid(m.p1);
++			for (unsigned i = 0; i < c->ri_count; i++) {
++				if (c->ri[i].id == m.p2) {
++					if (m.cmd == CMD_RX_DONE_W_REUSE) {
++						c->ri[i].used = false;
++					} else {
++						c->ri[i] = c->ri[--c->ri_count];
++					}
++					break;
++				}
++			}
++			break;
++		}
+ 		for (unsigned i = 0; i < g_ri_count; i++) {
+ 			if (g_ri[i].id == m.p2) {
+ 				if (m.cmd == CMD_RX_DONE_W_REUSE) {
+@@ -1255,17 +1553,30 @@ rx_one(void)
+ 			}
+ 		}
+ 		break;
+-	case CMD_RX_INTENT_REQ:
++	case CMD_RX_INTENT_REQ: {
+ 		rx_advance(8);
++		struct aux_chan *c = m.p1 != g_rcid ? aux_by_rcid(m.p1) : NULL;
++		if (c != NULL) {
++			aux_advertise(c, 1, MAX(m.p2, OUR_INTENT_SIZE));
++			send_cmd(CMD_RX_INTENT_REQ_ACK, c->lcid, 1);
++			break;
++		}
+ 		advertise_intents(1, MAX(m.p2, OUR_INTENT_SIZE));
+ 		send_cmd(CMD_RX_INTENT_REQ_ACK, CHAN_LCID, 1);
+ 		break;
+-	case CMD_RX_INTENT_REQ_ACK:
++	}
++	case CMD_RX_INTENT_REQ_ACK: {
+ 		rx_advance(8);
++		struct aux_chan *c = m.p1 != g_rcid ? aux_by_rcid(m.p1) : NULL;
+ 		if (m.p2 == 0) {
+-			g_intent_req_sent = false;      /* ask again on the next pump */
++			if (c != NULL) {
++				c->intent_req_sent = false;
++			} else {
++				g_intent_req_sent = false;  /* ask again on the next pump */
++			}
+ 		}
+ 		break;
++	}
+ 	case CMD_CLOSE_ACK:
+ 	case CMD_SIGNALS:
+ 		rx_advance(8);
+@@ -1295,6 +1606,17 @@ rx_one(void)
+ 		}
+ 		rx_advance(n);
+ 		if (hdr[1] == 0) {
++			struct aux_chan *c = m.p1 != g_rcid ? aux_by_rcid(m.p1) : NULL;
++			if (c != NULL) {
++				aux_rx(c, g_asm, g_asm_len);
++				if (g_features & 1) {
++					send_cmd(CMD_RX_DONE_W_REUSE, c->lcid, m.p2);
++				} else {
++					send_cmd(CMD_RX_DONE, c->lcid, m.p2);
++					aux_advertise(c, 1, OUR_INTENT_SIZE);
++				}
++				break;
++			}
+ 			if (m.p1 == g_rcid) {
+ 				qrtr_rx(g_asm, g_asm_len);
+ 			}
+@@ -1356,6 +1678,7 @@ glink_poll(struct smem_part_hdr *part, unsigned ms)
+ 	for (int i = 0; i < 64 && g_rx != NULL && rx_one(); i++) {
+ 	}
+ 	txq_pump();
++	aux_poll();
+ 	if (chan_up() && !g_intents_sent) {
+ 		advertise_intents(OUR_INTENTS, OUR_INTENT_SIZE);
+ 		g_intents_sent = true;
+@@ -1384,6 +1707,11 @@ glink_summary(void)
+ 	LOG("glink: rx %u msgs, tx %u, chan %s, modem intents %u, txq %u drops %u; qrtr node %x hello %u, %u services, %u RESUME_TX",
+ 	    g_rx_msgs, g_tx_msgs, chan_up() ? "UP" : "down", g_ri_count, g_txq_tail - g_txq_head, g_txq_drops,
+ 	    q_modem_node, q_hello_rx, q_srv_count, q_resumes);
++	for (unsigned i = 0; i < AUX_COUNT; i++) {
++		LOG("glink %s: %s, rx %u msgs, modem intents %u, txq %u", aux[i].name,
++		    aux[i].remote_open && aux[i].open_acked ? "UP" : (aux[i].remote_open ? "remote open only" : "not opened"),
++		    aux[i].rx_msgs, aux[i].ri_count, aux[i].qt - aux[i].qh);
++	}
+ 	svc_summary();
+ 	for (unsigned i = 0; i < q_srv_count; i++) {
+ 		LOG("  service %x:%x node %u port %x %s", q_srv[i].svc, q_srv[i].inst, q_srv[i].node, q_srv[i].port, svc_name(q_srv[i].svc));
+-- 
+2.47.3
+

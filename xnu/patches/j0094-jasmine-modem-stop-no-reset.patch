@@ -1,0 +1,73 @@
+From 837749d15012b248f178581086bf41606d7a178f Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 02:27:52 +0200
+Subject: [PATCH] jasmine-j0094: modem stop without mss_restart: the modem AXI
+ port never halts on sdm660 (busy even in reset; Linux on this phone logs
+ "port failed halt" on every stop), the board reset takes the MSS
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/TopazModem.cpp | 33 ++++++++++++++++-----------------
+ 1 file changed, 16 insertions(+), 17 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 6816665..e571d84 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -3839,8 +3839,8 @@ static uint16_t w_txn = 1;
+ static bool w_msa_ind, w_cap_done, w_bdf_started, w_fw_ready, w_mission;
+ /*
+  * j0085: Wi-Fi off before the modem stops, as Linux (ath10k leaves the AP and sends WLAN_MODE OFF,
+- * then remoteproc stops the modem). Stopping it under live Wi-Fi traffic left the modem's AXI port
+- * unhalted (j83-wlan: "halt modem port: ack 0 idle 0") and the reboot hung.
++ * then remoteproc stops the modem). The j83-wlan reboot, joined and without it, hung after the
++ * mss_restart (its unhalted modem port is normal: j0094).
+  */
+ static volatile bool w_off_asked, w_off_done;
+ static uint32_t w_off_ms, w_off_step;
+@@ -8262,7 +8262,7 @@ mba_handover(void)
+ /*
+  * q6v5_stop before a reboot or panic reset (jasmine): the SMP2P stop handshake as
+  * qcom_q6v5_request_stop (master-kernel bit 0 up, stop-ack on slave-kernel bit 3, 5 s; 200 ms on a
+- * panic as qcom_q6v5_panic), then q6v5_mba_reclaim's port halts and mss_restart. A crashed modem
++ * panic as qcom_q6v5_panic), then q6v5_mba_reclaim's port halts (no mss_restart, below). A crashed modem
+  * (FATAL) gets no handshake, as Linux skips it for a crashed remote. No clock or memory steps: the
+  * reset takes those back, and straight after a crash they took an SError (j0080q).
+  */
+@@ -8301,20 +8301,19 @@ topaz_modem_stop(bool panic)
+ 	} else {
+ 		LOG("stop: slave-kernel %08x%s, no stop handshake", sk, (sk & 1) ? " FATAL" : "");
+ 	}
+-	bool halted = mss_halt_port(MSS_HALT_Q6, "q6");
+-	halted = mss_halt_port(MSS_HALT_MODEM, "modem") && halted;
+-	halted = mss_halt_port(MSS_HALT_NC, "nc") && halted;
+-	if (!halted) {
+-		/*
+-		 * j0086: a reset under a bus port with transfers outstanding wedged the bus (j83/j85-wlan: the
+-		 * reboot hung after "halt modem port: ack 0 idle 0"); the board reset that follows resets the
+-		 * modem too
+-		 */
+-		LOG("stop: a modem port did not halt, mss_restart left alone");
+-		return;
+-	}
+-	w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) | 1u);
+-	LOG("stop: modem ports halted, mss_restart held");
++	/*
++	 * j0094: the halts as Linux, but no mss_restart. The modem port never halts on jasmine: it reads
++	 * busy (idle 0) even before the MBA boot with the MSS in reset, every stop since j81 logged
++	 * "ack 0 idle 0", and Linux on this phone logs "port failed halt" on every stop too (Nura journal).
++	 * Linux asserts the reset anyway because it boots the modem again (SSR); here the board reset
++	 * follows and takes the MSS with it. The reset under a joined Wi-Fi link hung the reboot twice
++	 * (j83/j85-wlan) while every reboot without it worked (j86-j92), so a modem restart (SSR) would
++	 * have to find out why first.
++	 */
++	mss_halt_port(MSS_HALT_Q6, "q6");
++	mss_halt_port(MSS_HALT_MODEM, "modem");
++	mss_halt_port(MSS_HALT_NC, "nc");
++	LOG("stop: modem stopped, mss_restart left to the board reset");
+ }
+ 
+ /*
+-- 
+2.47.3
+

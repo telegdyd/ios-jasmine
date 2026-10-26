@@ -1,0 +1,254 @@
+From ea39d94caa78e743f5f550045880f11feda353a0 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 22:28:03 +0200
+Subject: [PATCH] jasmine-j0082: Wi-Fi MAC from persist/wlan_mac.bin (read-only
+ ext4 root-dir lookup); the firmware reports 00:00:00:00:00:00
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 216 +++++++++++++++++++++++++++++++-
+ 1 file changed, 215 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 0e87e41..f47d6d8 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -4990,7 +4990,7 @@ static const uint16_t scan_freqs[] = {
+ 	5745, 5765, 5785, 5805, 5825,
+ };
+ #define NFREQ ((uint32_t)(sizeof(scan_freqs) / sizeof(scan_freqs[0])))
+-static const uint8_t our_mac[6] = { 0x02, 0x54, 0x4F, 0x50, 0x41, 0x5A };   /* locally administered */
++static uint8_t our_mac[6] = { 0x02, 0x54, 0x4F, 0x50, 0x41, 0x5A };         /* locally administered; jasmine: wlan_mac_load */
+ struct bss {
+ 	uint8_t bssid[6]; char ssid[33]; uint8_t chan; int8_t rssi; uint16_t seen;
+ 	uint8_t raw_ssid[32], raw_ssid_len; uint16_t freq, bintval, capab, ie_len; uint32_t last_ms; uint8_t ie[768];
+@@ -4998,6 +4998,217 @@ struct bss {
+ static struct bss bss[64];
+ static uint32_t nbss, scans, scan_frames;
+ static volatile uint32_t api_scans_done;
++
++/*
++ * jasmine's Wi-Fi MAC (j0082). The WLAN firmware reports 00:00:00:00:00:00 in WMI READY (Linux:
++ * "invalid MAC address; choosing random"); the factory address is the persist partition's
++ * /wlan_mac.bin ("Intf0MacAddress=<12 hex digits>\nEND"), which Android's cnss-daemon hands its
++ * driver. persist is ext4: a read-only lookup of one file in its root directory (extents, direct
++ * blocks or inline data; the journal is not replayed, the file is written once at the factory).
++ */
++struct ext4_fs {
++	const char *part;
++	uint32_t bs, ipg, isz, dsz;
++	bool b64;
++	uint64_t gdt;
++};
++
++static bool
++ext4_rd(const struct ext4_fs *fs, uint64_t off, void *dst, uint64_t n)
++{
++	return sweet_ufs_read_part(fs->part, off, dst, n) == 0;
++}
++
++static uint32_t
++ext4_u32(const uint8_t *p)
++{
++	return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
++}
++
++static uint16_t
++ext4_u16(const uint8_t *p)
++{
++	return (uint16_t)(p[0] | p[1] << 8);
++}
++
++/* the first 128 bytes of inode ino */
++static bool
++ext4_inode(const struct ext4_fs *fs, uint32_t ino, uint8_t in[128])
++{
++	uint8_t gd[64];
++	uint32_t g = (ino - 1) / fs->ipg, i = (ino - 1) % fs->ipg;
++	if (ino == 0 || !ext4_rd(fs, fs->gdt + (uint64_t)g * fs->dsz, gd, fs->dsz)) {
++		return false;
++	}
++	uint64_t table = ext4_u32(gd + 8) | (fs->b64 ? (uint64_t)ext4_u32(gd + 0x28) << 32 : 0);
++	return table != 0 && ext4_rd(fs, table * fs->bs + (uint64_t)i * fs->isz, in, 128);
++}
++
++/* the disk block of logical block lblk (0: a hole), buf: one block of scratch */
++static uint64_t
++ext4_bmap(const struct ext4_fs *fs, const uint8_t *in, uint8_t *buf, uint32_t lblk)
++{
++	const uint8_t *n = in + 0x28;               /* i_block */
++	if (!(ext4_u32(in + 0x20) & 0x80000)) {         /* no EXT4_EXTENTS_FL: direct blocks only */
++		return lblk < 12 ? ext4_u32(n + lblk * 4) : 0;
++	}
++	for (int level = 0; level < 6; level++) {
++		uint16_t entries = ext4_u16(n + 2), depth = ext4_u16(n + 6);
++		if (ext4_u16(n) != 0xF30A || entries > (fs->bs - 12) / 12) {
++			return 0;
++		}
++		if (depth == 0) {
++			for (uint16_t e = 0; e < entries; e++) {
++				const uint8_t *x = n + 12 + e * 12;
++				uint32_t first = ext4_u32(x), len = ext4_u16(x + 4);
++				if (len > 32768) {
++					len = 0;                    /* unwritten extent: reads as zeros */
++				}
++				if (lblk >= first && lblk - first < len) {
++					return ((uint64_t)ext4_u16(x + 6) << 32 | ext4_u32(x + 8)) + (lblk - first);
++				}
++			}
++			return 0;
++		}
++		const uint8_t *x = NULL;
++		for (uint16_t e = 0; e < entries && ext4_u32(n + 12 + e * 12) <= lblk; e++) {
++			x = n + 12 + e * 12;
++		}
++		if (x == NULL || !ext4_rd(fs, ((uint64_t)ext4_u16(x + 8) << 32 | ext4_u32(x + 4)) * fs->bs, buf, fs->bs)) {
++			return 0;
++		}
++		n = buf;
++	}
++	return 0;
++}
++
++/* /name from the root directory of partition part into dst: bytes read, or -1 */
++static int64_t
++ext4_root_file(const char *part, const char *name, void *dst, uint32_t max)
++{
++	uint8_t sb[256], in[128];
++	struct ext4_fs fs = { part, 0, 0, 0, 32, false, 0 };
++	if (sweet_ufs_read_part(part, 1024, sb, sizeof(sb)) != 0 || ext4_u16(sb + 0x38) != 0xEF53 ||
++	    ext4_u32(sb + 0x18) > 6) {
++		return -1;
++	}
++	fs.bs = 1024u << ext4_u32(sb + 0x18);
++	fs.ipg = ext4_u32(sb + 0x28);
++	fs.isz = ext4_u32(sb + 0x4C) == 0 ? 128 : ext4_u16(sb + 0x58);
++	fs.b64 = (ext4_u32(sb + 0x60) & 0x80) != 0;
++	if (fs.b64 && ext4_u16(sb + 0xFE) >= 64) {
++		fs.dsz = ext4_u16(sb + 0xFE);
++	}
++	if (fs.ipg == 0 || fs.isz < 128 || fs.dsz > 64) {
++		return -1;
++	}
++	fs.gdt = (uint64_t)(ext4_u32(sb + 0x14) + 1) * fs.bs;
++	uint8_t *buf = (uint8_t *)IOMalloc(fs.bs), *blk = (uint8_t *)IOMalloc(fs.bs);
++	int64_t got = -1;
++	uint32_t ino = 0;
++	if (buf == NULL || blk == NULL || !ext4_inode(&fs, 2, in)) {
++		goto out;
++	}
++	/* the root directory: plain dirent blocks (an htree's root and leaves read the same way) */
++	for (uint32_t l = 0, nblk = ext4_u32(in + 4) / fs.bs; l < nblk && ino == 0; l++) {
++		uint64_t pb = ext4_bmap(&fs, in, buf, l);
++		if (pb == 0 || !ext4_rd(&fs, pb * fs.bs, blk, fs.bs)) {
++			continue;
++		}
++		for (uint32_t o = 0; o + 8 <= fs.bs;) {
++			uint16_t rec = ext4_u16(blk + o + 4);
++			uint8_t nlen = blk[o + 6];
++			if (rec < 8 || o + rec > fs.bs) {
++				break;
++			}
++			if (ext4_u32(blk + o) != 0 && 8u + nlen <= rec && nlen == strlen(name) &&
++			    memcmp(blk + o + 8, name, nlen) == 0) {
++				ino = ext4_u32(blk + o);
++				break;
++			}
++			o += rec;
++		}
++	}
++	if (ino == 0 || !ext4_inode(&fs, ino, in) || (ext4_u16(in) & 0xF000) != 0x8000) {
++		goto out;
++	}
++	{
++		uint64_t size = ext4_u32(in + 4) | (uint64_t)ext4_u32(in + 0x6C) << 32;
++		if (size > max) {
++			goto out;
++		}
++		if (ext4_u32(in + 0x20) & 0x10000000) {     /* EXT4_INLINE_DATA_FL: in i_block */
++			if (size > 60) {
++				goto out;
++			}
++			memcpy(dst, in + 0x28, size);
++			got = (int64_t)size;
++			goto out;
++		}
++		for (uint64_t done = 0; done < size;) {
++			uint64_t pb = ext4_bmap(&fs, in, buf, (uint32_t)(done / fs.bs));
++			uint64_t n = MIN(size - done, (uint64_t)fs.bs);
++			if (pb == 0) {
++				memset((uint8_t *)dst + done, 0, n);
++			} else if (!ext4_rd(&fs, pb * fs.bs, (uint8_t *)dst + done, n)) {
++				goto out;
++			}
++			done += n;
++		}
++		got = (int64_t)size;
++	}
++out:
++	if (buf != NULL) {
++		IOFree(buf, fs.bs);
++	}
++	if (blk != NULL) {
++		IOFree(blk, fs.bs);
++	}
++	return got;
++}
++
++static int
++hex_digit(char c)
++{
++	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
++	       c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
++}
++
++/* our_mac from persist/wlan_mac.bin; it keeps the fixed address when there is none */
++static void
++wlan_mac_load(void)
++{
++	static const char key[] = "Intf0MacAddress=";
++	char text[129];
++	uint8_t mac[6];
++	int64_t n = ext4_root_file("persist", "wlan_mac.bin", text, sizeof(text) - 1);
++	if (n < 0) {
++		LOG("wifi: no persist/wlan_mac.bin, MAC %02x:%02x:%02x:%02x:%02x:%02x (fixed)", our_mac[0], our_mac[1],
++		    our_mac[2], our_mac[3], our_mac[4], our_mac[5]);
++		return;
++	}
++	text[n] = 0;
++	const char *v = NULL;
++	for (int64_t i = 0; v == NULL && i + (int64_t)sizeof(key) - 1 + 12 <= n; i++) {
++		if (memcmp(text + i, key, sizeof(key) - 1) == 0) {
++			v = text + i + sizeof(key) - 1;
++		}
++	}
++	bool ok = v != NULL;
++	for (int i = 0; ok && i < 6; i++) {
++		int hi = hex_digit(v[2 * i]), lo = hex_digit(v[2 * i + 1]);
++		ok = hi >= 0 && lo >= 0;
++		mac[i] = (uint8_t)(hi << 4 | lo);
++	}
++	/* a unicast, non-zero address */
++	if (!ok || (mac[0] & 1) || (mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]) == 0) {
++		LOG("wifi: persist/wlan_mac.bin (%lld bytes) has no usable address, MAC stays fixed", n);
++		return;
++	}
++	memcpy(our_mac, mac, 6);
++	LOG("wifi: MAC %02x:%02x:%02x:**:**:** from persist/wlan_mac.bin", our_mac[0], our_mac[1], our_mac[2]);
++}
++
+ static bool scan_started, scanning;
+ static unsigned next_scan_ms;
+ 
+@@ -7976,6 +8187,9 @@ topaz_modem_thread(void *arg __unused, wait_result_t wr __unused)
+ 	if (soc.jasmine) {
+ 		(void)wcn_power_on();
+ 	}
++	if (soc.jasmine && wifi_enabled()) {
++		wlan_mac_load();                        /* before the vdev is created with it */
++	}
+ 	/* jasmine (j0080n): the WLAN stream sits on the anoc2 SMMU; the same identity bank as topaz */
+ 	if (wifi_enabled() && !smmu_identity(WLAN_SID, WLAN_SID_MASK, "WLAN")) {
+ 		LOG("wifi: no SMMU stream for WLAN, the radio stays off");
+-- 
+2.47.3
+

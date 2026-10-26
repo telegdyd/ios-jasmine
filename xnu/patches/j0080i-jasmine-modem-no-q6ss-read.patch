@@ -1,0 +1,59 @@
+From d0d8c0a983416dd9d738b46a4e34b97436ddc1ab Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 16:39:43 +0200
+Subject: [PATCH] jasmine-j0080i: no QDSP6SS read once the core runs (the QDSP6
+ started / boot failed log lines read PWR_CTL/RESET: the SError)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index c031171..5304bbe 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6811,6 +6811,8 @@ rmb_wait(uint32_t status, unsigned ms)
+ }
+ 
+ /* q6v5proc_reset, MSS_SDM660: power the QDSP6 v62 up and start the PBL */
++static bool q6_started;
++
+ static bool
+ q6_power_up(void)
+ {
+@@ -6861,6 +6863,8 @@ q6_power_up(void)
+ 	w32(q6ss, Q6SS_RESET, r32(q6ss, Q6SS_RESET) & ~Q6SS_CORE_ARES);
+ 	w32(q6ss, Q6SS_GFMUX_CTL, r32(q6ss, Q6SS_GFMUX_CTL) | Q6SS_CLK_ENABLE);
+ 	LOG("mba: q6 8 start core (GFMUX %08x RESET %08x)", r32(q6ss, Q6SS_GFMUX_CTL), r32(q6ss, Q6SS_RESET));
++	/* from here on the QDSP6SS registers are the PBL's: an AP read is a bus error (SError), in Linux too */
++	q6_started = true;
+ 	w32(q6ss, Q6SS_RESET, r32(q6ss, Q6SS_RESET) & ~Q6SS_STOP_CORE);
+ 	uint32_t pblwait = 0;                       /* modem_pblwait=MS: no RMB access for MS after the core starts */
+ 	(void)PE_parse_boot_argn("modem_pblwait", &pblwait, sizeof(pblwait));
+@@ -6877,8 +6881,7 @@ q6_power_up(void)
+ 			IOSleep(1);
+ 		}
+ 	}
+-	LOG("mba: QDSP6 started: PWR_CTL %08x MEM_PWR_CTL %08x RESET %08x, PBL status %u%s", r32(q6ss, Q6SS_PWR_CTL),
+-	    r32(q6ss, Q6SS_MEM_PWR_CTL), r32(q6ss, Q6SS_RESET), pbl, pbl == 1 ? "" : (pbl == 0 ? " (timeout)" : " (unexpected)"));
++	LOG("mba: QDSP6 started: PBL status %u%s", pbl, pbl == 1 ? "" : (pbl == 0 ? " (timeout)" : " (unexpected)"));
+ 	return pbl == 1;
+ }
+ 
+@@ -7169,8 +7172,11 @@ modem_boot_mba(void)
+ 		goto out;
+ 	}
+ fail:
+-	LOG("mba: boot failed: RMB PBL %08x MBA %08x, RESET %08x PWR_CTL %08x", r32(rmb, RMB_PBL_STATUS),
+-	    r32(rmb, RMB_MBA_STATUS), r32(q6ss, Q6SS_RESET), r32(q6ss, Q6SS_PWR_CTL));
++	if (q6_started) {
++		LOG("mba: boot failed: RMB PBL %08x MBA %08x", r32(rmb, RMB_PBL_STATUS), r32(rmb, RMB_MBA_STATUS));
++	} else {
++		LOG("mba: boot failed before the core start: RESET %08x PWR_CTL %08x", r32(q6ss, Q6SS_RESET), r32(q6ss, Q6SS_PWR_CTL));
++	}
+ 	mss_reclaim();
+ out:
+ 	if (mdt != NULL) {
+-- 
+2.47.3
+

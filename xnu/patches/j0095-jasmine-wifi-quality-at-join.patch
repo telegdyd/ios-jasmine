@@ -1,0 +1,59 @@
+From 2f381200c551fe80b8977a7784f8d37b40416763 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 02:40:23 +0200
+Subject: [PATCH] jasmine-j0095: link quality posted with the link-up event too
+ (j93: the bars stayed gray ~15 s after the join until the first quiet 5 s)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/redwood_apple80211.c | 23 ++++++++++++++++-------
+ 1 file changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/bsd/dev/redwood_apple80211.c b/bsd/dev/redwood_apple80211.c
+index f327da9..705a287 100644
+--- a/bsd/dev/redwood_apple80211.c
++++ b/bsd/dev/redwood_apple80211.c
+@@ -647,6 +647,17 @@ post(uint32_t code, const void *data, uint32_t length)
+ 	kev_post_msg(&message);
+ }
+ 
++/* how the joined network is heard (dBm), as the status bar wants it */
++static void
++post_quality(int rssi)
++{
++	struct apple80211_link_quality quality = { .rssi_there = 1, .rssi = rssi, .per_core_there = 1,
++		                                   .per_core = { (int8_t)rssi, -128 }, .snr_there = 1,
++		                                   .snr = (int16_t)(rssi - NOISE_FLOOR), .noise_there = 1, .noise = NOISE_FLOOR };
++
++	post(EVENT_LINK_QUALITY, &quality, sizeof(quality));
++}
++
+ /* What the station side says has happened (bsd/dev/redwood_sta.c calls this, on its thread or the station's). */
+ void
+ redwood_apple80211_event(enum redwood_sta_event event, int status)
+@@ -692,17 +703,15 @@ redwood_apple80211_event(enum redwood_sta_event event, int status)
+ 		post(EVENT_SSID_CHANGED, NULL, 0);
+ 		post(EVENT_BSSID_CHANGED, NULL, 0);
+ 		post(EVENT_LINK_CHANGED, &link, sizeof(link));
++		if (status == 1 && link.rssi != 0) {
++			post_quality(link.rssi);        /* (the bars at once, not after the first quiet seconds: j93) */
++		}
+ 		break;
+ 	}
+-	case REDWOOD_STA_QUALITY: {
+-		struct apple80211_link_quality quality = { .rssi_there = 1, .rssi = status, .per_core_there = 1,
+-			                                   .per_core = { (int8_t)status, -128 }, .snr_there = 1, .snr = (int16_t)(status -
+-			                                   NOISE_FLOOR), .noise_there = 1, .noise = NOISE_FLOOR };
+-
+-		post(EVENT_LINK_QUALITY, &quality, sizeof(quality));
++	case REDWOOD_STA_QUALITY:
++		post_quality(status);
+ 		break;
+ 	}
+-	}
+ }
+ 
+ /* ---- the requests as they arrive --------------------------------------------------------------------- */
+-- 
+2.47.3
+

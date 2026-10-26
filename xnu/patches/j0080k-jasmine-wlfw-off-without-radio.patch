@@ -1,0 +1,39 @@
+From 48695a6eeed10166a78a75ba6253ab648416f30f Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 17:06:08 +0200
+Subject: [PATCH] jasmine-j0080k: no WLFW handshake while the radio is off (the
+ modem died in 13 s: dog_hb task starvation)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 4043a5f..2649d4c 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -762,6 +762,7 @@ static void svc_announce(void);
+ static void svc_summary(void);
+ static void wlfw_arrive(uint32_t node, uint32_t port);
+ static bool wifi_enabled(void);
++static bool wifi_enabled(void);
+ static bool ce_start(void);
+ static void radio_poll(unsigned ms);
+ static void w_rx_native(const uint8_t *f, uint32_t len);
+@@ -3665,6 +3666,13 @@ wlfw_arrive(uint32_t node, uint32_t port)
+ 	if ((w_node != 0 || w_port != 0) && w_node == node && w_port == port) {
+ 		return;
+ 	}
++	if (soc.jasmine && !wifi_enabled()) {
++		/* no radio (WCN3990 unpowered): no handshake, as Linux without ath10k; with one the modem died in 13 s */
++		LOG("t=%u ms: WLFW up, radio off: no handshake", g_ms);
++		w_node = node;
++		w_port = port;
++		return;
++	}
+ 	if (w_arrivals++ != 0) {
+ 		/* the WLAN PD restarted (new server port): start the handshake again */
+ 		LOG("t=%u ms: WLFW back on port %x (restart %u, last step: %s): handshake again", g_ms, port, w_arrivals - 1, w_step);
+-- 
+2.47.3
+

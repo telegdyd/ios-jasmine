@@ -1,0 +1,52 @@
+From f1525158124c407a84b415ad22681ac05222e742 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 06:38:30 +0200
+Subject: [PATCH] jasmine-j0080c: RPM clock handoff + scaling on before the
+ modem power-up (Linux has it from boot; the RPM ignored the qdss proxy vote),
+ DDR voted back to its rate; modem_rpmclk=0 skips it
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 998f680..1b203e9 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6566,6 +6566,9 @@ out:
+  * MSS_MSA (15), tracked per region as Linux does. No interrupts: RMB and SMP2P are polled.
+  */
+ extern "C" bool sweet_rpm_level_client(unsigned client, uint32_t type, uint32_t level);   /* bsd/dev/sweet_rpm.c */
++extern "C" int sweet_rpm_clk_scaling(void);
++extern "C" bool sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz);
++extern "C" uint32_t sweet_gcc_measure_mhz(uint32_t sel);
+ 
+ #define RPM_RWCX            0x78637772u         /* "rwcx" */
+ #define RPM_RWMX            0x786d7772u         /* "rwmx" */
+@@ -6989,6 +6992,23 @@ modem_boot_mba(void)
+ 		}
+ 		mb();
+ 
++		/*
++		 * RPM clocks as Linux has them from boot (clk-smd-rpm handoff + scaling on, j0080c):
++		 * until then the RPM ignores the AP's clock votes, so the modem's proxy clock "qdss"
++		 * is whatever the RPM left. The first test hit an SError right after the QDSP6 started
++		 * (PBL running) without this. The handoff votes bimc to the top; the DDR goes back to
++		 * the rate it had. modem_rpmclk=0 skips it.
++		 */
++		uint32_t rpmclk = 1;
++		(void)PE_parse_boot_argn("modem_rpmclk", &rpmclk, sizeof(rpmclk));
++		if (rpmclk != 0) {
++			uint32_t ddr = 2 * sweet_gcc_measure_mhz(0x19d);       /* GCC debug mux bimc_clk = half the DDR rate */
++			int failed = sweet_rpm_clk_scaling();
++			bool kept = failed == 0 && ddr != 0 && sweet_rpm_clk(0x326b6c63u /* clk2: bimc */, 0, ddr * 1000);
++			LOG("mba: RPM clock scaling %s (%d failed), DDR %u MHz before, %u MHz now%s", failed ? "FAILED" : "on", failed, ddr,
++			    2 * sweet_gcc_measure_mhz(0x19d), kept ? "" : " (not voted back)");
++		}
++
+ 		/* q6v5_mba_load */
+ 		mss_votes(true);
+ 		if ((r32(mss_gcc, GCC_BOOT_ROM_VOTE) & (1u << 10)) == 0) {                         /* proxy "mem" */
+-- 
+2.47.3
+

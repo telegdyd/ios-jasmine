@@ -1,0 +1,162 @@
+From 77e0bd02e86156d3257587e0789d6d03d49241b1 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 00:05:59 +0200
+Subject: [PATCH] jasmine-j0088: DHCP server on ue0 (the PC gets
+ 192.168.7.1/24, no router/DNS): XNU keeps IPv4 link-local on the primary
+ interface, so a 169.254 USB link died once Wi-Fi had an address (j86/j87)
+
+---
+ bsd/dev/sweet_usb.c | 130 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 130 insertions(+)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 6fecef2..c6aa1b0 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1147,6 +1147,133 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ extern uint32_t sweet_log_copy(uint64_t *pos, char *out, uint32_t max);
+ extern uint64_t sweet_log_position(void);
+ 
++/*
++ * j0088: a DHCP server on ue0 that gives the PC 192.168.7.1/24, with no router and no DNS (nothing
++ * else is routed over the phone). Without it the PC's adapter fell back to a 169.254 address, and in
++ * XNU IPv4 link-local belongs to one interface: arp_lookup_route() never scopes a 169.254 lookup and
++ * configd gives 169.254/16 to the primary interface. Once Wi-Fi had an address, the PC's 169.254
++ * address resolved on en0 and the USB link went silent (j86/j87-wlan: not even ARP was answered).
++ * 192.168.7/24 is ue0's alone. 169.254.7.2 stays on ue0 for a PC that has not asked yet.
++ */
++#define UD_DHCP_PC      0xc0a80701u             /* 192.168.7.1 */
++#define UD_DHCP_PHONE   0xc0a80702u
++
++static uint8_t *
++ud_put32(uint8_t *p, uint32_t v)
++{
++	p[0] = (uint8_t)(v >> 24);
++	p[1] = (uint8_t)(v >> 16);
++	p[2] = (uint8_t)(v >> 8);
++	p[3] = (uint8_t)v;
++	return p + 4;
++}
++
++static void
++ud_dhcp_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	static uint8_t q[576], r[300];
++	socket_t so = NULL;
++	struct sockaddr_in me;
++	unsigned answers = 0;
++
++	bzero(&me, sizeof(me));
++	me.sin_len = sizeof(me);
++	me.sin_family = AF_INET;
++	me.sin_port = htons(67);
++	while (so == NULL) {
++		ud_sleep_ms(500);
++		int on = 1;
++		if (sock_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, &so) != 0) {
++			so = NULL;
++			continue;
++		}
++		(void)sock_setsockopt(so, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
++		(void)sock_setsockopt(so, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
++		if (!sweet_usb_bind_listener(so) || sock_bind(so, (struct sockaddr *)&me) != 0) {
++			sock_close(so);
++			so = NULL;
++		}
++	}
++	printf("SWEET USB: dhcp server on ue0 (the PC gets 192.168.7.1/24)\n");
++	for (;;) {
++		struct iovec iov = { .iov_base = q, .iov_len = sizeof(q) };
++		struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++		size_t n = 0;
++		if (sock_receive(so, &msg, 0, &n) != 0) {
++			ud_sleep_ms(100);
++			continue;
++		}
++		/* BOOTREQUEST, Ethernet, the magic cookie */
++		if (n < 240 || q[0] != 1 || q[1] != 1 || q[2] != 6 ||
++		    q[236] != 99 || q[237] != 130 || q[238] != 83 || q[239] != 99) {
++			continue;
++		}
++		uint8_t type = 0;
++		uint32_t want = 0, ci = (uint32_t)q[12] << 24 | (uint32_t)q[13] << 16 | (uint32_t)q[14] << 8 | q[15];
++		for (size_t o = 240; o < n && q[o] != 255;) {
++			if (q[o] == 0) {
++				o++;
++				continue;
++			}
++			if (o + 2 > n || o + 2 + q[o + 1] > n) {
++				break;
++			}
++			if (q[o] == 53 && q[o + 1] >= 1) {
++				type = q[o + 2];
++			} else if (q[o] == 50 && q[o + 1] == 4) {
++				want = (uint32_t)q[o + 2] << 24 | (uint32_t)q[o + 3] << 16 | (uint32_t)q[o + 4] << 8 | q[o + 5];
++			}
++			o += 2 + (size_t)q[o + 1];
++		}
++		uint8_t reply;
++		if (type == 1) {
++			reply = 2;                      /* DISCOVER: OFFER */
++		} else if (type == 3) {
++			reply = (want != 0 ? want : ci) == UD_DHCP_PC ? 5 : 6;   /* REQUEST: ACK, or NAK for another address */
++		} else {
++			continue;
++		}
++		bzero(r, sizeof(r));
++		r[0] = 2;
++		r[1] = 1;
++		r[2] = 6;
++		memcpy(r + 4, q + 4, 4);                /* xid */
++		memcpy(r + 10, q + 10, 2);              /* flags */
++		if (reply != 6) {
++			(void)ud_put32(r + 16, UD_DHCP_PC);  /* yiaddr */
++		}
++		memcpy(r + 24, q + 24, 4 + 16);         /* giaddr, chaddr */
++		memcpy(r + 236, q + 236, 4);            /* the magic cookie */
++		uint8_t *p = r + 240;
++		*p++ = 53;
++		*p++ = 1;
++		*p++ = reply;
++		*p++ = 54;
++		*p++ = 4;
++		p = ud_put32(p, UD_DHCP_PHONE);         /* server identifier */
++		if (reply != 6) {
++			*p++ = 51;
++			*p++ = 4;
++			p = ud_put32(p, 7 * 86400);         /* lease */
++			*p++ = 1;
++			*p++ = 4;
++			p = ud_put32(p, 0xffffff00u);       /* subnet mask; no router, no DNS */
++		}
++		*p = 255;
++		struct sockaddr_in to = me;
++		to.sin_port = htons(68);
++		to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
++		struct iovec oiov = { .iov_base = r, .iov_len = sizeof(r) };
++		struct msghdr om = { .msg_name = &to, .msg_namelen = sizeof(to), .msg_iov = &oiov, .msg_iovlen = 1 };
++		size_t sent = 0;
++		int e = sock_send(so, &om, 0, &sent);
++		if (answers++ < 8) {
++			printf("SWEET USB: dhcp %s: %s 192.168.7.1 (send %d)\n", type == 1 ? "discover" : "request",
++			    reply == 2 ? "offer" : reply == 5 ? "ack" : "nak", e);
++		}
++	}
++}
++
+ static void
+ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+@@ -1689,6 +1816,9 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	if (ud.ifp != NULL) {
+ 		sweet_netfs_start();
+ 	}
++	if (ud.ifp != NULL && kernel_thread_start(ud_dhcp_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ 	uint32_t ptest = 0;
+ 	if (PE_parse_boot_argn("sweetpanic_test", &ptest, sizeof(ptest)) && ptest != 0 &&
+ 	    kernel_thread_start(ud_panic_test_thread, (void *)(uintptr_t)ptest, &thread) == KERN_SUCCESS) {
+-- 
+2.47.3
+

@@ -1,0 +1,47 @@
+From dd1eebcbc5f1d2c25f859db995d81fa598c647dc Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 07:57:16 +0200
+Subject: [PATCH] jasmine-j0080h: check the MBA bytes in DRAM (uncached
+ read-back, crc32 against a second read of mba.mbn)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 2b1b227..c031171 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6943,6 +6943,29 @@ modem_boot_mba(void)
+ 		LOG("mba: mba.mbn (%lld bytes) not loaded", mba_size);
+ 		return false;
+ 	}
++	{
++		/* j0080h: the MBA bytes in DRAM (uncached read-back) against a second read of the file */
++		uint8_t *chk = (uint8_t *)IOMalloc(mba_size);
++		IOMemoryMap *rb = map_phys(MBA_PA, (mba_size + 0x3fff) & ~0x3fffull, false);
++		if (chk != NULL && rb != NULL && fw_read("mba.mbn", chk, mba_size) == mba_size) {
++			const uint8_t *d = (const uint8_t *)rb->getVirtualAddress();
++			uint32_t c_file = crc32(0, chk, mba_size), c_dram = crc32(0, d, mba_size);
++			unsigned first = ~0u;
++			for (int64_t i = 0; i < mba_size && first == ~0u; i++) {
++				if (d[i] != chk[i]) {
++					first = (unsigned)i;
++				}
++			}
++			LOG("mba: mba.mbn in DRAM: crc %08x, file %08x%s; head %02x%02x%02x%02x first diff %d", c_dram, c_file,
++			    c_dram == c_file ? " (same)" : " (DIFFERENT)", d[0], d[1], d[2], d[3], (int)first);
++		}
++		if (rb != NULL) {
++			rb->release();
++		}
++		if (chk != NULL) {
++			IOFree(chk, mba_size);
++		}
++	}
+ 	mdt_size = fw_size("modem.mdt");
+ 	if (mdt_size <= (int64_t)sizeof(struct elf32_ehdr) || mdt_size > 0x100000) {
+ 		LOG("mba: modem.mdt: size %lld", mdt_size);
+-- 
+2.47.3
+

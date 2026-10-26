@@ -1,0 +1,1209 @@
+From 544ee9f0cab9c1ec5352f8650bb9ed299e0217b4 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 05:54:06 +0200
+Subject: [PATCH] jasmine-j0080: modem boot on SDM660 through the MBA (Linux
+ qcom_q6v5_mss.c sdm660_mss: cx/mx proxy votes, GCC MSS clocks and reset,
+ QDSP6 v62 power-up, PBL/MBA RMB handshake, metadata + segment authentication,
+ hyp assign HLOS/MSS_MSA); firmware from the modem partition FAT16 at run
+ time; SoC addresses per board; RPM rail votes aggregated per AP client;
+ modem=1, Wi-Fi radio still off on jasmine
+
+---
+ bsd/dev/sweet_rpm.c                   |  45 +-
+ iokit/Kernel/arm/SweetFramebuffer.cpp |   2 +
+ iokit/Kernel/arm/TopazModem.cpp       | 912 +++++++++++++++++++++++++-
+ 3 files changed, 937 insertions(+), 22 deletions(-)
+
+diff --git a/bsd/dev/sweet_rpm.c b/bsd/dev/sweet_rpm.c
+index e152251..4b5eb65 100644
+--- a/bsd/dev/sweet_rpm.c
++++ b/bsd/dev/sweet_rpm.c
+@@ -374,18 +374,57 @@ rpm_request(const char *what, uint32_t set, uint32_t type, uint32_t id, const ui
+  * active set like the stock DT's qcom,set = 3. The RPM takes the highest of
+  * all masters' votes; this one replaces the AP's earlier one (the
+  * bootloader's).
++ *
++ * The AP is one master but has several users of a rail (j0080): client 0
++ * the GPU (sweet_rpm_level), 1 the modem's proxy vote while it boots
++ * (TopazModem.cpp). The AP's vote is the highest of its clients' levels, as
++ * Linux rpmpd aggregates its consumers; 0 = no vote from that client. With
++ * no client voting the last vote stays (nothing ever voted the rail off).
+  */
++#define RPM_LEVEL_CLIENTS 2
++static struct {
++	uint32_t type, level[RPM_LEVEL_CLIENTS], sent;
++} rpm_rails[2] = { {0x78637772u /* rwcx */}, {0x786d7772u /* rwmx */} };
++
++bool sweet_rpm_level_client(unsigned client, uint32_t type, uint32_t level);
+ bool
+-sweet_rpm_level(uint32_t type, uint32_t level)
++sweet_rpm_level_client(unsigned client, uint32_t type, uint32_t level)
+ {
+-	uint32_t kv[4] = {KEY_SWEN, 1u, KEY_VLVL, level};
++	uint32_t vote = level, *sent = NULL;
+ 	lck_mtx_lock(&sweet_rpm_lock);
++	for (unsigned r = 0; r < 2 && client < RPM_LEVEL_CLIENTS; r++) {
++		if (rpm_rails[r].type == type) {
++			rpm_rails[r].level[client] = level;
++			vote = 0;
++			for (unsigned c = 0; c < RPM_LEVEL_CLIENTS; c++) {
++				vote = MAX(vote, rpm_rails[r].level[c]);
++			}
++			if (vote == 0 || vote == rpm_rails[r].sent) {
++				lck_mtx_unlock(&sweet_rpm_lock);
++				printf("SWEET RPM: %.4s client %u level %#x: AP vote stays %#x\n", (const char *)&type, client, level,
++				    rpm_rails[r].sent);
++				return true;
++			}
++			sent = &rpm_rails[r].sent;
++		}
++	}
++	uint32_t kv[4] = {KEY_SWEN, 1u, KEY_VLVL, vote};
+ 	bool ok = rpm_request("level sleep", 1, type, 0, kv, 2) && rpm_request("level active", 0, type, 0, kv, 2);
++	if (ok && sent != NULL) {
++		*sent = vote;
++	}
+ 	lck_mtx_unlock(&sweet_rpm_lock);
+-	printf("SWEET RPM: %.4s level %#x: %s\n", (const char *)&type, level, ok ? "ok" : "FAILED");
++	printf("SWEET RPM: %.4s client %u level %#x: AP vote %#x %s\n", (const char *)&type, client, level, vote,
++	    ok ? "ok" : "FAILED");
+ 	return ok;
+ }
+ 
++bool
++sweet_rpm_level(uint32_t type, uint32_t level)
++{
++	return sweet_rpm_level_client(0, type, level);
++}
++
+ /*
+  * One raw request (j0064, command port "rpm"): sets bit 0 the active set,
+  * bit 1 the sleep set (sleep first, as Linux). For live experiments with
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index d0c8a5a..c80bba0 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -434,6 +434,8 @@ AppleCLCD::start(IOService *provider)
+ 	if (topaz) {
+ 		topaz_modem_init();
+ 		topaz_audio_init();
++	} else if (sweet_board_is("xiaomi,jasmine")) {
++		topaz_modem_init();                     /* boot-arg modem=1: SDM660 MBA boot (j0080) */
+ 	}
+ 	/*
+ 	 * Every board: the AMFI service is software only. Without it ExtensionKit cannot read the
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 8aa0c2f..83fb666 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -12,6 +12,11 @@
+  * GPU's 0x90000000-0xD0000000), memory shared with the modem is write-combined (Normal NC:
+  * no cache upkeep, unaligned access ok), the carveout is mapped only while copying, the
+  * modem must start cold, polling only (no interrupts), no EFS writes.
++ *
++ * jasmine (SDM660, j0080): the same services on another SoC. The modem has no PAS there: the
++ * kernel starts the Hexagon itself and the modem boot authenticator (mba.mbn) checks the image
++ * (modem_boot_mba(), from Linux qcom_q6v5_mss.c). The firmware files are looked up in the
++ * modem partition's FAT16 at run time (fat_*), the SoC addresses come from board_setup().
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -25,9 +30,51 @@
+ #include <sys/errno.h>
+ 
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern "C" int sweet_board_is(const char *compat);   /* bsd/dev/sweet_board.c */
+ 
+ #define LOG(fmt, ...)       IOLog("TopazModem: " fmt "\n", ##__VA_ARGS__)
+ 
++/*
++ * SoC addresses: topaz's (SM6225) by default, jasmine's (SDM660, mainline sdm630.dtsi and the
++ * jasmine DTB) from board_setup(). The upper-case names below stay as the code's spelling.
++ */
++static struct {
++	bool jasmine;
++	uint64_t pool_base, smem_pa, tcsr_mutex_pa, apcs_pa;
++	unsigned glink_bit;                         /* APCS IPC bit of the modem's GLINK edge */
++	uint32_t wlfw_msa_base;
++	uint64_t smmu_pa;
++	uint32_t smmu_size, wlan_sid;
++	uint64_t ce_pa;
++} soc = {
++	false, 0xE0000000ull, 0x46000000ull, 0x00340000ull, 0x0F111000ull, 12,
++	0x51900000u, 0x0C600000ull, 0x00080000u, 0x1A0, 0x0C800000ull + 0x240000,
++};
++
++static void
++board_setup(void)
++{
++	if (!sweet_board_is("xiaomi,jasmine")) {
++		return;
++	}
++	soc.jasmine = true;
++	/*
++	 * Free low DDR (Linux System RAM a0000000-bfffbfff, after the 4 MiB ramoops at 0xa0000000;
++	 * XNU runs from 0x1_00000000, the GPU pool is 0xc0000000-0xf6000000), inside the range
++	 * Linux takes the modem metadata from (mpss-metadata alloc-ranges 0xa0000000+0x20000000).
++	 */
++	soc.pool_base = 0xA1000000ull;
++	soc.smem_pa = 0x86000000ull;                /* smem-mem@86000000 */
++	soc.tcsr_mutex_pa = 0x01F40000ull;          /* hwlock@1f40000, stride 0x1000 */
++	soc.apcs_pa = 0x17911000ull;                /* mailbox@17911000 (apcs hmss global) */
++	soc.glink_bit = 15;                         /* remoteproc mss glink-edge mboxes <&apcs 15> */
++	soc.wlfw_msa_base = 0x85700000u;            /* wlan-msa-mem@85700000 */
++	soc.smmu_pa = 0x016C0000ull;                /* iommu@16c0000 (anoc2), wifi iommus 0x1a00/0x1a01 */
++	soc.smmu_size = 0x00040000u;
++	soc.wlan_sid = 0x1A00;
++	soc.ce_pa = 0x18800000ull + 0x240000;       /* wifi@18800000 membase */
++}
++
+ #define PAS_ID_MODEM        4
+ #define SCM_FN(svc, cmd)    (0x42000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
+ #define SCM_SVC_PIL         0x02
+@@ -44,16 +91,16 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ #define MDT_RELOCATABLE     (1u << 27)
+ 
+ /* middle DDR bank, RAM the kernel does not manage; below 0xF0000000 for TZ/the modem */
+-#define MODEM_POOL_BASE     0xE0000000ull
++#define MODEM_POOL_BASE     soc.pool_base
+ #define MODEM_POOL_SIZE     0x01000000ull       /* 16 MB: metadata, SCM args, rmtfs, CE rings, WMI memory */
+ 
+-#define SMEM_PA             0x46000000ull
++#define SMEM_PA             soc.smem_pa
+ #define SMEM_SIZE           0x00200000u
+ #define SMEM_GLOBAL_HOST    0xFFFE
+-#define TCSR_MUTEX_PA       0x00340000ull       /* qcom,tcsr-mutex, stride 0x1000 */
++#define TCSR_MUTEX_PA       soc.tcsr_mutex_pa   /* qcom,tcsr-mutex, stride 0x1000 */
+ #define SMEM_HWLOCK         3
+ #define HWLOCK_APPS_ID      1
+-#define APCS_PA             0x0F111000ull
++#define APCS_PA             soc.apcs_pa
+ #define APCS_IPC            8                   /* apcs_glb mailbox */
+ #define MPSS_SMP2P_BIT      14
+ 
+@@ -208,9 +255,215 @@ static const struct { const char *name; uint32_t off, size, crc; } fw_files[] =
+ 	{ "modem.mdt", 0x4a6d000, 0x238c, 0x8742d22b },
+ };
+ 
++/*
++ * jasmine: no table. The modem partition (identical modem_a and modem_b, FAT16, 512-byte
++ * sectors, 16 KiB clusters, ~430 files) is indexed once from its boot sector, first FAT and
++ * directories (root plus subdirectories, short and long names, lower case), and files are
++ * read cluster run by cluster run along the FAT. Read-only, like the rest of this file.
++ */
++#define FAT_MAX_FILES       1024
++#define FAT_PATH            112                 /* the deepest: image/modem_pr/mcfg/configs/... (91) */
++struct fat_file { char path[FAT_PATH]; uint32_t size, clus; };
++static struct fat_file *fat_files;
++static unsigned fat_nfiles;
++static uint16_t *fat_tab;
++static uint32_t fat_nent, fat_csize;
++static uint64_t fat_data;                       /* byte offset of cluster 2 */
++
++static bool
++fat_name_eq(const char *a, const char *b)
++{
++	for (; *a != 0 && *b != 0; a++, b++) {
++		char x = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a, y = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
++		if (x != y) {
++			return false;
++		}
++	}
++	return *a == *b;
++}
++
++static uint32_t
++fat_next(uint32_t c)
++{
++	return c < fat_nent ? fat_tab[c] : 0xFFFF;
++}
++
++/* n bytes at off of the cluster chain from clus (size bytes long): contiguous clusters in one read */
++static bool
++fat_chain_read(uint32_t clus, uint32_t size, uint64_t off, void *dst, uint64_t n)
++{
++	if (off > size || n > size - off) {
++		return false;
++	}
++	uint64_t pos = 0, done = 0;
++	for (uint32_t c = clus; done < n; ) {
++		if (c < 2 || c >= 0xFFF8) {
++			return false;
++		}
++		uint32_t run = 1;                       /* clusters c .. c+run-1 are consecutive */
++		while (fat_next(c + run - 1) == c + run && run < 256) {
++			run++;
++		}
++		uint64_t len = (uint64_t)run * fat_csize;
++		if (off + done < pos + len) {
++			uint64_t in = off + done - pos, take = MIN(len - in, n - done);
++			if (sweet_ufs_read_part(fw_part, fat_data + (uint64_t)(c - 2) * fat_csize + in,
++			    (uint8_t *)dst + done, take) != 0) {
++				return false;
++			}
++			done += take;
++		}
++		pos += len;
++		c = fat_next(c + run - 1);
++	}
++	return true;
++}
++
++static void
++fat_dir(const uint8_t *d, uint32_t len, const char *prefix, int depth)
++{
++	static char lfn[FAT_PATH], name[FAT_PATH];  /* one thread; lfn is empty whenever this recurses */
++	lfn[0] = 0;
++	for (uint32_t i = 0; i + 32 <= len && d[i] != 0; i += 32) {
++		const uint8_t *e = d + i;
++		if (e[0] == 0xE5) {
++			lfn[0] = 0;
++			continue;
++		}
++		if (e[11] == 0x0F) {                    /* long name piece: 13 UCS-2 characters, last piece first */
++			static const uint8_t at[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
++			unsigned seq = (e[0] & 0x1F) - 1;
++			if (e[0] & 0x40) {
++				lfn[0] = 0;
++			}
++			for (unsigned k = 0; k < 13 && seq * 13 + k < FAT_PATH - 1; k++) {
++				uint16_t ch = (uint16_t)(e[at[k]] | e[at[k] + 1] << 8);
++				lfn[seq * 13 + k] = (ch == 0 || ch == 0xFFFF) ? 0 : (ch < 0x80 ? (char)ch : '_');
++				if (ch == 0) {
++					break;
++				}
++			}
++			if (e[0] & 0x40) {
++				lfn[MIN((seq + 1) * 13, (unsigned)FAT_PATH - 1)] = 0;
++			}
++			continue;
++		}
++		if (lfn[0] != 0) {
++			strlcpy(name, lfn, sizeof(name));
++		} else {
++			unsigned n = 0;
++			for (unsigned k = 0; k < 8 && e[k] != ' '; k++) {
++				name[n++] = (e[k] >= 'A' && e[k] <= 'Z') ? (char)(e[k] + 32) : (char)e[k];
++			}
++			if (e[8] != ' ') {
++				name[n++] = '.';
++				for (unsigned k = 8; k < 11 && e[k] != ' '; k++) {
++					name[n++] = (e[k] >= 'A' && e[k] <= 'Z') ? (char)(e[k] + 32) : (char)e[k];
++				}
++			}
++			name[n] = 0;
++		}
++		lfn[0] = 0;
++		if ((e[11] & 0x08) || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
++			continue;                           /* volume label, dot entries */
++		}
++		uint32_t clus = (uint32_t)(e[26] | e[27] << 8), size = (uint32_t)(e[28] | e[29] << 8 | e[30] << 16 | (uint32_t)e[31] << 24);
++		char path[FAT_PATH];
++		snprintf(path, sizeof(path), "%s%s", prefix, name);
++		if (e[11] & 0x10) {
++			if (depth >= 12 || clus < 2) {
++				continue;
++			}
++			uint32_t dlen = 0;                  /* directory size: its cluster chain */
++			for (uint32_t c = clus; c >= 2 && c < 0xFFF8 && dlen < 0x40000; c = fat_next(c)) {
++				dlen += fat_csize;
++			}
++			uint8_t *sub = (uint8_t *)IOMalloc(dlen);
++			if (sub != NULL && fat_chain_read(clus, dlen, 0, sub, dlen)) {
++				strlcat(path, "/", sizeof(path));
++				fat_dir(sub, dlen, path, depth + 1);
++			}
++			if (sub != NULL) {
++				IOFree(sub, dlen);
++			}
++		} else if (fat_nfiles < FAT_MAX_FILES) {
++			struct fat_file *f = &fat_files[fat_nfiles++];
++			strlcpy(f->path, path, sizeof(f->path));
++			f->size = size;
++			f->clus = clus;
++		}
++	}
++}
++
++static bool
++fat_index(void)
++{
++	uint8_t bs[512];
++	if (fat_files != NULL) {
++		return true;
++	}
++	if (sweet_ufs_read_part(fw_part, 0, bs, sizeof(bs)) != 0 || bs[510] != 0x55 || bs[511] != 0xAA) {
++		LOG("fat: %s has no boot sector", fw_part);
++		return false;
++	}
++	uint32_t bps = (uint32_t)(bs[11] | bs[12] << 8), spc = bs[13], rsv = (uint32_t)(bs[14] | bs[15] << 8);
++	uint32_t nfat = bs[16], nroot = (uint32_t)(bs[17] | bs[18] << 8), fsz = (uint32_t)(bs[22] | bs[23] << 8);
++	uint32_t tot = (uint32_t)(bs[19] | bs[20] << 8);
++	if (tot == 0) {
++		tot = (uint32_t)(bs[32] | bs[33] << 8 | bs[34] << 16 | (uint32_t)bs[35] << 24);
++	}
++	if (bps != 512 || spc == 0 || fsz == 0 || nroot == 0 || nfat == 0) {
++		LOG("fat: %s: bps %u spc %u fsz %u nroot %u: not FAT12/16", fw_part, bps, spc, fsz, nroot);
++		return false;
++	}
++	uint32_t root_secs = (nroot * 32 + bps - 1) / bps, first_data = rsv + nfat * fsz + root_secs;
++	uint32_t nclus = (tot - first_data) / spc;
++	if (nclus < 4085 || nclus >= 65525) {
++		LOG("fat: %s: %u clusters: not FAT16", fw_part, nclus);
++		return false;
++	}
++	fat_csize = bps * spc;
++	fat_data = (uint64_t)first_data * bps;
++	fat_nent = MIN(fsz * bps / 2, nclus + 2);
++	fat_tab = (uint16_t *)IOMalloc(fsz * bps);
++	fat_files = (struct fat_file *)IOMalloc(FAT_MAX_FILES * sizeof(struct fat_file));
++	uint8_t *root = (uint8_t *)IOMalloc(nroot * 32);
++	bool ok = fat_tab != NULL && fat_files != NULL && root != NULL &&
++	    sweet_ufs_read_part(fw_part, (uint64_t)rsv * bps, fat_tab, fsz * bps) == 0 &&
++	    sweet_ufs_read_part(fw_part, (uint64_t)(rsv + nfat * fsz) * bps, root, nroot * 32) == 0;
++	if (ok) {
++		fat_dir(root, nroot * 32, "", 0);
++	}
++	if (root != NULL) {
++		IOFree(root, nroot * 32);
++	}
++	LOG("fat: %s: FAT16, %u clusters of %u bytes, %u files%s", fw_part, nclus, fat_csize, fat_nfiles, ok ? "" : ": READ FAILED");
++	if (!ok || fat_nfiles == 0) {
++		fat_nfiles = 0;
++		return false;
++	}
++	return true;
++}
++
++static int
++fat_find(const char *path)
++{
++	for (unsigned i = 0; i < fat_nfiles; i++) {
++		if (fat_name_eq(fat_files[i].path, path)) {
++			return (int)i;
++		}
++	}
++	return -1;
++}
++
+ static int
+ fw_find(const char *name)
+ {
++	if (soc.jasmine) {
++		char path[FAT_PATH];
++		snprintf(path, sizeof(path), "image/%s", name);
++		return fat_find(path);
++	}
+ 	for (unsigned i = 0; i < sizeof(fw_files) / sizeof(fw_files[0]); i++) {
+ 		if (strcmp(fw_files[i].name, name) == 0) {
+ 			return (int)i;
+@@ -223,6 +476,9 @@ static int64_t
+ fw_size(const char *name)
+ {
+ 	int i = fw_find(name);
++	if (soc.jasmine) {
++		return i < 0 ? -1 : (int64_t)fat_files[i].size;
++	}
+ 	return i < 0 ? -1 : (int64_t)fw_files[i].size;
+ }
+ 
+@@ -232,6 +488,17 @@ fw_read(const char *name, void *dst, uint64_t max)
+ {
+ 	int i = fw_find(name), err;
+ 
++	if (soc.jasmine) {
++		if (i < 0 || fat_files[i].size > max) {
++			LOG("%s: not in %s or too big (%lld)", name, fw_part, fw_size(name));
++			return -1;
++		}
++		if (!fat_chain_read(fat_files[i].clus, fat_files[i].size, 0, dst, fat_files[i].size)) {
++			LOG("%s: read from %s failed", name, fw_part);
++			return -1;
++		}
++		return fat_files[i].size;
++	}
+ 	if (i < 0 || fw_files[i].size > max) {
+ 		LOG("%s: not in the table or too big (%lld)", name, fw_size(name));
+ 		return -1;
+@@ -443,7 +710,7 @@ extern "C" void read_random(void *buffer, unsigned int numBytes);
+ #define SMEM_GLINK_FIFO_TX  479
+ #define SMEM_GLINK_FIFO_RX  480
+ #define GLINK_TX_SIZE       0x4000u
+-#define GLINK_IRQ_BIT       12
++#define GLINK_IRQ_BIT       soc.glink_bit
+ #define GLINK_FEATURES      1                   /* INTENT_REUSE */
+ 
+ #define CMD_VERSION         0
+@@ -2360,6 +2627,9 @@ static const struct { const char *path; uint32_t size; uint16_t ext, next; } fw_
+ static int
+ fw_all_find(const char *path)
+ {
++	if (soc.jasmine) {
++		return fat_find(path);
++	}
+ 	for (unsigned i = 0; i < sizeof(fw_all) / sizeof(fw_all[0]); i++) {
+ 		if (strcmp(fw_all[i].path, path) == 0) {
+ 			return (int)i;
+@@ -2368,10 +2638,19 @@ fw_all_find(const char *path)
+ 	return -1;
+ }
+ 
++static uint32_t
++fw_all_size(int i)
++{
++	return soc.jasmine ? fat_files[i].size : fw_all[i].size;
++}
++
+ /* read n bytes at off of file i from modem_a (extent by extent) */
+ static bool
+ fw_all_read(int i, uint64_t off, void *dst, uint64_t n)
+ {
++	if (soc.jasmine) {
++		return fat_chain_read(fat_files[i].clus, fat_files[i].size, off, dst, n);
++	}
+ 	uint64_t base = 0, done = 0;
+ 	for (unsigned k = 0; k < fw_all[i].next && done < n; k++) {
+ 		uint32_t eo = fw_ext[fw_all[i].ext + k].off, el = fw_ext[fw_all[i].ext + k].len;
+@@ -2780,7 +3059,7 @@ tftp_request(uint32_t node, uint32_t port, const uint8_t *d, uint32_t len)
+ 			tftp_close(s);
+ 			return;
+ 		}
+-		s->size = fw_all[s->fi].size;
++		s->size = fw_all_size(s->fi);
+ 		LOG("t=%u ms: tftp RRQ %s seek %u rsize %u blk %u w %u (%llu B)", g_ms, path, s->seek, s->rsize, s->blk, s->wsize, s->size);
+ 	}
+ 	if (!opts) {
+@@ -2985,7 +3264,7 @@ rmtfs_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t
+ 			uint32_t e[3];                      /* sector, phys, count */
+ 			memcpy(e, iov + 1 + 12 * i, 12);
+ 			uint64_t bytes = (uint64_t)e[2] * 512;
+-			if (e[1] < rmtfs_pa || e[1] + bytes > rmtfs_pa + RMTFS_BUF_SIZE) {
++			if (e[1] < rmtfs_pa || e[1] + bytes > rmtfs_pa + (soc.jasmine ? 0x200000u : RMTFS_BUF_SIZE)) {
+ 				ok = false;
+ 				break;
+ 			}
+@@ -3004,7 +3283,15 @@ rmtfs_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t
+ 		break;
+ 	}
+ 	case 4: {                                   /* ALLOC_BUFF */
+-		if (rmtfs_pa == 0) {
++		if (rmtfs_pa == 0 && soc.jasmine) {
++			/* the DT's qcom,rmtfs-mem (memory@85e00000, 2 MiB, client 1, vmid 15), shared as Linux rmtfs_mem */
++			IOMemoryMap *rm = map_phys(0x85E00000ull, 0x200000, true);
++			static const uint32_t v[] = { VMID_HLOS, VMID_MSS_MSA };
++			if (rm != NULL && scm_assign(0x85E00000ull, 0x200000, v, 2) == 0) {
++				rmtfs_pa = 0x85E00000ull;
++				rmtfs_va = (uint8_t *)rm->getVirtualAddress();
++			}
++		} else if (rmtfs_pa == 0) {
+ 			rmtfs_va = (uint8_t *)pool_alloc(RMTFS_BUF_SIZE, &rmtfs_pa);   /* the modem owns it from now on */
+ 			if (rmtfs_va == NULL) {
+ 				rmtfs_pa = 0;
+@@ -3058,7 +3345,7 @@ rmtfs_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t
+ #define WLFW_MSA_INFO       0x2D
+ #define WLFW_MSA_READY      0x2E
+ #define WLFW_HOST_CAP       0x34
+-#define WLFW_MSA_BASE       0x51900000u         /* DTB wlan_msa_region, inside "PIL Reserved" */
++#define WLFW_MSA_BASE       soc.wlfw_msa_base   /* topaz DTB wlan_msa_region, inside "PIL Reserved" */
+ #define WLFW_MSA_SIZE       0x00100000u
+ #define WLFW_CLIENT_ID      0x4b4e454c          /* ath10k ATH10K_QMI_CLIENT_ID */
+ #define WLFW_SEG            6144                /* QMI_WLFW_MAX_DATA_SIZE_V01 */
+@@ -3207,7 +3494,7 @@ w_start_bdf(void)
+ 		LOG("wlfw: no board data file");
+ 		return;
+ 	}
+-	w_bdf_len = fw_all[w_bdf_fi].size;
++	w_bdf_len = fw_all_size(w_bdf_fi);
+ 	w_bdf_off = 0;
+ 	w_bdf_seg = 0;
+ 	LOG("t=%u ms: wlfw: board data %s, %u bytes", g_ms, name, w_bdf_len);
+@@ -3471,9 +3758,9 @@ wlfw_rx(const uint8_t *d, uint32_t len)
+  *  - WMI (TLV): SERVICE_READY -> INIT -> READY, then a passive scan (nothing is transmitted);
+  *    each BSS seen is logged once, its BSSID masked.
+  */
+-#define SMMU_PA             0x0C600000ull
+-#define SMMU_SIZE           0x00080000u
+-#define WLAN_SID            0x1A0
++#define SMMU_PA             soc.smmu_pa
++#define SMMU_SIZE           soc.smmu_size
++#define WLAN_SID            soc.wlan_sid
+ #define WLAN_SID_MASK       0x1
+ #define CB_CLONE_CBAR       0x0001f000u         /* S1_TRANS_S2_FAULT, S1_MEMATTR WB */
+ #define CB_CLONE_CBA2R      0x00000001u         /* VA64 */
+@@ -3566,7 +3853,7 @@ smmu_identity(uint32_t sid, uint32_t mask, const char *name)
+ 
+ /* ---------------- copy engines (ath10k ce.c, WCN3990: 64-bit descriptors, shadow regs, RRI in DDR) */
+ 
+-#define CE_PA               (0x0C800000ull + 0x240000)
++#define CE_PA               soc.ce_pa
+ #define CE_COUNT            12
+ #define SHADOW_PA           (0x0C800000ull + 0x32000)
+ #define SR_BASE_LO          0x00
+@@ -6012,6 +6299,9 @@ svc_summary(void)
+  * bit2 handover) and answer its IPA power query ("valid, AP IPA power off"): unanswered,
+  * modem_cfg starves and the modem watchdog fires once data services come up.
+  */
++static void mba_started(void);
++static void mba_handover(void);
++
+ static void
+ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ {
+@@ -6063,6 +6353,12 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 			if ((sk_last & 2) && !ready) {
+ 				ready = true;
+ 				LOG("modem is up (MODEM READY)");
++				if (soc.jasmine) {
++					mba_started();
++				}
++			}
++			if ((sk_last & 4) && soc.jasmine) {
++				mba_handover();                 /* once: the modem holds its own votes now */
+ 			}
+ 			if (sk_last & 1) {
+ 				uint32_t sz = 0;
+@@ -6248,6 +6544,573 @@ out:
+ 	return ok;
+ }
+ 
++/* ---------------------------------------------------------------- jasmine: MBA boot */
++
++/*
++ * SDM660 (qcom,sdm660-mss-pil) has no PAS for the modem: the AP powers the Hexagon up itself,
++ * the modem's PBL starts the modem boot authenticator (mba.mbn, copied whole into the MBA
++ * region), the MBA checks the .mdt metadata and then each loaded segment of the MPSS region.
++ * Adapted from Linux drivers/remoteproc/qcom_q6v5_mss.c (GPL-2.0-only; Copyright (C) 2016
++ * Linaro Ltd., Copyright (C) 2014 Sony Mobile Communications AB, Copyright (c) 2012-2013,
++ * The Linux Foundation), sdm660_mss: q6v5_mba_load, q6v5proc_reset (MSS_SDM660 branch),
++ * q6v5_mpss_init_image, q6v5_mpss_load, q6v5_start, q6v5_mba_reclaim, q6v5_xfer_mem_ownership
++ * (close adaptation with the user's OK, 2026-10-22). Addresses from the jasmine DTB:
++ *   qdsp6 0x4080000, rmb 0x4180000; qcom,halt-regs in TCSR 0x1f60000: q6 +0x3000,
++ *   modem +0x5000, nc +0x4000; memory mba 0x94800000+2M, mpss 0x8ac00000+0x7e00000.
++ * GCC (gcc-sdm660.c, the DT's clock indices): iface gcc_mss_cfg_ahb 0x8a000, bus
++ * gcc_bimc_mss_q6_axi 0x4401c, mem gcc_boot_rom_ahb (vote 0x52004 bit 10, halt 0x38004),
++ * snoc_axi 0x8a03c, mnoc_axi 0x8a004, reset GCC_MSS_RESTART 0x79000. "gpll0_mss"
++ * (GPLL0_OUT_MSSCC) has no clock in mainline either; "xo" and "qdss" are RPM clocks that stay
++ * on (sweet_rpm.c). Power domains cx and mx: RPM rwcx/rwmx at TURBO (rpmpd sdm660 max_state)
++ * from before the boot until the modem's handover. Ownership: hyp assign between HLOS (3) and
++ * MSS_MSA (15), tracked per region as Linux does. No interrupts: RMB and SMP2P are polled.
++ */
++extern "C" bool sweet_rpm_level_client(unsigned client, uint32_t type, uint32_t level);   /* bsd/dev/sweet_rpm.c */
++
++#define RPM_RWCX            0x78637772u         /* "rwcx" */
++#define RPM_RWMX            0x786d7772u         /* "rwmx" */
++#define RPM_LEVEL_NOM       0x100
++#define RPM_LEVEL_TURBO     0x180
++#define RPM_CLIENT_MODEM    1
++
++#define MSS_QDSP6_PA        0x04080000ull
++#define MSS_RMB_PA          0x04180000ull
++#define MSS_HALT_PA         0x01F60000ull
++#define MSS_HALT_Q6         0x3000
++#define MSS_HALT_MODEM      0x5000
++#define MSS_HALT_NC         0x4000
++#define MBA_PA              0x94800000ull
++#define MBA_SIZE            0x00200000ull
++#define MPSS_PA             0x8AC00000ull
++#define MPSS_SIZE           0x07E00000ull
++#define MSS_GCC_PA          0x00100000ull
++#define MSS_GCC_SIZE        0x00094000u
++#define GCC_MSS_RESTART     0x79000
++#define GCC_BOOT_ROM_VOTE   0x52004
++#define GCC_BOOT_ROM_HALT   0x38004
++#define PERM_RWX            7
++
++/* RMB (PBL/MBA interface) */
++#define RMB_MBA_IMAGE       0x00
++#define RMB_PBL_STATUS      0x04
++#define RMB_MBA_COMMAND     0x08
++#define RMB_MBA_STATUS      0x0C
++#define RMB_PMI_META_DATA   0x10
++#define RMB_PMI_CODE_START  0x14
++#define RMB_PMI_CODE_LENGTH 0x18
++#define RMB_CMD_META_DATA_READY 1
++#define RMB_CMD_LOAD_READY  2
++#define RMB_MBA_XPU_UNLOCKED 1
++#define RMB_MBA_XPU_UNLOCKED_SCRIBBLED 2
++#define RMB_MBA_META_DATA_AUTH_SUCCESS 3
++#define RMB_MBA_AUTH_COMPLETE 4
++
++/* QDSP6SS (v62 on SDM660) */
++#define Q6SS_RESET          0x014
++#define Q6SS_GFMUX_CTL      0x020
++#define Q6SS_PWR_CTL        0x030
++#define Q6SS_MEM_PWR_CTL    0x034               /* QDSP6V6SS_MEM_PWR_CTL */
++#define Q6SS_XO_CBCR        0x038
++#define Q6SS_BHS_STATUS     0x0C4               /* QDSP6V62SS_BHS_STATUS */
++#define Q6SS_STRAP_ACC      0x110
++#define Q6SS_ACC_OVERRIDE   0x20
++#define Q6SS_STOP_CORE      (1u << 0)
++#define Q6SS_CORE_ARES      (1u << 1)
++#define Q6SS_BUS_ARES_EN    (1u << 2)
++#define Q6SS_CLK_ENABLE     (1u << 1)
++#define Q6SS_CBCR_CLKOFF    (1u << 31)
++#define Q6SS_L2DATA_STBY_N  (1u << 18)
++#define Q6SS_SLP_RET_N      (1u << 19)
++#define Q6SS_CLAMP_IO       (1u << 20)
++#define Q6SS_CLAMP_WL       (1u << 21)
++#define Q6SS_CLAMP_QMC_MEM  (1u << 22)
++#define Q6SS_BHS_ON         (1u << 24)
++#define Q6SS_LDO_BYP        (1u << 25)
++#define Q6SS_BHS_EN_REST_ACK (1u << 0)
++
++static volatile uint8_t *q6ss, *rmb, *mss_halt, *mss_gcc;
++static uint64_t mba_perm = 1ull << VMID_HLOS, mpss_perm = 1ull << VMID_HLOS;
++static bool mba_votes, mba_reclaimed;
++static uint32_t mss_clks_set;                  /* bit i: mss_active_clks[i] switched on here; bit 31: the boot ROM vote */
++
++static const struct { uint32_t cbcr; const char *name; } mss_active_clks[] = {
++	{ 0x8a000, "iface (mss_cfg_ahb)" },
++	{ 0x4401c, "bus (bimc_mss_q6_axi)" },
++	{ 0x8a004, "mnoc_axi (mss_mnoc_bimc_axi)" },
++	{ 0x8a03c, "snoc_axi (mss_snoc_axi)" },
++};
++
++/* q6v5_xfer_mem_ownership: *perm = bit per VMID that owns the region now */
++static int
++mss_assign(const char *what, uint64_t addr, uint64_t size, uint64_t *perm, bool local, bool remote)
++{
++	if (local == (((*perm >> VMID_HLOS) & 1) != 0) && remote == (((*perm >> VMID_MSS_MSA) & 1) != 0)) {
++		return 0;
++	}
++	uint64_t pa = 0;
++	uint64_t *p = (uint64_t *)pool_alloc(0x1000, &pa);
++	if (p == NULL) {
++		return -1;
++	}
++	size = (size + 0xfff) & ~0xfffull;
++	p[0] = addr;                                /* 0x000: mem map {addr, size} */
++	p[1] = size;
++	uint32_t *src = (uint32_t *)(p + 8), nsrc = 0;  /* 0x040: current owners */
++	for (unsigned v = 0; v < 64; v++) {
++		if (*perm & (1ull << v)) {
++			src[nsrc++] = v;
++		}
++	}
++	uint32_t *dst = (uint32_t *)(p + 16), ndst = 0; /* 0x080: {vmid, perm, ctx(8), ctx_size, unused} */
++	uint64_t next = 0;
++	if (local) {
++		dst[6 * ndst] = VMID_HLOS;
++		dst[6 * ndst + 1] = PERM_RWX;
++		ndst++;
++		next |= 1ull << VMID_HLOS;
++	}
++	if (remote) {
++		dst[6 * ndst] = VMID_MSS_MSA;
++		dst[6 * ndst + 1] = PERM_RW;
++		ndst++;
++		next |= 1ull << VMID_MSS_MSA;
++	}
++	p[32] = nsrc * 4;                           /* 0x100: extended args: src size, dest, dest size, 0 */
++	p[33] = pa + 0x80;
++	p[34] = ndst * 24;
++	p[35] = 0;
++	mb();
++	uint64_t ai = 7 | (1 << 4) | (1 << 8) | (1 << 12);
++	uint64_t args[8] = { SCM_FN(0x0C, 0x16), ai, pa, 16, pa + 0x40, pa + 0x100, 0, 0 };
++	smc(args);
++	for (unsigned n = 0; args[0] == 1 && n < 100000; n++) {
++		uint64_t again[8] = { 1, ai, pa, 16, pa + 0x40, pa + 0x100, args[6], 0 };
++		memcpy(args, again, sizeof(args));
++		smc(args);
++	}
++	int ret = args[0] != 0 ? (int)args[0] : (int)args[1];
++	LOG("mba: assign %s %llx+%llx %llx -> %llx: ret %llx res %llx", what, addr, size, *perm, next, args[0], args[1]);
++	if (ret == 0) {
++		*perm = next;
++	}
++	return ret;
++}
++
++static bool
++mss_poll(volatile uint8_t *base, uint32_t off, uint32_t mask, uint32_t want, unsigned us)
++{
++	for (unsigned n = 0; n <= us; n++) {
++		if ((r32(base, off) & mask) == want) {
++			return true;
++		}
++		IODelay(1);
++	}
++	return false;
++}
++
++static bool
++mss_clk_on(unsigned i)
++{
++	uint32_t cbcr = mss_active_clks[i].cbcr;
++	const char *name = mss_active_clks[i].name;
++	if ((r32(mss_gcc, cbcr) & 1u) == 0) {
++		mss_clks_set |= 1u << i;
++	}
++	w32(mss_gcc, cbcr, r32(mss_gcc, cbcr) | 1u);
++	bool ok = mss_poll(mss_gcc, cbcr, Q6SS_CBCR_CLKOFF, 0, 200);
++	LOG("mba: clock %s %05x: %08x%s", name, cbcr, r32(mss_gcc, cbcr), ok ? "" : " STILL OFF");
++	return ok;
++}
++
++/* only what was switched on here: the boot ROM clock and the buses can have other users */
++static void
++mss_rom_off(void)
++{
++	if (mss_clks_set & (1u << 31)) {
++		w32(mss_gcc, GCC_BOOT_ROM_VOTE, r32(mss_gcc, GCC_BOOT_ROM_VOTE) & ~(1u << 10));
++		mss_clks_set &= ~(1u << 31);
++	}
++}
++
++static void
++mss_clks_off(void)
++{
++	for (unsigned i = 0; i < sizeof(mss_active_clks) / sizeof(mss_active_clks[0]); i++) {
++		if (mss_clks_set & (1u << i)) {
++			w32(mss_gcc, mss_active_clks[i].cbcr, r32(mss_gcc, mss_active_clks[i].cbcr) & ~1u);
++		}
++	}
++	mss_clks_set &= 1u << 31;
++	mss_rom_off();
++}
++
++/* the AP's proxy votes for cx/mx: TURBO while the modem boots, then the GPU's cx and NOM mx */
++static void
++mss_votes(bool on)
++{
++	if (on == mba_votes) {
++		return;
++	}
++	mba_votes = on;
++	(void)sweet_rpm_level_client(RPM_CLIENT_MODEM, RPM_RWCX, on ? RPM_LEVEL_TURBO : 0);
++	(void)sweet_rpm_level_client(RPM_CLIENT_MODEM, RPM_RWMX, on ? RPM_LEVEL_TURBO : RPM_LEVEL_NOM);
++}
++
++/* q6v5proc_halt_axi_port */
++static void
++mss_halt_port(uint32_t off, const char *name)
++{
++	if (r32(mss_halt, off + 8) != 0) {
++		return;                                 /* already idle */
++	}
++	w32(mss_halt, off, 1);
++	bool ack = mss_poll(mss_halt, off + 4, 1, 1, 100000);
++	uint32_t idle = r32(mss_halt, off + 8);
++	w32(mss_halt, off, 0);
++	LOG("mba: halt %s port: ack %u idle %u", name, ack, idle);
++}
++
++/* q6v5_mba_reclaim after a failed boot: ports halted, modem in reset, clocks off, memory back */
++static void
++mss_reclaim(void)
++{
++	mss_halt_port(MSS_HALT_Q6, "q6");
++	mss_halt_port(MSS_HALT_MODEM, "modem");
++	mss_halt_port(MSS_HALT_NC, "nc");
++	w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) | 1u);
++	mss_clks_off();
++	(void)mss_assign("mba", MBA_PA, MBA_SIZE, &mba_perm, true, false);
++	(void)mss_assign("mpss", MPSS_PA, MPSS_SIZE, &mpss_perm, true, false);
++	mss_votes(false);
++	LOG("mba: modem stopped (reset held, clocks off, memory reclaimed)");
++}
++
++/* q6v5_rmb_mba_wait: status (0 = any non-zero) or a negative error, -1000 on timeout */
++static int32_t
++rmb_wait(uint32_t status, unsigned ms)
++{
++	int32_t v = 0;
++	for (unsigned n = 0; n <= ms; n++) {
++		v = (int32_t)r32(rmb, RMB_MBA_STATUS);
++		if (v < 0 || (status == 0 && v != 0) || (status != 0 && (uint32_t)v == status)) {
++			return v;
++		}
++		IOSleep(1);
++	}
++	LOG("mba: RMB status still %d after %u ms (want %u)", v, ms, status);
++	return -1000;
++}
++
++/* q6v5proc_reset, MSS_SDM660: power the QDSP6 v62 up and start the PBL */
++static bool
++q6_power_up(void)
++{
++	uint32_t val;
++
++	w32(q6ss, Q6SS_STRAP_ACC, Q6SS_ACC_OVERRIDE);
++	val = r32(q6ss, Q6SS_RESET) | Q6SS_CORE_ARES | Q6SS_BUS_ARES_EN | Q6SS_STOP_CORE;
++	w32(q6ss, Q6SS_RESET, val);
++	w32(q6ss, Q6SS_XO_CBCR, r32(q6ss, Q6SS_XO_CBCR) | 1u);
++	if (!mss_poll(q6ss, Q6SS_XO_CBCR, Q6SS_CBCR_CLKOFF, 0, 200)) {
++		LOG("mba: QDSP6 xo cbcr stays off (%08x)", r32(q6ss, Q6SS_XO_CBCR));
++		return false;
++	}
++	val = r32(q6ss, Q6SS_PWR_CTL) | Q6SS_BHS_ON;
++	w32(q6ss, Q6SS_PWR_CTL, val);
++	val |= r32(q6ss, Q6SS_PWR_CTL);
++	IODelay(1);
++	if (!mss_poll(q6ss, Q6SS_BHS_STATUS, Q6SS_BHS_EN_REST_ACK, Q6SS_BHS_EN_REST_ACK, 200)) {
++		LOG("mba: BHS_EN_REST_ACK not set (%08x)", r32(q6ss, Q6SS_BHS_STATUS));
++		return false;
++	}
++	val |= Q6SS_LDO_BYP;
++	w32(q6ss, Q6SS_PWR_CTL, val);
++	val = r32(q6ss, Q6SS_PWR_CTL) & ~Q6SS_CLAMP_QMC_MEM;
++	w32(q6ss, Q6SS_PWR_CTL, val);
++	val |= Q6SS_L2DATA_STBY_N | Q6SS_SLP_RET_N;
++	w32(q6ss, Q6SS_PWR_CTL, val);
++	val = r32(q6ss, Q6SS_MEM_PWR_CTL);
++	for (int i = 28; i >= 0; i--) {             /* L1, L2, ETB and JU memories one at a time */
++		val |= 1u << i;
++		w32(q6ss, Q6SS_MEM_PWR_CTL, val);
++		val |= r32(q6ss, Q6SS_MEM_PWR_CTL);
++		IODelay(1);
++	}
++	val = r32(q6ss, Q6SS_PWR_CTL) & ~Q6SS_CLAMP_WL;
++	w32(q6ss, Q6SS_PWR_CTL, val);
++	val &= ~Q6SS_CLAMP_IO;
++	w32(q6ss, Q6SS_PWR_CTL, val);
++	w32(q6ss, Q6SS_RESET, r32(q6ss, Q6SS_RESET) & ~Q6SS_CORE_ARES);
++	w32(q6ss, Q6SS_GFMUX_CTL, r32(q6ss, Q6SS_GFMUX_CTL) | Q6SS_CLK_ENABLE);
++	w32(q6ss, Q6SS_RESET, r32(q6ss, Q6SS_RESET) & ~Q6SS_STOP_CORE);
++
++	uint32_t pbl = 0;
++	for (unsigned n = 0; n <= 1000 && pbl == 0; n++) {
++		pbl = r32(rmb, RMB_PBL_STATUS);
++		if (pbl == 0) {
++			IOSleep(1);
++		}
++	}
++	LOG("mba: QDSP6 started: PWR_CTL %08x MEM_PWR_CTL %08x RESET %08x, PBL status %u%s", r32(q6ss, Q6SS_PWR_CTL),
++	    r32(q6ss, Q6SS_MEM_PWR_CTL), r32(q6ss, Q6SS_RESET), pbl, pbl == 1 ? "" : (pbl == 0 ? " (timeout)" : " (unexpected)"));
++	return pbl == 1;
++}
++
++/* copy a whole firmware file to physical memory (WC mapping while copying), zero to memsz */
++static bool
++mss_copy(const char *name, uint64_t pa, uint32_t filesz, uint32_t memsz, const uint8_t *from)
++{
++	uint64_t base = pa & ~0x3fffull, off = pa - base, len = (off + memsz + 0x3fff) & ~0x3fffull;
++	IOMemoryMap *m = map_phys(base, len, true);
++	if (m == NULL) {
++		LOG("mba: %s: cannot map %llx+%x", name, pa, memsz);
++		return false;
++	}
++	uint8_t *dst = (uint8_t *)m->getVirtualAddress() + off;
++	bool ok = true;
++	if (from != NULL) {
++		memcpy(dst, from, filesz);
++	} else if (filesz != 0) {
++		ok = fw_read(name, dst, filesz) == (int64_t)filesz;
++	}
++	if (ok && memsz > filesz) {
++		bzero(dst + filesz, memsz - filesz);
++	}
++	mb();
++	m->release();
++	return ok;
++}
++
++static bool
++modem_boot_mba(void)
++{
++	uint8_t *mdt = NULL, *meta;
++	int64_t mdt_size, mba_size;
++	uint64_t meta_pa = 0, meta_perm = 1ull << VMID_HLOS;
++	int32_t st;
++	bool ok = false;
++
++	struct smem_part_hdr *part = smem_partition(0, 1);
++	LOG("mba: SMEM apps<->modem partition %p", part);
++	if (part == NULL) {
++		return false;
++	}
++	if (smem_get(part, ITEM_SMP2P_IN, NULL) != NULL) {
++		LOG("mba: modem SMP2P item %u already exists: modem is not cold, not touching it", ITEM_SMP2P_IN);
++		return false;
++	}
++	q6ss = (volatile uint8_t *)ml_io_map(MSS_QDSP6_PA, 0x1000);
++	rmb = (volatile uint8_t *)ml_io_map(MSS_RMB_PA, 0x1000);
++	mss_halt = (volatile uint8_t *)ml_io_map(MSS_HALT_PA, 0x6000);
++	mss_gcc = (volatile uint8_t *)ml_io_map(MSS_GCC_PA, MSS_GCC_SIZE);
++	if (q6ss == NULL || rmb == NULL || mss_halt == NULL || mss_gcc == NULL) {
++		LOG("mba: register mappings failed");
++		return false;
++	}
++	/* GCC only here: the QDSP6SS and RMB registers need the MSS clocks (unclocked reads can hang the bus) */
++	LOG("mba: before: MSS_RESTART %08x, gpll0 votes %08x, boot_rom vote %08x", r32(mss_gcc, GCC_MSS_RESTART),
++	    r32(mss_gcc, 0x5200c), r32(mss_gcc, GCC_BOOT_ROM_VOTE));
++
++	/* q6v5_load: mba.mbn whole into the MBA region (max 1 MiB) */
++	mba_size = fw_size("mba.mbn");
++	if (mba_size <= 0 || mba_size > 0x100000 || !mss_copy("mba.mbn", MBA_PA, (uint32_t)mba_size, (uint32_t)mba_size, NULL)) {
++		LOG("mba: mba.mbn (%lld bytes) not loaded", mba_size);
++		return false;
++	}
++	mdt_size = fw_size("modem.mdt");
++	if (mdt_size <= (int64_t)sizeof(struct elf32_ehdr) || mdt_size > 0x100000) {
++		LOG("mba: modem.mdt: size %lld", mdt_size);
++		return false;
++	}
++	mdt = (uint8_t *)IOMalloc(mdt_size);
++	if (mdt == NULL || fw_read("modem.mdt", mdt, mdt_size) != mdt_size) {
++		goto out;
++	}
++	{
++		struct elf32_ehdr *eh = (struct elf32_ehdr *)mdt;
++		if (memcmp(eh->e_ident, "\x7f" "ELF", 4) != 0 || eh->e_phnum < 2 ||
++		    eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf32_phdr) > (uint64_t)mdt_size) {
++			LOG("mba: modem.mdt: bad ELF header");
++			goto out;
++		}
++		struct elf32_phdr *ph = (struct elf32_phdr *)(mdt + eh->e_phoff);
++		uint32_t hash = 0, min_a = ~0u, max_a = 0;
++		bool relocate = false;
++		for (uint32_t i = 1; i < eh->e_phnum && hash == 0; i++) {
++			if ((ph[i].p_flags & MDT_TYPE_MASK) == MDT_TYPE_HASH) {
++				hash = i;
++			}
++		}
++		for (uint32_t i = 0; i < eh->e_phnum; i++) {
++			if (!loadable(&ph[i])) {
++				continue;
++			}
++			relocate |= (ph[i].p_flags & MDT_RELOCATABLE) != 0;
++			min_a = MIN(min_a, ph[i].p_paddr);
++			max_a = MAX(max_a, (ph[i].p_paddr + ph[i].p_memsz + 0xfff) & ~0xfffu);
++		}
++		LOG("mba: mba.mbn %lld bytes; modem.mdt %u phdrs, hash %u, %08x..%08x relocate %u", mba_size, eh->e_phnum, hash,
++		    min_a, max_a, relocate);
++		if (hash == 0 || ph[0].p_type == PT_LOAD || min_a > max_a || max_a - min_a > MPSS_SIZE) {
++			LOG("mba: unexpected modem.mdt layout");
++			goto out;
++		}
++
++		/* qcom_mdt_read_metadata: ELF header (phdr 0's filesz) + the hash segment */
++		uint32_t ehdr_size = ph[0].p_filesz, hash_size = ph[hash].p_filesz;
++		uint64_t meta_size = (uint64_t)ehdr_size + hash_size;
++		meta = (uint8_t *)pool_alloc(meta_size, &meta_pa);
++		if (meta == NULL || ehdr_size > (uint64_t)mdt_size) {
++			LOG("mba: metadata: %llu bytes, no room", meta_size);
++			goto out;
++		}
++		memcpy(meta, mdt, ehdr_size);
++		if (meta_size == (uint64_t)mdt_size) {
++			memcpy(meta + ehdr_size, mdt + ehdr_size, hash_size);     /* split, hash packed after the header */
++		} else if (ph[hash].p_offset + (uint64_t)hash_size <= (uint64_t)mdt_size) {
++			memcpy(meta + ehdr_size, mdt + ph[hash].p_offset, hash_size);
++		} else {
++			char hname[16];
++			snprintf(hname, sizeof(hname), "modem.b%02u", hash);
++			if (fw_read(hname, meta + ehdr_size, hash_size) != (int64_t)hash_size) {
++				goto out;
++			}
++		}
++		mb();
++
++		/* q6v5_mba_load */
++		mss_votes(true);
++		if ((r32(mss_gcc, GCC_BOOT_ROM_VOTE) & (1u << 10)) == 0) {                         /* proxy "mem" */
++			mss_clks_set |= 1u << 31;
++			w32(mss_gcc, GCC_BOOT_ROM_VOTE, r32(mss_gcc, GCC_BOOT_ROM_VOTE) | (1u << 10));
++		}
++		bool rom = mss_poll(mss_gcc, GCC_BOOT_ROM_HALT, Q6SS_CBCR_CLKOFF, 0, 200);
++		LOG("mba: clock mem (boot_rom_ahb): %08x%s", r32(mss_gcc, GCC_BOOT_ROM_HALT), rom ? "" : " STILL OFF");
++		w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) & ~1u);                /* reset deassert */
++		IODelay(10);
++		bool clks = rom;
++		for (unsigned i = 0; i < sizeof(mss_active_clks) / sizeof(mss_active_clks[0]); i++) {
++			clks &= mss_clk_on(i);
++		}
++		if (!clks) {
++			goto fail;
++		}
++		LOG("mba: clocked: RESET %08x PWR_CTL %08x RMB PBL %08x MBA %08x", r32(q6ss, Q6SS_RESET), r32(q6ss, Q6SS_PWR_CTL),
++		    r32(rmb, RMB_PBL_STATUS), r32(rmb, RMB_MBA_STATUS));
++		if (r32(rmb, RMB_PBL_STATUS) != 0 || r32(rmb, RMB_MBA_STATUS) != 0) {
++			LOG("mba: the PBL/MBA ran already since the last reset: not touching the modem");
++			goto fail;
++		}
++		if (mss_assign("mpss", MPSS_PA, MPSS_SIZE, &mpss_perm, false, true) != 0 ||
++		    mss_assign("mba", MBA_PA, MBA_SIZE, &mba_perm, false, true) != 0) {
++			goto fail;
++		}
++		w32(rmb, RMB_MBA_IMAGE, (uint32_t)MBA_PA);
++		if (!q6_power_up()) {
++			goto fail;
++		}
++		st = rmb_wait(0, 5000);
++		LOG("mba: MBA status %d%s", st, (st == RMB_MBA_XPU_UNLOCKED || st == RMB_MBA_XPU_UNLOCKED_SCRIBBLED) ? " (MBA booted)" : "");
++		if (st != RMB_MBA_XPU_UNLOCKED && st != RMB_MBA_XPU_UNLOCKED_SCRIBBLED) {
++			goto fail;
++		}
++
++		/* q6v5_mpss_load: metadata first */
++		w32(rmb, RMB_PMI_CODE_LENGTH, 0);
++		if (mss_assign("metadata", meta_pa, meta_size, &meta_perm, false, true) != 0) {
++			goto fail;
++		}
++		w32(rmb, RMB_PMI_META_DATA, (uint32_t)meta_pa);
++		w32(rmb, RMB_MBA_COMMAND, RMB_CMD_META_DATA_READY);
++		st = rmb_wait(RMB_MBA_META_DATA_AUTH_SUCCESS, 1000);
++		LOG("mba: metadata (%llu bytes @%llx) authentication: status %d", meta_size, meta_pa, st);
++		(void)mss_assign("metadata", meta_pa, meta_size, &meta_perm, true, false);
++		if (st != RMB_MBA_META_DATA_AUTH_SUCCESS) {
++			goto fail;
++		}
++
++		/* the segments, with the MPSS region shared between us and the modem */
++		(void)mss_assign("mpss", MPSS_PA, MPSS_SIZE, &mpss_perm, true, false);
++		if (mss_assign("mpss", MPSS_PA, MPSS_SIZE, &mpss_perm, true, true) != 0) {
++			goto fail;
++		}
++		uint64_t reloc = relocate ? min_a : MPSS_PA, size = 0;
++		for (uint32_t i = 0; i < eh->e_phnum; i++) {
++			if (!loadable(&ph[i])) {
++				continue;
++			}
++			int64_t offset = (int64_t)ph[i].p_paddr - (int64_t)reloc;
++			if (offset < 0 || (uint64_t)offset + ph[i].p_memsz > MPSS_SIZE || ph[i].p_filesz > ph[i].p_memsz) {
++				LOG("mba: segment %u (%08x+%x) outside the MPSS region", i, ph[i].p_paddr, ph[i].p_memsz);
++				goto fail;
++			}
++			char name[16];
++			snprintf(name, sizeof(name), "modem.b%02u", i);
++			bool in_mdt = ph[i].p_filesz != 0 && ph[i].p_offset < (uint64_t)mdt_size;
++			if (in_mdt && ph[i].p_offset + (uint64_t)ph[i].p_filesz > (uint64_t)mdt_size) {
++				LOG("mba: segment %u truncated in modem.mdt", i);
++				goto fail;
++			}
++			if (!mss_copy(name, MPSS_PA + offset, ph[i].p_filesz, ph[i].p_memsz, in_mdt ? mdt + ph[i].p_offset : NULL)) {
++				LOG("mba: %s (%x bytes) not loaded", name, ph[i].p_filesz);
++				goto fail;
++			}
++			size += ph[i].p_memsz;
++			if (r32(rmb, RMB_PMI_CODE_LENGTH) == 0) {
++				w32(rmb, RMB_PMI_CODE_START, (uint32_t)(relocate ? MPSS_PA : min_a));
++				w32(rmb, RMB_MBA_COMMAND, RMB_CMD_LOAD_READY);
++			}
++			w32(rmb, RMB_PMI_CODE_LENGTH, (uint32_t)size);
++			st = (int32_t)r32(rmb, RMB_MBA_STATUS);
++			if (st < 0) {
++				LOG("mba: after %s: MPSS authentication failed: %d", name, st);
++				goto fail;
++			}
++		}
++		LOG("mba: segments loaded (%llu bytes)", size);
++		if (mss_assign("mpss", MPSS_PA, MPSS_SIZE, &mpss_perm, false, true) != 0) {
++			goto fail;
++		}
++		st = rmb_wait(RMB_MBA_AUTH_COMPLETE, 10000);
++		LOG("mba: MPSS authentication: status %d%s", st, st == RMB_MBA_AUTH_COMPLETE ? " (complete, modem starting)" : "");
++		if (st != RMB_MBA_AUTH_COMPLETE) {
++			goto fail;
++		}
++		ok = true;
++		goto out;
++	}
++fail:
++	LOG("mba: boot failed: RMB PBL %08x MBA %08x, RESET %08x PWR_CTL %08x", r32(rmb, RMB_PBL_STATUS),
++	    r32(rmb, RMB_MBA_STATUS), r32(q6ss, Q6SS_RESET), r32(q6ss, Q6SS_PWR_CTL));
++	mss_reclaim();
++out:
++	if (mdt != NULL) {
++		IOFree(mdt, mdt_size);
++	}
++	return ok;
++}
++
++/* the modem is READY (q6v5_start after qcom_q6v5_wait_for_start): the MBA region comes back */
++static void
++mba_started(void)
++{
++	if (!mba_reclaimed) {
++		mba_reclaimed = true;
++		(void)mss_assign("mba", MBA_PA, MBA_SIZE, &mba_perm, true, false);
++	}
++}
++
++/* HANDOVER (q6v5_handover_interrupt): the modem votes for itself, our proxy votes go */
++static void
++mba_handover(void)
++{
++	if (mba_votes) {
++		mss_rom_off();
++		mss_votes(false);
++		LOG("mba: handover: proxy votes dropped (cx back to the GPU's, mx NOM, our boot_rom_ahb vote off)");
++	}
++}
++
+ /*
+  * Wait for the firmware partition (sweet_ufs comes up with the root device) and map SMEM, the
+  * pool, APCS and the TCSR mutex. Once, for whichever of TopazModem / TopazAudio comes first;
+@@ -6272,16 +7135,20 @@ topaz_soc_map(void)
+ 		return state > 0;
+ 	}
+ 	state = -1;
++	board_setup();
+ 	soc_lock = IOLockAlloc();
+ 	(void)PE_parse_boot_argn("modem_part", fw_part, sizeof(fw_part));
+ 	uint8_t probe[16];
+ 	int err = EAGAIN;
+ 	for (int i = 0; i < 120 && err == EAGAIN; i++) {
+-		err = sweet_ufs_read_part(fw_part, fw_files[0].off, probe, sizeof(probe));
++		err = sweet_ufs_read_part(fw_part, soc.jasmine ? 0 : fw_files[0].off, probe, sizeof(probe));
+ 		if (err == EAGAIN) {
+ 			IOSleep(500);
+ 		}
+ 	}
++	if (err == 0 && soc.jasmine && !fat_index()) {
++		err = ENOENT;
++	}
+ 	smem_map = err == 0 ? map_phys(SMEM_PA, SMEM_SIZE, true) : NULL;
+ 	pool_map = err == 0 ? map_phys(MODEM_POOL_BASE, MODEM_POOL_SIZE, true) : NULL;
+ 	apcs = (volatile uint8_t *)ml_io_map(APCS_PA, 0x1000);
+@@ -6344,14 +7211,14 @@ extern "C" int64_t
+ topaz_part_fw_size(const char *path)
+ {
+ 	int i = fw_all_find(path);
+-	return i < 0 ? -1 : (int64_t)fw_all[i].size;
++	return i < 0 ? -1 : (int64_t)fw_all_size(i);
+ }
+ 
+ extern "C" bool
+ topaz_part_fw_read(const char *path, uint64_t off, void *dst, uint64_t n)
+ {
+ 	int i = fw_all_find(path);
+-	return i >= 0 && off + n <= fw_all[i].size && fw_all_read(i, off, dst, n);
++	return i >= 0 && off + n <= fw_all_size(i) && fw_all_read(i, off, dst, n);
+ }
+ 
+ extern "C" bool
+@@ -6374,11 +7241,16 @@ topaz_modem_thread(void *arg __unused, wait_result_t wr __unused)
+ 		return;
+ 	}
+ 	LOG("SMEM version %u", *(volatile uint32_t *)(smem + 64 + 7 * 4) >> 16);
++	if (wifi_enabled() && soc.jasmine) {
++		/* the WLAN SMMU (anoc2, behind the hypervisor) and the WCN3990 quirks are the next step */
++		LOG("wifi: not ported to jasmine yet, the radio stays off (modem only)");
++		wifi_on = 0;
++	}
+ 	if (wifi_enabled() && !smmu_identity(WLAN_SID, WLAN_SID_MASK, "WLAN")) {
+ 		LOG("wifi: no SMMU stream for WLAN, the radio stays off");
+ 		wifi_on = 0;
+ 	}
+-	if (modem_boot()) {
++	if (soc.jasmine ? modem_boot_mba() : modem_boot()) {
+ 		modem_watch(smem_partition(0, 1), watch);
+ 	}
+ 	/* keep the mappings: the modem uses SMEM from now on */
+@@ -6398,7 +7270,9 @@ topaz_modem_init(void)
+ 		return;
+ 	}
+ 	started = true;
+-	topaz_sta_init();                           /* private: bsd/dev/topaz_sta.c (en0 + Apple80211 for wifid) */
++	if (!sweet_board_is("xiaomi,jasmine")) {    /* jasmine: no radio yet, so no en0 for wifid either */
++		topaz_sta_init();                       /* private: bsd/dev/topaz_sta.c (en0 + Apple80211 for wifid) */
++	}
+ 	if (kernel_thread_start(topaz_modem_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+-- 
+2.47.3
+

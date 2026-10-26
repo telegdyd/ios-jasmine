@@ -1,0 +1,107 @@
+From ed01066ded04f4a301de5cb55b48a3d4ff8159f7 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 22:59:07 +0200
+Subject: [PATCH] jasmine-j0084: Wi-Fi data path diagnostics after a join
+ (counters every 10 s, the first 12 frames each way)
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 41 +++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 616fbcb..b91b573 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6052,6 +6052,25 @@ w_find_ie(const uint8_t *ies, uint32_t len, uint8_t id)
+ static uint8_t *tx_pool;
+ static uint64_t tx_pool_pa, tx_busy;
+ static uint32_t tx_sent, tx_done, tx_fail, tx_drop, rx_up;
++/* j0084: the data path after a join (jasmine joins, DHCP gets no answer) */
++static uint32_t tx_st[8], rx_data, rx_nonllc, rx_eapol, rx_down, tx_seen, rx_seen, data_stat_ms;
++
++/* one line about an Ethernet frame: its type, and for IPv4 the protocol and UDP ports (DHCP: 68/67) */
++static void
++eth_note(const char *dir, uint32_t n, const uint8_t *e, size_t len)
++{
++	uint16_t et = (uint16_t)(e[12] << 8 | e[13]);
++	if (et == 0x0800 && len >= 14 + 20 && e[23] == 17 && len >= 14 + (size_t)(e[14] & 15) * 4 + 4) {
++		const uint8_t *u = e + 14 + (e[14] & 15) * 4;
++		LOG("t=%u ms: wifi %s %u: IPv4 UDP %u -> %u, %u bytes, to %02x:%02x:%02x:**:**:**", g_ms, dir, n,
++		    u[0] << 8 | u[1], u[2] << 8 | u[3], (unsigned)len, e[0], e[1], e[2]);
++	} else if (et == 0x0800 && len >= 14 + 20) {
++		LOG("t=%u ms: wifi %s %u: IPv4 proto %u, %u bytes", g_ms, dir, n, e[23], (unsigned)len);
++	} else {
++		LOG("t=%u ms: wifi %s %u: type %04x, %u bytes, to %02x:%02x:%02x:**:**:**", g_ms, dir, n, et,
++		    (unsigned)len, e[0], e[1], e[2]);
++	}
++}
+ 
+ static bool
+ htt_tx_frame(const uint8_t *f, uint32_t len, bool clear)
+@@ -6108,6 +6127,7 @@ htt_tx_compl(const uint8_t *p, uint32_t len)
+ 		}
+ 	}
+ 	tx_done += n;
++	tx_st[st] += n;
+ 	if (st != 0) {
+ 		tx_fail += n;
+ 		if (tx_fail <= 4) {
+@@ -6708,7 +6728,12 @@ w_rx_native(const uint8_t *f, uint32_t len)
+ 	uint32_t hl = ((f[1] & 3) == 3) ? 30 : 24;
+ 	const uint8_t *da = f + 4, *sa = (f[1] & 2) ? f + 16 : f + 10;   /* from DS: addr3 is the source */
+ 	const uint8_t *llc = f + hl;
++	rx_data++;
+ 	if (len < hl + 8 || llc[0] != 0xAA || llc[1] != 0xAA || llc[2] != 0x03) {
++		if (rx_nonllc++ < 4) {
++			LOG("t=%u ms: wifi rx: no LLC/SNAP: fc %02x%02x, %u bytes, at %u: %02x %02x %02x %02x", g_ms, f[0], f[1],
++			    len, hl, llc[0], llc[1], llc[2], llc[3]);
++		}
+ 		return;
+ 	}
+ 	uint32_t plen = len - hl - 8;
+@@ -6720,12 +6745,18 @@ w_rx_native(const uint8_t *f, uint32_t len)
+ 	memcpy(e + 12, llc + 6, 2);
+ 	memcpy(e + 14, llc + 8, plen);
+ 	if (e[12] == 0x88 && e[13] == 0x8E) {
++		rx_eapol++;
+ 		w_eapol_rx(e, 14 + plen);
+ 		return;
+ 	}
+ 	if (s_state == S_UP && topaz_wlan_rx_hook != NULL) {
+ 		rx_up++;
++		if (rx_seen < 12) {
++			eth_note("rx", ++rx_seen, e, 14 + plen);
++		}
+ 		topaz_wlan_rx_hook(e, 14 + plen);
++	} else {
++		rx_down++;
+ 	}
+ }
+ 
+@@ -6852,6 +6883,9 @@ w_tx_pump(void)
+ 		len = etxq[i].len;
+ 		memcpy(one, etxq[i].d, len);
+ 		IOSimpleLockUnlock(etxq_lock);
++		if (s_state == S_UP && tx_seen < 12) {
++			eth_note("tx", ++tx_seen, one, len);
++		}
+ 		if (s_state != S_UP || !w_tx_ether(one, len, false)) {
+ 			if (s_state != S_UP) {
+ 				IOSimpleLockLock(etxq_lock);
+@@ -6954,6 +6988,13 @@ radio_poll(unsigned ms)
+ 		w_join_poll();
+ 		w_tx_pump();
+ 	}
++	if (s_state == S_UP && g_ms >= data_stat_ms) {
++		data_stat_ms = g_ms + 10000;
++		LOG("t=%u ms: wifi data: tx queued %u sent %u done %u (ok %u, st1 %u st2 %u st3 %u st4+ %u) drops %u; "
++		    "rx msdus %u data %u (eapol %u, up %u, not up %u, no snap %u)", g_ms, etxq_tail, tx_sent, tx_done, tx_st[0],
++		    tx_st[1], tx_st[2], tx_st[3], tx_st[4] + tx_st[5] + tx_st[6] + tx_st[7], tx_drop, htt_msdus, rx_data,
++		    rx_eapol, rx_up, rx_down, rx_nonllc);
++	}
+ 	if (scan_started && !scanning && api_scan_asked && (s_state == S_IDLE || s_state == S_UP)) {
+ 		api_scan_asked = false;
+ 		next_scan_ms = 0;
+-- 
+2.47.3
+

@@ -1,0 +1,42 @@
+From b436cef26b4c8a5458ccd43675929e736bbcc421 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 00:15:30 +0200
+Subject: [PATCH] jasmine-j0089: scoped host route 255.255.255.255 on ue0, so
+ the DHCP server can answer (j88: offers failed with ENETUNREACH)
+
+---
+ bsd/dev/sweet_usb.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index c6aa1b0..69436ff 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -920,8 +920,10 @@ ud_scoped_route(uint32_t net, uint32_t mask, uint32_t addr)
+ 	dst.sin_addr.s_addr = htonl(net);
+ 	msk.sin_addr.s_addr = htonl(mask);
+ 	gw.sin_addr.s_addr = htonl(addr);              /* ue0's own address: an interface route, as rtinit */
+-	int e = rtrequest_scoped(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw, (struct sockaddr *)&msk,
+-	    RTF_UP | RTF_CLONING | RTF_STATIC, NULL, ifnet_index(ud.ifp));
++	bool host = mask == 0xffffffffu;               /* j0089: a host route (255.255.255.255) */
++	int e = rtrequest_scoped(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
++	    host ? NULL : (struct sockaddr *)&msk, RTF_UP | RTF_STATIC | (host ? RTF_HOST : RTF_CLONING), NULL,
++	    ifnet_index(ud.ifp));
+ 	printf("SWEET USB: ue0 scoped route %u.%u.%u.%u/%u: %d\n", net >> 24, (net >> 16) & 255, (net >> 8) & 255,
+ 	    net & 255, (unsigned)__builtin_popcount(mask), e);
+ }
+@@ -1030,6 +1032,11 @@ ud_if_create(void)
+ 	if (err == 0) {
+ 		ud_scoped_route(0xc0a80700, 0xffffff00, 0xc0a80702);
+ 		ud_scoped_route(0xa9fe0000, 0xffff0000, 0xa9fe0702);
++		/*
++		 * j0089: the limited broadcast out of ue0, for the DHCP server's answers (j88: sock_send
++		 * ENETUNREACH; ue0 has no default route for 255.255.255.255 to fall under)
++		 */
++		ud_scoped_route(0xffffffffu, 0xffffffffu, 0xc0a80702);
+ 	}
+ }
+ 
+-- 
+2.47.3
+

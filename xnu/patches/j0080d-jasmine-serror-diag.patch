@@ -1,0 +1,53 @@
+From 57c907406c923d8a21190246ccb926dc8c3031a9 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 06:49:23 +0200
+Subject: [PATCH] jasmine-j0080d: SError diagnostics: ESR/FAR/ELR/LR printed
+ before the panic (no panic buffer on jasmine); modem_pblwait=MS: no RMB
+ access after the QDSP6 starts
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 8 +++++++-
+ osfmk/arm64/sleh.c              | 7 +++++++
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 1b203e9..77e8d58 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6856,7 +6856,13 @@ q6_power_up(void)
+ 	w32(q6ss, Q6SS_GFMUX_CTL, r32(q6ss, Q6SS_GFMUX_CTL) | Q6SS_CLK_ENABLE);
+ 	LOG("mba: q6 8 start core (GFMUX %08x RESET %08x)", r32(q6ss, Q6SS_GFMUX_CTL), r32(q6ss, Q6SS_RESET));
+ 	w32(q6ss, Q6SS_RESET, r32(q6ss, Q6SS_RESET) & ~Q6SS_STOP_CORE);
+-	LOG("mba: q6 9 core running, waiting for the PBL");
++	uint32_t pblwait = 0;                       /* modem_pblwait=MS: no RMB access for MS after the core starts */
++	(void)PE_parse_boot_argn("modem_pblwait", &pblwait, sizeof(pblwait));
++	LOG("mba: q6 9 core running, waiting for the PBL (q6_power_up at %p, first RMB read after %u ms)", (void *)&q6_power_up, pblwait);
++	if (pblwait != 0) {
++		IOSleep(pblwait);
++		LOG("mba: q6 10 %u ms passed without an SError, reading RMB now", pblwait);
++	}
+ 
+ 	uint32_t pbl = 0;
+ 	for (unsigned n = 0; n <= 1000 && pbl == 0; n++) {
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index a2a8c1b..706b0b0 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -394,7 +394,14 @@ __dead2 __unused
+ static void
+ arm64_implementation_specific_error(arm_saved_state_t *state, uint32_t esr, vm_offset_t far)
+ {
++#if defined(SWEET)
++	/* jasmine j0080d: what kind of error, and where (no panic buffer on this board, only this line) */
++	printf("SWEET SERROR: esr 0x%x far 0x%lx elr 0x%llx (unslid 0x%llx) lr 0x%llx cpu %d\n", esr, far,
++	    (unsigned long long)get_saved_state_pc(state), (unsigned long long)VM_KERNEL_UNSLIDE(get_saved_state_pc(state)),
++	    (unsigned long long)get_saved_state_lr(state), cpu_number());
++#else
+ #pragma unused (state, esr, far)
++#endif
+ 	panic_plain("Unhandled implementation specific error\n");
+ }
+ 
+-- 
+2.47.3
+

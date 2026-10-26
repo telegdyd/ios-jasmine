@@ -1,0 +1,401 @@
+# Wi-Fi on jasmine: step 1, the modem (MBA boot)
+
+Branch `wifi` (worktree `ios-jasmine-wifi/`, XNU worktree WSL `~/xnu-wifi` branch `wifi` on `fde1ca9` = j0070).
+Test images only: nothing flashed, slot b unchanged. Phone lock: the usual `phone.lock` (see `tools/g2/flash-slotb.sh`).
+
+## What the patches do (j0080, j0080b-h, all boot-arg gated: `modem=1`)
+
+- **j0080** TopazModem on jasmine: SoC addresses per board (`board_setup()`: SMEM 0x86000000, TCSR mutex 0x1f40000,
+  APCS 0x17911000, GLINK bit 15, WLAN MSA 0x85700000, anoc2 SMMU 0x16c0000 SID 0x1a00, CE 0x18800000+0x240000,
+  pool 0xA1000000); firmware found at run time in the modem partition's FAT16 (`fat_*`, replaces topaz's offset
+  tables; modem_a == modem_b); rmtfs on the DT carveout 0x85e00000 (HLOS+MSA, read-only EFS as topaz);
+  `modem_boot_mba()` = Linux `qcom_q6v5_mss.c` sdm660_mss (cx/mx TURBO proxy votes, GCC MSS clocks/reset, QDSP6 v62
+  power-up, PBL/MBA RMB handshake, metadata + segments, hyp assign HLOS<->MSS_MSA); `sweet_rpm_level_client()`
+  aggregates rail votes per AP client (GPU 0, modem 1). Wi-Fi radio and en0/wifid glue stay off on jasmine.
+- j0080b step log, `modem_delay=S` (start after the USB log is up), `modem_stop=1`.
+- j0080c RPM clock handoff + scaling on before the boot (`modem_rpmclk=0` skips), DDR voted back.
+- j0080d/f SError details in the panic line (`printf` there panics: console I/O with interrupts off); `modem_pblwait=MS`.
+- j0080e `gpll0_out_msscc` (GCC 0x5200c bit 2, msm-4.4 gpll0_mss_clk); RMB code start/length 0 before release.
+- j0080g halt-port log, `modem_pulse=1`, TCSR halt/QDSP6SS/RMB open to the command port `r`/`w` (with `sweetosm=1`).
+- j0080h MBA bytes in DRAM checked (uncached read-back + crc32).
+
+## 2026-10-24 afternoon: the modem boots, GLINK and the QMI services come up
+
+- **j0080i** (the SError): the "QDSP6 started" log line read QDSP6SS PWR_CTL/MEM_PWR_CTL/RESET after STOP_CORE
+  was cleared, and the SError was taken in the next IOLog. Only RMB is read after the start now. MBA boots, metadata
+  and all MPSS segments authenticate, READY + HANDOVER 114 ms after the start, proxy votes dropped.
+- **j0080j**: the modem's GLINK TX FIFO (SMEM item 480) is in the partition's *cached* list, which our `smem_get`
+  never searched (mainline `qcom_smem_get_private` does). With it: IPCRTR up, qrtr HELLO, 42 services, pd-mapper,
+  tftp (modem_pr/mcfg, wlanmdsp.mbn), rmtfs (modemst1/2, fsg, fsc), WLFW 0x45 at ~840 ms: chip_id 140, fw
+  WLAN.HL.1.0.1.c2-00811. host_cap is rejected (err 1, the `snoc-host-cap-8bit-quirk`), then "waiting MSA_READY ind"
+  (the `no-msa-ready-indicator` quirk).
+- The modem then goes FATAL: `dog_hb.c:266: Task starvation: diag, ping: 4` at 13 s with our WLFW handshake
+  (WCN3990 unpowered), at 101 s without it (**j0080k**: no WLFW handshake on jasmine while the radio is off).
+  Nothing happens on GLINK after 8.8 s. Next: does Linux's modem (r109 shell, no rmtfs/tftp/diag) live longer?
+- WCN3990 power for the radio step (pm660 RPM LDOs): L5 0.8 V cx/mx, L9 1.8 V xo, L6 1.3 V rfa, L19 3.3 V ch0.
+- Linux reference (r109 shell, 17:22): its modem crashes every **40 s** ("fatal error without message", 5 recoveries
+  in 210 s): the shell has no rmtfs/tftp/pd-mapper, so it is no lifetime reference. Ours lived 101 s.
+- **j0080l** WCN3990 LDOs on before the modem boot (`wcn_power_on`): all four on, still FATAL at 101.2 s (j0080k
+  101.4 s): deterministic, not the chip power.
+- **j0080m** WLFW handshake once the chip is powered (`wlfw=0` skips), jasmine quirks: host_cap `daemon_support` as
+  a u8 (answer err 94 NOT_SUPPORTED, not fatal as in ath10k), the msa_ready response taken as MSA_READY.
+  **j0080n** `wifi=1` allowed on jasmine (anoc2 SMMU identity bank, CE after mission; untested), SHADOW_PA per board.
+  **j0080o** GLINK/qrtr trace after 3 s: nothing at all from the modem between 8.6 s (mcfg tftp) and the crash.
+- j0080o round: handshake to the board data (`image/bdwlan.bin`, board_id ff, 19152 B); the end segment answered
+  err 1 (firmware CRC check of the BDF; ath10k ignores it and the firmware uses its built-in BDF), we stopped, FATAL
+  at 17 s. The earlier the WLAN PD stalls waiting for the host, the sooner the starvation (13 s / 17 s / 101 s).
+  **j0080p** goes on to cal_report like ath10k.
+- CI: `xnu.yml` has `cancel-in-progress`: a new dispatch on the branch cancels the running build.
+
+## Result so far (2026-10-24 06:20-08:20): the PBL kills the MSS register bus
+
+Every step works up to the core start: FAT index (429 files), MBA copy (DRAM crc = file crc), cx/mx votes, all MSS
+clocks, both hyp assigns (ret 0), the whole QDSP6 power-up (BHS ack, memories 0x1fffffff, clamps off). Right after
+STOP_CORE is cleared the **first AP read of RMB (or QDSP6SS) gets a bus error**: SError `esr 0xbf000002`, taken in
+the next IOLog. With `modem_pblwait=3000` nothing happens for 3 s, then the first RMB read faults. After the start all
+three MSS AXI halt ports read idle. TZ `tr` reads return 0 for everything (filtered, useless).
+
+Ruled out: qdss/RPM clock scaling (j0080c), gpll0_msscc (j0080e), halted ports / reset pulse (j0080g), GPU and its
+CX votes (GPU-off image), MBA content (j0080h).
+
+## Linux reference (r109 shell, same phone, same firmware chain): boots fine
+
+`fastboot boot shim/out/nura-r109-boot_a.img`, push `qmi_helpers qcom_sysmon qcom_q6v5 qcom_common qcom_pil_info
+qrtr qcom_q6v5_mss` (.ko from the r109 apk, decompressed: `research/wifi/r109-mods/` in the main checkout; qcom_aoss and mdt_loader are already
+loaded), `mount -t vfat -o ro /dev/disk/by-partlabel/modem_a /mnt/m`, firmware path `/mnt/m/image`, insmod, `echo
+start > /sys/class/remoteproc/remoteproc0/state`: "MBA booted" ~80-110 ms, MPSS up 1.5 s.
+
+- function_graph of `q6v5_load`/`q6v5_start` (`research/wifi/linux-trace/q6v5_start.trace`): same order as ours.
+- kprobes in `q6v5_mba_load` (x19 = qproc; +0x460 after the assigns, +0xf04 PBL done, offsets from the r109 module):
+  before the power-up Linux has **exactly our state** (RESET 7, GFMUX 0x100, PWR_CTL 0x700000, XO_CBCR 0x80000000,
+  BHS 0, RMB all 0), the same assigns (mpss then mba, src HLOS -> MSA RW), and its first RMB poll right after
+  STOP_CORE gets PBL 1 and MBA 2.
+- Reading QDSP6SS registers from a kprobe right after the core start, or RMB+0x40 while the modem runs, crashed
+  Linux too: those reads are fatal in Linux as well. Linux reads only RMB 0x04/0x0c during the boot.
+
+Tools in `research/wifi/` (main checkout, gitignored): `modem-round.sh` (lock + fastboot boot + log; aborts if the
+phone is unreachable), `fatls.py`, `rd32.c`, `mba_load.dis` (r109 module disassembly), `linux-trace/`.
+
+## Next (not done)
+
+The state and the sequence match Linux; the difference is in how XNU touches the hardware or what else runs. Ideas:
+1. Our code reads QDSP6SS after STOP_CORE? It should not (only RMB); recheck every read between STOP_CORE and the
+   PBL poll (the LOG lines), and the memory type `ml_io_map` gives (Device-nGnRnE vs Linux nGnRE).
+2. Other XNU activity on the same buses during the boot (GCC debug-mux measurements, bwmon, profiler, TSENS):
+   run the boot with them off.
+3. Speculative AP access to the assigned regions (any XNU mapping of 0x8ac00000-0x92a00000 / 0x94800000) -> hyp/TZ
+   reaction; check the early V=P blocks and every mapping.
+4. Port the rest only after the MBA boots: WLFW quirks (`snoc-host-cap-8bit-quirk`, `no-msa-ready-indicator`),
+   WLAN SMMU on anoc2 behind the hypervisor, TxBF-on-disassoc fix (kernel/0005).
+
+## 2026-10-24 evening (j0080q-t), handoff
+
+- j0080q `modem_nowlan=1`: no WLAN PD, FATAL still at 101.1 s. Its stop-on-FATAL took an SError (reverted in j0080r).
+- j0080r `master-kernel` SMP2P entry: 101.1 s. qdss RPM vote dropped live after handover: 101.4 s.
+- Nura journal (backup rootfs): diag-router talked to the modem over DIAG_CNTL on every boot; no diag starvation.
+- j0080s pd-mapper from the jasmine jsn files; j0080t glink_ssr + DIAG channels: glink_ssr up, the modem still never
+  opened DIAG, FATAL at 100.95 s; the reboot after the round froze the phone.
+- Summary and next tasks: `jasmine/WIFI-HANDOFF.md`.
+
+## 2026-10-24 20:00-20:45 (j0080u-w): diag starvation solved
+
+- The modem's diag is a QRTR client (service 4097), not GLINK `DIAG*` channels. j0080u publishes the diag
+  servers, j0080v answers its 3-byte feature mask, j0080w logs `modem alive` each minute. j80w: alive to t=480000,
+  no FATAL. Details and findings: `jasmine/WIFI-HANDOFF.md`.
+
+## 2026-10-24 20:49-21:30 (j0080x-y): WLAN PD back on, safe stop, wifi=1 hangs in the SMMU setup
+
+- j80w-modem1 (20:50, `modem=1 modem_delay=45`, WLAN PD on): chip 140, BDF (end-segment CRC rejected, not
+  fatal, as ath10k), FW_READY, **mission mode at 2.5 s, modem alive to t=180000** (end of the 300 s log), no
+  FATAL. The 13-17 s deaths with the WLAN firmware waiting were the diag starvation too. Reboot and park fine.
+- j0080x `topaz_modem_stop(panic)`: q6v5_stop on the reboot (command-port reboot, `haltRestart` restart/halt)
+  and panic paths: master-kernel bit 0, wait for slave-kernel bit 3 (5 s, 200 ms on a panic), clear, halt
+  q6/modem/nc ports, assert mss_restart. No handshake after a FATAL (as Linux for a crashed remote), no clock or
+  memory steps. Not yet exercised on the phone (the j80x round never booted the modem, below).
+- j80x-wifi (21:02, `wifi=1`): `smmu: sCR0 00200626 ID0 48017a06 ID1 40008015: 6 SMRs, 21 CBs, page 1000 x32`,
+  then nothing more from the modem thread for 5 min; no panic, the rest of iOS ran, the command-port reboot
+  worked. So one access in `smmu_identity` after the ID reads never completes. Not writeback addressing (the
+  disassembly has plain `ldr/str [x, #imm]` only). Linux on Nura sees the same SMMU (6 groups, 21 CBs).
+- j0080y: a log line after each step of `smmu_identity`, and 0x16c0000-0x1700000 on the command port (`r`).
+- j80y-wifi (21:21): every step lands and reads back (CB4 SCTLR e0, S2CR0 4, SMR0 80011a00), then the
+  **global TLB sync** (sTLBGSYNC 0x70 / sTLBGSTATUS 0x74) never returns. The rest of iOS keeps running.
+- j80y-aggr (21:30, `modem_delay=90`): the live aggre2 NoC vote could not be sent (the `rpm` parser wanted
+  4-char keys, `KHz` is 3: fixed in j0080z). It would not have mattered: aggre2 (downstream anoc2 SMMU clock
+  `AGGR2_NOC_SMMU_CLK`) is in the RPM scaling handoff, and before scaling is on the RPM ignores AP rate votes
+  (UFS and USB run over aggre2 anyway). Same sync hang; this time the phone went down by itself ~45 s later
+  and came back in fastboot (watchdog reset, probably); parked fine.
+- j0080z: WCN3990 rails before the SMMU setup. j80z-wifi (21:40): rails on, **sync still hangs**. Not power.
+- j0080aa: no global sync on jasmine. Linux's `arm_smmu_write_sme` does none after SMR/S2CR writes; the global
+  sync only follows TLB maintenance (none issued, the bank does not translate) or the SMMU reset. If the WLAN
+  TBU itself is unreachable, CE DMA will show it (no HTC READY) without a CPU hang, since CE is polled in memory.
+- The CI applies `xnu/patches/*.patch` in glob order and **skips a patch that fails with only a warning**
+  (`Skipping patch ... already upstream, previously applied, or malformed`): `j0080aa` sorted after `j0080`
+  and was skipped, so j80aa (21:53) ran the j0080z kernel (same hang). Renamed `j0081`. Check the build log
+  for `Skipping patch` (4 blacktop patches for other macOS versions are always skipped, that is normal).
+- **j81-wifi (22:06): Wi-Fi scans under iOS.** SMMU `WLAN identity ... CB4 SMR0 -> OK`, modem READY at 108 ms,
+  FW_READY 2.5 s, mission, CE 12 rings, HTC READY (2 credits x 2184, 22 endpoints), HTT/WMI connected, WMI
+  SERVICE_READY + INIT + READY (fw MAC 00:00:00:00:00:00: no MAC given yet), chan list 37, passive scan:
+  scan 1 at 7.3 s 5 networks, scan 2 6 networks, every 15 s after.
+  Modem alive to t=180000 with the radio running. **Safe stop on the reboot**: `stop: slave-kernel 0000000e
+  after 207 ms (stop-ack)`, `modem ports halted, mss_restart held`; fastboot and park fine (80%, charging).
+  `modem-round.sh` now also records the log across the reboot (`<log>-reboot.txt`).
+
+## 2026-10-24 22:15-23:05 (j0082-j0085): factory MAC, en0 + wifid, first join
+
+- j0082: the Wi-Fi MAC from the persist partition's `/wlan_mac.bin` (`Intf0MacAddress=<12 hex>\nEND`, as
+  Android's cnss-daemon), read in the kernel with a read-only ext4 root-directory lookup over `sweet_ufs`
+  (tested on the host against both persist backups, byte-exact). The fixed 02:54:4f:50:41:5a stays as the
+  fallback. The firmware still reports 00:..:00 in WMI READY; the vdev is created with our address (as ath10k).
+  Linux/Nura never used it: ath10k picked a random MAC and pmOS `bootmac` set a made-up 02:00:... one.
+  **j82-wifi (22:35)**: `wifi: MAC 94:87:e0:**:**:** from persist/wlan_mac.bin`, scans as before, clean stop
+  (206 ms), parked 80%. Only 3 automatic scans is by design (`scans < 3`); later scans are on request.
+- The ath10k TxBF-on-disassoc fix (Nura `kernel/0005`) does not apply: our WMI code sends no vdev TxBF param.
+- j0083: `topaz_sta_init()` (en0 + Apple80211) on jasmine when `wifi=1`. j83-wifi (22:43): en0 attached once
+  WMI was ready, but **wifid never ran**: launchd starts it only when the ADT has a `wlan` node
+  (`_LimitLoadToDeviceTree`), which `tools/mkadt.py` made only for topaz. Fixed on branch `jasmine`
+  (8fda077): `mkadt.py --wlan`, passed by `mkimg.sh` when EXTRA_ARGS has `wifi=1` (other images unchanged).
+- **j83-wlan (22:52): wifid scans, networks show in Settings (user saw them), and the first join works at
+  the 802.11 level**: wifid ASSOCIATE (TelekNet, WPA2, passphrase) -> `join: TelekNet 2472 MHz WPA2`, auth
+  status 0, assoc status 0 aid 7, 4-way handshake, `WPA2 keys installed (group key yes, idx 2)`,
+  `joined TelekNet` in 56 ms; wifid reads CURRENT_NETWORK/SSID/BSSID fine after it, link stays up.
+  **No IP address** (Settings spins, no address under the network's info): DHCP never completes; the data
+  path after the keys has no log (counters existed, never printed) -> j0084.
+  The **reboot afterwards hung**: modem stop-ack after 128 ms, then `mba: halt modem port: ack 0 idle 0`
+  (every earlier reboot halted it), mss_restart asserted, launchd quiesced, then nothing; the round script
+  gave up, the user's Power + Volume down brought fastboot back at ~23:00; parked 71%.
+- j0084: data path diagnostics while joined: a `wifi data:` line every 10 s (tx queued/sent/done by
+  completion status/drops, rx msdus/data/eapol/up/not up/no SNAP) and the first 12 frames each way
+  (IPv4 UDP ports: DHCP is 68 <-> 67).
+- j0085: Wi-Fi off before the modem stop, as Linux (ath10k leaves the AP and sends WLFW WLAN_MODE OFF, then
+  remoteproc stops the modem): `topaz_modem_stop` (not on a panic) asks the modem thread for `w_teardown()`
+  and WLAN_MODE OFF (mode 4), waits up to 1.5 s for the answer, then the stop handshake as before.
+- **j85-wlan (23:13, 420 s)**: TelekNet joined again (keys in 51 ms; the user tapped it: wifid does not
+  auto-join on boot, see the handoff). j0084's counters: rx works
+  (478 frames up to en0: ARP, IGMP, SSDP/WS-Discovery multicast), but **`tx queued 0`**: iOS never sent a
+  frame (redwood_net: `0 frames sent`). Cause: configd had **no network service at all** —
+  `/private/var/preferences/SystemConfiguration/preferences.plist` held only the host names (no Sets, no
+  NetworkServices, no CurrentSet), while `NetworkInterfaces.plist` already named en0 (IEEE80211, builtin,
+  `IOPathMatch .../RedwoodWLANController/RedwoodWLAN`). configd starts ~45 s before en0 exists
+  (`modem_delay`), so it never made the default configuration. Written live over sweet_netfs (23:19, the
+  original kept in the session scratchpad): one Set "Automatic" (CurrentSet) with a "Wi-Fi" service for en0
+  (Interface DeviceName en0 / Hardware AirPort / Type Ethernet, IPv4 DHCP, IPv6 Automatic, ServiceOrder).
+  Read by configd on the next boot; not yet tested. No kill/launchctl/scutil on the phone to restart configd.
+- j85 reboot: j0085 sent WLAN_MODE OFF 20 ms after the teardown; the WLAN firmware asserted at once
+  (`err_qdi.c:459:EF:wlan_process:1:cmnos_thread.c:3285:Asserted in wlan_vdev.c`), modem FATAL, no
+  answer, `halt modem port: ack 0 idle 0` again, hang; the user's reset at ~23:25, parked 67%.
+- j0086: Wi-Fi off in ath10k's order, one step per poll with the firmware's time: teardown (vdev down, peer
+  delete, vdev stop), wait for WMI VDEV_STOPPED (0x5002, 400 ms at most), VDEV_DELETE (0x5002, tag 0x57),
+  200 ms, CE off, WLAN_MODE OFF; stop waits up to 2.5 s. And when a modem port does not halt, mss_restart is
+  not asserted (the board reset follows anyway): the two hangs both came after an unhalted modem port.
+- **j86-wlan (23:35): IP address and internet over Wi-Fi (user-confirmed in Settings and with a page).**
+  configd read the written Set: right after the join (t=30.1 s) en0 sent IPv6 ND and a DHCP DISCOVER
+  (`UDP 68 -> 67`); the address came. The user saw a **gray Wi-Fi icon** in the status bar. ~1 s after the
+  DHCP exchange (t=33.7 s) the USB log stopped and the command port was gone at the end, while iOS stayed
+  responsive (user): the USB link lost its path once en0 was configured (handoff task 1). The reboot test of
+  j0086 did not run; the phone was left in iOS.
+- j0087: scoped routes for ue0 (192.168.7/24, 169.254/16) and the 5140/5141/5142 listeners bound to ue0
+  (IP_BOUND_IF, inherited by accepted connections; also keeps them off the Wi-Fi network).
+  **j87-wlan (23:59)**: both scoped routes added (0), the user tapped TelekNet at ~00:02, joined, DHCP
+  DISCOVERs out, and the USB log stopped at 00:02:06 again. From the PC, 169.254.7.2 did not even answer
+  ARP (neighbour state Probe; the PC's adapter "ios-sweet Sweet iOS (USB Ethernet)" had 169.254.218.81).
+  Cause, in XNU: `arp_lookup_route()` never scopes a 169.254 lookup ("don't constrain the lookup"), so IPv4
+  link-local lives on one interface, the one holding the unscoped 169.254/16 route, which configd gives the
+  primary interface (en0 once it has an address). Nothing scoped can keep a 169.254 USB link alive.
+  The round's reboot could not reach the command port; the user's reset, parked 63%.
+- j0088: a DHCP server on ue0 (UDP 67 bound to ue0) gives the PC 192.168.7.1/24 (no router, no DNS, lease
+  7 days, NAK for other addresses); the tools already try 192.168.7.2 first. 169.254.7.2 stays as a fallback.
+- j88-wlan (00:13): the PC's DHCP DISCOVERs reached the server, but every OFFER failed `sock_send` 51
+  (ENETUNREACH: nothing routes 255.255.255.255 out of ue0); no join, the reboot worked (j0086 unjoined:
+  vdev stopped + deleted, WLAN_MODE OFF ok in 225 ms, stop-ack 50 ms, then `halt modem port: ack 0 idle 0`
+  and the new fallback left mss_restart alone), parked 68%.
+- j0089: a ue0-scoped host route for 255.255.255.255. **j89-wlan (00:22) and j89b (00:29)**: the PC's USB
+  adapter got **192.168.7.1/24 by DHCP** (offer + ack, send 0), the log connected over 192.168.7.2 and ran the
+  whole 300 s, the reboot over the command port and the park worked (69%, 70%). No Wi-Fi join happened in
+  either round, so the link with Wi-Fi up is still to be seen. The modem port never halts, Wi-Fi or not.
+- **j89c-wlan (01:02, 360 s): the USB link survives Wi-Fi.** PC on 192.168.7.1 by DHCP, log over
+  192.168.7.2; the user joined TelekNet at t=26 s; the log ran on (`wifi data` at 36/46/56 s: 1805 frames sent,
+  all completed ok, 0 drops; 2720 received up to en0). Reboot over the command port while joined at 01:05:53:
+  the j0086 teardown made the WLAN firmware assert at once (`Asserted in wlan_vdev.c`, modem FATAL),
+  WLAN_MODE OFF unanswered (2.5 s), no stop handshake, modem port not halted -> mss_restart left alone ->
+  the phone rebooted to fastboot normally; parked 84%. So j85's assert was the teardown while joined too.
+- j0090: the leave as a step machine (S_LEAVE, `w_leave_poll` after the CE poll) with waits, no scan/join
+  while it runs, STOP_SCAN (0x3002, tag 0x4e, STOP_ALL) before wlan off; order then deauth, VDEV_DOWN,
+  PEER_DELETE (wait HTT unmap 0x04 / WMI PEER_DELETE_RESP 0x6007), VDEV_STOP (wait VDEV_STOPPED).
+  **j90-wlan (01:27)**: joined, the user's Forget came during wifid's scan; FATAL in wlan_vdev.c again, no
+  rejoin. j89c too had a scan go out mid-teardown, so the scan was the first suspect.
+- j0091: the leave stops a running scan first and waits for it; one log line per leave step; no wlan off
+  wait on a crashed (FATAL) modem. **j91-wlan (01:44)**: no scan this time, deauth sent, tx out (1164/1164),
+  then VDEV_DOWN + PEER_DELETE -> FATAL 200 ms later, no unmap/resp. The order was the cause:
+  `ieee80211_set_disassoc` (mac80211 6.12, `research/wifi/linux/mac80211/mlme.c`) flushes, deauths,
+  flushes, `sta_info_flush` (peer delete, ath10k waits) and only then BSS_CHANGED_ASSOC (VDEV_DOWN) and
+  the channel release (VDEV_STOP); qcacld deletes the peer before the vdev steps too. Reboot skipped the
+  wlan off wait on the FATAL modem as meant; parked 82%.
+- j0092: PEER_DELETE (+ wait) before VDEV_DOWN. **j92-wlan (01:57): leave and rejoin work.** Joined at
+  t=29 s; the user's Forget at t=44.7 s: deauth, tx out 20 ms (929/929), peer gone in 1 ms (unmap 1,
+  delete resp 1), vdev down, vdev stopped in 4 ms, left in 26 ms; rejoined at t=67 s (user: works). Reboot
+  over the command port while joined and scanning (02:00:38): scan stopped, the same clean leave, vdev
+  deleted, `wlfw: wlan_mode off ok err 0`, wlan off done in 256 ms, stop-ack in 51 ms; the modem port
+  still did not halt (`ack 0 idle 0`, task 2), mss_restart left alone.
+
+## 2026-10-25 02:10-02:35 (j0093-j0094): the modem port halt explained, link quality
+
+- **The modem AXI port has never halted, and that is normal.** Every reboot log since j81 says
+  `halt modem port: ack 0 idle 0`, including j81/j82/j83-wifi, which then asserted mss_restart and rebooted
+  fine (the j83-wlan note "every earlier reboot halted it" was wrong: the old code ignored the result). The
+  port reads busy even at boot, before the MBA, with the MSS in reset (`halt ports (req ack idle): q6 0 0 1,
+  modem 0 0 0, nc 0 0 1` in every log); q6 and nc read idle and are skipped. Offsets match both DTs (TCSR
+  0x1f63000/0x1f65000/0x1f64000, msm-4.4 `sdm660.dtsi` and the jasmine DTB). **Linux on this phone does the
+  same**: the Nura journal has `qcom-q6v5-mss 4080000.remoteproc: port failed halt` on every modem stop
+  (crash recovery at 4041 s and 425 s, shutdown at 4075 s and 460 s), then asserts the reset anyway and
+  even boots the modem again fine.
+- The two hung reboots (j83-wlan, j85-wlan) were the only ones with mss_restart under a joined Wi-Fi link
+  (j83: no wlan off yet; j85: WLAN firmware FATAL). Both stopped after `launchd quiesce complete`, before
+  `vfs_unmountall`. Every reboot without mss_restart worked (j86-j92), every unjoined one with it too.
+  Cause of those hangs unknown; irrelevant without a modem restart (SSR), since the board reset takes the MSS.
+- j0094: halts as Linux, no mss_restart at all (the j0086 fallback was the only path ever taken anyway).
+- **Gray Wi-Fi icon (task 3)**: iOS draws the bars from wifid's LQM (link quality metric) callbacks
+  (MobileWiFi `WiFiDeviceClientRegisterLQMCallback`, `_WiFiScaleRSSI`: 0.5 + x / (2 sqrt(x^2 + 450)),
+  x = rssi + 77.5), which come from Apple80211 **event 39** (IO80211 16.x `_dispatchlqmChangedEvent`, found
+  through the jump tables of the kernel-event dispatcher; extracted with `ipsw dyld extract`, research files
+  in WSL `~/ios-work/wifi-re/`). We never sent it. Its data (at least 180 bytes after the 16-byte name;
+  each value behind a "there" byte): rssi_there 0x00 / int32 rssi 0x04, per-core 0x08 / int8 x2 0x09,
+  snr 0x0b / int16 0x0c, noise 0x0e / int16 0x10, cca 0x12 / u8 0x13, tx fail/retrans/frames 0x14/0x18/0x1c,
+  rx retry/frames 0x20/0x24, beacons 0x28/0x2c (there 0x30), fw tx 0x34-0x3c (there 0x31), tx rate 0x40,
+  fallback rate 0x44, rx rate 0x48, QBSS 0x52-0x58 (there 0x50), flags 0x5c (bit0/1 directed, bit2/3
+  internet), roam state 0x60 (there 0x62), CCA stats (there 0xa0). 24 + 16 + 180 = 220 bytes fits MLEN 224.
+- j0093: live RSSI of the joined AP (its beacons' WMI snr, and `rx_ppdu_start.rssi_comb` of each first MPDU
+  as ath10k, both -95 dBm based, averaged over ~8), into the station state; NOISE (17) answered with -95 dBm
+  (ath10k/ath11k's default floor); the link event gets snr/noise; the wifi-station thread posts event 39
+  every 5 s while joined and idle. `wifi data:` lines now end with `signal N dBm (beacons B, ppdus P)`.
+- **j93-wlan (02:37-02:49)**: TelekNet joined at t=35.7 s (keys in 63 ms), signal -52..-57 dBm (beacons 2303,
+  ppdus ~4100 by the end), LQM events every 5 s; **the bars turned white** (user), ~15 s after the join (the
+  first quiet 5 s came late, wifid scans after a join): j0095 posts one with the link-up event too.
+  **Reboot while joined hung again, without mss_restart**: wlan off 258 ms (clean leave), stop-ack 51 ms,
+  `mss_restart left to the board reset`, launchd teardown, `launchd quiesce complete`, then only periodic lines
+  (battery, net, ue0 counters) for a few seconds and the USB log ended at 02:45; user's Power + Volume down,
+  fastboot 02:49, parked 77%. So **mss_restart did not cause the j83/j85 hangs** (j0094's comment is wrong on
+  that). Joined reboots: j83, j85, j93 hung; j89c, j92 fine; no unjoined reboot ever hung. In good reboots
+  `vfs_unmountall(nonsystem) start` follows `launchd quiesce complete` at once, so the hang is in
+  reboot_kernel between proc_shutdown(TRUE) and vfs_unmountall: the rest of proc_shutdown, audit_shutdown,
+  sync(), or IOSystemShutdownNotification(RootUnmount). The USB log dying within seconds suggests the whole
+  system froze (a CPU stuck on a bus access?), not one blocked thread.
+
+## 2026-10-25 02:00-02:57 CET (j0096-j0097): reboot watchdog, no hang caught
+
+(Clock note: DST ended at 03:00 CEST tonight; times in this section are CET, the j93 section above is CEST.)
+- **The "USB log dies within seconds" was the capture, not the phone**: `modem-round.sh` recorded the
+  reboot with `sweet-netlog.py --for 20`. Now `--for 150`, and it greps the `SDW` lines.
+- j0096: reboot watchdog. `reboot_kernel` and `proc_shutdown` name each step (`SDW step NAME at +N ms`); a
+  kernel thread prints `SDW in NAME for N ms` every 2 s (lines stop = whole system stopped); 6 s in one
+  step it dumps the reboot thread's kernel backtrace and every process left with its threads (state,
+  wait event, frame-pointer kernel backtrace, raw addresses + slide), 20 s in also kernel_task.
+  (`exception.c` `sweet_sample_kthread`/`_ktask`, `sweet_sample.c` `sweet_shutdown_step`.)
+- Good reboot, every round: SIGTERM wait ends at ~0.65 s, sync 0.19 s, vfs_unmountall(nonsystem) at
+  ~0.87 s, vfs_unmountall(system) at ~0.9 s, then the USB link goes with the hfs unmount.
+- **j96 (02:20), j96b (02:27), j96c (02:34), j96d (02:42): four joined reboots, all clean** (user joined
+  TelekNet each time). Joined reboots overall: 3 hung (j83, j85, j93), 6 fine (j89c, j92, j96a-d).
+- Lead tested and dropped: in j83 and j85 the last logged line is `SMP --- sample N` (sweet_sample.c,
+  every 120 s) printed right after `launchd quiesce complete`, with no process line after it. j96c/d
+  timed the reboot onto a sample from the PC (landed in the modem stop, ~1 s jitter). j0097 adds
+  `sdw_sample=1`, one forced sample 100 ms into the SIGTERM wait: **j97-smp (02:54) sampled backboardd and
+  SpringBoard mid-kill and rebooted fine.** So the sampler was a victim of an already stuck shutdown (its
+  header came >= 3 s in, then it blocked too, before `vm_shared_region_get`/task lock), not the cause.
+  j0097 also stops sampling once a reboot starts and skips exiting processes (harmless; its comment
+  overstates the j83/j85 link).
+- Also not it: UsageTrackingAgent's SIGTRAP at shutdown (in most good reboots too), configd sig 9,
+  `ifnet_detach_final ... utun2` (every reboot).
+- What the hung ones share: the kernel's kill phase was still running when launchd finished its own
+  3 s teardown (`launchd quiesce complete` before `vfs_unmountall`), so something there took > 3 s;
+  j93 printed no `didn't act on SIGTERM/SIGKILL` within ~17 s. The j0096 dump will say what, on the
+  next hang. All images from now on carry it.
+
+## 2026-10-25 03:10-04:00 CET (j0098): no auto-join explained, a reboot stall caught
+
+- Known networks are stored fine: `/private/var/preferences/SystemConfiguration/com.apple.wifi.plist`,
+  "List of known networks" holds TelekNet (WPA2, ch 13, password date, lastJoined), and wifid loads it
+  after the first unlock ("Fetched 1 known networks from the plist").
+- **wifid's own log file**: `LoggingFileEnabled = true` in that plist (wifid notices the change live) makes it
+  write `/private/var/logs/wifimanager.log` (WFLog lines). It showed auto-join running on every trigger and
+  ending in `__WiFiDeviceManagerPostAutoJoinNotification: auto-join failed with no network found. Unsuitable
+  network count:0`, while the driver heard TelekNet (-52 dBm) in every scan.
+- CoreWiFi's `AUTO-JOIN:` lines go only to os_log. Not reachable on stderr: `applog_name`/`sweetnull`,
+  `OS_ACTIVITY_DT_MODE`, `ACTIVITY_LOG_STDERR` in the launchd job with `StandardErrorPath` to a file (file made,
+  stays empty); `applog=1` (all daemons' stdio to the console) killed the USB log after ~17 s.
+  **What works: the persisted unified log.** `tools/tracev3-strings.py` decompresses a tracev3
+  (LZ4 `bv41` chunksets) and prints its strings; the arguments (`%@`) are plain text, so CoreWiFi's lines come
+  out nearly whole. Files: `/private/var/db/diagnostics/{Persist,Special}/*.tracev3` (pull with sweet-fs).
+- **The cause**: `AUTO-JOIN: Found matching network (TelekNet ... rssi=-57 ...)`, then `Join candidate
+  'wifi.network.ssid.TelekNet' is not allowed (error=(1 'Below minimum RSSI threshold') ... rssi=-54`.
+  wifid's check (`sub_10010b0a0`, the one that logs `__WiFiDeviceManagerGetAutoJoinThreshold`) compares the
+  network's RSSI with a threshold that `WiFiDeviceOpen` copies from Apple80211 **RSSI_BOUNDS (106)**, which we
+  refused (`wifid gets 106 (RSSI_BOUNDS), value 0, 16 bytes: REFUSED`): the threshold stayed 0 dBm.
+  IO80211 (`Apple80211CopyValue` -> per-type getter, jump tables at 0x1d3ef54a0 / 0x1d3ef565e, type 106 at
+  0x1d3ec6394) reads 16 bytes: u32 version 1, then s32 RSSI_MIN, RSSI_MAX, RSSI_THRESHOLD (keys checked
+  through the CFString pointers).
+- j0098: 106 answered: min -100, max 0, threshold -80 dBm (our choice). Build run 40156300246.
+  **j98-wlan (04:02-04:07): auto-join works.** `wifid gets 106 (RSSI_BOUNDS) ... answered`; nobody touched
+  the phone: wifid sent ASSOCIATE itself (TelekNet, the stored key as a 32-byte PMK), joined at t=11.8 s after
+  the Wi-Fi start (keys in 58 ms), DHCP, then traffic (`wifi data` at t=101 s: 3125 sent, all ok; 3397 up to
+  en0; -54 dBm). The reboot while joined was clean (wlan off 251 ms, stop-ack 49 ms); parked 82%.
+- **Reboot stall caught by j0096 (round j97-aj2, unjoined, 03:2x)**: `RootUnmount notification` took 30 s
+  (IOKit's timeout, then the reboot went on). The reboot thread waits in `IOSystemShutdownNotification ->
+  IOService::waitQuietWithOptions`; an exiting process (pid 57, at the second dump pid 26) sits in
+  `IOSurfaceRootUserClient::clientClose -> OSArray::flushCollection -> SweetSurfaceRef::free ->
+  IOMemoryMap::taggedRelease -> IORecursiveLockLock -> lck_mtx_lock_contended`. So a surface client's close
+  blocks on a lock someone holds during shutdown: the lead for handoff task 2 (log
+  `ios-jasmine/logs/netlog-j97-aj2-reboot.txt`, kernel `xnu/out-jasmine-j97`, slide 0).
+- Phone state changed for these rounds (to undo when done): com.apple.wifi.plist `LoggingFileEnabled` true
+  (original in `ios-jasmine/research/wifi/autojoin/com.apple.wifi-orig-j97.plist`, gitignored); launchd.plist was changed for wifid's
+  stderr and **put back** (original `ios-jasmine/research/wifi/autojoin/launchd-orig.plist`, 793735 bytes, root:80 0644).
+
+## 2026-10-25 (j0099): the j97-aj2 stall read, wrapped surfaces unwired
+
+Not a Wi-Fi bug: the stall is between our IOSurface code and IOKit's memory lock (aj2 was an unjoined reboot).
+Whether j83/j85/j93's joined hangs are the same is not proven (their capture ended at 20 s).
+- **Symbolicated dump** (`netlog-j97-aj2-reboot.txt`, j97 kernel, slide 0; `ipsw macho a2s` per address):
+  - reboot thread tid 209 = `ud_cmd_thread -> reboot_kernel -> IOSystemShutdownNotification -> waitQuietWithOptions`.
+  - pid 57 = **backboardd**, pid 26 = **SpringBoard** (SMP lines in the boot log). Both: `IOSurfaceRootUserClient::clientClose
+    -> OSArray::flushCollection -> SweetSurfaceRef::free -> IOMemoryMap::taggedRelease -> IORecursiveLockLock ->
+    lck_mtx_lock_contended`, the same lock (wait 0xfffffff3d94e3c48, hint 1 = kernel mutex): `gIOMemoryLock`.
+    backboardd's last `SSDROP` was surface **1**, the panel framebuffer (physical 0x9d400000, device memory).
+  - kernel tid 110 (an early thread_call thread, by its tid): `mach_memory_entry_no_senders -> vm_map_copy_discard ->
+    vm_object_deallocate -> device_pager_last_unmap -> (device_pager_deallocate -> memory_object_destroy) ->
+    vm_object_destroy -> vm_object_paging_wait`, wait 0xfffffff0da277102 = object 0x...100 + event 2
+    (PAGING_IN_PROGRESS: paging_in_progress or activity_in_progress not 0). Frames past 8 were cut.
+  - vm_object_reaper (tid 217) waits the same way on object 0xfffffff0da0ef300.
+  - No thread in a page fault, nobody visibly holding the lock.
+- **Reading** (inference, not proven): kernel no-senders run inline, and every IOKit path to a device object's destroy holds
+  `gIOMemoryLock` (`IOMemoryMap::taggedRelease`/`unmap` wrap the whole free). Device mappings are filled completely at
+  map time (`populateDevicePager`), so faults never take the lock. A count that never drops with no thread in a fault is a
+  **UPL** (`vm_object_iopl_request` holds `activity_in_progress` until commit/abort; device-memory UPLs drop it fine).
+  In our code only two things keep one: `sweet_surface_use_task_memory` (IOSurfaceAddress wraps: prepared for the
+  surface's life; two in that boot, backboardd 512 B at 0x107ffc000 and 5 MB at 0x10fd78000) and `SweetGPUBuffer::import`.
+  A wrap's UPL ends only in `SweetSurface::free`, and every way there releases an `IOMemoryMap` first (`SweetSurfaceRef::free`
+  maps before the surface, `SweetSurface::free` its kernelMap before `complete()`): lock -> UPL -> free -> lock.
+  Not identified: whose UPL tid 110 waited for (8 frames, no lock owners).
+- **j0099** (`xnu/patches/j0099-jasmine-unwired-wraps-reboot-dump.patch`, `~/xnu-wifi` f7c66dd):
+  - wraps: `withAddressRange(... | kIOMemoryPersistent)` (memory entries made at creation, so the pages stay referenced
+    when the task unmaps them), `prepare()` + `complete()` only as the writable/read-only check. No lifetime wire.
+  - GPU users wire while they use it: SweetGPU import already did (`complete()` first in its free); RedwoodGPU (topaz)
+    pins with the new `sweet_surface_pin`/`unpin` around its physical-address use.
+  - dump: header, then `SDW <tag> waits: mutex owner tid N` or `waits: vm object ... paging P activity A pager NAME
+    contig/private/named`, then the backtrace 8 frames a line up to 32 (aj2: lines past ~270 characters lost their ends).
+    Each dump also prints `SDW IOKit memory lock: owner tid N, count C`.
+  - `SDW pinned client memory (RootUnmount notification): W wrapped surfaces alive, wired by G GPU imports and P pins`
+    on every reboot: G = P = 0 means no surface free can be what a VM object's destroy waits for.
+- Build run 40159794543 (j0099 applied; only the 4 usual blacktop patches skipped), image `shim-boot-j99-wlan.img`
+  (same arguments as j98). **j99-wlan (05:03-05:09)**: home screen, icons, wallpaper, dock drawn normally (user);
+  wraps without the lifetime wire: 6 logged (backboardd's 512 B LUT, five 180x180 icons, a 28x28); auto-join
+  TelekNet at t=12.2 s. **Joined reboot clean**: leave in 26 ms, wlan off 258 ms, stop-ack 51 ms, kill phase 0.92 s,
+  `SDW pinned client memory (RootUnmount notification): 0 wrapped surfaces alive, wired by 0 GPU imports and 0 pins`,
+  RootUnmount 1 ms, vfs_unmountall(system) at +1124 ms, log ends with the hfs unmount as in every good reboot.
+- **After that reboot the phone powered off** instead of resetting to fastboot (user: never happened before in this
+  project). The first j99 attempt at 05:01 already found it unreachable (no fastboot, no command port, r109 shell
+  172.16.42.1 silent). j0099 does not touch the reset. Likely, not checked: `sweet_reset_now`
+  (SweetPlatformExpert.cpp) does PSCI SYSTEM_RESET, then drops PS_HOLD, and writes only PON SOFT_RB_SPARE (0x88f,
+  fastboot); it never sets the PMIC's PS_HOLD reset type (pm660 PON 0x85a type, 0x85b enable bit 7; Linux's
+  pm8941-pwrkey writes HARD_RESET there on reboot and SHUTDOWN on poweroff). After a Linux poweroff the type stays
+  SHUTDOWN, and a PS_HOLD drop powers the phone off (memory: the 2026-10-02 Linux power-off had POFF reason PS_HOLD).
+  To confirm: PON regs in the r109 shell (`/sys/kernel/debug/regmap/0-00/registers`: 0x85a/0x85b, 0x8c0 PON_REASON1,
+  0x8c5 POFF_REASON1, 0x8c7 OFF_REASON). Fix if it is that: write HARD_RESET into 0x85a (0x85b off, wait, type, on)
+  before the reset. User: leave it until it happens again.

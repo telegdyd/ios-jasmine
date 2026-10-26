@@ -1,0 +1,83 @@
+From 2f8f8a029ca921b925d514b5c673952e5929b81a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 24 Oct 2026 07:02:23 +0200
+Subject: [PATCH] jasmine-j0080e: MSS clock gpll0_out_msscc (GCC vote 0x5200c
+ bit 2, msm-4.4 gpll0_mss_clk; mainline lacks it): without it the AP read of
+ RMB faults (SError) once the PBL runs; RMB code start/length 0 before release
+ as msm-4.4
+
+---
+ iokit/Kernel/arm/TopazModem.cpp | 22 ++++++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index 77e8d58..f4ebd76 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -6559,9 +6559,10 @@ out:
+  *   modem +0x5000, nc +0x4000; memory mba 0x94800000+2M, mpss 0x8ac00000+0x7e00000.
+  * GCC (gcc-sdm660.c, the DT's clock indices): iface gcc_mss_cfg_ahb 0x8a000, bus
+  * gcc_bimc_mss_q6_axi 0x4401c, mem gcc_boot_rom_ahb (vote 0x52004 bit 10, halt 0x38004),
+- * snoc_axi 0x8a03c, mnoc_axi 0x8a004, reset GCC_MSS_RESTART 0x79000. "gpll0_mss"
+- * (GPLL0_OUT_MSSCC) has no clock in mainline either; "xo" and "qdss" are RPM clocks that stay
+- * on (sweet_rpm.c). Power domains cx and mx: RPM rwcx/rwmx at TURBO (rpmpd sdm660 max_state)
++ * snoc_axi 0x8a03c, mnoc_axi 0x8a004, gpll0_mss = GPLL0_OUT_MSSCC (vote 0x5200c bit 2: msm-4.4
++ * gcc-sdm660.c; mainline has no clock for it, and without it the MSS bus stops answering once
++ * the PBL runs: SError on the next RMB read, j0080d), reset GCC_MSS_RESTART 0x79000; "xo" and
++ * "qdss" are RPM clocks (sweet_rpm.c). Power domains cx and mx: RPM rwcx/rwmx at TURBO (rpmpd sdm660 max_state)
+  * from before the boot until the modem's handover. Ownership: hyp assign between HLOS (3) and
+  * MSS_MSA (15), tracked per region as Linux does. No interrupts: RMB and SMP2P are polled.
+  */
+@@ -6591,6 +6592,8 @@ extern "C" uint32_t sweet_gcc_measure_mhz(uint32_t sel);
+ #define GCC_MSS_RESTART     0x79000
+ #define GCC_BOOT_ROM_VOTE   0x52004
+ #define GCC_BOOT_ROM_HALT   0x38004
++#define GCC_APCS_VOTE_1     0x5200c             /* bit 2: gpll0_out_msscc */
++#define GPLL0_MSSCC_BIT     (1u << 2)
+ #define PERM_RWX            7
+ 
+ /* RMB (PBL/MBA interface) */
+@@ -6634,7 +6637,7 @@ extern "C" uint32_t sweet_gcc_measure_mhz(uint32_t sel);
+ static volatile uint8_t *q6ss, *rmb, *mss_halt, *mss_gcc;
+ static uint64_t mba_perm = 1ull << VMID_HLOS, mpss_perm = 1ull << VMID_HLOS;
+ static bool mba_votes, mba_reclaimed;
+-static uint32_t mss_clks_set;                  /* bit i: mss_active_clks[i] switched on here; bit 31: the boot ROM vote */
++static uint32_t mss_clks_set;                  /* bit i: mss_active_clks[i] switched on here; bit 31: the boot ROM vote, 30: gpll0_mss */
+ 
+ static const struct { uint32_t cbcr; const char *name; } mss_active_clks[] = {
+ 	{ 0x8a000, "iface (mss_cfg_ahb)" },
+@@ -6743,6 +6746,9 @@ mss_clks_off(void)
+ 			w32(mss_gcc, mss_active_clks[i].cbcr, r32(mss_gcc, mss_active_clks[i].cbcr) & ~1u);
+ 		}
+ 	}
++	if (mss_clks_set & (1u << 30)) {
++		w32(mss_gcc, GCC_APCS_VOTE_1, r32(mss_gcc, GCC_APCS_VOTE_1) & ~GPLL0_MSSCC_BIT);
++	}
+ 	mss_clks_set &= 1u << 31;
+ 	mss_rom_off();
+ }
+@@ -7026,6 +7032,12 @@ modem_boot_mba(void)
+ 		w32(mss_gcc, GCC_MSS_RESTART, r32(mss_gcc, GCC_MSS_RESTART) & ~1u);                /* reset deassert */
+ 		IODelay(10);
+ 		bool clks = rom;
++		if ((r32(mss_gcc, GCC_APCS_VOTE_1) & GPLL0_MSSCC_BIT) == 0) {                     /* active "gpll0_mss" */
++			mss_clks_set |= 1u << 30;
++			w32(mss_gcc, GCC_APCS_VOTE_1, r32(mss_gcc, GCC_APCS_VOTE_1) | GPLL0_MSSCC_BIT);
++			IODelay(1);                                 /* clk_gate2 udelay */
++		}
++		LOG("mba: clock gpll0_mss (gpll0_out_msscc): vote %08x", r32(mss_gcc, GCC_APCS_VOTE_1));
+ 		for (unsigned i = 0; i < sizeof(mss_active_clks) / sizeof(mss_active_clks[0]); i++) {
+ 			clks &= mss_clk_on(i);
+ 		}
+@@ -7043,6 +7055,8 @@ modem_boot_mba(void)
+ 			goto fail;
+ 		}
+ 		w32(rmb, RMB_MBA_IMAGE, (uint32_t)MBA_PA);
++		w32(rmb, RMB_PMI_CODE_START, 0);            /* no debug policy (msm-4.4 pil_mss_reset) */
++		w32(rmb, RMB_PMI_CODE_LENGTH, 0);
+ 		uint32_t stop = 0;
+ 		if (PE_parse_boot_argn("modem_stop", &stop, sizeof(stop)) && stop == 1) {
+ 			LOG("mba: modem_stop=1: stopping before the QDSP6 power-up");
+-- 
+2.47.3
+
