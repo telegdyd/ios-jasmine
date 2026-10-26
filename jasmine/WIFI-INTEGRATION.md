@@ -95,6 +95,16 @@ No unattended retry, flashing or destructive step is authorized by this runbook.
    Verify USB command **and file** services still respond while joined. Check
    Home, icons, wallpaper, dock, CC/NC and a swipe for GPU/IOSurface regressions.
    `bench stat` must respond; do not start a performance capture.
+   Run the staged **production-matched seven-step GL control** once, bounded
+   to20s: require all7 steps PASS, exit0, no new GPU/SMMU fault. It comes from
+   CI40170072509 /a9e95ec, under the original checkout's ignored
+   `research/wifi-integration/production-gl-control/`; test SHA256
+   `5bcc71b6613738fd379968a87964e15f8208af8e6fb4a7d4546239aaaaf5e6bc`.
+   Its companion library matches production14e32aea... exactly. Install only
+   the test as `/usr/local/bin/sweetgpu_gltest-wifi-acceptance`, verify readback,
+   run with no options, then remove that test file. Do not install its library.
+   This exercises the kernel's GPU/IOSurface import path using the established
+   control, without Task24's unrelated experimental eighth step.
 3. **Disconnect/recovery (about 3–5 minutes).** Toggle Wi-Fi off/on in Settings;
    expect clean leave and auto-rejoin with working traffic. With a controllable
    test AP/hotspot, remove and restore the AP while joined, then verify recovery.

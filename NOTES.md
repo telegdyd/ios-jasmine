@@ -1,3 +1,27 @@
+### 2026-10-26: Wi-Fi cold Intel build progressing; production GL control staged
+
+CI40358833912 /8405096 remains in Build. Live job log is downloadable with
+gh api --allow-escape-sequences repos/telegdyd/ios-jasmine/actions/jobs/121698472232/logs;
+save to file and strip ANSI before reading. At16:40UTC snapshot:632 compile
+command lines, all17 legacy IIG definitions replayed (twice for export/build),
+only4 expected upstream blacktop patch skips, no compiler error observed in
+that snapshot. New SDK/compiler causes cold rebuild; completion still pending.
+Own ignored watch-and-package.ps1 waits for success, then runs wifi-build-kit.py
+with exact84050968075304307e93f16baeb7f507725e8d70 and original j99 baseline.
+Its exec session10500 is active; output original research/wifi-integration/
+kit-result.txt, expected kit directory ci-40358833912/. If CI fails, it saves
+intel-failure.log and packages nothing. No retry/phone action in that script.
+
+Prepared production-matched seven-step GL control from successful Mesa
+CI40170072509 /a9e95ec8795969f7c227b4a56074ac5940ecd9df. Downloaded ignored
+research/wifi-integration/production-gl-control/. Companion library SHA
+14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261 matches
+production; plain-arm64 test SHA5bcc71b6613738fd379968a87964e15f8208af8e6fb4a7d4546239aaaaf5e6bc,
+no Task24 barrier marker. control.json records provenance. Later install only
+test-name binary, verify readback, bound20s, require7/7+exit0, remove test;
+never replace production library. Runbook updated. No new device test/result.
+Phone untouched throughout; availability/battery need fresh checks when home.
+
 ### 2026-10-26: Wi-Fi combined build now running on Intel; phone untouched
 
 8405096 pushed to codex/wifi-integration; CI40358833912 accepted macos-15-intel
