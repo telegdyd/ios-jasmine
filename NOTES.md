@@ -1,3 +1,20 @@
+### 2026-10-26: t5tc-diag archived and retired
+
+User approved the proposed archive-and-delete procedure. Annotated tag
+archive/t5tc-diag-2026-10-25 pushed to origin and remote peeled commit verified
+as d400e26b688ba97f86bd7eb66ce3fb3616f9ec91 before branch deletion.
+Tag object f24c04068da7cd87a3759819c2cb47886a852f29 preserves diagnostic history;
+annotation records production fix a9e95ec, diagnostic CI40169317271 (UI drawn,
+GL7/7, dump never fired) and production CI40170072509. These are historical
+results, not new tests. Deleted origin/t5tc-diag with expected-tip lease, then
+local t5tc-diag. No worktree/files/artifacts removed; no device/build/CI action.
+Six origin branches remain: jasmine, wifi, codex/wifi-integration,
+codex/framebench-build, t16-build1, topaz (default). Five local branches remain
+(same except topaz). Earlier cleanup commits: bbd67e6 and correction39e1f7d.
+Task24/charging handoff unchanged. Next optional cleanup: topaz requires changing
+GitHub default first; active build branches require consolidation/validation.
+Milestone commit subject: docs: record archived task 5 diagnostic branch.
+
 ### 2026-10-26: approved branch cleanup completed
 
 User approved deletion only for branches with the plain Delete recommendation.
