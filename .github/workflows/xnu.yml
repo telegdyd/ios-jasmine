@@ -255,6 +255,10 @@ jobs:
           ccache -z
           set -o pipefail
           bash build.sh 2>&1 | tee kernel-build.log
+          if [ -f patches/j0059a-jasmine-cpu-check-reference.patch ]; then
+            grep -q 'SWEET CPUCHECK: boot reference ready; OSM setup disabled' xnu/osfmk/arm64/sweet_osm.c
+            python3 ../tools/cpuclk/check-reference-test.py xnu/osfmk/arm64/sweet_osm.c
+          fi
           if [ -f patches/j0100-jasmine-wifi-defaults.patch ]; then
             python3 ../tools/check-wifi-integration.py --source xnu --log kernel-build.log
             nm fakeroot/System/Library/Kernels/kernel.development.sweet > wifi-symbols.txt

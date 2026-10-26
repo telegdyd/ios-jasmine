@@ -1,0 +1,44 @@
+From 8214a777e2430e93c50d441312fd0c491a489eb7 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Mon, 26 Oct 2026 23:09:34 +0100
+Subject: [PATCH] jasmine-j0059a: initialize live CPU checker without OSM setup
+
+---
+ osfmk/arm64/sweet_osm.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 127aa3b..5542a44 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1736,13 +1736,25 @@ void
+ sweet_osm_init(void)
+ {
+ 	thread_t thread;
+-	if (!PE_parse_boot_argn("sweetosm", &osm_mode, sizeof(osm_mode)) || osm_mode == 0) {
++	uint32_t cmd = 0;
++	(void)PE_parse_boot_argn("sweetosm", &osm_mode, sizeof(osm_mode));
++	(void)PE_parse_boot_argn("sweetcmd", &cmd, sizeof(cmd));
++	if (osm_mode == 0 && cmd == 0) {
+ 		return;
+ 	}
+-	printf("SWEET OSM: sweetosm=%u\n", osm_mode);
++	if (osm_mode != 0) {
++		printf("SWEET OSM: sweetosm=%u\n", osm_mode);
++	}
+ 	uint64_t t0 = mach_absolute_time();
+ 	osm_ref = osm_workload(OSM_WORK);
+ 	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &osm_ns_boot);
++	/* sweetcmd exposes check without OSM setup. Capture its known-good
++	 * reference here, before sweet_gold_clock changes the boot clock;
++	 * never establish a new reference after an experimental transition. */
++	if (osm_mode == 0) {
++		printf("SWEET CPUCHECK: boot reference ready; OSM setup disabled\n");
++		return;
++	}
+ 	if (kernel_thread_start(osm_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+-- 
+2.47.3
+

@@ -1,3 +1,24 @@
+### 2026-10-26: Task 2 diagnostic kernel prepared; phone available
+
+User explicitly approved pushing prior milestone and continuing with full phone
+access from charging shell. Pushed0c52b12+b437aed to origin/jasmine. Own shared
+phone lock held, ownership ignored research/cpu-dvfs/owner.json. Fresh preflight:
+r109 kernel6.19.10-sdm660,99%,34C,+498046uA,4395252uV,online1/Charging/Good,
+backlight0,slot_b. No phone reboot/clock/voltage change yet in this continuation.
+
+Isolated WSL source worktree ~/xnu-cpu-dvfs branch codex/cpu-dvfs based on wifi
+f7c66dd; source commit8214a77 exports j0059a-jasmine-cpu-check-reference.patch.
+It initializes osm_ref before sweetgold for sweetcmd-only boots and returns
+before starting OSM workers. All four extracted actual-function host-CC branch
+tests PASS; pre-fix negative control fails missing-reference assertion as expected.
+No local Apple clang available; actual ARM compile requires CI. Workflow now
+requires the marker and host behavior test so skipped patch cannot pass silently.
+Six model input tests still PASS. Generated AMP ADT verified correct8 CPU MPIDRs
+and Gold2208/Silver1843.2MHz max metadata. Apparent generic1900MHz value is already
+overridden by Jasmine; no mkadt change needed. Remaining: commit/build4K diagnostic
+kernel, verify artifacts, temporary4/8-core baseline at unchanged clocks, then
+PMIC/APM commit investigation. Root/partitions remain untouched.
+
 ### 2026-10-26: Task 2 restarted for both CPU clusters; offline milestone
 
 User requested eight cores, stock-max availability, demand scaling and heat

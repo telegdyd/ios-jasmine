@@ -5,6 +5,12 @@ stock maximum frequencies, and scale with demand to control power and heat.
 This supersedes the starting assumptions in HANDOFF-CPUCLK.md, not its historical
 observations. Implementation is in progress; no new device result is claimed.
 
+Diagnostic follow-up: j0059a initializes the live check reference on sweetcmd-only
+boots before sweetgold runs, then returns without OSM setup/workers. Four extracted
+actual-function host-compiler tests PASS; pre-fix source fails the same test.
+ARM CI build and device validation pending. AMP ADT generation already overrides
+Silver's generic maximum with the correct Jasmine1843.2MHz; verified, no change.
+
 ## Findings and first milestone
 
 - Eight-core bring-up already passed on 2026-10-22 (CI 39798911718,
