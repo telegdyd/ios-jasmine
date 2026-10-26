@@ -125,6 +125,15 @@ the event log for graph order, target area and clear/layout constraints.
 - iOS CI, device boot, installed-library hash and graph results are pending.
   No phone access has occurred in this milestone.
 
+Follow-up: implementation `ccd9a88` pushed. First Mesa CI `40247120431` failed
+because `fd_bt_draw` needed the existing `assert_dt` annotation for Clang's
+thread-safety analysis of `bound_shader_stages`. The annotation is now added;
+no warning suppression or runtime threading change. GCC checks and controller
+tests pass again; the repaired iOS build remains pending. User confirmed the
+phone free, own shared lock acquired, exact production library backed up and
+verified as `14e32aea...`; baseline GPU588/DDR1804 observed. No test install or
+boot yet. Current session state is in root NOTES.md.
+
 Next: build this diagnostic with Mesa CI, verify the artifact and prepare one
 test-name library/temporary boot session once the phone is free. Run only a
 bounded Home/CC/NC graph after the accessory-sync precheck; use the current

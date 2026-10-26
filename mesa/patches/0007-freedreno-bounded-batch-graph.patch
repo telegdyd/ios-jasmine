@@ -127,7 +127,7 @@ new file mode 100644
 +}
 +
 +static inline void
-+fd_bt_draw(struct fd_batch *batch)
++fd_bt_draw(struct fd_batch *batch) assert_dt
 +{
 +   if (!sweet_batch_trace_active())
 +      return;

@@ -1,3 +1,19 @@
+### 2026-10-26: task 24 diagnostic CI annotation repair; phone lock held
+
+Implementation ccd9a88 pushed with explicit user approval. Mesa CI40247120431
+failed at Clang thread-safety analysis: fd_bt_draw lacked assert_dt while reading
+bound_shader_stages. Added the required driver-thread annotation; no suppression.
+Eight GCC checks and controller tests still pass; iOS rebuild is next.
+User confirmed phone free for one bounded trace. Own shared lock acquired;
+owner saved in research/t24/lock-owner.txt. Do not remove another owner's lock.
+Production exact backup research/t24/production-before.dylib SHA25614e32aea...
+matches prior handoff. Live baseline GPU588/DDR1804 verified in preboot log.
+Temporary image prepared from exact j70 slot-b payload; only cmdline/digest
+changed, pipeline0; SHA2568d1b50d5... . No test library installed, no reboot/boot,
+no device graph yet. Phone still ordinary production iOS; own collectors ended.
+Next: commit annotation repair/rebuild, artifact checks, test-name install and
+one authorized diagnostic session; restore ordinary boot and release own lock.
+
 ### 2026-10-26: task 24 source audit and bounded batch graph prepared
 
 User approved starting the plan. Report: jasmine/PERF-TASK24-AUDIT.md.
