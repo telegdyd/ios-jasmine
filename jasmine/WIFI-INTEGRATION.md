@@ -4,6 +4,25 @@ Branch: `codex/wifi-integration`, based on jasmine `d34f5ca` plus wifi `daf1e6d`
 This document supersedes WIFI-HANDOFF task 8's preparation instructions.
 It does not mark device acceptance complete or authorize partition flashing.
 
+## Ready for the device session (2026-10-26)
+
+**Combined kernel CI40358833912 passed. All three images are prepared and
+verified. No phone access or device test has occurred.**
+
+Use the original checkout's
+`research/wifi-integration/ci-40358833912/images/manifest.json` for exact paths,
+command lines and hashes. Images are `wifi-default.img`, `wifi-diagnostic.img`
+and `wifi-off.img`, each17,403,904 bytes. Kernel SHA256:
+`2c281ee61aec20187df365d1b07d6f2b121109ad5bc4e06458e93dabd38051be`.
+The manifest and NOTES.md record all image hashes. CI checksum, plain arm64,
+integration symbols, baseline shim/ADT preservation, payload roundtrips,
+independent Android header digests and variant arguments pass.
+
+Only device acceptance remains: default auto-join/internet/USB + GL control,
+disconnect/failure recovery, two joined reboots, and the off fallback. Use a
+WPA2 test AP/hotspot for recovery cases; WPA3 support is not claimed.
+No new configuration write should be needed on this already configured phone.
+
 ## Prepared offline
 
 - Both j0099 patches coexist. A real SweetGPU cleanup hunk conflict was fixed
@@ -38,9 +57,9 @@ Workflow `xnu.yml`, `topaz_4k=1`. Runs `40353134781` and `40354341764` were
 cancelled while queued; neither compiled. The first was superseded by a corrected
 C++ symbol check; the second was blocked by the active macOS14 brownout.
 Supported Intel-runner build: **40358833912**, source **8405096**. ARM run
-40357619511 was cancelled while queued without compiling. The Intel build's outcome and image
-paths/hashes are recorded below and in NOTES.md when available. Do not equate
-CI with device success.
+40357619511 was cancelled while queued without compiling. The Intel build
+passed in24m25s including the cold build and artifact steps. Do not equate CI
+with device success.
 
 GitHub's [macOS14 retirement notice](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/)
 lists the Oct26 14:00UTC–Oct27 00:00UTC brownout and Nov2 retirement. The kernel
@@ -66,6 +85,9 @@ python tools/g2/wifi-build-kit.py --run 40358833912 --expected-head 840509680753
 
 The downloader refuses queued, failed or mismatched builds and requires the CI integration-gate output before
 packaging. `wifi-images.py` can also package a separately verified local kernel.
+For an interrupted download, `--resume` requires saved metadata for the exact
+same successful source/run and refuses to overwrite existing images. Build-job
+log downloads retry with HTTP/2 disabled after an observed stream cancellation.
 
 Images: `wifi-default.img` exercises defaults without modem/wifi/delay arguments;
 `wifi-diagnostic.img` differs by `wifi_diag=1`; `wifi-off.img` uses

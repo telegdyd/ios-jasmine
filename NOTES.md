@@ -1,3 +1,43 @@
+### 2026-10-26: Wi-Fi offline preparation complete; three verified images ready
+
+Combined 4KiB kernel CI40358833912 PASS, source84050968075304307e93f16baeb7f507725e8d70.
+Build job16:24:42–16:49:07UTC (24m25s, cold supported Intel runner). All repository
+patches applied; source and linked-symbol gates PASS. Pinned legacy IIG17
+definitions replayed exactly, no RPC-layout change. Original macos14 brownout
+and queued ARM attempts are superseded; kernel job now macos-15-intel.
+
+Verified CI SHA256SUMS kernel2c281ee61aec20187df365d1b07d6f2b121109ad5bc4e06458e93dabd38051be.
+Images ready under original checkout's ignored research/wifi-integration/
+ci-40358833912/images/ (all17403904 bytes):
+- wifi-default.img SHA256f17574a2054d2dd50399d2779e3e42770a98fb63f66cc242ba9a6c739cf975fe
+- wifi-diagnostic.img SHA25638d87a4eca45f7229fb3600b663e8d276ee1bf7e42e694f52f1f5e54d046a771
+- wifi-off.img SHA2565f2d3c0c7aa1df73708c1cb1e6b8954692cb3f5edff0252bfa5423bcf5beeef3
+manifest.json records exact args/source/kernel/baseline/ADT hashes. Default and
+diagnostic preserve j99's exact shim+hardware ADT; off removes only wlan node.
+Independent image SHA256, Android SHA1 header IDs, payload roundtrips and
+variant arguments PASS. Default has no modem/wifi/delay args (tests defaults);
+diagnostic adds wifi_diag=1; off adds modem=0 wifi=0. No new GPU library involved.
+
+First all-run log download hit HTTP2 CANCEL before kernel/image creation;
+wifi-build-kit.py now downloads the build-job log directly, retries and supports
+exact-run --resume. Retry succeeded; build.log, run.json, kernel/SHA256SUMS,
+kernel and images are saved. kit-retry-result.txt has packaging output.
+Watch session10500 ended on that transient download error; retry77040 completed0.
+No remaining background task/collector from this preparation.
+
+Device acceptance NOT RUN. Ready runbook jasmine/WIFI-INTEGRATION.md includes
+default boot/auto-join/internet+USB, production-matched GL7/7 control, AP-loss
+and wrong-password recovery, two joined reboots and off fallback. Fresh shared
+availability and charging-shell capacity>=30% before using phone; original12%
+net-discharge observation was never rechecked here. No phone command, lock,
+boot, installation, partition write or device result in this task.
+After device acceptance, direct merge into jasmine is sufficient (draft PR1
+optional). Slot-b flashing still requires explicit confirmation. Production
+library14e32aea... and all device partitions/backups remain untouched.
+Active isolated checkout/branch codex/wifi-integration-build; published canonical
+branch origin/codex/wifi-integration. Final changes after8405096 are docs and
+host downloader resilience, not kernel source/workflow changes.
+
 ### 2026-10-26: Wi-Fi cold Intel build progressing; production GL control staged
 
 CI40358833912 /8405096 remains in Build. Live job log is downloadable with
