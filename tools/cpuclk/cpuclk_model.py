@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Offline model of the Gold (perf, apc1) cluster clock setup on SDM660 / Mi A2,
+Offline model of both clusters' clock setup on SDM660 / Mi A2,
 as the downstream msm-4.4 drivers compute it: speed bin, CPR fuse combo,
 per-corner open-loop / floor / ceiling voltages, target quotients, the CPRh
 per-corner register words, and the OSM LUT rows the kernel writes.
@@ -21,10 +21,12 @@ those DT properties are absent).
 Usage:
   cpuclk_model.py DTS FUSES      FUSES: text with "NN 0xVALUE" per row, or a
                                  kernel log with "SWEET OSM: fuse NN 0x..."
-  cpuclk_model.py DTS --zero     all CPR fuses 0 (sanity run), speed bin 1
+  cpuclk_model.py DTS FUSES --cluster both   Gold + Silver (default: gold)
+  cpuclk_model.py DTS --zero     synthetic CPR fuses 0, speed bin 1; NOT chip data
 """
 import re
 import sys
+import argparse
 
 STEP = 4000             # qcom,voltage-step (apc1), uV
 BASE_VOLT = 400000      # qcom,voltage-base
@@ -48,6 +50,32 @@ QOFF = [[], [(70, 27, 33)], [(70, 20, 26)], [(70, 13, 19)], [(70, 60, 63), (71, 
 REF_VOLT = [724000, 788000, 868000, 988000, 1068000]    # K:490 sdm660 perf
 CORNER_NAME = ["SVS", "SVSPLUS", "NOM", "TURBO", "TURBO_L2"]
 
+# K:203/253/303/353/482, SDM660 power cluster (apc0). CPR uses the shared
+# speed-bin fuse; this stock DT also maps both OSM efuses to that same row.
+CLUSTERS = {
+    "gold": dict(node="cprh-ctrl@179c4000", osm="perfcl", names=CORNER_NAME,
+                 ro=RO_SEL, init=INIT_V, quot=TQUOT, qoff=QOFF, ref=REF_VOLT),
+    "silver": dict(node="cprh-ctrl@179c8000", osm="pwrcl",
+                   names=["LowSVS", "SVS", "SVSPLUS", "NOM", "TURBO_L1"],
+                   ro=[[(67, 12, 15)], [(67, 8, 11)], [(65, 56, 59)],
+                       [(67, 4, 7)], [(67, 0, 3)]],
+                   init=[[(67, 34, 39)], [(67, 28, 33)], [(71, 3, 8)],
+                         [(67, 22, 27)], [(67, 16, 21)]],
+                   quot=[[(68, 12, 23)], [(68, 0, 11)], [(71, 9, 20)],
+                         [(67, 52, 63)], [(67, 40, 51)]],
+                   qoff=[[], [(68, 38, 44)], [(71, 21, 27)],
+                         [(68, 31, 37)], [(68, 24, 30)]],
+                   ref=[644000, 724000, 788000, 868000, 1068000]),
+}
+
+
+def required_rows(cluster):
+    config = CLUSTERS[cluster]
+    segments = SPEED_BIN + FUSING_REV
+    for key in ("ro", "init", "quot", "qoff"):
+        segments += [part for corner in config[key] for part in corner]
+    return {row for row, _, _ in segments}
+
 
 def cround(n, d):
     """R:857 CPR3_ROUND = DIV_ROUND_UP(n, d) * d (C integer division, n >= 0 here)."""
@@ -69,7 +97,9 @@ def read_param(rows, segs):
     val, total = 0, 0
     for row, lo, hi in segs:
         bits = hi - lo + 1
-        val |= ((rows.get(row, 0) >> lo) & ((1 << bits) - 1)) << total
+        if row not in rows:
+            raise ValueError("missing fuse row %d; refusing to substitute zero" % row)
+        val |= ((rows[row] >> lo) & ((1 << bits) - 1)) << total
         total += bits
     return val
 
@@ -139,16 +169,20 @@ class Corner:
         self.use_open_loop = False
 
 
-def cprh_model(dt, rows, log):
+def cprh_model(dt, rows, log, cluster="gold"):
+    config = CLUSTERS[cluster]
+    missing = required_rows(cluster) - rows.keys()
+    if missing:
+        raise ValueError("%s: missing fuse rows %s" % (cluster, sorted(missing)))
     speed_bin = read_param(rows, SPEED_BIN)                        # K:916
     rev = read_param(rows, FUSING_REV)                             # K:706
     combo = rev + 8 * speed_bin                                    # K:763
     fuse = {k: [read_param(rows, p[i]) for i in range(5)]
-            for k, p in (("init", INIT_V), ("quot", TQUOT), ("ro", RO_SEL), ("qoff", QOFF))}   # K:716-752
+            for k, p in ((key, config[key]) for key in ("init", "quot", "ro", "qoff"))}   # K:716-752
     log("speed bin %d, CPR fusing rev %d, fuse combo %d" % (speed_bin, rev, combo))
     for i in range(5):
         log("  fuse corner %-8s init %#04x  quot %4d  ro %2d  quot_offset %3d"
-            % (CORNER_NAME[i], fuse["init"][i], fuse["quot"][i], fuse["ro"][i], fuse["qoff"][i]))
+            % (config["names"][i], fuse["init"][i], fuse["quot"][i], fuse["ro"][i], fuse["qoff"][i]))
 
     # U:541 cpr3_parse_common_corner_data
     n_fc = dt["qcom,cpr-fuse-corners"][0]
@@ -202,8 +236,8 @@ def cprh_model(dt, rows, log):
             c[i].fc = n_fc - 1
 
     # K:1010 cprh_kbss_calculate_open_loop_voltages
-    fv = [ol_fuse(REF_VOLT[i], FUSE_STEP, fuse["init"][i], FUSE_SIZE) for i in range(5)]   # K:1069
-    log("fused open-loop: " + ", ".join("%s %d" % (CORNER_NAME[i], fv[i]) for i in range(5)))
+    fv = [ol_fuse(config["ref"][i], FUSE_STEP, fuse["init"][i], FUSE_SIZE) for i in range(5)]   # K:1069
+    log("fused open-loop: " + ", ".join("%s %d" % (config["names"][i], fv[i]) for i in range(5)))
     if "qcom,cpr-open-loop-voltage-fuse-adjustment" in dt:        # U:1436
         adj = [s32(x) for x in array("qcom,cpr-open-loop-voltage-fuse-adjustment", n_fc)]
         fv = [fv[i] + adj[i] for i in range(5)]
@@ -334,14 +368,22 @@ def cprh_corner_regs(c):
 
 
 # ---------------------------------------------------------------- OSM (perfcl)
-def osm_model(osm, rows, corners, log):
-    efuse = rows.get(38, 0) & 0xffffffff                           # readl(perfcl_efuse 0x784130)
-    sb = (efuse >> 29) & 7                                         # O:3209 PERFCL_EFUSE_SHIFT/MASK
-    prop = "qcom,perfcl-speedbin%d-v0" % sb
+def osm_model(osm, rows, corners, log, cluster="gold"):
+    prefix = CLUSTERS[cluster]["osm"]
+    # O:3138/3187/3205: without a named efuse resource use the bin-0 LUT.
+    has_efuse = '"%s_efuse"' % prefix in osm["reg-names"]
+    if has_efuse:
+        resources = re.findall(r'"([^"]+)"', osm["reg-names"])
+        index = resources.index(prefix + "_efuse") * 2
+        if osm["reg"][index:index + 2] != [0x784130, 8]:
+            raise ValueError("unsupported %s efuse mapping" % prefix)
+    # O:229/231: both resources use bits 31:29 of their low 32-bit word.
+    sb = read_param(rows, SPEED_BIN) if has_efuse else 0
+    prop = "qcom,%s-speedbin%d-v0" % (prefix, sb)
     arr = osm[prop]
     assert len(arr) % 5 == 0
     nrows = len(arr) // 5
-    log("OSM: perfcl speed bin %d -> %s, %d rows" % (sb, prop, nrows))
+    log("OSM: %s speed bin %d -> %s, %d rows" % (prefix, sb, prop, nrows))
     table = []
     for j in range(OSM_TABLE_SIZE):                                # O:941 rows past the end repeat the last
         k = min(j, nrows - 1) * 5
@@ -387,35 +429,33 @@ def parse_fuses(path):
         m = re.search(r"SWEET OSM: fuse (\d+) (0x[0-9a-fA-F]+)", line) or \
             re.match(r"\s*(\d+)\s+(0x[0-9a-fA-F]+)\s*$", line)
         if m:
-            rows[int(m.group(1))] = int(m.group(2), 16)
+            row, value = int(m.group(1)), int(m.group(2), 16)
+            if value >= 1 << 64:
+                raise ValueError("fuse row %d exceeds 64 bits" % row)
+            if row in rows and rows[row] != value:
+                raise ValueError("conflicting values for fuse row %d" % row)
+            rows[row] = value
     return rows
 
 
-def main():
-    if len(sys.argv) != 3:
-        print(__doc__)
-        sys.exit(1)
-    text = open(sys.argv[1], encoding="utf-8").read()
-    if sys.argv[2] == "--zero":
-        rows = {38: 0x88614230_3040008c}        # the measured speed-bin row, CPR fuses 0
-    else:
-        rows = parse_fuses(sys.argv[2])
-    ctrl = parse_dts_node(text, "cprh-ctrl@179c4000")
-    vreg = parse_dts_node(text[text.find("cprh-ctrl@179c4000"):], "regulator")
+def report_cluster(text, rows, cluster):
+    config = CLUSTERS[cluster]
+    ctrl = parse_dts_node(text, config["node"])
+    vreg = parse_dts_node(text[text.find(config["node"]):], "regulator")
     vreg["ctrl"] = ctrl
     osm = parse_dts_node(text, "qcom,clk-cpu-660@179c0000")
-    m = cprh_model(vreg, rows, print)
+    m = cprh_model(vreg, rows, print, cluster)
     c = m["corners"]
     base, words = cprh_corner_regs(c)
-    print("\nCPRh apc1 corners (uV); last = APM crossover corner")
+    print("\nCPRh %s corners (uV); last = APM crossover corner" % ("apc1" if cluster == "gold" else "apc0"))
     print(" vc   freq MHz  fc   floor  open-loop  ceiling   RO  quot   CPRH_REG_CORNER")
     for i, x in enumerate(c):
         r = next((k for k in range(CPR3_RO_COUNT) if x.quot[k]), 0)
         print(" %2d  %8.1f  %2s  %7d  %7d  %7d   %2d  %4d   %#010x"
               % (i, x.freq / 1e6, x.fc if x.freq else "-", x.floor, x.open_loop, x.ceiling, r, x.quot[r], words[i]))
     print(" base target quotients per RO: %s" % base)
-    o = osm_model(osm, rows, c, print)
-    print("\nOSM perfcl LUT (rows %d..39 repeat row %d)" % (o["nrows"], o["nrows"] - 1))
+    o = osm_model(osm, rows, c, print, cluster)
+    print("\nOSM %s LUT (rows %d..39 repeat row %d)" % (config["osm"], o["nrows"], o["nrows"] - 1))
     print(" idx  freq MHz  src div cores  L    vc  OLV mV  spare  FREQ_REG    VOLT_REG    OVERRIDE")
     for i, e in enumerate(o["table"][:o["nrows"]]):
         fd = e["fdata"]
@@ -427,5 +467,36 @@ def main():
           % (o["apm_threshold_vc"], o["apm_pre_vc"], o["apm_crossover_vc"], o["mem_acc_vc"], o["seq32_lval"] or 0))
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("dts")
+    parser.add_argument("fuses", nargs="?")
+    parser.add_argument("--zero", action="store_true", help="synthetic sanity input, NOT chip data")
+    parser.add_argument("--cluster", choices=("gold", "silver", "both"), default="gold")
+    args = parser.parse_args()
+    if bool(args.fuses) == args.zero:
+        parser.error("provide exactly one of FUSES or --zero")
+    clusters = ("gold", "silver") if args.cluster == "both" else (args.cluster,)
+    text = open(args.dts, encoding="utf-8-sig").read()
+    if args.zero:
+        print("SYNTHETIC ZERO-FUSE SANITY RUN: not a voltage table for this chip")
+        rows = {row: 0 for cluster in clusters for row in required_rows(cluster)}
+        rows[38] = 0x88614230_3040008c
+    else:
+        rows = parse_fuses(args.fuses)
+    # Validate all requested inputs before printing any candidate tables.
+    for cluster in clusters:
+        missing = required_rows(cluster) - rows.keys()
+        if missing:
+            raise ValueError("%s: missing fuse rows %s" % (cluster, sorted(missing)))
+    for cluster in clusters:
+        if args.cluster == "both":
+            print("\n=== %s ===" % cluster.upper())
+        report_cluster(text, rows, cluster)
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, KeyError) as exc:
+        sys.exit("cpuclk model: %s" % exc)

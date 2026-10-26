@@ -4,7 +4,10 @@
     osmctl.py 'r 0x179c3004; state'      one or more commands (';'-separated)
     osmctl.py                            interactive: one line per command, empty line quits
 
-Needs a kernel booted with sweetosm= (sweetosm=8: table + commands only).
+Needs sweetcmd=1 or sweetosm=. For status reads on the normal sweetgold clock,
+use sweetcmd=1 without sweetosm. sweetosm=8 computes tables but skips sweetgold
+(the clock code skips it for all sweetosm>=2). The historical live check needs
+sweetosm reference initialization; with sweetcmd alone its reference is unset.
 Commands (osfmk/arm64/sweet_osm.c, osm_cmd_one):
   r ADDR [N]   read N (1..16) words          w ADDR VAL   write, then read back
   tr ADDR      TZ IO read                    tw ADDR VAL  TZ IO write, TZ read back

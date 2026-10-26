@@ -1,5 +1,11 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: task2 CPU DVFS restarted for both clusters.**
+[Active CPU plan and validation](PERF-TASK2-DVFS.md). Offline model now covers
+Gold/Silver; six input checks PASS, Gold output unchanged, Silver stock table
+derived through1843.2MHz. Voltage commit remains unproven; no new governor,
+kernel build, CI run, device test or CPU/GPU/DDR default change in this milestone.
+
 **2026-10-26 02:10: task24 paired diagnostic deferred at13% battery.**
 Phone session approved, but readiness check below agreed30% threshold. Left in
 verified charging shell/backlight0/float4050000; own lock released. No boot,

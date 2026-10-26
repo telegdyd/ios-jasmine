@@ -1,5 +1,11 @@
 # Brief: the Gold cluster's clock done properly (OSM + CPRh, DVFS)
 
+**2026-10-26 restart:** this is a historical brief. The active dual-cluster plan
+and first implementation milestone are [PERF-TASK2-DVFS.md](PERF-TASK2-DVFS.md).
+Eight cores already boot with 4K pages; OSM attempts and the SAW voltage blocker
+are recorded in NOTES.md. The offline model now covers Silver too. Follow the
+active plan for current scope, voltage limits and diagnostic-mode caveats.
+
 Written 2026-10-22 05:10 for the next agent, at the user's request. Scope: make XNU run the four Gold cores the way
 the stock Android kernel does: Qualcomm's OSM clock sequencer with per-chip CPR voltages, frequency scaling with load,
 and the hardware limits. Goals: speed (2208 MHz instead of a fixed 1747 MHz) **and** power (low clock and voltage when
