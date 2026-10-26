@@ -116,6 +116,32 @@ linking or GPU behavior. All eight regenerated patches apply; reversing0008
 also passes its application check. Actual iOS compile/sign remains the CI gate.
 No driver fix has been made, and no further phone session has run.
 
+**Paired build ready:** source `339bb02`, Mesa CI `40252267715` PASS (3m22s),
+including the pre-experiment rebuild/sign step. Downloaded Mach-O headers,
+diagnostic strings and CI-exported hashes independently checked. The retained
+marker is present in the normal binary and absent from the pre0008 control.
+Artifacts/provenance/logs are ignored under `research/t24/diagnostic-ios/`,
+`diagnostic-artifacts.json`, `diagnostic-ci.json`, `diagnostic-build.log`.
+
+| Signed test | SHA256 |
+| --- | --- |
+| Current, disabled by diagnostic mode | `087c5668b339b8705c71f2a297ce1f71b83798bce6e63ea7a0a1e5839591c684` |
+| Patch0008 removed | `1ed0608b3c5eb1dae8734168707edddab0c0bd01707ec61005b2a313f05051ea` |
+
+These are compile/sign results only; no new GPU result or root cause established.
+
+The next bounded device diagnostic is four processes, each with a 20-second
+remote execution limit: current test and pre0008 test, each with
+`--feedback-diagnostics`, then each with `--feedback-diagnostics --no-tc`.
+All force retention off. A completed diagnostic may exit1 because it reproduced
+pixel mismatches; retain its per-check results and compare them across modes.
+A missing check, timeout, nonzero GL error, retained-path marker, or new GPU/
+SMMU fault aborts the session. No speed run or enabled-barrier case belongs to
+this diagnostic. Use test-name binaries, verify production bytes unchanged,
+remove own files and restore r109 charging afterward. First check charging-shell
+battery capacity and defer the iOS boot if still low (below30%); the preceding
+session ended at16%. Do not spend that remaining battery on repeated boots.
+
 ## Cleanup and final phone state
 
 Removed the sole test binary. Production before/after bytes have identical

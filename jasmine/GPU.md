@@ -1,5 +1,13 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26: task24 paired baseline diagnostics build successfully.**
+[Diagnostic controls and exact hashes](PERF-TASK24-PIXEL-GATE.md).
+Source339bb02 / CI40252267715 PASS, normal and patch0008-removed signed tests.
+Separate forced-off diagnostic mode preserves the original acceptance test;
+28 controls isolate clear/wait and target/alias behavior. No new device result,
+root cause or fix; phone remains in last verified charging state. Fresh paired
+TC on/off session coordinated separately, with battery check before iOS boot.
+
 **2026-10-26: task24 disabled baseline fails new pixel tests.**
 [Exact results and next diagnostic gate](PERF-TASK24-PIXEL-GATE.md).
 Source8b6f7e0 / CI40250210168, first off/TC-default case: repeated feedback

@@ -1,3 +1,21 @@
+### 2026-10-26: task24 paired baseline diagnostics built; phone coordination pending
+
+Implementation339bb02 pushed. Mesa CI40252267715 PASS3m22s including reverse0008
+control rebuild/sign. Signed tests SHA087c5668... (normal),1ed0608b... (pre0008);
+Mach-O, diagnostic strings, retained marker present/absent and exported hashes
+verified. Artifacts ignored research/t24/diagnostic-ios/; diagnostic-ci.json,
+diagnostic-artifacts.json and diagnostic-build.log preserve exact evidence.
+Report jasmine/PERF-TASK24-PIXEL-GATE.md has commands/28-check controls and scope.
+Local syntax check passes; original acceptance body verified unchanged.
+No driver fix or new GPU result, no gain. Phone untouched this turn; last verified
+r109 charging16%, own lock released. Fresh coordination requested for 4processes:
+normal/pre0008 x TC on/off, --feedback-diagnostics forces barrierOFF. Gate iOS
+boot on charging-shell capacity>=30%; lower battery means defer/leave charging.
+Expected pixel failures are diagnostic data, but timeout/missing checks/nonzero
+GLerror/newGPUfault abort. Test-name only, verify production/remove files/restore
+charging. Prior matrix's first disabled baseline failed; retained path untested.
+Standing Task24 push/CI approval. Task24 open; defaults unchanged.
+
 ### 2026-10-26: task24 baseline diagnostic controls prepared offline
 
 See jasmine/PERF-TASK24-PIXEL-GATE.md diagnostic section. Added explicit

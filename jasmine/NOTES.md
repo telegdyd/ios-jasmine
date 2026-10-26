@@ -1,3 +1,16 @@
+### 2026-10-26: task24 paired baseline diagnostic builds ready
+
+Source339bb02 / Mesa CI40252267715 PASS3m22s, normal + pre0008 signed GPU tests.
+Hashes087c5668.../1ed0608b..., Mach-O and diagnostic/marker presence verified.
+--feedback-diagnostics forces barrierOFF,28 checks compare clear stages/wait
+controls and imported/same-name revisit against ordinary GL allocations. Original
+acceptance sequence unchanged. See PERF-TASK24-PIXEL-GATE.md and root NOTES.
+No new phone access/result/fix/gain. Last verified r109 charging16%, own lock
+released. Fresh phone coordination pending for paired source x TC modes; defer
+iOS if battery below30%, then restore charging/remove ownfiles/verify production.
+Candidate defaultoff/retained path untested; prior disabled-baseline failures
+remain blocker. Standing Task24 push/CI approval, task24 open.
+
 ### 2026-10-26: task24 disabled GPU baseline failed; charging shell restored
 
 See PERF-TASK24-PIXEL-GATE.md and root NOTES active handoff. Source8b6f7e0 /
