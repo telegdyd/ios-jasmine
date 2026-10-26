@@ -1,3 +1,19 @@
+### 2026-10-26: task24 diagnostic session approved but deferred at13% battery
+
+User approved phone-free paired baseline diagnostic session. Acquired own shared
+lock;02:10:02 Budapest charging shell reports capacity13%, Charging,+41503uA,
+3718984uV, chargeronline1, backlight0,float4050000. Below agreed30% pre-boot
+threshold: no iOS boot, install, diagnostic process or collector ran. Phone left
+in existing charging shell; own lock released. Evidence ignored under
+research/t24/diagnostic-session/{charging-before.txt,state.json,lock-released.txt}.
+Capacity fell from prior16%; this single check does not establish a cause or
+reliable charge-rate estimate. No charger setting changed.
+Paired artifacts/source339bb02 / Mesa CI40252267715 PASS remain ready; details
+jasmine/PERF-TASK24-PIXEL-GATE.md. Existing baseline pixel failure unresolved,
+retained path untested/defaultoff, no gain. User's phone-session approval is
+recorded; next check shared availability and capacity>=30 before that unused
+bounded session. No automatic follow-up scheduled; do not boot low battery.
+
 ### 2026-10-26: task24 paired baseline diagnostics built; phone coordination pending
 
 Implementation339bb02 pushed. Mesa CI40252267715 PASS3m22s including reverse0008

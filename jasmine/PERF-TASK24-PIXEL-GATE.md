@@ -1,5 +1,15 @@
 # Task 24: default-off pixel gate failed
 
+**Latest readiness check, 2026-10-26 02:10:02 Budapest:** user approved the
+paired baseline diagnostic session. Acquired the shared lock, but charging
+shell capacity was13%, below the agreed30% threshold. Reported Charging,
++41503uA,3718984uV, chargeronline1, backlight0,float4050000. No iOS boot,
+install or diagnostic ran. Left charging unchanged and released own lock.
+Evidence ignored under `research/t24/diagnostic-session/`. Prior capacity16%
+does not establish a charge-rate estimate or the cause of the lower reading.
+Session approval is recorded but unused; wait for sufficient charge before
+the bounded matrix. No automatic follow-up is scheduled.
+
 2026-10-26, Budapest. Candidate source `8b6f7e0`, Mesa CI `40250210168`
 PASS. The first GPU case failed with the experimental barrier **disabled**.
 The matrix stopped; no enabled case or performance trial ran. Task 24 remains

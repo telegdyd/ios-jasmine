@@ -1,3 +1,15 @@
+### 2026-10-26: task24 diagnostic approved; deferred for low battery
+
+User approved paired baseline diagnostic session. Own lock acquired;02:10:02
+charging shell13%/Charging,+41503uA/3718984uV, chargeronline1, backlight0 and
+float4050000. Below agreed30% threshold; no iOS boot/install/test/collector.
+Left charging unchanged, own lock released. Capacity previously16%; cause not
+established. Ignored evidence research/t24/diagnostic-session/. Paired339bb02 /
+CI40252267715 artifacts ready; GPU failure/root cause unresolved, no gain.
+Approval recorded for unused bounded session; next ensure shared availability
+and capacity>=30 before boot. No automatic follow-up scheduled. Root NOTES and
+PERF-TASK24-PIXEL-GATE.md contain the active handoff.
+
 ### 2026-10-26: task24 paired baseline diagnostic builds ready
 
 Source339bb02 / Mesa CI40252267715 PASS3m22s, normal + pre0008 signed GPU tests.

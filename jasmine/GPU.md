@@ -1,5 +1,11 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-26 02:10: task24 paired diagnostic deferred at13% battery.**
+Phone session approved, but readiness check below agreed30% threshold. Left in
+verified charging shell/backlight0/float4050000; own lock released. No boot,
+install or GPU test. Paired source339bb02/CI40252267715 artifacts remain ready.
+Prior baseline pixel failures unresolved, no gain; root NOTES has active handoff.
+
 **2026-10-26: task24 paired baseline diagnostics build successfully.**
 [Diagnostic controls and exact hashes](PERF-TASK24-PIXEL-GATE.md).
 Source339bb02 / CI40252267715 PASS, normal and patch0008-removed signed tests.
