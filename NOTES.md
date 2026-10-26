@@ -6,14 +6,16 @@ j0064-ddr and main in one atomic push, each guarded by its audited tip lease.
 Deleted the five corresponding local branches (no local main existed).
 Profiler/scheduler worktrees preserved at their existing commits as detached
 HEADs d7e7047/8620435; no directory or ignored artifact removed.
-Prior audit committed as 67fdae4. Remaining six origin branches: jasmine, wifi,
-codex/framebench-build, t16-build1, t5tc-diag, topaz (still default).
-Remaining local branches: same except topaz, plus codex/wifi-integration.
+Prior audit committed as 67fdae4. Final live check found seven origin branches:
+jasmine, wifi, codex/framebench-build, t16-build1, t5tc-diag, topaz (still
+default), plus codex/wifi-integration newly published at 341b28f during this
+cleanup by concurrent work. Remaining six local branches: same except topaz.
 Topaz requires default change before retirement; t5tc-diag requires archive
 preservation first; neither was approved for this deletion and both retained.
 Current integration worktree already had four unrelated tracked modifications
 (.github/workflows/xnu.yml, tools/g2/mkimg.sh, tools/mkadt.py, j0099 patch);
-left untouched and excluded from this documentation commit. No new CI/build/
+left untouched and excluded from this documentation commit; concurrent commit
+341b28f had committed them by final verification. This cleanup ran no CI/build/
 boot/device action. Task24/charging handoff below unchanged.
 Milestone commit subject: docs: record approved branch deletions.
 
