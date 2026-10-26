@@ -1,3 +1,28 @@
+### 2026-10-26 23:44: CPU checker device PASS on4/8; neutral RPM kernel building
+
+Published40b6e3d (matched baseline report + bounded neutral probe). Probe
+CI40414145643/40b6e3d in progress, job121892076489. It must pass12scenario
+hostprobe test, marker/call and linked-symbol guard in addition to prior gates.
+No neutralRPMrequest sent yet. New image-tool --cpu-rpm-probe opt-in checks
+kernelmarker; negative oldkernel rejection PASS before writing an output dir.
+Host tool strips inherited sweetcpurpm so default packaging never enables it.
+
+Checker kernel CI40410605951/e74a086 temporarily tested4 and8 cores from
+checker-images manifest. ImageSHA4fa92ac98081f6b9eb421577cfa44830b65f0fadd8b596269bf28a20ce941846c;
+8:85c03675f7601113076c843dabeb41220913eb6855a52d344fd1798efb89f6bf.
+Both print SWEET CPUCHECK boot reference ready; no SWEET OSM setup/watch/probe
+lines. Startup100runs/CPU0errors. Livecheck4x20 and8x20 zeroerrors; every
+worker pinned to expectedCPU/MPIDR/P-E. Gold14.3ms/run, Silver26.1ms/run for
+this deterministic workload; not frequency measurements. Host validator fixed
+to accept MPIDR0 printed as0, not0x0. Actual8corecheck itself passed both times.
+Rails unchanged872/868/868mV, GoldL0x5b/RCG0x301, SilverL0x48/RCG0x501, GPU588,
+DDR1804. Checker4 cleanactualfastboot; phone nowchecker8, own console collector
+and lock held. LastTSENS max61.5C. No clock/voltage increase or partition flash.
+Next successfulprobeCI: verifyhash/logs, temporary4coreopt-inprobe image,
+runchecker then neutralS1first (Silver parked), read/statuscheck, thenS2/S3 only
+if priorrequestACK+unchanged. Firmware support unknown; stoponfailure. Parkr109,
+verifyproductionlibraryunchanged, releaseonlyownlock and updatefinalhandoff.
+
 ### 2026-10-26 23:36: CPU baseline complete; checker CI PASS; RPM probe prepared
 
 Report jasmine/PERF-CPU-BASELINE-20261026.md. Accepted kernel d42bfb4 used for

@@ -24,7 +24,7 @@ def digest(blob):
     return hashlib.sha256(blob).hexdigest()
 
 
-def prepare(kernel, baseline, out, revision, ci_run):
+def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False):
     if out.exists():
         raise ValueError('refusing to overwrite ' + str(out))
     blob = baseline.read_bytes()
@@ -51,11 +51,15 @@ def prepare(kernel, baseline, out, revision, ci_run):
     # Omit broad OSM probes and retain the normal manual Gold clock. DDR is
     # held at the current production setting in both variants, even if the
     # accepted Wi-Fi image inherited a baseline without a sweetddr argument.
-    replace = {'cpus', 'sweetosm', 'osmwatch', 'sweetcmd', 'sweetddr'}
+    replace = {'cpus', 'sweetosm', 'osmwatch', 'sweetcmd', 'sweetddr', 'sweetcpurpm'}
     common = [a for a in args if a.split('=')[0] not in replace]
     model = mkpayload.parse_macho(kernel.read_bytes())
     if model['cputype'] != 0x100000c or model['cpusub'] != 0:
-        raise ValueError('expected a plain arm64 4K kernel')
+        raise ValueError('expected a plain arm64 kernel')
+    if cpu_rpm_probe:
+        if b'SWEET CPURPM: neutral S' not in kernel.read_bytes():
+            raise ValueError('kernel has no neutral CPU RPM probe')
+        common.append('sweetcpurpm=1')
     out.mkdir(parents=True)
     dtpath = out / 'hardware.adt'
     dtpath.write_bytes(dt)
@@ -63,6 +67,7 @@ def prepare(kernel, baseline, out, revision, ci_run):
                   kernel_sha256=digest(kernel.read_bytes()), baseline=str(baseline.resolve()),
                   baseline_sha256=digest(blob), adt_sha256=digest(dt),
                   checker_reference=b'SWEET CPUCHECK: boot reference ready' in kernel.read_bytes(),
+                  cpu_rpm_probe=cpu_rpm_probe,
                   four_k_provenance='caller must verify CI topaz_4k=1', images={})
     for count in (4, 8):
         cmdline = ' '.join(common + [f'cpus={count}', 'sweetcmd=1', 'sweetddr=1804'])
@@ -90,5 +95,6 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--revision', required=True)
     parser.add_argument('--ci-run', required=True, type=int)
+    parser.add_argument('--cpu-rpm-probe', action='store_true', help='opt in to the gated neutral-only diagnostic')
     a = parser.parse_args()
-    prepare(a.kernel, a.baseline, a.out, a.revision, a.ci_run)
+    prepare(a.kernel, a.baseline, a.out, a.revision, a.ci_run, a.cpu_rpm_probe)

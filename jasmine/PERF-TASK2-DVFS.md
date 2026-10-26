@@ -26,6 +26,12 @@ vote or clock change. Twelve host scenarios PASS; CI/device gate pending.
 Firmware support remains unknown; an ACK at the same voltage would not prove
 voltage scaling. Never send an implicit single-key first CPU-rail vote.
 
+Device follow-up: CI40410605951 checker passes on both4 and8 CPUs with
+sweetcmd-only boots, OSM setup disabled. Startup100runs/core and live20runs/core
+have zero errors, with every worker on its expected CPU/MPIDR/cluster. Clocks
+and rails remain at baseline. Probe CI40414145643/40b6e3d is building; no live
+CPU-RPM request yet. Current image hashes and console references are in NOTES.md.
+
 ## Findings and first milestone
 
 - Eight-core bring-up already passed on 2026-10-22 (CI 39798911718,
