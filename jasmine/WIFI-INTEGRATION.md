@@ -37,13 +37,14 @@ It does not mark device acceptance complete or authorize partition flashing.
 Workflow `xnu.yml`, `topaz_4k=1`. Runs `40353134781` and `40354341764` were
 cancelled while queued; neither compiled. The first was superseded by a corrected
 C++ symbol check; the second was blocked by the active macOS14 brownout.
-Supported-runner build: **40357619511**, source **c83b9e3**. Its outcome and image
+Supported Intel-runner build: **40358833912**, source **8405096**. ARM run
+40357619511 was cancelled while queued without compiling. The Intel build's outcome and image
 paths/hashes are recorded below and in NOTES.md when available. Do not equate
 CI with device success.
 
 GitHub's [macOS14 retirement notice](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/)
 lists the Oct26 14:00UTC–Oct27 00:00UTC brownout and Nov2 retirement. The kernel
-job now uses macOS15. Xcode16's IIG emits a different RPC layout, so
+job now uses `macos-15-intel`. Xcode16's IIG emits a different RPC layout, so
 `tools/xnu-legacy-iig.py` preserves the exact Xcode15-generated headers and
 implementations from successful Wi-Fi CI40159794543. A pinned manifest checks
 1922 original source header/definition hashes, 34 output hashes and the IIG
@@ -60,7 +61,7 @@ round trips. Default/diagnostic ADTs must remain byte-identical to j99.
 The off image removes only `/arm-io/wlan`. No GPU library is installed/replaced.
 
 ```powershell
-python tools/g2/wifi-build-kit.py --run 40357619511 --expected-head c83b9e357a5d5abb19990402890f39cf0b7fc425 --baseline "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/shim/out/shim-boot-j99-wlan.img" --out "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/research/wifi-integration/ci-40357619511"
+python tools/g2/wifi-build-kit.py --run 40358833912 --expected-head 84050968075304307e93f16baeb7f507725e8d70 --baseline "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/shim/out/shim-boot-j99-wlan.img" --out "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/research/wifi-integration/ci-40358833912"
 ```
 
 The downloader refuses queued, failed or mismatched builds and requires the CI integration-gate output before

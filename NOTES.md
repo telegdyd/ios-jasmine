@@ -1,3 +1,13 @@
+### 2026-10-26: Wi-Fi combined build now running on Intel; phone untouched
+
+8405096 pushed to codex/wifi-integration; CI40358833912 accepted macos-15-intel
+immediately and is in progress (setup/checkout/fetch passed, dependencies next).
+Prior ARM40357619511 cancelled queued; no kernel produced. Current run includes
+all47 integrated patches, quiet/default-on/fallback behavior, pinned legacy IIG
+and strict skip/source/symbol checks. Source after8405096 is docs only.
+Images still pending successful CI. No phone command/lock/boot/install/flash.
+Direct merge supported after build/device acceptance; draft PR optional.
+
 ### 2026-10-26: Wi-Fi offline preparation continues on supported Intel runner
 
 Supported macos15 ARM run40357619511 also remained queued without a runner;
