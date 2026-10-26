@@ -1,3 +1,39 @@
+### 2026-10-26 23:29: Task 2 current baseline capture; diagnostic CI running
+
+User explicitly authorized pushing CPU DVFS milestones and building/testing as
+needed. Diagnostic repo commit e74a086 published on jasmine; CI40410605951
+(topaz_4k=1, kernel, Intel) running Build. New patch source8214a77; no Apple
+clang locally. Own phone lock still held (research/cpu-dvfs/owner.json).
+
+tools/cpuclk/images.py packages matched4/8 temporary images with accepted
+shim+AMP ADT unchanged; args differ only cpus=4/8. Omits sweetosm; fixes DDR1804
+for both (accepted Wi-Fi baseline omitted sweetddr). Independent image hash,
+Android header SHA1, payload/ADT/shim and arguments checks PASS. Existing accepted
+kernel d42bfb4/CI40398100808 used for baseline before new diagnostic kernel.
+
+Temporary baseline4 boot23:15, production readback hash14e32aea... exact. Gold
+1747, Silver PLL1382, GPU measured587-588, DDR1804, S1 set/valid872mV, S2/S3
+868mV; APM and MEM-ACC still0. Startup4core100runs0errors. UI Home screenshot
+viewed. After unlock+settling (trustd/accessoryupdater0ms/s), baseline4-a/b
+framebench captures PASS, symbols matched, no dropped records. HomeB21.84/21.57
+swap arrivals/s, median47.788/47.442ms; CCB20.23/21.19, median46.718/45.115ms.
+Not displayed FPS. HomeA in4-a had no swaps and is excluded. EndTSENS max58.5C.
+Clean actual fastboot23:23:27; RootUnmount0GPUimports/pins. Temporary baseline8
+boot followed, all8CPU_ON success and8core100runs0errors at unchanged clocks.
+
+baseline8-a is INVALID for comparison: settling check was before unlock; after
+unlock trustd/accessoryupdater resumed (~638/439ms/s in HomeA sampled window).
+Retained raw data. baseline8-postunlock gate0ms/s, baseline8-b now capturing.
+Both4core captures show no sync-process sampledCPU. Screenshot buffer2 has
+horizontal artifacts, buffer4 clean; -s dumps all render buffers, not confirmed
+active scanout, so neither displayed corruption nor clean visual acceptance
+is established. No new runtime GPU/SMMU fault observed; startupFSR0x400 baseline.
+All evidence ignored research/cpu-dvfs/. No voltage/PLL write, root/library
+change or partition flash. Phone currently running baseline8, own collector on.
+Next finish two settled8 captures, verify CI/build/artifacts, test fixed checker
+at normal4/8 clocks, park r109 and release only own lock. Governor/max clocks
+and voltage commit/APM investigation remain open.
+
 ### 2026-10-26: Task 2 diagnostic kernel prepared; phone available
 
 User explicitly approved pushing prior milestone and continuing with full phone
