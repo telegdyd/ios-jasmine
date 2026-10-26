@@ -1,3 +1,17 @@
+### 2026-10-26: Wi-Fi offline preparation continues on supported Intel runner
+
+Supported macos15 ARM run40357619511 also remained queued without a runner;
+cancellation requested to try the documented macos-15-intel pool. No build or
+new device result from it. Kernel and pinned IIG outputs unchanged. Local IIG
+replay matches both IOUserClient outputs byte-for-byte; modified definition
+negative control rejects. Added download-time verification of CI SHA256SUMS.
+Latest jasmine README/handoff e4ac03c merged as7b608e6; both handoffs preserved,
+only docs changed since compiled-source candidate c83b9e3. PR is optional: user
+asked why it exists; explained it is a review aid, not a merge requirement.
+Direct branch merge after successful build/device acceptance remains valid.
+No phone access/lock/boot/write. Next: commit/dispatch Intel runner, verify and
+package artifacts if available; runbook/tools ready even if runner stays queued.
+
 ### 2026-10-26: README refreshed on jasmine for publication
 
 User explicitly requested the approved README update on jasmine and origin.

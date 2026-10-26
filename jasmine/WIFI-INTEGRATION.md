@@ -34,10 +34,24 @@ It does not mark device acceptance complete or authorize partition flashing.
 
 ## Build and image kit
 
-Workflow `xnu.yml`, `topaz_4k=1`. Initial run `40353134781` was cancelled while
-queued to correct the C++-mangled pin/unpin names in the linked-symbol guard.
-Final build outcome and image paths/hashes are recorded below and in NOTES.md
-when available. Do not equate CI with device success.
+Workflow `xnu.yml`, `topaz_4k=1`. Runs `40353134781` and `40354341764` were
+cancelled while queued; neither compiled. The first was superseded by a corrected
+C++ symbol check; the second was blocked by the active macOS14 brownout.
+Supported-runner build: **40357619511**, source **c83b9e3**. Its outcome and image
+paths/hashes are recorded below and in NOTES.md when available. Do not equate
+CI with device success.
+
+GitHub's [macOS14 retirement notice](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/)
+lists the Oct26 14:00UTC–Oct27 00:00UTC brownout and Nov2 retirement. The kernel
+job now uses macOS15. Xcode16's IIG emits a different RPC layout, so
+`tools/xnu-legacy-iig.py` preserves the exact Xcode15-generated headers and
+implementations from successful Wi-Fi CI40159794543. A pinned manifest checks
+1922 original source header/definition hashes, 34 output hashes and the IIG
+preprocessor configuration before replay. The private SweetSurface header and
+two unrelated HFS/libpthread SDK header copies are excluded; RPC headers and
+all IIG definitions are checked. No kernel ABI change or generated Apple source
+is committed. Each build refreshes this immutable seed as a 90-day artifact.
+If the source/generation configuration changes, the replay deliberately fails.
 
 The offline packager reuses `shim/out/shim-boot-j99-wlan.img`'s verified shim
 and hardware ADT, replacing only the kernel and the specified boot options.
@@ -46,9 +60,11 @@ round trips. Default/diagnostic ADTs must remain byte-identical to j99.
 The off image removes only `/arm-io/wlan`. No GPU library is installed/replaced.
 
 ```powershell
-gh run download RUN_ID -R telegdyd/ios-jasmine -n xnu-kernel -D xnu/out-jasmine-wifi-integration
-python tools/g2/wifi-images.py --kernel xnu/out-jasmine-wifi-integration/kernel.development.sweet --baseline shim/out/shim-boot-j99-wlan.img --out research/wifi-integration/images --revision SOURCE_SHA --ci-run RUN_ID
+python tools/g2/wifi-build-kit.py --run 40357619511 --expected-head c83b9e357a5d5abb19990402890f39cf0b7fc425 --baseline "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/shim/out/shim-boot-j99-wlan.img" --out "C:/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/research/wifi-integration/ci-40357619511"
 ```
+
+The downloader refuses queued, failed or mismatched builds and requires the CI integration-gate output before
+packaging. `wifi-images.py` can also package a separately verified local kernel.
 
 Images: `wifi-default.img` exercises defaults without modem/wifi/delay arguments;
 `wifi-diagnostic.img` differs by `wifi_diag=1`; `wifi-off.img` uses
@@ -136,7 +152,8 @@ Record every case PASS/FAIL/NOT RUN with exact log, image and build references.
 ## Merge and installation gate
 
 After combined CI, artifact verification and the above device checks pass,
-review/merge the integration PR into jasmine. Keep the production Mesa library;
+merge the integration branch into jasmine. A direct merge is sufficient; the
+draft PR is an optional review aid. Keep the production Mesa library;
 Task24's unrelated default-off experiment is not part of this test. Update the
 handoff and PR with observed results. Installing the accepted kernel into slot b
 is a separate destructive action requiring the user's explicit confirmation.

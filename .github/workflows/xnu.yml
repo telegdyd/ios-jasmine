@@ -167,7 +167,7 @@ jobs:
     if: ${{ inputs.build != 'ios' && inputs.build != 'mesa' }}
     # macos-14 is in retirement brownouts. Preserve xnu-8796's RPC ABI by
     # replaying pinned Xcode15 IIG output; compile/link on a supported runner.
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

@@ -4,6 +4,7 @@
 No waits, phone commands or partition writes. Refuse stale/wrong kernel sources.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -48,6 +49,13 @@ def main():
     kernels = list((a.out / 'kernel').rglob('kernel.development.sweet'))
     if len(kernels) != 1:
         raise SystemExit('expected exactly one development kernel in the artifact')
+    sums = kernels[0].parent / 'SHA256SUMS'
+    if not sums.is_file():
+        raise SystemExit('kernel artifact is missing its CI SHA256SUMS')
+    expected = {parts[1].lstrip('*'): parts[0] for line in sums.read_text().splitlines()
+                if len(parts := line.split()) == 2}.get(kernels[0].name)
+    if expected != hashlib.sha256(kernels[0].read_bytes()).hexdigest():
+        raise SystemExit('kernel does not match the CI SHA256SUMS')
     images.prepare(kernels[0], a.baseline, a.out / 'images', run['headSha'], run['databaseId'])
 
 
