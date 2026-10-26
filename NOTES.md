@@ -1,3 +1,23 @@
+### 2026-10-26: README freshness review; proposed changes only
+
+User requested review and a proposal before updating README.md. README remains
+unchanged. Its October21 summary incorrectly still describes CPU-only CA,
+kernel-only GPU, CPU display scaling, no Wi-Fi and future-only eight-core support.
+Cross-checked jasmine GPU/performance/Wi-Fi reports, current workflow and image
+builder. Proposal: date status October26; describe CA GLES via injected libsweetca
+and Mesa/a5xx, MDP hardware scaling, default four Gold cores versus available
+4K/eight-core builds, documented GPU588/DDR1804 clocks, Wi-Fi tested on wifi
+branch versus combined integration acceptance pending; qualify charging and
+remaining graphics/stability limitations. Refresh build instructions for optional
+topaz_4k=1 and Mesa/userland installation; replace stale roadmap/patch inventory
+with current linked guides, and identify root NOTES as an active handoff too.
+Avoid treating swap arrivals as displayed FPS or Task24 as a delivered gain.
+Live gh run-list refresh failed connecting to api.github.com; no fresh CI status
+established. No CI dispatched, build, phone access, boot or install performed.
+Existing Task24/charging and Wi-Fi integration next actions unchanged. Next:
+user reviews proposal, then implement README refresh with verified scope.
+Milestone commit subject: docs: record README freshness review proposal.
+
 ### 2026-10-26: t5tc-diag archived and retired
 
 User approved the proposed archive-and-delete procedure. Annotated tag
