@@ -154,6 +154,7 @@ static void shadow_texture_drawn(struct sca_ctx *c, GLuint tex);
 static GLenum tgt(struct sca_ctx *c, GLenum target);
 static void note_size(struct sca_ctx *c, GLuint tex, unsigned w, unsigned h);
 static void kick_after_draw(struct sca_ctx *c);
+static void region_copy_log(struct sca_ctx *c, GLuint tex);
 
 #include "sweetca_pass_trace.inc"
 
@@ -1851,6 +1852,7 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
            c->frame, c->program, count, small ? "small" : down ? "down" : "up", b[0], b[1], b[2], b[3], c->fbo, fbtex,
            fbtex < TEXMAX ? c->tex_w[fbtex] : 0, fbtex < TEXMAX ? c->tex_h[fbtex] : 0, tex, blend, src, dst,
            mask[0], mask[1], mask[2], mask[3]);
+   region_copy_log(c, c->held[0]);
    if (c->program && c->program < OBJMAX && !shown[c->program]) {
       shown[c->program] = 1;
       GLuint sh[4];
@@ -2233,6 +2235,41 @@ copy_refresh(struct sca_ctx *c, int u, GLuint tex)
               k->w, k->h, c->frame, n_refreshes);
 }
 
+/* SWEETCA_REGION diagnostics: per byte lane of a 4-byte surface, max value and nonzero count */
+static void
+surf_lanes(IOSurfaceRef s, char *out, size_t len)
+{
+   size_t w = IOSurfaceGetWidth(s), h = IOSurfaceGetHeight(s), pitch = IOSurfaceGetBytesPerRow(s);
+   const uint8_t *base = IOSurfaceGetBaseAddress(s);
+   unsigned mx[4] = {0}, nz[4] = {0};
+   if (!base || IOSurfaceGetBytesPerElement(s) != 4) {
+      snprintf(out, len, "lanes n/a");
+      return;
+   }
+   for (size_t y = 0; y < h; y++)
+      for (size_t x = 0; x < w; x++)
+         for (int i = 0; i < 4; i++) {
+            uint8_t v = base[y * pitch + x * 4 + i];
+            mx[i] = v > mx[i] ? v : mx[i];
+            nz[i] += v != 0;
+         }
+   snprintf(out, len, "lanes max %u %u %u %u nonzero %u %u %u %u seed %u", mx[0], mx[1], mx[2], mx[3], nz[0],
+            nz[1], nz[2], nz[3], IOSurfaceGetSeed(s));
+}
+
+/* SWEETCA_REGION: what a sampled copy holds against its surface's memory now */
+static void
+region_copy_log(struct sca_ctx *c, GLuint tex)
+{
+   if (!tex || tex >= TEXMAX || !c->copies[tex])
+      return;
+   struct sca_copy *k = c->copies[tex];
+   char lanes[128];
+   surf_lanes(k->s, lanes, sizeof(lanes));
+   sca_log("sweetca: region u0 tex %u copy of surface %u (target %d, copied seed %u, frame %u): %s", tex,
+           IOSurfaceGetID(k->s), k->target, k->seed, k->frame, lanes);
+}
+
 /*
  * Render targets the GPU cannot use in place (CA's offscreen surfaces come with rows
  * of 92 or 4512 bytes, the a5xx wants multiples of 64): a texture of the same size
@@ -2357,8 +2394,11 @@ shadow_target(struct sca_ctx *c, IOSurfaceRef s, GLenum target)
       return true;
    }
    c->shadows[slot] = tex;
-   sca_log("sweetca: attachImage: surface %u %zux%zu pitch %zu: shadow target tex %u", IOSurfaceGetID(s), w, h,
-           pitch, tex);
+   char lanes[128] = "";
+   if (getenv("SWEETCA_REGION"))
+      surf_lanes(s, lanes, sizeof(lanes));
+   sca_log("sweetca: attachImage: surface %u %zux%zu pitch %zu: shadow target tex %u %s", IOSurfaceGetID(s), w, h,
+           pitch, tex, lanes);
    return true;
 }
 
