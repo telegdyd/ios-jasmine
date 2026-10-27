@@ -1,8 +1,45 @@
 # CPU scaling and UI freeze investigation
 
-The screen freeze is reproducible without a synthetic stress sweep or user
-interaction. A concrete IOSurface lifetime defect has also been fixed in source;
-its effect on the phone remains to be validated.
+The earlier screen freeze was reproduced without a synthetic stress sweep or
+user interaction. After fixing released-surface pixel retention, eight-core
+stock-OPP memory checks and automatic scaling pass, and the user confirms the
+physical UI is responsive while swiping. A separate Wallpaper-gallery trial is
+currently being observed; its physical result is pending.
+
+## Fixed-kernel validation
+
+CI40520184930/ba35bbc passes actual ARM compilation, the new memory and surface
+lifetime tests, and existing integration/source/symbol guards. Kernel SHA256:
+`156b9ebf43cf605dd752993bfb7f3c10e52e01b2a4ab902aab663966906a540a`.
+
+Device testing used kernel50ea09c/SHA256
+`80a07f5bb50013de237ff9c2f9a9b0a422e1cd4b0d65e5a70a814801ca13fea7`.
+Its ARM build succeeded, but an overly narrow new CI regex rejected its `S`
+code symbol. Remaining guards and the lifetime regression passed locally
+against its exact packaged source. The corrected CI artifact's `__TEXT_EXEC`,
+`__DATA_CONST` and `__DATA` segments are byte-identical to this tested artifact;
+whole-file hashes differ. No failed compile was booted.
+
+The new checker passed on four CPUs, then33 checks on eight CPUs: boot state,
+all Gold7/Silver8 stock OPPs up/down, joint maxima and restored boot. Each check
+used1MiB per pinned CPU and four patterns, with readers crossing clusters.
+Every CPU reported its correct binding and zero memory errors. Ordered boot
+restore passed; transition failures/faults remained zero. This is bounded
+CPU/cache/RAM evidence, not an exhaustive hardware memory qualification.
+
+The fixed-clock control and subsequent automatic run each captured24 snapshots
+over about4.5minutes on the same boot. Under auto, wired memory stayed272.7–
+279.9MiB and requested surface backing61.9–66.1MiB; no page waiters or GPU
+allocation failures occurred. Both300MHz floors and both stock ceilings were
+observed. The user explicitly confirmed physical responsiveness while swiping.
+Old/new baseline wired totals alone are not a matched saving measurement:
+the earlier run also allocated the larger legacy profiler buffer.
+
+The user then requested a Wallpaper trial. Dense2s monitoring observed backing
+rise to184.2MiB and fall to about72MiB rather than accumulating past1.5GiB.
+Physical gallery acceptance is still pending. A green-CI temporary auto-on
+eight-core image is prepared under ignored `dvfs-ready-images/`; no flash or
+persistent boot/default change has been performed.
 
 ## Controlled reproduction
 
@@ -78,11 +115,10 @@ necessarily current holders; removed-table objects are not counted by this
 diagnostic. Use framebench lifetime allocation totals alongside it.
 
 Published milestones: diagnosticsf52ccce/sourcef74baa6; retention fix50ea09c/
-sourced5f8701. Combined CI40517147150 is pending. Diagnostic-only CI40516338522
-was cancelled in favor of that combined build; no j0105/j0106 phone boot yet.
-Next: actual ARM build/guards, temporary4/8 boots, memory-integrity tests across
-stock OPPs, then ordinary auto scaling with allocation monitoring and physical
-UI confirmation. No governor, voltage or default-core policy changed here.
+sourced5f8701; CI guard correctionba35bbc. Diagnostic-only CI40516338522 was
+cancelled. CI40517147150 compiled successfully but failed the symbol regex;
+CI40520184930 is green. Next finish Wallpaper acceptance and validate a clean
+auto-on boot. No governor, voltage or default-core policy changed here.
 
 Ignored artifacts and scripts remain under `research/cpu-dvfs/`: `ui-idle8*`,
 `ui-auto8*`, `ui-fixed4*`, `ui-recovery4c*` and the exact CI logs/manifests.

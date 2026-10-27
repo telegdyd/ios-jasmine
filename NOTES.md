@@ -1,3 +1,35 @@
+### 2026-10-27 15:38: green CI; auto8 UI responsive; Wallpaper trial ongoing
+
+CI40520184930/headba35bbc SUCCESS, job122244862831. KernelSHA256
+156b9ebf43cf605dd752993bfb7f3c10e52e01b2a4ab902aab663966906a540a.
+Actual ARM build, memory diagnostic + actual surface-release regression and all
+prior integration/source/linked-symbol guards PASS. Corrected guard accepts S.
+Artifact executable __TEXT_EXEC and __DATA_CONST/__DATA segments byte-identical
+to tested50ea09c kernel80a07f5b; __TEXT/__CTF differ. Comparison saved ignored
+ci-40520184930/executable-comparison.json. No need conflate whole-file hashes.
+
+Fixed8 manual24snapshots (~4.5min) completed without pressure; then sameboot
+auto enabled15:30:09. Auto24snapshots (~4.5min) completed: wired272.7–279.9MiB,
+surfacebacking61.9–66.1MiB, zero VM page waiters/GPU allocation failures and
+DVFS failures/faults. Both clusters observed300MHz and stockmax2208/1843.2MHz.
+User explicitly confirmed physical UI responsive WHILE SWIPING under auto.
+Earlier33 full-OPP cross-core RAM tests +4-corebaseline test also PASS.
+Old/new wired baselines differ in profiler allocations; do not present their
+raw difference alone as an isolated memory saving from the fix.
+
+User asked whether Wallpaper hang might be fixed, then explicitly asked to try.
+Told them try now and kept monitoring. watch-wallpaper.py native87462 runs
+observe-integrity integrity8-wallpaper at2s cadence,4 boundedwindows. As of76
+snapshots: wired491.3–600.2MiB; surfacebacking peaked184.2MiB then fell71.9MiB;
+no faults. User's physical gallery result pending async question; do not declare
+Wallpaper fixed before reply. No plugin disabled, no wallpaper selected by agent.
+Phone still temporary integrity8,auto1,own lock +collector held. NewgreenCI
+dvfs-ready-images/cpu8.img prepared with auto-on boot flags, SHA256
+b704c63935b57dd41e96facb84c45e8ce2d7d4ad1e2f65d074b86f41c8dece1a.
+This image has NOT been booted yet; don't interrupt user's active Wallpaper trial.
+Next finish trial, record physical result, consider final clean auto-on boot,
+then final docs/commit/push and release only our lock when stopping.
+
 ### 2026-10-27 15:25: fixed kernel4/8 memory PASS; physical8-core UI responsive
 
 Published CI guard fixba35bbc; CI40520184930 building, watcher native91457.
