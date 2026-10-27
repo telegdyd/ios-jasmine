@@ -1,3 +1,41 @@
+### 2026-10-27 19:05: j0108 confirmed on device (temporary boot); NOT installed to boot_b
+
+User confirmed backlight turns off on sleep and UI is smooth. Image shim/out/shim-boot-j0108-wledgl0.img = CI 40551286401 kernel,
+mkimg.sh GPUDBG=0 EXTRA_ARGS="gpudelay=1 gpupause=0 sweetfb_sync=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib".
+PITFALL: plain mkimg.sh (no sweetenv injection) = CPU renderer, glitchy; default sweetgpu_debug=1 = near-frozen. Always pass both.
+Phone runs this temporary image (reboot returns installed boot_b kernel, which still has the sleep bug). Installing j0108 needs
+the promotion packaging (package-promotion.py not in repo; ignored/staged elsewhere) + explicit user OK for the boot_b flash.
+
+### 2026-10-27: sleep leaves the backlight on - root cause found, fix j0108 NOT yet built or booted
+
+Observation (logs/): 368 of 424 logs with `SWEET WLED:` lack `SWEET FB: backlight via the PM660L WLED`;
+there AppleCLCD::start printed its lines BEFORE `SWEET PMIC/WLED` (e.g. netlog-t16-baseline.txt 106-118),
+and display off logs only `display off` (no `backlight off`). Logs where the PMIC came first
+(netlog-j70ddr-slotb.txt) do switch the WLED off. Cause (inferred from the ordering, not proven on device):
+IOKit matches the display nub on its own thread while SweetPlatformExpert::start is still in
+sweet_pmic_init, so sweet_wled_get() returned -1 and fWled stayed false for the whole boot.
+Temporary boot 18:54 of CI 40551286401 (image shim-boot-j0108-wled.img, log logs/netlog-j0108-wled.txt): WLED path active, backlight off/on logged (lines 1554, 1898); PMIC happened to win the race here too, so one boot does not prove the fix. User eye-check of the backlight pending.
+Pushed; CI run 40551286401 (jasmine, defaults, build=kernel) started 17:30Z. Fix: xnu/patches/j0108-jasmine-wled-after-pmic.patch (commit 6b9c52b; sweet_pmic_ready flag, AppleCLCD::start
+waits up to 10 s). Applies cleanly on the CPU-DVFS tree. Next: CI build, boot, expect
+`backlight via the PM660L WLED` at boot and `backlight off (WLED 0): 0` on the power button.
+
+### 2026-10-27: boot_b installed + exact readback PASS; normal boot validation next
+
+flash-promoted.py28589 stopped after exactimage readback because its overly
+strict whole-GPT-hash check saw a metadata change. Read-only inspection found
+ONLY boot_b attrs0x77000000000000 ->0x3f000000000000 plus header/entry CRCs,
+as part of bootloader flashing. Successfulbit54 cleared; no partition layout,
+GUID, name or any other entry changed. Both primary/backup header+entry CRCs
+valid and arrays match. No manual GPT write/restoration performed.
+verify-flash-metadata.py reverified exact17440768-byte image, boot_a original
+hash and normalized completeGPT copies (only boot_b attrs +CRCs may differ).
+promotion-flash-verified.json PASS. Do not claim GPTbytesunchanged; layout is.
+
+normal-installed-boot.py now returning from chargingLinux tofastboot and issuing
+plain fastbootreboot into installedslotb (not fastbootboot XNU). Ownlockheld.
+Need installed startup CPU/RAM checks, observe SWEETAB success marking after60s,
+physicalUI confirmation, then final docs and release collector/lock. No reflash.
+
 ### 2026-10-27: promoted default validated; user confirmed boot_b and flash sent
 
 GREEN CI40529045995/f9b1bfd/job122276484978 PASS all ARM/default/image/core/
