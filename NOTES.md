@@ -1,3 +1,29 @@
+### 2026-10-27 16:04: promotion published, CI building, installed-slot backup verified
+
+Publishedaf69432/source09756bf j0107 default promotion; CI40526565989,
+job122267674679 building using workflow defaults (no topaz_4k override supplied).
+Actual default/override/init/transition and shell profile tests PASS. No CPU
+electrical policy/OPP change. scripts preservelegacy probes by explicitopt-out.
+
+Phone currently r109 charging shell,slot_b,81%,Charging,+631347uA,33.5C at entry;
+own lock held. Installedboot_b is /dev/mmcblk1p63 (not mmcblk0),64MiB. Full
+rollback backup verified against phone SHA256
+bc59109ca42bca06fa46edd0086c723e16c116014c06217ad7fd4de4d87cc844.
+Both GPT copies backed up and entry CRCs checked; primarySHA
+f4e2eb6c507421ee13d95444f800740a9c8de7631e37c5259d088eb23d20087f,
+completebackupSHA520cef056c24f874ef48aa6278ea47d0c1e58d2bd239933b0512d1a93689938b.
+Boot_a hash7ac7aeb57e293c744adec0c568e73485f405d4bc75d8753478d31e3c94156117.
+GPT uses72x128 entries but reserves32 sectors for backup array; follow header
+entry LBA. Earlier partialreadfiles preserved; valid filegpt-backup-complete.bin.
+Manifest in ignored promotion-backup-20261027; attrsboot_a0x72000000000000,
+boot_b0x77000000000000 (active +successful; not unbootable). No flash yet.
+
+Prepared package-promotion.py to verify green build, run actual mkimg defaults
+(no AMP/CPUS/CPU_DVFS env override), preserveGPU588/DDR1804/injection, addabmarkb,
+check8-node AMP layout, and stage boot_b image plus separate no-DVFS-args probe.
+Next CI result, package, temporary default-probe test, physical UI/flash
+confirmation as required by AGENTS, then ONLYboot_b flash/readback +normalboot.
+
 ### 2026-10-27: user requests promotion, build and persistent phone installation
 
 Explicit new scope: make8-core/scaling the Jasmine default, build and install
