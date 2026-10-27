@@ -1,3 +1,17 @@
+### 2026-10-27 19:30: j0108 INSTALLED to boot_b (exact readback PASS); first installed boot died at 11% battery
+
+boot_b flashed with research/cpu-dvfs/promotion2-images/cpu8-slotb.img (SHA256 5c81dba1d8d64afdf7902beba6c4455276698bac5ff72d4887ffab1d841e7432,
+CI 40551286401 / 6b9c52b, args incl. abmark=b, sweetgpu_debug=0, libsweetca injection). Used COPIES of the promotion scripts
+(package-promotion2.py, flash-promoted2.py, verify-flash-metadata2.py, inspect-slot-metadata2.py, normal-installed-boot2.py,
+sessionlib2.py + owner2.json = own lock in Temp/claude/phone-j0108.lock); old promotion-* proof files untouched.
+flash-promoted2 stopped at its strict whole-GPT hash (known); verify-flash-metadata2 PASS: only boot_b attrs 0x77..->0x3f.. + CRCs changed,
+boot_a unchanged. Rollback: research/cpu-dvfs/promotion-images/cpu8-slotb.img (previous j0107a install, exact readback verified).
+Installed boot reached the command port and logged WLED backlight off/on, then the phone powered off ~19:18 (log ends, no panic text).
+Fastboot afterwards: slot b current, slot-successful:b no (SWEETAB never reached 60 s), unbootable no, retry 6. Charging shell shows
+battery 11%/3.68 V: INFERRED brownout from ~25 min of USB-powered test boots, not a kernel fault. Do NOT boot iOS below ~30%.
+Phone now in r109 charging shell (temporary boot). Next: charge to >=30%, `fastboot reboot` into installed boot_b, confirm
+`slot-successful:b yes`, sleep backlight, then release own lock (delete phone-j0108.lock).
+
 ### 2026-10-27 19:05: j0108 confirmed on device (temporary boot); NOT installed to boot_b
 
 User confirmed backlight turns off on sleep and UI is smooth. Image shim/out/shim-boot-j0108-wledgl0.img = CI 40551286401 kernel,
