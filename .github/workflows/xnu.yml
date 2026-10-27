@@ -279,7 +279,7 @@ jobs:
             grep -q '#include "sweet_memcheck.h"' xnu/osfmk/arm64/sweet_osm.c
             python3 ../tools/cpuclk/memcheck-test.py xnu/osfmk/arm64/sweet_memcheck.h
             strings fakeroot/System/Library/Kernels/kernel.development.sweet | grep 'checkmem: %s'
-            nm fakeroot/System/Library/Kernels/kernel.development.sweet | grep -E '[[:space:]][Tt][[:space:]]_sweet_surface_stats$'
+            nm fakeroot/System/Library/Kernels/kernel.development.sweet | grep -E '[[:space:]][TtSs][[:space:]]_sweet_surface_stats$'
           fi
           if [ -f patches/j0106-jasmine-surface-zombie-pixels.patch ]; then
             python3 ../tools/cpuclk/surface-release-test.py xnu/iokit/Kernel/arm/SweetSurface.cpp

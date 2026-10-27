@@ -1,3 +1,15 @@
+### 2026-10-27 15:19: ARM kernel compiled; new CI symbol-type guard too narrow
+
+CI40517147150/head50ea09c actual ARM compile/link succeeded, Build Done14:17:55UTC;
+checker/RPM/voltage/DVFS and new actual-header memory tests PASS. Build step then
+failed because new sweet_surface_stats nm guard accepted onlyT/t; this XNU uses
+S symbols (as existing guards already allow). Correcting toTtSs. Remaining
+surface-release/WiFi/framebench gates were not reached in that failed step and
+must be verified before device testing. No new kernel booted. Phone remains
+responsive recovery4c, own lock/collector held. Existing renderer crash first16
+exception frames match2026-10-24 report, so that specific abort predates DVFS;
+does not establish the cause of auto-correlated surface growth.
+
 ### 2026-10-27: published surface fix50ea09c; combined CI40517147150 pending
 
 Source d5f8701 + j0105 memory/creator diagnostics published50ea09c.
