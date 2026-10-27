@@ -31,9 +31,35 @@ pass_trace_number(const char *key, unsigned fallback, unsigned maximum)
    return errno || *end || v[0] == '-' || n > maximum ? fallback : (unsigned)n;
 }
 
+/*
+ * SWEETCA_TRIGGER=path: the pass trace (its window then opens when the file
+ * appears, the delay is ignored) and SWEETCA_REGION wait until the file exists,
+ * looked for at most twice a second.
+ */
+static const char *sca_trigger;
+static bool sca_triggered;
+static double sca_trigger_checked;
+
+static bool
+trigger_ready(void)
+{
+   if (!sca_trigger || sca_triggered)
+      return true;
+   double t = pass_trace_time();
+   if (t - sca_trigger_checked < .5)
+      return false;
+   sca_trigger_checked = t;
+   if (access(sca_trigger, F_OK) == 0) {
+      sca_triggered = true;
+      sca_log("sweetca: trigger %s seen", sca_trigger);
+   }
+   return sca_triggered;
+}
+
 static void
 pass_trace_init(void)
 {
+   sca_trigger = getenv("SWEETCA_TRIGGER");
    const char *v = getenv("SWEETCA_PASS_TRACE");
    pass_trace_enabled = v && strcmp(v, "1") == 0;
    if (!pass_trace_enabled)
@@ -70,7 +96,7 @@ pass_trace_event(struct sca_ctx *c, const char *fmt, ...)
       return;
    pthread_mutex_lock(&pass_trace_lock);
    double age = pass_trace_time() - pass_trace_epoch;
-   if (!pass_trace_ended && age >= pass_trace_delay &&
+   if (!pass_trace_ended && (!sca_trigger || pass_trace_started) && age >= pass_trace_delay &&
        age < pass_trace_delay + pass_trace_seconds && pass_trace_events < 8000) {
       char line[500];
       va_list ap;
@@ -120,6 +146,14 @@ pass_trace_draw(struct sca_ctx *c, GLenum mode, GLsizei count)
    if (!pass_trace_enabled || c->api < 3)
       return;
    pthread_mutex_lock(&pass_trace_lock);
+   if (sca_trigger && !pass_trace_started && !pass_trace_ended) {
+      if (!trigger_ready()) {
+         pthread_mutex_unlock(&pass_trace_lock);
+         return;
+      }
+      /* the window opens at the trigger */
+      pass_trace_epoch = pass_trace_time() - pass_trace_delay;
+   }
    double age = pass_trace_time() - pass_trace_epoch;
    if (age < pass_trace_delay || pass_trace_ended) {
       pthread_mutex_unlock(&pass_trace_lock);

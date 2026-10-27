@@ -1835,7 +1835,81 @@ draw_bounds(GLuint prog, GLint first, GLsizei count, GLenum itype, const void *i
  * unit 0 texture and target, up to 150, with each program's fragment source once.
  * Draws into render targets of at most 64x64 are logged wherever they are.
  */
+/* SWEETCA_REGION: a logged draw's float uniforms (not texmat/vertex_matrix/sca_) and constant vertex_color */
+static float region_box[4];
+
 static void
+region_inputs(struct sca_ctx *c)
+{
+   GLuint prog = c->program;
+   GLint n = 0;
+   if (!prog)
+      return;
+   glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
+   char line[600];
+   size_t l = 0;
+   for (GLint i = 0; i < n && l < sizeof(line) - 80; i++) {
+      char name[64];
+      GLint size = 0;
+      GLenum type = 0;
+      glGetActiveUniform(prog, i, sizeof(name), NULL, &size, &type, name);
+      int comps = type == GL_FLOAT ? 1 : type == GL_FLOAT_VEC2 ? 2 : type == GL_FLOAT_VEC3 ? 3 :
+                  type == GL_FLOAT_VEC4 ? 4 : 0;
+      if (!comps || !strncmp(name, "texmat", 6) || !strncmp(name, "sca_", 4))
+         continue;
+      char *br = strchr(name, '[');
+      if (br)
+         *br = 0;
+      for (GLint k = 0; k < size && k < 5 && l < sizeof(line) - 80; k++) {
+         char el[72];
+         snprintf(el, sizeof(el), size > 1 ? "%s[%d]" : "%s", name, k);
+         GLfloat v[4] = {0};
+         GLint loc = glGetUniformLocation(prog, el);
+         if (loc < 0)
+            continue;
+         glGetUniformfv(prog, loc, v);
+         l += snprintf(line + l, sizeof(line) - l, " %s=", el);
+         for (int j = 0; j < comps; j++)
+            l += snprintf(line + l, sizeof(line) - l, "%s%.4g", j ? "," : "", v[j]);
+      }
+   }
+   GLint vc = glGetAttribLocation(prog, "vertex_color"), on = 0;
+   if (vc >= 0) {
+      glGetVertexAttribiv(vc, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &on);
+      GLfloat v[4] = {0};
+      if (!on)
+         glGetVertexAttribfv(vc, GL_CURRENT_VERTEX_ATTRIB, v);
+      if (on)
+         l += snprintf(line + l, sizeof(line) - l, " vertex_color=array");
+      else
+         l += snprintf(line + l, sizeof(line) - l, " vertex_color=%.4g,%.4g,%.4g,%.4g", v[0], v[1], v[2], v[3]);
+   }
+   sca_log("sweetca: region inputs prog %u:%s", prog, line);
+}
+
+/* after a logged draw: the target pixel under the centre of its box */
+static void
+region_result(struct sca_ctx *c)
+{
+   GLuint prog = c->program ? c->program : c->last_program;
+   GLint ml = prog ? glGetUniformLocation(prog, "vertex_matrix") : -1, vp[4];
+   if (ml < 0)
+      return;
+   GLfloat m[16];
+   glGetUniformfv(prog, ml, m);
+   glGetIntegerv(GL_VIEWPORT, vp);
+   float x = (region_box[0] + region_box[2]) * .5f, y = (region_box[1] + region_box[3]) * .5f;
+   float cx = m[0] * x + m[4] * y + m[12], cy = m[1] * x + m[5] * y + m[13], cw = m[3] * x + m[7] * y + m[15];
+   if (cw == 0)
+      return;
+   int wx = vp[0] + (int)((cx / cw + 1) * .5f * vp[2]), wy = vp[1] + (int)((cy / cw + 1) * .5f * vp[3]);
+   GLubyte px[4] = {0};
+   glReadPixels(wx, wy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   sca_log("sweetca: region result frame %u prog %u fbo %u at %d,%d: %u %u %u %u", c->frame, c->program, c->fbo,
+           wx, wy, px[0], px[1], px[2], px[3]);
+}
+
+static bool
 region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const void *indices)
 {
    static int on = -1;
@@ -1847,8 +1921,8 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
       on = getenv("SWEETCA_REGION") &&
            sscanf(getenv("SWEETCA_REGION"), "%f:%f:%f:%f", &r[0], &r[1], &r[2], &r[3]) == 4;
    float b[4] = {0};
-   if (!on || logged >= 150 || count <= 0)
-      return;
+   if (!on || logged >= 150 || count <= 0 || !trigger_ready())
+      return false;
    GLuint fbt = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
    bool small = c->fbo && fbt && fbt < TEXMAX && c->tex_w[fbt] && c->tex_w[fbt] <= 64 && c->tex_h[fbt] <= 64;
    bool have = draw_bounds(c->program ? c->program : c->last_program, first, count, itype, indices, b);
@@ -1856,14 +1930,14 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
    bool up = have && b[0] < r[2] && b[2] > r[0] && b[1] < 2436.f - r[1] && b[3] > 2436.f - r[3];
    /* draws into small targets (cached layer images such as the pill's glyph) always */
    if (!small && !down && !up)
-      return;
+      return false;
    /* skip full-screen and other draws much larger than the region */
    if (!small && (b[2] - b[0] > 3 * (r[2] - r[0]) || b[3] - b[1] > 3 * (r[3] - r[1])))
-      return;
+      return false;
    uint32_t key = c->program * 2654435761u ^ c->held[0] * 40503u ^ c->fbo;
    for (unsigned i = 0; i < nseen; i++)
       if (seen[i] == key)
-         return;
+         return false;
    seen[nseen++] = key;
    logged++;
    char tex[160] = "";
@@ -1885,6 +1959,8 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
            fbtex < TEXMAX ? c->tex_w[fbtex] : 0, fbtex < TEXMAX ? c->tex_h[fbtex] : 0, tex, blend, src, dst,
            mask[0], mask[1], mask[2], mask[3]);
    region_copy_log(c, c->held[0]);
+   region_inputs(c);
+   region_box[0] = b[0], region_box[1] = b[1], region_box[2] = b[2], region_box[3] = b[3];
    if (c->program && c->program < OBJMAX && !shown[c->program]) {
       shown[c->program] = 1;
       GLuint sh[4];
@@ -1905,6 +1981,7 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
          free(src2);
       }
    }
+   return true;
 }
 
 /* true when the magenta program is now bound; the caller draws, then unbinds it */
@@ -1990,7 +2067,7 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
-   region_probe(c, first, count, 0, NULL);
+   bool probed = region_probe(c, first, count, 0, NULL);
    if (count > 0 && !ticket_draw(c))
       return; /* preparation may read back/seal earlier writes; BEGIN comes after it */
    bool zero = zero_probe_bind(c, mode, first, count, 0, NULL);
@@ -2000,6 +2077,8 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    }
    if (zero)
       glUseProgram(0);
+   if (probed)
+      region_result(c);
    shadow_drawn(c);
    ticket_after_write(c);
    kick_after_draw(c);
@@ -2014,7 +2093,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
-   region_probe(c, 0, count, type, indices);
+   bool probed = region_probe(c, 0, count, type, indices);
    if (count > 0 && !ticket_draw(c))
       return;
    bool zero = zero_probe_bind(c, mode, 0, count, type, indices);
@@ -2024,6 +2103,8 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    }
    if (zero)
       glUseProgram(0);
+   if (probed)
+      region_result(c);
    shadow_drawn(c);
    ticket_after_write(c);
    kick_after_draw(c);
