@@ -1,3 +1,23 @@
+### 2026-10-27: rendering gaps investigated (home Search glyph, wallpaper); desk research only, phone not used
+
+User report: magnifying glass in the home "Search" pill is missing; wallpapers do not look right.
+Observed in existing dumps: research/wifi-integration/device/fixed-home.png shows the pill and "Search" text but no
+glyph; SF Symbol glyphs elsewhere render (t5/step2-control.png Control Center, Settings chevrons), so it is a
+specific dropped draw, not missing symbol assets. Lock/home background in every dump is the same plain blue gradient.
+Wallpaper: research/wp-j70-oslog.txt PosterBoard logs `(_buildSwitcherConfiguration...) No selected configuration,
+no configuration to fallback to` and `Failed to update switcher configuration ... Code=-2214`: no poster is
+configured, so the gradient is SpringBoard's fallback, not a rendered poster (Settings > Wallpaper "CURRENT" shows
+two gray snapshots, framebench/20261025-first/wallpaper.png). Gallery dump (gallery.png): Emoji/Color previews draw,
+Astronomy blank (inferred: needs Metal, which no process has), black streak artifacts below the rows.
+QuartzCore GL tex_fragment_shaders (0x1d5b48a10, dumped from WSL ~/ios-work/gl/dsc with a scratch reader):
+NULL entries besides the four libsweetca patches (0x14/0x26/0x27/0x2d) are **0x19, 0x1c, 0x28** (0x33+ = table end,
+assumed). A draw using one of them fails create_shader and is dropped silently; libsweetca does not log it.
+GUESS (unproven): the pill glyph uses a vibrancy/compositing texture function that hits one of these, or a CA
+filter the GL renderer skips. Next: (1) libsweetca: log texture-function ids whose table entry is NULL / failed
+create_shader (hook point = the patched case table), boot temporarily, open the home screen, read which id;
+(2) wallpaper: select a poster from the lock-screen editor (Color/Emoji first), then dump, to separate "no
+configuration" from poster-extension rendering failures. Phone needs >=30% battery first (see below).
+
 ### 2026-10-27 19:30: j0108 INSTALLED to boot_b (exact readback PASS); first installed boot died at 11% battery
 
 boot_b flashed with research/cpu-dvfs/promotion2-images/cpu8-slotb.img (SHA256 5c81dba1d8d64afdf7902beba6c4455276698bac5ff72d4887ffab1d841e7432,
