@@ -1,3 +1,27 @@
+### 2026-10-27: promoted default validated; user confirmed boot_b and flash sent
+
+GREEN CI40529045995/f9b1bfd/job122276484978 PASS all ARM/default/image/core/
+memory/surface/integration guards. KernelSHA256
+aaaaa461bb7aebbff0ede2598c218779b758df7ddb353ba7d9ef67070a3fb1b4.
+Actualmkimg (default AMP/CPUS/CPU_DVFS, no override) built8-core auto image:
+promotion-images/cpu8-slotb.img,17440768bytes,SHA256
+1072ca12ca416ee594fa75c0c09ede7e6d7592d7e40f1f497f24893742f96d80.
+ADT differs from accepted AMP tree ONLY in fresh random-seed; hardware unchanged.
+
+Temporary promotion-default8 probe omitted sweetdvfs/sweetdvfsauto flags and
+automatically reached ready1/auto1. Arithmetic8x20 and5 cross-core RAM checks
+PASS; both300MHz floors and stock2208/1843.2MHz maxima observed,zero faults.
+User explicitly confirmed screenworks AND "Screen works—install boot_b" for
+image1072ca12ca41, per AGENTS destructive-step confirmation requirement.
+
+fastboot flash boot_b succeeded (Sending17032KB OKAY,WritingOKAY,0.562s).
+flash-promoted.py native28589 is now temporarily booting r109 and reading back
+exact image plusboot_a/GPT integrity. DO NOT repeat flash while it is active.
+Current device in charging Linux for readback; own lock held. No other partition
+flashed. Need readback success filepromotion-flash-verified.json, then run
+normal-installed-boot.py (normalfastbootreboot,not temporaryboot), validate-startup
+promotion-installed and physicalUI confirmation. Then final docs/push/toolrelease.
+
 ### 2026-10-27: corrected promotion CI40529045995 compiling; installation staged
 
 Publishedf9b1bfd includes source53d1842/j0107a compile fix. Corrected default
