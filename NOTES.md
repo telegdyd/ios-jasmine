@@ -36,7 +36,12 @@ Porting plan (from reading the repo, nothing built): (1) replace their libdrm st
 darwin backend (mesa/darwin/darwin_*.c); (2) forward-port patches/ from Mesa 25.0.7 to 26.2.5 (ir3-* should apply, ir3 is
 shared a5xx/a6xx; fd6-fb-barrier-reorder is a6xx-only); (3) check a5xx Gallium caps (compute, images, SSBO) vs air_metal.c
 needs. GUESS: libsweetca and the Metal lib in one process (backboardd) should share one Mesa/device, so build both from one tree.
-Next: read air_metal.c / src/bgmtl.m to list every libdrm/fd6-specific call site.
+2026-10-28 later: call sites mapped in mesa/METAL-PORT.md (read only, nothing built). Observed: all 9 Chlorophyll Mesa
+patches fail `git apply --check` on 26.2.5 (WSL ~/ios-work/mesa 052f0a0, temp index); a5xx has caps->fbfetch = 0 (used by
+their CA SDF path); our xf86drm stub's drmOpenWithType returns -ENODEV; SweetGPU has no cache-sync selector (they call
+sweet_drm_bo_sync). Chlorophyll targets iOS 18 22H352 private Metal classes; we run iOS 16.7, so bgmtl.m/plugin/inject
+need re-reading against iOS 16 Metal.framework (likely the largest part).
+Next: decide order: (a) libbgair compute-only build on 26.2.5 + darwin backend in CI, or (b) first check iOS 16 _MTLDevice.
 
 ### 2026-10-27 22:40: fixed libsweetca INSTALLED as production; glyph confirmed on normal boot_b
 
