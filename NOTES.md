@@ -1,3 +1,20 @@
+### 2026-10-27: published surface fix50ea09c; combined CI40517147150 pending
+
+Source d5f8701 + j0105 memory/creator diagnostics published50ea09c.
+Combined CI40517147150/job122234342766 queued; watcher fetch-ci.py native
+session12307 waits with30s polls and downloads only successful kernel/logs.
+Diagnostic-only CI40516338522 explicitly cancelled; do NOT boot its partial
+artifacts. Actual ARM/device acceptance of new patches still pending.
+Regression source verification: IOMemoryMap::setMemoryDescriptor retains its
+descriptor via OSSharedPtr/OSRetain, so cached state mapping survives releasing
+the surface. See jasmine/PERF-CPU-UI-FREEZE-20261027.md for exact reproduction.
+Four-core recovery physical touch confirmed; six idle observations completed
+with wired memory stable~452MiB. Current phone recovery4c, own lock/collector held.
+Prepared ignored package-integrity.py verifies expected CI head/hash/markers/
+regression logs; validate-memory.py covers baseline4 and full8-core OPP sweep.
+Next verify new kernel build, temporary4 then8, memory tests, physical UI check
+before automatic reproduction. Keep original eight-core freeze evidence intact.
+
 ### 2026-10-27: concrete released-surface pixel retention bug fixed; CI pending
 
 Diagnostic milestonef52ccce/sourcef74baa6 pushed; CI40516338522/job122231111407
