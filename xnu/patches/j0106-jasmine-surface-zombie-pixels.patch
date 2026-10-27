@@ -1,0 +1,29 @@
+From d5f8701d9b781d17e76ce5c32720ab50ba500f84 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 15:00:10 +0100
+Subject: [PATCH] jasmine-j0106: retain only state mappings for released
+ surface views
+
+---
+ iokit/Kernel/arm/SweetSurface.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index ae70273..6b377cb 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -1797,6 +1797,11 @@ IOSurfaceRootUserClient::trapRelease(void *id, void *, void *, void *, void *, v
+ 		 */
+ 		OSSafeReleaseNULL(ref->data);
+ 		sweet_surface_put(ref->surface);
++		/* Keep the independent state mapping, not the surface's pixel backing.
++		 * fZombies may hold 256 views per client; retaining the surface here
++		 * kept gigabytes of released pixels wired until those views aged out.
++		 * Other clients, GPU imports and ports hold their own surface retains. */
++		OSSafeReleaseNULL(ref->surface);
+ 		ref->released = true;
+ 		ref->detached = false;
+ 		if (fZombies != NULL && fZombies->setObject(ref)) {
+-- 
+2.47.3
+

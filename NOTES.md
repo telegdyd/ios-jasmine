@@ -1,3 +1,24 @@
+### 2026-10-27: concrete released-surface pixel retention bug fixed; CI pending
+
+Diagnostic milestonef52ccce/sourcef74baa6 pushed; CI40516338522/job122231111407
+queued when checked. New follow-up build will supersede it with j0106 fix.
+Four-core recovery ui-recovery4c booted cleanly and user explicitly confirms
+physical touch responsive again. Six bounded read-only fixed4 observations
+running; own phone lock/collector held.
+
+Source inspection found fZombies retains SweetSurfaceRef for up to256 released
+views PER CLIENT to keep16KiB state mappings. But each ref retained its entire
+SweetSurface and pixel memory until eviction, contradicting the state-only
+comment. This is a concrete lifetime defect, plausibly explains large retained
+backing; relation to CPU scaling/frozen UI still requires device A/B validation.
+j0106/source d5f8701 drops ref->surface after sweet_surface_put, keeping the
+independent state IOMemoryMap. Other clients/GPU imports/ports keep own retains.
+Actual trapRelease regression test FAILS on old code and PASSES fix: immediate
+pixel release, state-map retention,256-view bound, repeated release counts and
+independent live clients. j0105 memory test remains included. No voltage/frequency
+or governor policy change. Need push/build, verify actual ARM compile and boot,
+repeat low/max memory tests and idle auto scaling + physical UI acceptance.
+
 ### 2026-10-27 14:54: freeze reproduced after auto enable without interaction
 
 Resumed by user. Own exclusive phone lock reacquired. Temporary verified

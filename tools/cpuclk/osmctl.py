@@ -12,6 +12,8 @@ Commands (osfmk/arm64/sweet_osm.c, osm_cmd_one):
   r ADDR [N]   read N (1..16) words          w ADDR VAL   write, then read back
   tr ADDR      TZ IO read                    tw ADDR VAL  TZ IO write, TZ read back
   check        pinned-core workload/errors; printed ~MHz is a Gold-calibrated timing proxy
+  checkmem     j0105: pinned cross-core RAM/cache check, 1 MiB/CPU, four patterns
+  surfaces     j0105: live surface backing grouped by creator (not current holder)
   tsens        temperatures                  state        PLL / RCG / OSM / CPRh / SAW
   table        this chip's CPRh corners      prog         CPRh + SAW + OSM programmed, not enabled
   spmi SID ADDR [N]   PMIC register read     rails        PM660 S1-S3 (APC supplies) voltages

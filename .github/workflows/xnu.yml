@@ -281,6 +281,9 @@ jobs:
             strings fakeroot/System/Library/Kernels/kernel.development.sweet | grep 'checkmem: %s'
             nm fakeroot/System/Library/Kernels/kernel.development.sweet | grep -E '[[:space:]][Tt][[:space:]]_sweet_surface_stats$'
           fi
+          if [ -f patches/j0106-jasmine-surface-zombie-pixels.patch ]; then
+            python3 ../tools/cpuclk/surface-release-test.py xnu/iokit/Kernel/arm/SweetSurface.cpp
+          fi
           if [ -f patches/j0100-jasmine-wifi-defaults.patch ]; then
             python3 ../tools/check-wifi-integration.py --source xnu --log kernel-build.log
             nm fakeroot/System/Library/Kernels/kernel.development.sweet > wifi-symbols.txt
