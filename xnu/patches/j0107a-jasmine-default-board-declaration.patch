@@ -1,0 +1,27 @@
+From 53d1842da673af69378f57947f8abb530f771320 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 16:14:13 +0100
+Subject: [PATCH] jasmine-j0107a: declare BSD board helper across OSFMK include
+ boundary
+
+---
+ osfmk/arm64/sweet_dvfs.h | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/osfmk/arm64/sweet_dvfs.h b/osfmk/arm64/sweet_dvfs.h
+index a3314f2..f20bae1 100644
+--- a/osfmk/arm64/sweet_dvfs.h
++++ b/osfmk/arm64/sweet_dvfs.h
+@@ -246,7 +246,8 @@ dvfs_policy(unsigned c, unsigned busy)
+ }
+ 
+ /* DVFS kernel worker */
+-#include <dev/sweet_board.h>
++/* bsd/dev/sweet_board.h is private to BSD include paths. */
++extern int sweet_board_is(const char *compat);
+ 
+ /* Only Jasmine's validated 4K/AMP build enables CPU scaling by default. */
+ static bool
+-- 
+2.47.3
+

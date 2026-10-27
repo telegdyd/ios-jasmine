@@ -1,3 +1,15 @@
+### 2026-10-27 16:14: promotion build include-path failure fixed; no flash yet
+
+CI40526565989/af69432 FAILED actualARM compile: sweet_dvfs.h249 cannotfind
+dev/sweet_board.h (OSFMK does not export BSD dev headers). Source53d1842 exports
+j0107a with matching externint sweet_board_is(constchar*) declaration instead.
+Board/default logic unchanged. No local clang executable available; actual
+ARM retry required. No failed kernel booted, no persistent flash performed.
+Phone remains charging shell, own lock held, rollback/GPT/boot_a backup verified.
+Need publish/buildfix, update package-promotion.py expected green run/head before
+packaging, temporary no-flags default boot +CPU/RAM/UI checks, then confirmation
+andboot_b-only flash/readback/normalboot. Promotion scripts are staged ignored.
+
 ### 2026-10-27 16:04: promotion published, CI building, installed-slot backup verified
 
 Publishedaf69432/source09756bf j0107 default promotion; CI40526565989,
