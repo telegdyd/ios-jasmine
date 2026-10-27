@@ -17,6 +17,11 @@ Commands (osfmk/arm64/sweet_osm.c, osm_cmd_one):
   spmi SID ADDR [N]   PMIC register read     rails        PM660 S1-S3 (APC supplies) voltages
   cpuvolt 0|1 [mV]   j0103: Gold(0)/Silver(1) SAW16 helper; omit mV for status
                      writes need sweetcpuvolt=1; Gold 868/872, Silver 872/876 only
+  dvfs stat         j0104+j0104a: status, rail validity, load and failure counters
+  dvfs auto 0|1     disable/enable demand scaling; requires sweetdvfs=1
+  dvfs set 0|1 KHZ  Gold(0)/Silver(1) stock OPP; disable auto first
+  dvfs restore      disable auto and restore boot clocks, rails and APMs
+                     sweetdvfsauto=0|1 controls initial auto; thermal=off
 Sequences (j0048): one line runs back to back in the kernel.
   m ADDR MASK VAL     read-modify-write      d US         delay      t   us since line start
   poll ADDR MASK VAL [US]   wait for a value; a timeout skips the rest of the line
@@ -29,7 +34,10 @@ See jasmine/PERF-CPU-VOLTAGE-20261027.md for limits and actual readback evidence
 Prefer j0103's serialized cpuvolt helper for these bounded steps: it checks both
 Gold rails, verifies delayed PMIC readback, and attempts rollback on failure.
 Its fault latch requires reboot. Raw w/m/tw commands bypass that mutex and its
-checks; do not mix them with helper transactions. Higher OPPs remain unvalidated.
+checks; do not mix them with helper transactions. The newer DVFS controller has
+passed full stock OPP sweeps on both clusters and uses the same mutex. Physical
+UI acceptance remains open after a frozen screen; see
+jasmine/PERF-CPU-DVFS-20261027.md. Raw writes also bypass DVFS transaction checks.
 Direct accesses are limited to the clock / OSM / CPRh / SAW / APCS / GCC / TSENS blocks.
 Goes over the USB command port (TCP 5141, the same as tools/sweet-cmd.py).
 """

@@ -3,7 +3,13 @@
 2026-10-26. Scope requested by the user: make all eight CPUs available, allow
 stock maximum frequencies, and scale with demand to control power and heat.
 This supersedes the starting assumptions in HANDOFF-CPUCLK.md, not its historical
-observations. Implementation is in progress; a working governor is not installed.
+observations. An opt-in governor is implemented and device electrical/scaling
+tests pass, but physical UI acceptance is blocked by a repeated frozen screen.
+
+**Current result:** [full DVFS validation and remaining UI blocker](PERF-CPU-DVFS-20261027.md).
+Code2550347/CI40444015228 passes both clusters' full stock OPP sweeps and demand
+scaling on eight CPUs. Defaults remain unchanged. Work is paused in charging
+shell; earlier findings below are historical and may be superseded by that report.
 
 **Latest user direction, 2026-10-27:** finish CPU clock transitions, stock-max
 validation and load scaling first. Defer thermal throttling; GPU/RAM power
@@ -51,8 +57,9 @@ RPM vote; the bounded neutral probe explicitly initializes UV+enable together.
   `m4kf`, all-core checker zero errors). It requires `TOPAZ_4K`, AMP ADT and
   `cpus=8`. `tools/g2/mkimg.sh` supports `AMP=1 CPUS=8`. Four Gold cores remain
   the documented default because older eight-core UI comparisons regressed.
-- The current kernel still has the manual Gold PLL switch and diagnostic OSM
-  code; there is no working dual-cluster CPU governor or thermal clock cap.
+- At restart the kernel had only the manual Gold PLL switch and diagnostic OSM
+  code. The opt-in dual-cluster governor now passes CPU tests; no thermal cap is
+  implemented, per the user's latest direction.
   Gold's boot default is 1747.2 MHz; Silver was measured at 1382.4 MHz.
 - The recorded OSM attempts did not start its clock/sequencer; secure writes were
   dropped. Software DVFS remains the working direction. This is an observation

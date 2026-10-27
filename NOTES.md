@@ -1,3 +1,77 @@
+### 2026-10-27: paused in charging shell; DVFS tests pass, physical UI freeze open
+
+Latest user request: put phone in charging shell and prepare for later. Usage
+interruption prevented final documentation; resumed only to finish parking and
+handoff. Fresh verified Linux6.19.10-sdm660/r109, slot_b, charger online1,
+status Full/health Good, backlight0, battery99%,33.5C,+26855uA,4312977uV.
+Released ONLY our exact verified phone lock; no matching CPU-DVFS collectors or
+CI watchers remain. Temporary fastboot boot only; no partition flash performed.
+
+Published code2550347 (j0104+j0104a), source736adf1 in isolated WSL
+/home/teleg/xnu-cpu-dvfs branch codex/cpu-dvfs. CI40444015228/job121990838172
+SUCCESS; verified kernel SHA256
+bca76245a10547f39f1268e34f6b3dc164169776da64788ca7e72199396deffd.
+Previous CI40442814374/e123e85 failed C declaration after label; fixed before
+any new-kernel device boot. Actual ARM build, host core/command/fault tests and
+source/linked marker guards pass. See jasmine/PERF-CPU-DVFS-20261027.md.
+
+New manual8 kernel passed all Gold7/Silver8 OPPs up/down, ten min/max ramp
+cycles and sustained maximum checks:60 stress commands, each8 CPUs x20 runs,
+zero checker errors; restored-state check also passed.70 set requests,
+Gold33/Silver35 actual changes, failures0/fault0, verified boot restore.
+Automatic settled run passed10 load checks and38 status records: each cluster
+observed300MHz floor and stock max (Gold2208/Silver1843.2MHz), failures0/fault0.
+Floors were not necessarily simultaneous. First short10s idle-window test did
+not see Silver floor amid background work; do not label that first run PASS.
+No thermal policy/gate in new governor, as user directed (thermal=off).
+
+Physical UI acceptance FAILED again: user says already frozen BEFORE touching
+it on new8-core kernel. CPU/TCP responsiveness does not establish UI health.
+Earlier4-core baseline physical touch explicitly recovered. New frozen-run
+profile shows heavy VM/compression/pageout and UFS-write polling; DVFS worker
+small fraction. Wallpaper processes were present without user interaction;
+causal attribution remains unproven. No RAM/VM/UI recovery fix implemented.
+Next session: fresh8-core baseline without transition stress, compare physical
+UI and VM/storage behavior, then test RAM/coherency across OPPs. Do not claim
+usable governor/default8 until physical UI acceptance. Defaults unchanged.
+
+Ignored research/cpu-dvfs contains dvfs-manual-images/ and dvfs-auto-images/
+manifests, ci-40444015228/, dvfs-live8*, dvfs-auto8-settled*, dvfs-busy-prof.*,
+ui-profile-summary.txt and pause-final-charging.txt. Preserve dumps out of git.
+Do not rerun boot waiters or acquire phone until user resumes device work.
+
+### 2026-10-27 04:36: baseline physical UI recovered; fixed governor CI PASS
+
+User hardware-reset successfully; actualfastboot04:35:40.084. Waiterbooted
+known baseline-images/cpu4.img (accepted d42bfb4 kernel) as ui-recovery4.
+Freshrails872/868/868,Gold1747/Silver1382,GPU588/DDR1804,APMs0. Sweetd/sweet_shot
+works, lockscreenbufferreadbackcapturedignored ui-recovered4*. User explicitly
+confirmed physicaltouchresponsiveagain. Earlierfreeze remainsrealissue with
+severeVMpageoutactivity; noestablishedcausal attribution toclocks/heat/governor.
+Newgovernor wasnotrunningduringfreeze. FixedCI40444015228/2550347 SUCCESS,
+job121990838172; artifactdownload/hashverificationinprogress. Needtemporary
+newmanual8, fullAPIsweep/ramp/sustainedchecks, automaticboost/idle proof and
+physicalUIacceptance. Continueworking; ownphone lockheld.
+
+### 2026-10-27 04:31: user reports physically frozen UI; recovery in progress
+
+User says iOSscreenfrozen, touchandbuttonsdo nothing. This is realacceptance
+failure despitecommandporthavingresponded; doNOTequateCPUcheckerPASSwithUI.
+Stilloldbcdc037 manualkernel dvfs-max8; newj0104/j0104a notbooted. Allclock/rail/
+APMrestorationshadpassed. KernelHIDlogsreceivetouches, GPUcompleted943/943 no
+pendingjobsatobservedsnapshot. SilverL48/cfg501,GoldL5b/cfg301,rails872/868/868,
+APMs0. VM_pageout_scan consuming~25sCPUper30swindow, compressor/compactionactive;
+VMpressureislead, causalconnectiontoDVFSnotestablished. No newGPU/SMMUpanicseen.
+Boundedprofiler/screenshotattemptsfailedconnect; userlandsweetd5143unreachable.
+Kernel5141becameintermittent, thenrebootconnectrequests timedout. No actual
+fastbootafter90s. AskeduserholdPower+VolumeDownuntilFASTBOOT. Ownlockheld;
+wait-ui-reset.py awaitsfastbootthenboots knownbaseline4 forUIrecovery.
+Do notsendanotherbootinparallelwiththatwaiter. NewCI40444015228/2550347
+job121990838172 buildingcompilerfix. Continuegovernorworkafterphysicalrecovery,
+includingphysicalUIacceptance. Do notclaimfullyusableCPUgovernoruntiltested.
+FastPMICtestwhileoldkernelresponsive verifiedGold868/872immediatePMICvalid
+without100msdelay; command+allrailreadbacks~2.2-2.3ms, thenrestored868PASS.
+
 ### 2026-10-27 04:24: first governor CI compile failure fixed, broader host coverage
 
 CI40442814374/e123e85 FAILED in sweet_dvfs.h status handler: declaration after
