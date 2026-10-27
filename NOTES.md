@@ -1,4 +1,14 @@
-### 2026-10-27 22:25: home Search pill glyph FIXED (libsweetca A,R,G,B images); fix NOT yet installed as production lib
+### 2026-10-27 22:40: fixed libsweetca INSTALLED as production; glyph confirmed on normal boot_b
+
+User OK'd install. /usr/local/bin/libsweetca.dylib = Mesa CI 40585335072 (c3c0f36), SHA256
+8cb5863ccf7c1ded43fc1bbb868e20e994ecdb3ac7b5c83e1d8754cc90779e1e (phone readback matches).
+Backup of previous production lib (SHA256 14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261):
+phone /usr/local/bin/libsweetca-pre-argbfix.dylib and ignored research/libsweetca-backup/. Rollback = copy it
+over libsweetca.dylib and reboot. Rebooted (command port -> fastboot reboot) into installed boot_b; user confirmed
+glyph visible after unlock. boot_b image unchanged. /usr/local/bin/libsweetca-probe.dylib still present (same fixed
+build, unused by the installed boot-args). Open: texture function 0x1c (material backdrop, still flat).
+
+### 2026-10-27 22:25: home Search pill glyph FIXED (libsweetca A,R,G,B images)
 
 Cause (measured on device, logs/netlog-s3-region4.txt): the magnifying glass is a 28x28 IOSurface CA creates
 around its own memory with NO pixel format (fourcc 0, bpe 4, 112-byte rows -> attachImage shadow target).
@@ -8,7 +18,7 @@ fmt_from_surface(0, 4) read them as B,G,R,A, so alpha = 0 and the glyph invisibl
 upload and write-back (surf_fmt.argb). Commit c3c0f36; Mesa CI 40585335072
 (macos-15). User confirmed glyph visible; dump research/argbfix-home.png; no SMMU fault/panic.
 Same boot had two more fourcc-0 shadow targets (53x42, 53x53 pitch 212), now also reversed: effect unverified
-(status-bar Wi-Fi icon not visible in the 10:22 dump; may just be association timing - ask/verify).
+(user says status bar looks fine).
 Ruled out on the way: QuartzCore NULL texture functions 0x19/0x28 never requested; 0x1c IS requested (backdrop
 draws of materials go out with no program when it is NULL) but filling it did not affect the glyph; 0x1c remains
 unimplemented. Untextured program-0 full-screen draws are normal state draws.
@@ -16,8 +26,7 @@ Diagnostics now in libsweetca (opt-in env, NOTE sweetenv splits values on commas
 SWEETCA_ZERO_PROBE=1, SWEETCA_REGION=x0:y0:x1:y1 (draws touching a screen rect + small targets, byte lanes).
 CI: workflow input mesa_runner (macos-15 queues far less than macos-14).
 Phone: running temporary image shim/out/shim-boot-j0108-argbfix.img with /usr/local/bin/libsweetca-probe.dylib
-(= fixed lib). Production /usr/local/bin/libsweetca.dylib and installed boot_b UNCHANGED. Next: user OK to copy
-xnu/out-mesa-argbfix/libsweetca.dylib over /usr/local/bin/libsweetca.dylib (keep a backup), then a normal reboot.
+(= fixed lib). [Superseded 22:40: installed as production, see above.]
 
 ### 2026-10-27: rendering gaps investigated (home Search glyph, wallpaper); desk research only, phone not used
 
