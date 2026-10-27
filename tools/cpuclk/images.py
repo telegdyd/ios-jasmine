@@ -26,6 +26,8 @@ def digest(blob):
 
 def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False, cpu_voltage_probe=False,
             cpu_dvfs=False, cpu_dvfs_auto=False):
+    if cpu_dvfs and (cpu_rpm_probe or cpu_voltage_probe):
+        raise ValueError('DVFS owns CPU supplies; do not combine it with legacy voltage/RPM probes')
     if out.exists():
         raise ValueError('refusing to overwrite ' + str(out))
     blob = baseline.read_bytes()

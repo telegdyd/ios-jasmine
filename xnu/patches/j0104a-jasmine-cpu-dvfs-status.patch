@@ -1,0 +1,40 @@
+From 736adf186c84ad54e23dc2f3f6f40f56cbf7e4de Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 04:23:39 +0100
+Subject: [PATCH] jasmine-j0104a: C11-compatible DVFS status handler
+
+---
+ osfmk/arm64/sweet_dvfs.h | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/osfmk/arm64/sweet_dvfs.h b/osfmk/arm64/sweet_dvfs.h
+index b86a752..0ea2f91 100644
+--- a/osfmk/arm64/sweet_dvfs.h
++++ b/osfmk/arm64/sweet_dvfs.h
+@@ -332,6 +332,7 @@ sweet_dvfs_start(void)
+ static int
+ dvfs_command(int argc, char **argv, char *out, size_t len)
+ {
++	int n;
+ 	lck_mtx_lock(&cpuvolt_lock);
+ 	const char *message="status";
+ 	if (!dvfs_ready) { message="not ready (sweetdvfs=1; wait30s; see console)"; goto report; }
+@@ -362,13 +363,13 @@ dvfs_command(int argc, char **argv, char *out, size_t len)
+ 		message="use dvfs stat|auto 0/1|set 0/1 kHz|restore";
+ 	}
+ report:
+-	int n=snprintf(out,len,"SWEET DVFS: %s ready=%u auto=%u thermal=off\n",message,dvfs_ready,dvfs_auto);
++	n=snprintf(out,len,"SWEET DVFS: %s ready=%u auto=%u thermal=off\n",message,dvfs_ready,dvfs_auto);
+ 	for (unsigned c=0; c<2 && n<(int)len-160; c++) {
+ 		uint32_t mv=0; bool rail=dvfs_ready && dvfs_rail_read(c,&mv);
+ 		n+=snprintf(out+n,len-n," %s requested=%u actual=%u kHz rail=%u mV valid=%u apc=%u busy=%u%% changes=%llu failures=%llu fault=%u\n",
+ 		    c==0 ? "Gold" : "Silver",dvfs_state[c].requested,dvfs_ready ? dvfs_actual_khz(c) : 0,
+ 		    mv,rail && !dvfs_state[c].fault && dvfs_context(c,&dvfs_state[c].current,dvfs_state[c].apc),
+-		    dvfs_state[c].apc,dvfs_state[c].busy,dvfs_state[c].changes,dvfs_state[c].failures,dvfs_state[c].fault);
++		    dvfs_state[c].apc,dvfs_state[c].busy,(unsigned long long)dvfs_state[c].changes,(unsigned long long)dvfs_state[c].failures,dvfs_state[c].fault);
+ 	}
+ 	lck_mtx_unlock(&cpuvolt_lock); return n;
+ }
+-- 
+2.47.3
+

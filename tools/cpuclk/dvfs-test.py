@@ -17,7 +17,8 @@ def main():
     parser.add_argument('--dts', type=Path)
     parser.add_argument('--fuses', type=Path)
     args = parser.parse_args()
-    source = args.source.read_text().split('/* DVFS kernel worker */')[0]
+    full_source = args.source.read_text()
+    source = full_source.split('/* DVFS kernel worker */')[0]
     source = source.replace('__asm__ volatile ("dsb sy" ::: "memory");', '')
     harness = r'''
 #include <assert.h>
@@ -97,7 +98,14 @@ static void osm_wr(volatile uint32_t *p,unsigned off,uint32_t v) {
     }
 }
 '''
+    command = full_source[full_source.index('static int\ndvfs_command('):]
     harness += source + r'''
+static bool dvfs_sample_valid;
+static unsigned command_locked;
+static int cpuvolt_lock;
+static void lck_mtx_lock(int *lock) { (void)lock;assert(!command_locked);command_locked=1; }
+static void lck_mtx_unlock(int *lock) { (void)lock;assert(command_locked);command_locked=0; }
+''' + command + r'''
 static void reset(void) {
     memset(memory,0,sizeof(memory));memset(pages,0,sizeof(pages));
     memset(dvfs_state,0,sizeof(dvfs_state));memset(fuse_rows,0,sizeof(fuse_rows));
@@ -154,7 +162,21 @@ int main(void) {
     for(unsigned i=0;i<4;i++) assert(dvfs_policy(0,20)==6);
     assert(dvfs_policy(0,20)==5);
     assert(dvfs_policy(0,50)==6 && dvfs_state[0].quiet==0);
+    char output[1024];
+    char *stat[]={"dvfs","stat"}, *on[]={"dvfs","auto","1"}, *off[]={"dvfs","auto","0"};
+    char *set[]={"dvfs","set","0","2208000"}, *bad[]={"dvfs","set","1","4294967296"};
+    char *restore[]={"dvfs","restore"};
+    reset();dvfs_ready=false;dvfs_command(2,stat,output,sizeof(output));assert(strstr(output,"not ready") && !writes);
+    reset();dvfs_command(4,bad,output,sizeof(output));assert(strstr(output,"unsupported OPP") && !writes);
+    dvfs_command(3,on,output,sizeof(output));assert(dvfs_auto && !dvfs_sample_valid);
+    dvfs_command(4,set,output,sizeof(output));assert(strstr(output,"disable auto") && !writes);
+    dvfs_command(3,off,output,sizeof(output));assert(!dvfs_auto);
+    dvfs_command(4,set,output,sizeof(output));assert(strstr(output,"SWEET DVFS: OK ") && strstr(output,"actual=2208000"));
+    dvfs_command(2,stat,output,sizeof(output));assert(strstr(output,"valid=1") && !command_locked);
+    dvfs_command(2,restore,output,sizeof(output));assert(strstr(output,"boot restored") && !dvfs_auto);
+    assert(dvfs_context(0,&dvfs_boot[0],0) && dvfs_context(1,&dvfs_boot[1],0));
     puts("DVFS core: all levels, divider, supply/APM/PLL ordering, five injected failures, rollback, sticky fault and load policy PASS");
+    puts("DVFS actual status/auto/manual/restore command handler PASS");
 MODEL_CASE
 }
 '''

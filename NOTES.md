@@ -1,3 +1,27 @@
+### 2026-10-27 04:24: first governor CI compile failure fixed, broader host coverage
+
+CI40442814374/e123e85 FAILED in sweet_dvfs.h status handler: declaration after
+report label rejected by ARM C compiler (line365). No governor kernel booted.
+Sourcefix736adf1 exportsj0104a: declare n beforelabel; portableuint64formatcasts.
+Hosttestnowcompiles actualcommandhandler too and exercises status/auto/manual/
+restore/unsupportedOPP, inadditiontoactualtransitionfaultcases. AllPASS; runtime
+fuse OPPs stillmatch Python+stockDT. CIrebuildnext. Phone8-coreoldkernelresponsive,
+bootclocks/railsrestored. Framebenchdiscovery1sconnect timedoutonce; direct5s
+BringupClientread state/rails succeeds. No hardwarewrite fromfailedfastvalid
+preflight. No thermal policy asuserdirected; keepgoingthroughgovernoracceptance.
+
+### 2026-10-27 04:18: full exact-OPP up/down sweep PASS; governor CI building
+
+Publish e123e85 implements j0104 source276c227. CI40442814374 job121986917941
+running4Kkernel. CIguardexecutes actualDVFScorefaulttests andlinkedready marker.
+All-opps raw sweep completed upward+downward for Gold7/Silver8 points at each
+point's own fuse-derived voltage (including1958/880,2150/928,2208/948;
+Silver1843.2/900). All8x20 perpointPASS; bootrestorePASS. Goldremained300during
+Silver sweep, so simultaneouslowGold+variableSilver also exercised. TSENSpeak
+~73C recorded without thermal gating peruser direction. Own phone lock/collector
+remain held; oldbcdc037 kernelcurrentlyrestoredbootstate. Newkerneldevice test
+prepared in ignored validate-dvfs.py; no j0104 phone result yet.
+
 ### 2026-10-27: all stock CPU frequency points pass; complete governor prepared
 
 On fresh temporarydvfs-max8 boot using bcdc037/CI40437789398, Gold1958/2150/
