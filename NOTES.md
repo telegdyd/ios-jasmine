@@ -1,3 +1,22 @@
+### 2026-10-27: user requests promotion, build and persistent phone installation
+
+Explicit new scope: make8-core/scaling the Jasmine default, build and install
+on phone. Own exclusive lock reacquired; entering r109 charging shell to back
+up installed boot_b/GPT before install. No persistent flash yet. Repository
+AGENTS.md requires confirmation for destructive steps; prepare concrete tested
+image/backup before asking. Existing flash-slotb script documents older standing
+boot_b authorization, but do not infer authorization for other partitions.
+
+Source09756bf in isolatedCPU worktree exportsj0107: default scaling/auto enabled
+only on Jasmine+TOPAZ_4K, sweetdvfs0 opt-out, sweetdvfsauto0 manual, non-Jasmine/
+legacy builds off, OSM and legacyRPM/voltage probes excluded. Initialization now
+runs without sweetcmd flag when the default governor is enabled. CI4K default
+and push fallback now1. mkimg detects default-profile kernel marker and selects
+AMP1/CPUS8/CPU_DVFS1, with explicit overrides and legacy-kernel compatibility.
+Matched diagnostic images explicitly disable DVFS unless requested.
+Actual gate/override, checker-init, transition/rollback and image-default host
+tests PASS. Kernel build/device/default-image validation and installation pending.
+
 ### 2026-10-27 15:48: CPU scaling + Wallpaper hang acceptance PASS; tools released
 
 User confirmed Wallpaper -> Add New Wallpaper hang is GONE. Rendering remains

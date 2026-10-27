@@ -1,0 +1,92 @@
+From 09756bfbab4cdf3552ab5ff0e1c3f539a27a7273 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 15:59:02 +0100
+Subject: [PATCH] jasmine-j0107: enable validated CPU scaling by default on 4K
+ Jasmine
+
+---
+ osfmk/arm64/sweet_dvfs.h | 40 ++++++++++++++++++++++++++++++++++------
+ osfmk/arm64/sweet_osm.c  |  2 +-
+ 2 files changed, 35 insertions(+), 7 deletions(-)
+
+diff --git a/osfmk/arm64/sweet_dvfs.h b/osfmk/arm64/sweet_dvfs.h
+index 0ea2f91..a3314f2 100644
+--- a/osfmk/arm64/sweet_dvfs.h
++++ b/osfmk/arm64/sweet_dvfs.h
+@@ -246,6 +246,35 @@ dvfs_policy(unsigned c, unsigned busy)
+ }
+ 
+ /* DVFS kernel worker */
++#include <dev/sweet_board.h>
++
++/* Only Jasmine's validated 4K/AMP build enables CPU scaling by default. */
++static bool
++sweet_dvfs_enabled(void)
++{
++#if defined(TOPAZ_4K)
++	if (!sweet_board_is("xiaomi,jasmine")) { return false; }
++	uint32_t probe=0;
++	(void)PE_parse_boot_argn("sweetcpuvolt",&probe,sizeof(probe));
++	if (probe) { return false; }
++	(void)PE_parse_boot_argn("sweetcpurpm",&probe,sizeof(probe));
++	if (probe) { return false; }
++	uint32_t enabled=1;
++	(void)PE_parse_boot_argn("sweetdvfs",&enabled,sizeof(enabled));
++	return enabled==1;
++#else
++	return false;
++#endif
++}
++
++static bool
++sweet_dvfs_automatic(void)
++{
++	uint32_t automatic=1;
++	(void)PE_parse_boot_argn("sweetdvfsauto",&automatic,sizeof(automatic));
++	return automatic==1;
++}
++
+ #include <kern/recount.h>
+ static uint64_t dvfs_last_busy[MAX_CPUS], dvfs_last_idle[MAX_CPUS];
+ static bool dvfs_sample_valid;
+@@ -296,9 +325,7 @@ dvfs_worker(void *arg, wait_result_t result)
+ 		}
+ 	}
+ 	dvfs_ready=ok;
+-	uint32_t automatic=0;
+-	(void)PE_parse_boot_argn("sweetdvfsauto",&automatic,sizeof(automatic));
+-	dvfs_auto=ok && automatic==1;
++	dvfs_auto=ok && sweet_dvfs_automatic();
+ 	printf("SWEET DVFS: ready=%u auto=%u thermal=off; array boot settings retained\n",ok,dvfs_auto);
+ 	lck_mtx_unlock(&cpuvolt_lock);
+ 	if (!ok) { return; }
+@@ -322,9 +349,10 @@ dvfs_worker(void *arg, wait_result_t result)
+ static void
+ sweet_dvfs_start(void)
+ {
+-	uint32_t enabled=0;
+-	(void)PE_parse_boot_argn("sweetdvfs",&enabled,sizeof(enabled));
+-	if (enabled!=1 || osm_mode!=0) { return; }
++	if (!sweet_dvfs_enabled() || osm_mode!=0) { return; }
++#if defined(TOPAZ_4K)
++	printf("SWEET DVFS: jasmine defaults v1; sweetdvfs=0 disables, sweetdvfsauto=0 manual\n");
++#endif
+ 	thread_t thread;
+ 	if (kernel_thread_start(dvfs_worker,NULL,&thread)==KERN_SUCCESS) { thread_deallocate(thread); }
+ }
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 16953af..2c9daa3 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1769,7 +1769,7 @@ sweet_osm_init(void)
+ 	uint32_t cmd = 0;
+ 	(void)PE_parse_boot_argn("sweetosm", &osm_mode, sizeof(osm_mode));
+ 	(void)PE_parse_boot_argn("sweetcmd", &cmd, sizeof(cmd));
+-	if (osm_mode == 0 && cmd == 0) {
++	if (osm_mode == 0 && cmd == 0 && !sweet_dvfs_enabled()) {
+ 		return;
+ 	}
+ 	if (osm_mode != 0) {
+-- 
+2.47.3
+

@@ -74,6 +74,9 @@ def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False, cpu_vo
         if b'SWEET DVFS: ready=' not in kernel.read_bytes():
             raise ValueError('kernel has no CPU DVFS governor')
         common += ['sweetdvfs=1', 'sweetdvfsauto=' + str(int(cpu_dvfs_auto))]
+    else:
+        # Preserve baseline/manual probe semantics on default-on kernels.
+        common += ['sweetdvfs=0', 'sweetdvfsauto=0']
     out.mkdir(parents=True)
     dtpath = out / 'hardware.adt'
     dtpath.write_bytes(dt)

@@ -28,7 +28,7 @@ on:
         default: false
       topaz_4k:
         description: 1 = 4 KiB pages + AMP (TOPAZ_4K, all eight cores with mkadt.py --amp), 0 = 16 KiB pages, Gold only
-        default: "0"
+        default: "1"
   push:
     branches: [main]
     paths:
@@ -37,7 +37,7 @@ on:
 
 
 concurrency:
-  group: xnu-${{ github.ref }}-${{ inputs.build || 'kernel' }}-${{ inputs.topaz_4k || '0' }}
+  group: xnu-${{ github.ref }}-${{ inputs.build || 'kernel' }}-${{ inputs.topaz_4k || '1' }}
   cancel-in-progress: true
 
 env:
@@ -54,7 +54,7 @@ env:
   CCACHE_MAXSIZE: 3G
   CCACHE_WRAP: ${{ github.workspace }}/ccache-bin
   # makedefs/MakeInc.def (topaz 0140) reads it: 1 builds SWEET with 4 KiB pages
-  TOPAZ_4K: ${{ inputs.topaz_4k == '1' && '1' || '' }}
+  TOPAZ_4K: ${{ inputs.topaz_4k != '0' && '1' || '' }}
 
 jobs:
   # iOS 16 userland programs for jasmine (ios/*.c): Xcode's iPhoneOS SDK,
@@ -283,6 +283,13 @@ jobs:
           fi
           if [ -f patches/j0106-jasmine-surface-zombie-pixels.patch ]; then
             python3 ../tools/cpuclk/surface-release-test.py xnu/iokit/Kernel/arm/SweetSurface.cpp
+          fi
+          if [ -f patches/j0107-jasmine-default-cpu-scaling.patch ]; then
+            python3 ../tools/cpuclk/defaults-test.py xnu/osfmk/arm64/sweet_dvfs.h
+            python3 ../tools/cpuclk/image-defaults-test.py ../tools/g2/mkimg.sh
+            if [ "$TOPAZ_4K" = 1 ]; then
+              strings fakeroot/System/Library/Kernels/kernel.development.sweet | grep 'SWEET DVFS: jasmine defaults v1'
+            fi
           fi
           if [ -f patches/j0100-jasmine-wifi-defaults.patch ]; then
             python3 ../tools/check-wifi-integration.py --source xnu --log kernel-build.log

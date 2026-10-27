@@ -53,6 +53,8 @@ static void thread_deallocate(thread_t t) { (void)t; ++dealloc_calls; }
 '''
     if 'sweet_dvfs_start();' in function:
         harness += 'static void sweet_dvfs_start(void) {}\n'
+    if 'sweet_dvfs_enabled()' in function:
+        harness += 'static int input_dvfs;\nstatic int sweet_dvfs_enabled(void) { return input_dvfs; }\n'
     harness += function + r'''
 static void scenario(unsigned mode, unsigned cmd, unsigned expected_work, unsigned expected_threads) {
     input_mode=mode; input_cmd=cmd; osm_mode=0; osm_ref=0;
@@ -67,9 +69,13 @@ int main(void) {
     scenario(0, 1, 1, 0);  /* live checker has reference, no OSM workers */
     scenario(1, 0, 1, 2);  /* original probe/watch retained */
     scenario(8, 1, 1, 2);  /* original table/watch retained */
-    puts("CPU checker init: four scenarios PASS");
+    PROMOTED_CASES
+    puts("CPU checker init: original and applicable promoted-default scenarios PASS");
 }
 '''
+    harness = harness.replace('PROMOTED_CASES',
+        'input_dvfs=1; scenario(0,0,1,0); scenario(0,1,1,0); input_dvfs=0;'
+        if 'sweet_dvfs_enabled()' in function else '')
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory)
         (path / "check.c").write_text(harness)
