@@ -1,3 +1,29 @@
+### 2026-10-28 00:40: texture function 0x1c = ds8 implemented; material chain verified; NOT installed
+
+0x1c is "ds8" (names from MetalContext::get_TextureFunction_decoder dictionary 0x1d5b82198; 0x1a ds4, 0x1b ds6,
+0x1d ups ...). Not a full-program function in GL create_shader (mask 0x1f3fec000000), so an expression entry
+works. capture_backdrop uses it for backdrop scale < 1/4 with offset[4] = (k,k),(k,3k),(3k,k),(3k,3k) texels;
+blur_surface for 1/8 (sets no weight). libsweetca sca_ds8 = mean of the 16 mirrored bilinear taps, case byte
+0x1c := 0x0f (offset/weight lookup). Commit 052afdc, Mesa CI 40588221824. Details: side-session notes
+texfn-0x1c-ds8.md.
+Device (temporary boots, probe lib only): ds8 shader builds (2D sampler), runs on lock and home screens, no
+textured program-less draws left except one 6-vertex 981x426 draw at unlock (fn unknown), no SMMU fault/panic.
+Visual: pill/dock unchanged vs before ds8 (dock gap 115,126,180; CPU renderer 249,251,253).
+Diagnostics (commit 52b450f, Mesa CI 40601658380, lib SHA256 4780fbaa..., on phone as libsweetca-probe.dylib):
+SWEETCA_TRIGGER=/usr/local/bin/sca-go gates SWEETCA_PASS_TRACE and SWEETCA_REGION until the file exists; region
+draws now log float uniforms, constant vertex_color and the target pixel after the draw.
+MEASURED (logs/netlog-s3-ds8atlas.txt, region 0:0:140:110 = backdrop atlas corner, after page swipes): pill
+backdrop chain ds4 -> luminanceCurve(function_arg -1.03,0.9,0.6,0.3, amount color.a 0.5) -> colour matrix
+(saturation ~1.6, offset .08) -> 2-axis Gaussian (p71/p89) -> fade matrix (p85); every pass's centre pixel equals
+what its CA parameters imply (checked luminanceCurve by hand). Dock composite p73 samples atlas 0..0.095 x
+0..0.045 (coord_arg). So no GPU step is dropped any more; the darker GPU material is CA's GL recipe/parameters vs
+its CPU renderer (UNPROVEN which is "right"; compare against a real iPhone photo or the Metal path next).
+Tips: unlock/keys via command port 5141 (tools/g2/uibench.py cmd: 'key 3 1; key 3 0', 'swipe 540 2150 540 900
+250'); 169.254.7.2 is NOT reachable from this PC (s3round's sweetd wait just times out). Region probe dedups per
+program/texture/fbo and stops at 150; it also matches the vertically mirrored rect and skips draws >3x the rect.
+Phone: returned to installed boot_b (production lib unchanged, SHA256 8cb5863c...). Production install of the
+ds8 lib needs the user's OK.
+
 ### 2026-10-28: Chlorophyll (Metal driver) forked for Adreno 5xx; submodule mesa/metal
 
 Goal: Metal for iOS processes (CoreAnimation/apps ship AIR in .metallib) via Chlorophyll (AIR -> NIR -> ir3, Metal API
