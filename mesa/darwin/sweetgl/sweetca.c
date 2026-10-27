@@ -1769,6 +1769,105 @@ zero_index(GLenum type, const void *indices, GLint i)
    return ((const GLubyte *)indices)[i];
 }
 
+/* bounds of the draw's client-memory vertex_position values (before vertex_matrix) */
+static bool
+draw_bounds(GLuint prog, GLint first, GLsizei count, GLenum itype, const void *indices, float b[4])
+{
+   GLint pos = prog ? glGetAttribLocation(prog, "vertex_position") : -1;
+   GLint buf = 1, type = 0, size = 0, stride = 0, on = 0, ebuf = 0;
+   void *ptr = NULL;
+   if (pos < 0)
+      return false;
+   glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ebuf);
+   glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &on);
+   glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buf);
+   glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+   glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+   glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+   glGetVertexAttribPointerv(pos, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
+   if (!on || buf || !ptr || type != GL_FLOAT || size < 2 || (indices && ebuf))
+      return false;
+   b[0] = b[1] = 1e9f, b[2] = b[3] = -1e9f;
+   size_t st = stride ? (size_t)stride : (size_t)size * sizeof(float);
+   for (GLsizei i = 0; i < count; i++) {
+      const float *p = (const float *)((const char *)ptr + st * zero_index(itype, indices, first + i));
+      b[0] = fminf(b[0], p[0]), b[2] = fmaxf(b[2], p[0]), b[1] = fminf(b[1], p[1]), b[3] = fmaxf(b[3], p[1]);
+   }
+   return true;
+}
+
+/*
+ * SWEETCA_REGION=x0,y0,x1,y1 (screen pixels, y down): log draws whose positions touch
+ * that rectangle or its vertical mirror (CA's y may point up), once per program,
+ * unit 0 texture and target, up to 150, with each program's fragment source once.
+ */
+static void
+region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const void *indices)
+{
+   static int on = -1;
+   static float r[4];
+   static unsigned logged, nseen;
+   static uint32_t seen[150];
+   static uint8_t shown[OBJMAX];
+   if (on < 0)
+      on = getenv("SWEETCA_REGION") &&
+           sscanf(getenv("SWEETCA_REGION"), "%f,%f,%f,%f", &r[0], &r[1], &r[2], &r[3]) == 4;
+   float b[4];
+   if (!on || logged >= 150 || count <= 0 || !draw_bounds(c->program ? c->program : c->last_program, first, count, itype, indices, b))
+      return;
+   bool down = b[0] < r[2] && b[2] > r[0] && b[1] < r[3] && b[3] > r[1];
+   bool up = b[0] < r[2] && b[2] > r[0] && b[1] < 2436.f - r[1] && b[3] > 2436.f - r[3];
+   if (!down && !up)
+      return;
+   /* skip full-screen and other draws much larger than the region */
+   if (b[2] - b[0] > 3 * (r[2] - r[0]) || b[3] - b[1] > 3 * (r[3] - r[1]))
+      return;
+   uint32_t key = c->program * 2654435761u ^ c->held[0] * 40503u ^ c->fbo;
+   for (unsigned i = 0; i < nseen; i++)
+      if (seen[i] == key)
+         return;
+   seen[nseen++] = key;
+   logged++;
+   char tex[160] = "";
+   size_t l = 0;
+   for (int u = 0; u < 4; u++) {
+      GLuint t = c->held[u];
+      if (t)
+         l += snprintf(tex + l, sizeof(tex) - l, " u%d=%u(%ux%u)", u, t, t < TEXMAX ? c->tex_w[t] : 0,
+                       t < TEXMAX ? c->tex_h[t] : 0);
+   }
+   GLuint fbtex = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
+   GLint blend = glIsEnabled(GL_BLEND), src = 0, dst = 0, mask[4] = {0};
+   glGetIntegerv(GL_BLEND_SRC_RGB, &src);
+   glGetIntegerv(GL_BLEND_DST_RGB, &dst);
+   glGetIntegerv(GL_COLOR_WRITEMASK, mask);
+   sca_log("sweetca: region draw: frame %u prog %u n %d %s box %.1f,%.1f .. %.1f,%.1f fbo %u (tex %u %ux%u)%s "
+           "blend %d %#x/%#x mask %d%d%d%d",
+           c->frame, c->program, count, down ? "down" : "up", b[0], b[1], b[2], b[3], c->fbo, fbtex,
+           fbtex < TEXMAX ? c->tex_w[fbtex] : 0, fbtex < TEXMAX ? c->tex_h[fbtex] : 0, tex, blend, src, dst,
+           mask[0], mask[1], mask[2], mask[3]);
+   if (c->program && c->program < OBJMAX && !shown[c->program]) {
+      shown[c->program] = 1;
+      GLuint sh[4];
+      GLsizei n = 0;
+      glGetAttachedShaders(c->program, 4, &n, sh);
+      for (GLsizei i = 0; i < n; i++) {
+         GLint type = 0;
+         glGetShaderiv(sh[i], GL_SHADER_TYPE, &type);
+         if (type != GL_FRAGMENT_SHADER)
+            continue;
+         char *src2 = malloc(16384);
+         GLsizei len = 0;
+         glGetShaderSource(sh[i], 16384, &len, src2);
+         const char *m = strstr(src2, "void main");
+         m = m ? m : src2;
+         for (const char *p = m; *p; p += 600)
+            sca_log("sweetca: region prog %u | %.600s", c->program, p);
+         free(src2);
+      }
+   }
+}
+
 /* true when the magenta program is now bound; the caller draws, then unbinds it */
 static bool
 zero_probe_bind(struct sca_ctx *c, GLenum mode, GLint first, GLsizei count, GLenum itype,
@@ -1852,6 +1951,7 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
+   region_probe(c, first, count, 0, NULL);
    if (count > 0 && !ticket_draw(c))
       return; /* preparation may read back/seal earlier writes; BEGIN comes after it */
    bool zero = zero_probe_bind(c, mode, first, count, 0, NULL);
@@ -1875,6 +1975,7 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    draw_prep(c);
    n_draws++;
    trace_draw(c, mode, count);
+   region_probe(c, 0, count, type, indices);
    if (count > 0 && !ticket_draw(c))
       return;
    bool zero = zero_probe_bind(c, mode, 0, count, type, indices);
