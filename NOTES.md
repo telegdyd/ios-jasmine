@@ -1,3 +1,20 @@
+### 2026-10-28 01:00: frame-rate bottleneck measured fresh: GPU DRAM traffic
+
+[Report](jasmine/PERF-BOTTLENECK-20261028.md). Installed boot_b (j0108) + production lib 4780fbaa, one boot,
+no flash/reboot. New tool tools/g2/sensround.py: runtime clock setting + one framebench capture per config,
+restores `dvfs auto 1`, `gpu clk 588`, `ddr 1804` (restored and read back). Measured (swap arrivals/s, Home B /
+Control B): base 26.3/22.7, repeat 27.1/22.0; CPU pinned max 27.0/23.0; CPU pinned 1401.6 MHz 26.6/23.5 (no
+effect); GPU 430 25.3/20.3; GPU 647 27.3/22.1; DDR 1296 22.3/17.2. `ddr bw` counters in motion: GPU busy
+~400 Mcyc/s, 56-66% RAM-starved, ~5.3 GB/s. GPU busy/frame (CC) 34.9 ms, +18% at DDR 1296, +5% at GPU 430.
+Intervals quantized to the 16.7 ms frame clock (Home mostly 2 periods, CC 2-3). sweetfb_hz=30 is not a cap
+(all swaps take the sweetfb_sync immediate path). Conclusion: sysmem rendering traffic; tasks 24/25 are the
+levers, CPU work (task 5/DVFS) is not on the critical path now. Not done: per-batch GPUPROF on today's build
+(needs a temporary boot with SWEETCA_GPUPROF in sweetenv). Phone left in installed boot_b, home screen, clocks
+at defaults. Locks: my lock (scratchpad) released; stale locks from earlier agents still exist and were NOT
+removed: Temp/claude/phone-j0108.lock (Oct 27 19:11) and the framebench DEFAULT_LOCK phone.lock
+("Codex CPU default promotion", Oct 27 15:57), so plain framebench runs fail until someone deletes them.
+Raw data ignored under research/bottleneck-20261028/.
+
 ### 2026-10-28 00:50: ds8 libsweetca INSTALLED as production (user OK)
 
 /usr/local/bin/libsweetca.dylib = Mesa CI 40601658380 (52b450f: ds8 + opt-in SWEETCA_TRIGGER/region inputs),

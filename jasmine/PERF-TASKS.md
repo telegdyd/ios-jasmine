@@ -15,6 +15,12 @@ approved by the user on 2026-10-24; implementation has not started.
 
 ## Current state and priorities
 
+- **2026-10-28 fresh measurement on the installed config (8 cores, CPU auto, GPU 588, DDR 1804):
+  the GPU's DRAM traffic is the bottleneck.** Same-boot clock sweep: CPU pinned at 1401 MHz or
+  2208 MHz = no change; GPU -27% = -4..-10%; DDR -28% = -15..-24%. 56-66% of GPU busy cycles
+  are RAM-starved; frames land on 2-3 periods of the 16.7 ms clock. CPU-side tasks (5, DVFS) will
+  not raise frame rate until GPU time per frame falls; tasks 24/25 are the levers.
+  [Report](PERF-BOTTLENECK-20261028.md). The ranking table below predates this.
 - **2026-10-25: the GPU is now the limit for Home and memory-bound** (65% of busy cycles RAM-starved, every batch in
   sysmem at 1125x2436): [GPU time report](PERF-GPU-TIME-20261025.md), new **tasks 23-25** in
   [PERF-TASK23-25-GPU-TRAFFIC.md](PERF-TASK23-25-GPU-TRAFFIC.md). DDR 1804 is the default since then (task 10).
