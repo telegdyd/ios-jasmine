@@ -1391,15 +1391,16 @@ static const char fn_vblur[] =
    "}\n";
 /*
  * SWEETCA_TEXFN_PROBE=1: the entries still NULL after the ones above (0x19, 0x1c,
- * 0x28) become sca_missNN(s0), which draws magenta where the source has alpha, so
+ * 0x28) become sca_missNN(s0), which draws yellow / green / cyan where the source has alpha, so
  * the first shader built for one is logged and its layer shows on screen.
  */
 static const uint8_t probe_fns[] = {0x19, 0x1c, 0x28};
 static const char *const probe_exprs[] = {"sca_miss19(s0)", "sca_miss1c(s0)", "sca_miss28(s0)"};
+static const char *const probe_colors[] = {"1., 1., 0.", "0., 1., 0.", "0., 1., 1."};
 static bool probe_seen[sizeof(probe_fns)];
 static const char fn_miss[] =
    "lowp vec4 sca_miss%02x(lowp vec4 s) {\n"
-   "  return vec4(1., 0., 1., 1.) * s.a;\n"
+   "  return vec4(%s, 1.) * s.a;\n"
    "}\n";
 static const char fn_cm_decl[] = "uniform lowp vec4 color_matrix[5];\n";
 static const char fn_vblur_decl[] = "uniform highp vec4 minmax_dir;\n";
@@ -1413,7 +1414,7 @@ add_texfns(char *src)
    bool nop = strstr(src, "sca_nop(") != NULL, vblur = strstr(src, "sca_vblur(") != NULL;
    if (strstr(src, "void main") && strstr(src, "sca_miss")) {
       for (size_t i = 0; i < sizeof(probe_fns); i++) {
-         char name[16], def[sizeof(fn_miss)];
+         char name[16], def[sizeof(fn_miss) + 16];
          snprintf(name, sizeof(name), "sca_miss%02x(", probe_fns[i]);
          if (!strstr(src, name))
             continue;
@@ -1421,7 +1422,7 @@ add_texfns(char *src)
             probe_seen[i] = true;
             sca_log("sweetca: texture function %#x requested (probe shader built)", probe_fns[i]);
          }
-         snprintf(def, sizeof(def), fn_miss, probe_fns[i]);
+         snprintf(def, sizeof(def), fn_miss, probe_fns[i], probe_colors[i]);
          src = insert_at(src, strstr(src, "void main") - src, def);
       }
    }
@@ -1740,7 +1741,8 @@ kick_after_draw(struct sca_ctx *c)
 
 /*
  * SWEETCA_ZERO_PROBE=1: CA sometimes draws with no program bound (its create_shader gave
- * up before making one), which GL ignores. Such draws are logged (the first 40: vertex
+ * up before making one), which GL ignores. Such draws that sample a texture on unit 0
+ * (untextured ones are full-screen state draws, left alone) are logged (the first 40: vertex
  * count, unit 0 texture, bounds of the client-memory positions before vertex_matrix)
  * and drawn magenta with the last CA program's vertex_matrix, to show what is missing.
  */
@@ -1776,8 +1778,8 @@ zero_probe_bind(struct sca_ctx *c, GLenum mode, GLint first, GLsizei count, GLen
       const char *v = getenv("SWEETCA_ZERO_PROBE");
       zero_probe = v && strcmp(v, "1") == 0;
    }
-   if (!zero_probe || c->program || c->api < 3 || count <= 0)
-      return false;
+   if (!zero_probe || c->program || c->api < 3 || count <= 0 || !c->held[0])
+      return false; /* untextured ones are full-screen state draws, left alone */
    static unsigned logged;
    GLuint last = c->last_program;
    GLint pos = last ? glGetAttribLocation(last, "vertex_position") : -1;
