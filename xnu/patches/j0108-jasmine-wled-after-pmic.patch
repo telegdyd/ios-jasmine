@@ -1,0 +1,64 @@
+From e38fd3324614832b65985cb9c8a780b26920e610 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 18:28:31 +0100
+Subject: [PATCH] jasmine-j0108: AppleCLCD waits for the PMIC setup before
+ looking for the WLED (matching raced sweet_pmic_init: display off left the
+ backlight on)
+
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp    | 9 +++++++++
+ iokit/Kernel/arm/SweetPlatformExpert.cpp | 4 ++++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index d0c8a5a..0fbfe64 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -178,6 +178,7 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ /* bsd/dev/sweet_pmic.c: jasmine PM660L WLED backlight (12-bit, 0 = off) */
+ extern "C" int sweet_wled_get(void);
+ extern "C" int sweet_wled_set(uint32_t level);
++extern "C" volatile int sweet_pmic_ready;       /* SweetPlatformExpert.cpp */
+ 
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+@@ -501,6 +502,14 @@ AppleCLCD::start(IOService *provider)
+ 	 * auto-lock) switches the backlight off instead of drawing black at full
+ 	 * backlight; the level stays ABL's unless sweetbl_level= or sweetbl=1.
+ 	 */
++	/*
++	 * IOKit matches this nub on its own thread while the platform expert is
++	 * still in sweet_pmic_init (SPMI reads take a while): asking for the WLED
++	 * too early said "none", and display off then drew black at full backlight.
++	 */
++	for (unsigned int ms = 0; !topaz && !sweet_pmic_ready && ms < 10000; ms += 5) {
++		IOSleep(5);
++	}
+ 	int wl = topaz ? -1 : sweet_wled_get();
+ 	fWled = wl >= 0;
+ 	if (fWled) {
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 3974e2f..7865ea3 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -16,6 +16,9 @@
+ extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ /* bsd/dev/sweet_pmic.c: jasmine PMIC keys and RTC (ADT /sweet-pmic) */
+ extern "C" int sweet_pmic_init(void);
++/* set once the PMIC drivers (RTC, charger, gauge, WLED) are set up; AppleCLCD waits for it */
++extern "C" volatile int sweet_pmic_ready;
++volatile int sweet_pmic_ready;
+ extern "C" int sweet_rtc_get(uint64_t *secs);
+ extern "C" void sweet_rtc_set(uint64_t secs);
+ /* bsd/dev/sweet_nvt.c: jasmine touch (ADT /sweet-touch) */
+@@ -254,6 +257,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	(void)sweet_gold_clock();       /* sweetgold=: Gold cluster off GPLL0, before any disk write */
+ 	bool rtc = sweet_pmic_init() != 0;
+ 	sweet_nvt_init();
++	sweet_pmic_ready = 1;
+ 	registerService();
+ 	IOLog("SWEET: platform expert registered\n");
+ 	/* IOKitInitializeTime waits up to 30 s for IORTC before reading the clock */
+-- 
+2.47.3
+
