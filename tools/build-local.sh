@@ -1,11 +1,12 @@
 #!/bin/bash
-# The topaz kernel built on a Mac (faster than CI for day-to-day work).
+# The SWEET/Jasmine kernel built on a Mac (faster than CI for day-to-day work).
 # Same steps as .github/workflows/xnu.yml: blacktop/darwin-xnu-build at a fixed commit, our
 # patches next to its own, Xcode 15.4 (its iig matches the xnu-8796 IORPC ABI), KDK 13.5
 # unpacked here instead of installed with sudo, ccache.
 #   tools/build-local.sh        build this checkout's xnu/patches
 # Work tree (build.sh clone, xnu clone, KDK, ccache): $XNU_BUILD_DIR, default ~/topaz-xnu-build.
 # Output: $XNU_BUILD_DIR/out/kernel.development.sweet and out/SHA256SUMS.
+# Defaults to the validated 4K/AMP build; TOPAZ_4K=0 selects legacy Gold-only diagnostics.
 set -euo pipefail
 TREE=$(cd "$(dirname "$0")/.." && pwd)
 ROOT=${XNU_BUILD_DIR:-$HOME/topaz-xnu-build}
@@ -15,6 +16,8 @@ DXB_SHA=663906528d1cd5ea8fde7de6f16de73db9511549
 
 export DEVELOPER_DIR=/Applications/Xcode_15.4.app/Contents/Developer
 export MACOS_VERSION=13.5 KERNEL_CONFIG=DEVELOPMENT MACHINE_CONFIG=SWEET
+export TOPAZ_4K=${TOPAZ_4K:-1}
+case "$TOPAZ_4K" in 0|1) ;; *) echo 'TOPAZ_4K must be 0 or 1' >&2; exit 1;; esac
 export KDKROOT=$ROOT/kdkpkg/KDK.pkg/Payload
 export CCACHE_DIR=$ROOT/.ccache CCACHE_BASEDIR=$ROOT CCACHE_COMPILERCHECK=content
 export CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime,file_macro,pch_defines CCACHE_MAXSIZE=3G

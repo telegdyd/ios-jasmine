@@ -5,6 +5,7 @@
 #   bash tools/cpuclk/osm-round.sh KERNEL_RUN|- TAG "ARGS" [LOG]
 # KERNEL_RUN "-" reuses xnu/out-jasmine-TAG. The image is shim/out/shim-boot-TAG-osm.img.
 # AMP=1 (8 cores, TOPAZ_4K kernel), RO=1 (read-only root), CPUS=N go to tools/g2/mkimg.sh.
+# OSM rounds explicitly disable the automatic governor; omitted AMP follows the kernel profile.
 # The phone must be in fastboot or running a kernel with the command port.
 G="/c/Program Files/GitHub CLI/gh"
 KR=${1:?usage: osm-round.sh KERNEL_RUN|- TAG "ARGS" [LOG]}
@@ -23,7 +24,7 @@ if [ "$KR" != - ]; then
 fi
 # G2 state of 2026-10-22 05:04 (shim-boot-j38-bb8.img) + ARGS; sweetfb_sync=1 since 22:15 (j0056 flicker fix)
 BASE="gpudelay=1 gpupause=0 sweetfb_sync=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib"
-wsl env GPUDBG=0 VARIANT=osm AMP=${AMP:-0} RO=${RO:-0} ${CPUS:+CPUS=$CPUS} EXTRA_ARGS="$BASE $ARGS" bash "/mnt/c/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/tools/g2/mkimg.sh" $T || exit 1
+wsl env GPUDBG=0 VARIANT=osm CPU_DVFS=0 ${AMP:+AMP=$AMP} RO=${RO:-0} ${CPUS:+CPUS=$CPUS} EXTRA_ARGS="$BASE $ARGS" bash "/mnt/c/Users/teleg/Documents/Code/Xiaomi A2/ios-jasmine/tools/g2/mkimg.sh" $T || exit 1
 for i in $(seq 1 ${WAIT:-60}); do
 	[ -n "$(fastboot devices)" ] && break
 	python -c "import socket; socket.create_connection(('169.254.7.2', 5141), timeout=2)" 2>/dev/null && break
