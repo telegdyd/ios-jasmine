@@ -1351,6 +1351,11 @@ has_word(const char *src, const char *word)
  *    (level 0 only) cannot hold, so the mip passes draw nothing and the second
  *    blurs the source in one pass: a 24 tap golden angle disc, Gaussian weighted,
  *    radius = mask alpha (1 - alpha with minmax_dir.y) * minmax_dir.x / 2.
+ *  - sca_ds8 (0x1c, "ds8" in the Metal path's function names, next to ds4/ds6 =
+ *    0x1a/0x1b): the 8x downsample of capture_backdrop (backdrop scale < 1/4:
+ *    materials) and blur_surface. CA passes offset[4] = (k,k), (k,3k), (3k,k), (3k,3k)
+ *    texels (k = 1 at 1/8), mirrored here into a 4x4 grid of bilinear taps over the
+ *    8x8 block, averaged (blur_surface sets no weight, so none is read).
  */
 static const char fn_vcm[] =
    "lowp vec4 sca_vcm(lowp vec4 s) {\n"
@@ -1390,14 +1395,25 @@ static const char fn_vblur[] =
    "  }\n"
    "  return acc / wsum;\n"
    "}\n";
+static const char fn_ds8[] =
+   "lowp vec4 sca_ds8(lowp vec4 s) {\n"
+   "  mediump vec4 acc = vec4(0.);\n"
+   "  for (int i = 0; i < 4; i++) {\n"
+   "    highp vec2 o = offset[i], p = vec2(o.x, -o.y);\n"
+   "    acc += sca_ds8_tex(texcoord0_0 + o) + sca_ds8_tex(texcoord0_0 - o)\n"
+   "      + sca_ds8_tex(texcoord0_0 + p) + sca_ds8_tex(texcoord0_0 - p);\n"
+   "  }\n"
+   "  return acc * .0625;\n"
+   "}\n";
+static const char fn_ds8_decl[] = "uniform highp vec2 offset[4];\n";
 /*
- * SWEETCA_TEXFN_PROBE=1: the entries still NULL after the ones above (0x19, 0x1c,
- * 0x28) become sca_missNN(s0), which draws yellow / green / cyan where the source has alpha, so
+ * SWEETCA_TEXFN_PROBE=1: the entries still NULL after the ones above (0x19, 0x28)
+ * become sca_missNN(s0), which draws yellow / cyan where the source has alpha, so
  * the first shader built for one is logged and its layer shows on screen.
  */
-static const uint8_t probe_fns[] = {0x19, 0x1c, 0x28};
-static const char *const probe_exprs[] = {"sca_miss19(s0)", "sca_miss1c(s0)", "sca_miss28(s0)"};
-static const char *const probe_colors[] = {"1., 1., 0.", "0., 1., 0.", "0., 1., 1."};
+static const uint8_t probe_fns[] = {0x19, 0x28};
+static const char *const probe_exprs[] = {"sca_miss19(s0)", "sca_miss28(s0)"};
+static const char *const probe_colors[] = {"1., 1., 0.", "0., 1., 1."};
 static bool probe_seen[sizeof(probe_fns)];
 static const char fn_miss[] =
    "lowp vec4 sca_miss%02x(lowp vec4 s) {\n"
@@ -1413,6 +1429,7 @@ add_texfns(char *src)
 {
    bool vcm = strstr(src, "sca_vcm(") != NULL, cm4 = strstr(src, "sca_cm4(") != NULL;
    bool nop = strstr(src, "sca_nop(") != NULL, vblur = strstr(src, "sca_vblur(") != NULL;
+   bool ds8 = strstr(src, "sca_ds8(") != NULL;
    if (strstr(src, "void main") && strstr(src, "sca_miss")) {
       for (size_t i = 0; i < sizeof(probe_fns); i++) {
          char name[16], def[sizeof(fn_miss) + 16];
@@ -1427,7 +1444,7 @@ add_texfns(char *src)
          src = insert_at(src, strstr(src, "void main") - src, def);
       }
    }
-   if (!strstr(src, "void main") || !(vcm || cm4 || nop || vblur))
+   if (!strstr(src, "void main") || !(vcm || cm4 || nop || vblur || ds8))
       return src;
    if (vblur)
       src = insert_at(src, after_directives(src), fn_derivatives);
@@ -1443,6 +1460,21 @@ add_texfns(char *src)
       src = insert_at(src, strstr(src, "void main") - src, fn_nop);
    if (vblur)
       src = insert_at(src, strstr(src, "void main") - src, fn_vblur);
+   if (ds8) {
+      /* texture0 is the source; a rect sampler (the usual case) takes texel coordinates */
+      static bool logged;
+      bool rect = strstr(src, "sampler2DRect texture0") != NULL;
+      if (!logged) {
+         logged = true;
+         sca_log("sweetca: texture function 0x1c (ds8) shader built (%s sampler)", rect ? "rect" : "2D");
+      }
+      if (!strstr(src, "offset["))
+         src = insert_at(src, strstr(src, "void main") - src, fn_ds8_decl);
+      src = insert_at(src, strstr(src, "void main") - src,
+                      rect ? "#define sca_ds8_tex(c) texture2DRect(texture0, c)\n"
+                           : "#define sca_ds8_tex(c) texture2D(texture0, c)\n");
+      src = insert_at(src, strstr(src, "void main") - src, fn_ds8);
+   }
    return src;
 }
 
@@ -2895,6 +2927,7 @@ static const struct {
    {0x14, "sca_cm4(s0)", 0},
    {0x26, "sca_nop()", 0xde},
    {0x27, "sca_vblur(s1)", 0x95},
+   {0x1c, "sca_ds8(s0)", 0x0f}, /* the case of ds4/ds6: looks up offset and weight */
 };
 
 static bool

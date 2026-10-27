@@ -1,6 +1,6 @@
-From 53ff49ec51e37f21e9aa99449252570771374b10 Mon Sep 17 00:00:00 2001
+From 5fa71a9bd2bbcd1007458a91b12d1800f520bb38 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Tue, 27 Oct 2026 22:16:07 +0100
+Date: Tue, 27 Oct 2026 22:36:34 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -22,8 +22,8 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++
  src/gallium/frontends/sweetgl/meson.build     |   90 +
- src/gallium/frontends/sweetgl/sweetca.c       | 3007 +++++++++++++++++
- .../frontends/sweetgl/sweetca_pass_trace.inc  |  188 ++
+ src/gallium/frontends/sweetgl/sweetca.c       | 3040 +++++++++++++++++
+ .../frontends/sweetgl/sweetca_pass_trace.inc  |  188 +
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  696 ++++
  src/gallium/frontends/sweetgl/sweetgl.h       |  120 +
@@ -33,7 +33,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  .../frontends/sweetgl/sweetgpu_gltest.c       |  685 ++++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   79 +
- 28 files changed, 8472 insertions(+), 6 deletions(-)
+ 28 files changed, 8505 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -2014,10 +2014,10 @@ index 0000000..ee052db
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..28bedd4
+index 0000000..d67eb7b
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,3007 @@
+@@ -0,0 +1,3040 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -3371,6 +3371,11 @@ index 0000000..28bedd4
 + *    (level 0 only) cannot hold, so the mip passes draw nothing and the second
 + *    blurs the source in one pass: a 24 tap golden angle disc, Gaussian weighted,
 + *    radius = mask alpha (1 - alpha with minmax_dir.y) * minmax_dir.x / 2.
++ *  - sca_ds8 (0x1c, "ds8" in the Metal path's function names, next to ds4/ds6 =
++ *    0x1a/0x1b): the 8x downsample of capture_backdrop (backdrop scale < 1/4:
++ *    materials) and blur_surface. CA passes offset[4] = (k,k), (k,3k), (3k,k), (3k,3k)
++ *    texels (k = 1 at 1/8), mirrored here into a 4x4 grid of bilinear taps over the
++ *    8x8 block, averaged (blur_surface sets no weight, so none is read).
 + */
 +static const char fn_vcm[] =
 +   "lowp vec4 sca_vcm(lowp vec4 s) {\n"
@@ -3410,14 +3415,25 @@ index 0000000..28bedd4
 +   "  }\n"
 +   "  return acc / wsum;\n"
 +   "}\n";
++static const char fn_ds8[] =
++   "lowp vec4 sca_ds8(lowp vec4 s) {\n"
++   "  mediump vec4 acc = vec4(0.);\n"
++   "  for (int i = 0; i < 4; i++) {\n"
++   "    highp vec2 o = offset[i], p = vec2(o.x, -o.y);\n"
++   "    acc += sca_ds8_tex(texcoord0_0 + o) + sca_ds8_tex(texcoord0_0 - o)\n"
++   "      + sca_ds8_tex(texcoord0_0 + p) + sca_ds8_tex(texcoord0_0 - p);\n"
++   "  }\n"
++   "  return acc * .0625;\n"
++   "}\n";
++static const char fn_ds8_decl[] = "uniform highp vec2 offset[4];\n";
 +/*
-+ * SWEETCA_TEXFN_PROBE=1: the entries still NULL after the ones above (0x19, 0x1c,
-+ * 0x28) become sca_missNN(s0), which draws yellow / green / cyan where the source has alpha, so
++ * SWEETCA_TEXFN_PROBE=1: the entries still NULL after the ones above (0x19, 0x28)
++ * become sca_missNN(s0), which draws yellow / cyan where the source has alpha, so
 + * the first shader built for one is logged and its layer shows on screen.
 + */
-+static const uint8_t probe_fns[] = {0x19, 0x1c, 0x28};
-+static const char *const probe_exprs[] = {"sca_miss19(s0)", "sca_miss1c(s0)", "sca_miss28(s0)"};
-+static const char *const probe_colors[] = {"1., 1., 0.", "0., 1., 0.", "0., 1., 1."};
++static const uint8_t probe_fns[] = {0x19, 0x28};
++static const char *const probe_exprs[] = {"sca_miss19(s0)", "sca_miss28(s0)"};
++static const char *const probe_colors[] = {"1., 1., 0.", "0., 1., 1."};
 +static bool probe_seen[sizeof(probe_fns)];
 +static const char fn_miss[] =
 +   "lowp vec4 sca_miss%02x(lowp vec4 s) {\n"
@@ -3433,6 +3449,7 @@ index 0000000..28bedd4
 +{
 +   bool vcm = strstr(src, "sca_vcm(") != NULL, cm4 = strstr(src, "sca_cm4(") != NULL;
 +   bool nop = strstr(src, "sca_nop(") != NULL, vblur = strstr(src, "sca_vblur(") != NULL;
++   bool ds8 = strstr(src, "sca_ds8(") != NULL;
 +   if (strstr(src, "void main") && strstr(src, "sca_miss")) {
 +      for (size_t i = 0; i < sizeof(probe_fns); i++) {
 +         char name[16], def[sizeof(fn_miss) + 16];
@@ -3447,7 +3464,7 @@ index 0000000..28bedd4
 +         src = insert_at(src, strstr(src, "void main") - src, def);
 +      }
 +   }
-+   if (!strstr(src, "void main") || !(vcm || cm4 || nop || vblur))
++   if (!strstr(src, "void main") || !(vcm || cm4 || nop || vblur || ds8))
 +      return src;
 +   if (vblur)
 +      src = insert_at(src, after_directives(src), fn_derivatives);
@@ -3463,6 +3480,21 @@ index 0000000..28bedd4
 +      src = insert_at(src, strstr(src, "void main") - src, fn_nop);
 +   if (vblur)
 +      src = insert_at(src, strstr(src, "void main") - src, fn_vblur);
++   if (ds8) {
++      /* texture0 is the source; a rect sampler (the usual case) takes texel coordinates */
++      static bool logged;
++      bool rect = strstr(src, "sampler2DRect texture0") != NULL;
++      if (!logged) {
++         logged = true;
++         sca_log("sweetca: texture function 0x1c (ds8) shader built (%s sampler)", rect ? "rect" : "2D");
++      }
++      if (!strstr(src, "offset["))
++         src = insert_at(src, strstr(src, "void main") - src, fn_ds8_decl);
++      src = insert_at(src, strstr(src, "void main") - src,
++                      rect ? "#define sca_ds8_tex(c) texture2DRect(texture0, c)\n"
++                           : "#define sca_ds8_tex(c) texture2D(texture0, c)\n");
++      src = insert_at(src, strstr(src, "void main") - src, fn_ds8);
++   }
 +   return src;
 +}
 +
@@ -4915,6 +4947,7 @@ index 0000000..28bedd4
 +   {0x14, "sca_cm4(s0)", 0},
 +   {0x26, "sca_nop()", 0xde},
 +   {0x27, "sca_vblur(s1)", 0x95},
++   {0x1c, "sca_ds8(s0)", 0x0f}, /* the case of ds4/ds6: looks up offset and weight */
 +};
 +
 +static bool
