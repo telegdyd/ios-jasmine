@@ -39,6 +39,14 @@ Its six idle observations stayed stable around452MiB wired after startup.
 This establishes a stronger temporal relationship with auto enable, not a
 proven electrical cause. It does not implicate user wallpaper interaction.
 
+The persisted AegirPoster report captured at14:46:10 shows SIGABRT in an
+Objective-C exception path through NSArray insertion and the renderer's
+uniform-buffer creation. The first16 exception frames exactly match a report
+from2026-10-24, before this DVFS implementation. Auto was enabled at14:45:35.
+Thus this renderer abort predates the new governor; this does not establish
+whether it triggered the surface growth or why auto enable coincided with it.
+Raw crash reports remain ignored and contain device identifiers.
+
 ## Concrete retention defect and fix
 
 `IOSurfaceRootUserClient::trapRelease` cached up to256 released views per client

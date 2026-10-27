@@ -1,3 +1,27 @@
+### 2026-10-27 15:25: fixed kernel4/8 memory PASS; physical8-core UI responsive
+
+Published CI guard fixba35bbc; CI40520184930 building, watcher native91457.
+Kernel from50ea09c/CI40517147150 ARM compile/link succeeded but CI guard failed
+on S-vs-T type. Downloaded exact kernel + buildtree; kernel SHA256
+80a07f5bb50013de237ff9c2f9a9b0a422e1cd4b0d65e5a70a814801ca13fea7.
+Independently verified remaining defined Mach-O symbols, WiFi/framebench source/
+skip guards, hash/markers, and actual trapRelease regression against packaged
+build source: all PASS. CI status remains failure, do not describe as green.
+Local evidence recordedci-40517147150/local-symbol-source-verification.json;
+integrity-images manifest explicitly records CI failure and local validation.
+
+Temporary integrity4 boot + bounded4-core memorycheck PASS (67.65ms), then
+clean reboot and matched integrity8.33 memorychecks PASS: boot, Gold7/Silver8
+points up/down, joint stockmax and restored boot. Each8 CPUs x1MiB x4patterns,
+correct pinned CPU reports and0errors. All allocations freed. Finalboot restore
+Gold1747.2/868mV,Silver1382.4/872mV,APMsMX; changes15/17,failures0/fault0.
+User explicitly confirms physical8-core touch responsive AFTER sweep.
+New memory wired~280MiB initially vs old settled~470MiB; no causal claim yet.
+observe-integrity.py integrity8-manual running native92278,4 bounded90s windows
+(~4.5min total) beforeauto reproduction. Own lock +integrity8 collector held.
+Next complete manual observation, autoenable sameboot and repeat memory/creator
+monitoring + physical UI check. Corrected CI40520184930 stillpending.
+
 ### 2026-10-27 15:19: ARM kernel compiled; new CI symbol-type guard too narrow
 
 CI40517147150/head50ea09c actual ARM compile/link succeeded, Build Done14:17:55UTC;
