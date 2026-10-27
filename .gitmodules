@@ -1,0 +1,4 @@
+[submodule "mesa/metal"]
+	path = mesa/metal
+	url = https://github.com/telegdyd/Chlorophyll.git
+	branch = adreno5xx

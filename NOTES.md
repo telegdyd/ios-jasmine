@@ -1,3 +1,17 @@
+### 2026-10-28: Chlorophyll (Metal driver) forked for Adreno 5xx; submodule mesa/metal
+
+Goal: Metal for iOS processes (CoreAnimation/apps ship AIR in .metallib) via Chlorophyll (AIR -> NIR -> ir3, Metal API
+over Gallium freedreno), written for Bergamota / Poco F1 / Adreno 630. Fork: https://github.com/telegdyd/Chlorophyll,
+`main` = untouched upstream (ry-diffusion/Chlorophyll @ 787338f), our work on branch `adreno5xx` (same commit, no changes
+yet). Submodule `mesa/metal` tracks `adreno5xx`; remote `upstream` added in the local clone. Its own nested submodules
+(Mesa 25.0.7, libdrm 2.4.124) are deliberately NOT initialised: we build against our mesa-26.2.5 + mesa/patches tree.
+CI (xnu.yml) checkout does not fetch submodules, so nothing builds it yet. License MIT; keep NOTICE.md/LICENSE.hackios-userland.
+Porting plan (from reading the repo, nothing built): (1) replace their libdrm stand-in over the Bergamota kernel with our
+darwin backend (mesa/darwin/darwin_*.c); (2) forward-port patches/ from Mesa 25.0.7 to 26.2.5 (ir3-* should apply, ir3 is
+shared a5xx/a6xx; fd6-fb-barrier-reorder is a6xx-only); (3) check a5xx Gallium caps (compute, images, SSBO) vs air_metal.c
+needs. GUESS: libsweetca and the Metal lib in one process (backboardd) should share one Mesa/device, so build both from one tree.
+Next: read air_metal.c / src/bgmtl.m to list every libdrm/fd6-specific call site.
+
 ### 2026-10-27 22:40: fixed libsweetca INSTALLED as production; glyph confirmed on normal boot_b
 
 User OK'd install. /usr/local/bin/libsweetca.dylib = Mesa CI 40585335072 (c3c0f36), SHA256
