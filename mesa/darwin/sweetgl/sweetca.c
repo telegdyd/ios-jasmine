@@ -1384,6 +1384,18 @@ static const char fn_vblur[] =
    "  }\n"
    "  return acc / wsum;\n"
    "}\n";
+/*
+ * SWEETCA_TEXFN_PROBE=1: the entries still NULL after the ones above (0x19, 0x1c,
+ * 0x28) become sca_missNN(s0), which draws magenta where the source has alpha, so
+ * the first shader built for one is logged and its layer shows on screen.
+ */
+static const uint8_t probe_fns[] = {0x19, 0x1c, 0x28};
+static const char *const probe_exprs[] = {"sca_miss19(s0)", "sca_miss1c(s0)", "sca_miss28(s0)"};
+static bool probe_seen[sizeof(probe_fns)];
+static const char fn_miss[] =
+   "lowp vec4 sca_miss%02x(lowp vec4 s) {\n"
+   "  return vec4(1., 0., 1., 1.) * s.a;\n"
+   "}\n";
 static const char fn_cm_decl[] = "uniform lowp vec4 color_matrix[5];\n";
 static const char fn_vblur_decl[] = "uniform highp vec4 minmax_dir;\n";
 static const char fn_derivatives[] = "#extension GL_OES_standard_derivatives : enable\n";
@@ -1394,6 +1406,20 @@ add_texfns(char *src)
 {
    bool vcm = strstr(src, "sca_vcm(") != NULL, cm4 = strstr(src, "sca_cm4(") != NULL;
    bool nop = strstr(src, "sca_nop(") != NULL, vblur = strstr(src, "sca_vblur(") != NULL;
+   if (strstr(src, "void main") && strstr(src, "sca_miss")) {
+      for (size_t i = 0; i < sizeof(probe_fns); i++) {
+         char name[16], def[sizeof(fn_miss)];
+         snprintf(name, sizeof(name), "sca_miss%02x(", probe_fns[i]);
+         if (!strstr(src, name))
+            continue;
+         if (!probe_seen[i]) {
+            probe_seen[i] = true;
+            sca_log("sweetca: texture function %#x requested (probe shader built)", probe_fns[i]);
+         }
+         snprintf(def, sizeof(def), fn_miss, probe_fns[i]);
+         src = insert_at(src, strstr(src, "void main") - src, def);
+      }
+   }
    if (!strstr(src, "void main") || !(vcm || cm4 || nop || vblur))
       return src;
    if (vblur)
@@ -2618,6 +2644,18 @@ install_texfns(void)
       bool ok = write_const((void *)&table[fn], &texfns[i].expr, sizeof(char *), VM_PROT_READ) &&
                 (u == 0xde || write_const((void *)&cases[fn], &u, 1, VM_PROT_READ | VM_PROT_EXECUTE));
       sca_log("sweetca: texture function %#x = %s: %s", fn, texfns[i].expr, ok ? "installed" : "FAILED");
+   }
+   const char *p = getenv("SWEETCA_TEXFN_PROBE");
+   if (!p || strcmp(p, "1") != 0)
+      return;
+   for (size_t i = 0; i < sizeof(probe_fns); i++) {
+      uint8_t fn = probe_fns[i];
+      if (table[fn] || cases[fn] != 0xde) {
+         sca_log("sweetca: probe %#x: unexpected (%p, case %#x), skipped", fn, (void *)table[fn], cases[fn]);
+         continue;
+      }
+      bool ok = write_const((void *)&table[fn], &probe_exprs[i], sizeof(char *), VM_PROT_READ);
+      sca_log("sweetca: probe %#x = %s: %s", fn, probe_exprs[i], ok ? "installed" : "FAILED");
    }
 }
 
