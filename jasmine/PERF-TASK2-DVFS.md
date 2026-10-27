@@ -12,6 +12,17 @@ MEM-ACC remained unchanged, and Gold's all-core checker passed while raised and
 after restoration. The earlier voltage-commit blocker is resolved for these
 small tests; full-range/PLL/array transitions remain unvalidated.
 
+**Later 2026-10-27:** j0103's serialized two-level SAW16 helper passed
+CI40437789398/bcdc037 and three raise/restore cycles per cluster on both4 and8
+cores. Default opt-out and bounds refusals passed. At unchanged clocks, both
+APMs acknowledged APC selection at872mV, passed8-core checks and restored MX.
+Gold's wider rail test reached948mV, but its global70C diagnostic cutoff stopped
+the top checker (hottest raw8=70.2C); restoration and the eight-core checker
+passed. Silver reached900mV and passed its checker at61.8C peak, but the host
+shell incorrectly continued after the stricter cooldown gate failed, so it is
+warm electrical evidence, not accepted as the intended cooled run. Detailed
+limits and next gates are in the voltage report. No higher clock/default enabled.
+
 j0059a repairs the live check reference on sweetcmd-only boots before sweetgold,
 then returns without OSM setup/workers. CI40410605951/e74a086 and subsequent
 CI40414145643/40b6e3d pass actual ARM compilation and host/source/symbol guards.

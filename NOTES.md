@@ -1,3 +1,73 @@
+### 2026-10-27: SAW16 backend 4/8 PASS; APM crossover proven; upper rail tests bounded
+
+Published implementationbcdc037; source00866db in ~/xnu-cpu-dvfs (branch
+codex/cpu-dvfs). CI40437789398/job121970563336 SUCCESS, verified kernelSHA
+1ba0349f842523a80094e06667db90edc0d0e64f98e9e3df535e42111b465f1b.
+Actual ARM compile + actual-header fault tests + source/linkedmarker and prior
+checker/RPM/WiFi/framebench/source/symbol gatesPASS; four expected upstream skips.
+Default4 temporary boot refused both voltage requests without opt-in, unchanged
+rails, fourcorecheck0errors. Probe4 and8 each3raise/restorecycles perclusterPASS;
+all sixraised +initial/final pinned20runs/core checksPASS. Eightcorestartup100/
+corePASS. Silver executing during8-core voltage steps. BothGoldS2/S3 readback
+verified. FinalbootrailsS1872/S2-S3868mV, clocksGold1747/Silver1382/GPU588/DDR1804.
+ImageSHA4ee43d970e74588cf8ae77f52bd3a35def7b4263df736c5746c91fc38262c1ad0;
+8:014300f3feaa5913b36c63b674cef21e2f8a22bc70ace067c4aaba589692ec21.
+Default/voltage manifests, full CI logs/hashes, rawresults ignoredresearch/cpu-dvfs/.
+
+At872mV each APM acceptedAPCbit1 and acknowledgedmode3underlow5bitmask0x1f.
+Goldstatus0x1f000003,Silver0xff000303. All8x20 passed while each selected.
+Both restoredMXcontrol/status0 beforeGoldlowered868; noPLL/MEM-ACCwrites.
+FirstGoldhostparser expectedunmaskedstring, skippedcheck andrestored; corrected
+apm-gold2 includescheckerPASS. Source audit/pinned references in voltage report.
+MissingMEM-ACC DTproperties are normal onTZ-initialized path, not register recipes.
+
+Goldrange/APC: bothsupplies target+valid every4mVthrough948. ChecksPASS880/896/
+912/928/944. At948hottestTSENSraw8=70.2C(Goldraw4..7max69.6), global70C diagnostic
+cutoff stoppedbeforetopchecker. Restored872->MX->868andall8checkPASS. This is a
+thermal-gate rejection, NOT fullrangeacceptance or evidence for higher clocks.
+Silverrange/APC target+valid876..900, all8checks880/896/900andrestoredPASS, peak61.8C.
+BUTprecedingcooldown(<58Cthreeconsecutivewithin180s)FAILEDandPowerShellcontinued
+nextnativecommand. Record aswarm electricalevidence, notplannedcooledacceptance.
+Correctedcooled-range.pyuses subprocess.run(check=True) for dependentstages.
+Retainraw+reviewedresults. Never infercooldowngatePASSfromoriginalrangescriptPASS.
+Default4firstcheck26-27ms/Gold, settledprobe4/8~14.3msGold/~26.1msSilver. No freq
+change observed; startupcontentionpossible, notproven. PrintedMHzproxy isnotclock.
+
+Userthermalflagcontract sweetthermal=0|1 default1 documented: bypassnormalcaps
+for tests; independentemergency/sensorvalidity/OPPstockceilings retained. Flag
+notfunctionaluntilgovernorconnected. Onlyj0103smalltwolevelhelperisimplemented;
+fullOPPbackend/APMrollbackintegration/PLL/arraysequencing/loadgovernor/thermals
+remainopen. NextauditarrayregistersfromtargetTZconfig, integrateprovenAPMsequence,
+validatecooledvoltage+PLL transitions withrollbackbeforestockmaxGold2208/Silver1843.
+No speedgain/default/installation/flashclaimed. Phonepartitions/libraryunchangedbyus.
+
+Allthreebootscleanactualfastboot (default4 03:33:32.685,probe4 03:35:31.898,
+probe8 2026-10-27T03:45:52.834396+01:00). FinalRootUnmount+3188ms,0wrapped/0GPUimports/0pins;
+systemunmount+3190ms,no newruntimeGPU/SMMUfault/panicobserved. Temporaryr109
+parkingbootSUCCESS. Freshfinalcharging92%,+757812uA,4287098uV,34C,online1,
+Charging/Good,backlight0,slot_b. Finalreading+lockrelease2026-10-27T03:47:44.837977+01:00.
+Ownlockreleased; noPythoncollector/testprocessremained onfinalCIMcheck. CIwatcher
+session53361completed0. Reacquirefreshsharedlock/readinessbeforenextphonework.
+Detailedreports jasmine/PERF-CPU-VOLTAGE-20261027.md and PERF-TASK2-DVFS.md.
+
+### 2026-10-27 03:33: SAW16 helper ARM CI PASS; temporary tests starting
+
+Publishedbcdc037. CI40437789398/job121970563336 completedSUCCESS; kernelSHA
+1ba0349f842523a80094e06667db90edc0d0e64f98e9e3df535e42111b465f1b
+matches SHA256SUMS. Actual ARM build, checker/RPM/SAW16 behavior tests, linked
+helper marker and existing WiFi/framebench/source/symbol gatesPASS. Only four
+expected upstream skips. Full final.log/run.json savedignoredci-40437789398/.
+Default/probe4+8 kits packaged and independently hash checked by image tool.
+Old-kernel opt-in rejectionPASS; deliberately removedSIZE negative testFAILS
+as required. Full clock transition/governor/thermal policy still unimplemented.
+
+Shared phone lock reacquired; freshcharging92%,34C,+478027uA,4285389uV,
+online1/Charging/Good,backlight0,slot_b. Ownlockheld. Temporary default4 boot
+in progress (no opt-in) to verify refusal before gated4/8 ramp tests. No flash.
+Sourceaudit confirms missing CPU MEM-ACC properties are normal with TZinit;
+no array/APM write attempted. Detailed audit in voltage report. New thermal
+flag remains planned until governor is connected, not functional yet.
+
 ### 2026-10-27: serialized SAW16 backend prepared; thermal test flag requested
 
 User resumed CPU work and requested thermal caps on/off for testing. Planned

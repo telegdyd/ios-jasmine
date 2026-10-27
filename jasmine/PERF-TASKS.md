@@ -1,6 +1,11 @@
 # Performance, bug-fix and diagnostic tasks
 
 Reviewed 2026-10-24 against [NOTES.md](NOTES.md) and the measurement reports.
+Task2 update2026-10-27: serialized SAW16 helper passes on4/8 cores; APM crossover
+works on both clusters at existing clocks. Gold948mV range sweep stopped on the
+70C diagnostic gate; higher PLL/array states, governor and thermal caps remain
+open. User requested a default-on thermal-cap test flag; contract and evidence:
+[active DVFS plan](PERF-TASK2-DVFS.md), [voltage report](PERF-CPU-VOLTAGE-20261027.md).
 Task numbers stay unchanged so existing handoffs and logs still refer to the same work.
 Tasks are grouped by purpose and status. The recommended order below ranks benefit
 versus effort; category tables keep stable task-number order. New tasks 17-21 were
