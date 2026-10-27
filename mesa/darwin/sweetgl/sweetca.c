@@ -1800,6 +1800,7 @@ draw_bounds(GLuint prog, GLint first, GLsizei count, GLenum itype, const void *i
  * SWEETCA_REGION=x0:y0:x1:y1 (screen pixels, y down; sweetenv splits on commas): log draws touching
  * that rectangle or its vertical mirror (CA's y may point up), once per program,
  * unit 0 texture and target, up to 150, with each program's fragment source once.
+ * Draws into render targets of at most 64x64 are logged wherever they are.
  */
 static void
 region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const void *indices)
@@ -1812,15 +1813,19 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
    if (on < 0)
       on = getenv("SWEETCA_REGION") &&
            sscanf(getenv("SWEETCA_REGION"), "%f:%f:%f:%f", &r[0], &r[1], &r[2], &r[3]) == 4;
-   float b[4];
-   if (!on || logged >= 150 || count <= 0 || !draw_bounds(c->program ? c->program : c->last_program, first, count, itype, indices, b))
+   float b[4] = {0};
+   if (!on || logged >= 150 || count <= 0)
       return;
-   bool down = b[0] < r[2] && b[2] > r[0] && b[1] < r[3] && b[3] > r[1];
-   bool up = b[0] < r[2] && b[2] > r[0] && b[1] < 2436.f - r[1] && b[3] > 2436.f - r[3];
-   if (!down && !up)
+   GLuint fbt = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
+   bool small = c->fbo && fbt && fbt < TEXMAX && c->tex_w[fbt] && c->tex_w[fbt] <= 64 && c->tex_h[fbt] <= 64;
+   bool have = draw_bounds(c->program ? c->program : c->last_program, first, count, itype, indices, b);
+   bool down = have && b[0] < r[2] && b[2] > r[0] && b[1] < r[3] && b[3] > r[1];
+   bool up = have && b[0] < r[2] && b[2] > r[0] && b[1] < 2436.f - r[1] && b[3] > 2436.f - r[3];
+   /* draws into small targets (cached layer images such as the pill's glyph) always */
+   if (!small && !down && !up)
       return;
    /* skip full-screen and other draws much larger than the region */
-   if (b[2] - b[0] > 3 * (r[2] - r[0]) || b[3] - b[1] > 3 * (r[3] - r[1]))
+   if (!small && (b[2] - b[0] > 3 * (r[2] - r[0]) || b[3] - b[1] > 3 * (r[3] - r[1])))
       return;
    uint32_t key = c->program * 2654435761u ^ c->held[0] * 40503u ^ c->fbo;
    for (unsigned i = 0; i < nseen; i++)
@@ -1843,7 +1848,7 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
    glGetIntegerv(GL_COLOR_WRITEMASK, mask);
    sca_log("sweetca: region draw: frame %u prog %u n %d %s box %.1f,%.1f .. %.1f,%.1f fbo %u (tex %u %ux%u)%s "
            "blend %d %#x/%#x mask %d%d%d%d",
-           c->frame, c->program, count, down ? "down" : "up", b[0], b[1], b[2], b[3], c->fbo, fbtex,
+           c->frame, c->program, count, small ? "small" : down ? "down" : "up", b[0], b[1], b[2], b[3], c->fbo, fbtex,
            fbtex < TEXMAX ? c->tex_w[fbtex] : 0, fbtex < TEXMAX ? c->tex_h[fbtex] : 0, tex, blend, src, dst,
            mask[0], mask[1], mask[2], mask[3]);
    if (c->program && c->program < OBJMAX && !shown[c->program]) {
@@ -1999,6 +2004,16 @@ w_Clear(void *rctx, GLbitfield mask)
       return;
    (void)c;
    n_clears++;
+   static unsigned told;
+   GLuint fbt = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
+   if (told < 40 && getenv("SWEETCA_REGION") && c->fbo && fbt && fbt < TEXMAX && c->tex_w[fbt] &&
+       c->tex_w[fbt] <= 64 && c->tex_h[fbt] <= 64) {
+      GLfloat cc[4] = {0};
+      glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
+      told++;
+      sca_log("sweetca: region clear: frame %u fbo %u (tex %u %ux%u) mask %#x color %.2f %.2f %.2f %.2f", c->frame,
+              c->fbo, fbt, c->tex_w[fbt], c->tex_h[fbt], mask, cc[0], cc[1], cc[2], cc[3]);
+   }
    glClear(mask);
    shadow_drawn(c);
    ticket_after_write(c);
