@@ -1,3 +1,24 @@
+### 2026-10-27 22:25: home Search pill glyph FIXED (libsweetca A,R,G,B images); fix NOT yet installed as production lib
+
+Cause (measured on device, logs/netlog-s3-region4.txt): the magnifying glass is a 28x28 IOSurface CA creates
+around its own memory with NO pixel format (fourcc 0, bpe 4, 112-byte rows -> attachImage shadow target).
+Its coverage is in byte 0 only ("lanes max 255 0 0 0"): CA's own 32-bit images are A,R,G,B in memory, and
+fmt_from_surface(0, 4) read them as B,G,R,A, so alpha = 0 and the glyph invisible. CPU renderer showed it
+(research/cpuref-home2.png). Fix: libsweetca shadow targets of fourcc-0 surfaces byte-reverse each pixel on
+upload and write-back (surf_fmt.argb). Commit c3c0f36; Mesa CI 40585335072
+(macos-15). User confirmed glyph visible; dump research/argbfix-home.png; no SMMU fault/panic.
+Same boot had two more fourcc-0 shadow targets (53x42, 53x53 pitch 212), now also reversed: effect unverified
+(status-bar Wi-Fi icon not visible in the 10:22 dump; may just be association timing - ask/verify).
+Ruled out on the way: QuartzCore NULL texture functions 0x19/0x28 never requested; 0x1c IS requested (backdrop
+draws of materials go out with no program when it is NULL) but filling it did not affect the glyph; 0x1c remains
+unimplemented. Untextured program-0 full-screen draws are normal state draws.
+Diagnostics now in libsweetca (opt-in env, NOTE sweetenv splits values on commas): SWEETCA_TEXFN_PROBE=1,
+SWEETCA_ZERO_PROBE=1, SWEETCA_REGION=x0:y0:x1:y1 (draws touching a screen rect + small targets, byte lanes).
+CI: workflow input mesa_runner (macos-15 queues far less than macos-14).
+Phone: running temporary image shim/out/shim-boot-j0108-argbfix.img with /usr/local/bin/libsweetca-probe.dylib
+(= fixed lib). Production /usr/local/bin/libsweetca.dylib and installed boot_b UNCHANGED. Next: user OK to copy
+xnu/out-mesa-argbfix/libsweetca.dylib over /usr/local/bin/libsweetca.dylib (keep a backup), then a normal reboot.
+
 ### 2026-10-27: rendering gaps investigated (home Search glyph, wallpaper); desk research only, phone not used
 
 User report: magnifying glass in the home "Search" pill is missing; wallpapers do not look right.
