@@ -1797,7 +1797,7 @@ draw_bounds(GLuint prog, GLint first, GLsizei count, GLenum itype, const void *i
 }
 
 /*
- * SWEETCA_REGION=x0,y0,x1,y1 (screen pixels, y down): log draws whose positions touch
+ * SWEETCA_REGION=x0:y0:x1:y1 (screen pixels, y down; sweetenv splits on commas): log draws touching
  * that rectangle or its vertical mirror (CA's y may point up), once per program,
  * unit 0 texture and target, up to 150, with each program's fragment source once.
  */
@@ -1811,7 +1811,7 @@ region_probe(struct sca_ctx *c, GLint first, GLsizei count, GLenum itype, const 
    static uint8_t shown[OBJMAX];
    if (on < 0)
       on = getenv("SWEETCA_REGION") &&
-           sscanf(getenv("SWEETCA_REGION"), "%f,%f,%f,%f", &r[0], &r[1], &r[2], &r[3]) == 4;
+           sscanf(getenv("SWEETCA_REGION"), "%f:%f:%f:%f", &r[0], &r[1], &r[2], &r[3]) == 4;
    float b[4];
    if (!on || logged >= 150 || count <= 0 || !draw_bounds(c->program ? c->program : c->last_program, first, count, itype, indices, b))
       return;

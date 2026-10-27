@@ -1,6 +1,6 @@
-From 68f3579006fb4a3509a67290639ac01580d0d31e Mon Sep 17 00:00:00 2001
+From 46582ca00a39cf20a07195fd01a6e89cb382d2c9 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Tue, 27 Oct 2026 21:44:26 +0100
+Date: Tue, 27 Oct 2026 21:50:53 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -2014,7 +2014,7 @@ index 0000000..ee052db
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..7b6ed90
+index 0000000..776e41f
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
 @@ -0,0 +1,2930 @@
@@ -3817,7 +3817,7 @@ index 0000000..7b6ed90
 +}
 +
 +/*
-+ * SWEETCA_REGION=x0,y0,x1,y1 (screen pixels, y down): log draws whose positions touch
++ * SWEETCA_REGION=x0:y0:x1:y1 (screen pixels, y down; sweetenv splits on commas): log draws touching
 + * that rectangle or its vertical mirror (CA's y may point up), once per program,
 + * unit 0 texture and target, up to 150, with each program's fragment source once.
 + */
@@ -3831,7 +3831,7 @@ index 0000000..7b6ed90
 +   static uint8_t shown[OBJMAX];
 +   if (on < 0)
 +      on = getenv("SWEETCA_REGION") &&
-+           sscanf(getenv("SWEETCA_REGION"), "%f,%f,%f,%f", &r[0], &r[1], &r[2], &r[3]) == 4;
++           sscanf(getenv("SWEETCA_REGION"), "%f:%f:%f:%f", &r[0], &r[1], &r[2], &r[3]) == 4;
 +   float b[4];
 +   if (!on || logged >= 150 || count <= 0 || !draw_bounds(c->program ? c->program : c->last_program, first, count, itype, indices, b))
 +      return;
