@@ -1,3 +1,41 @@
+### 2026-10-27 15:48: CPU scaling + Wallpaper hang acceptance PASS; tools released
+
+User confirmed Wallpaper -> Add New Wallpaper hang is GONE. Rendering remains
+incorrect; user explicitly deferred that separate issue.140 dense observations
+during manual trial: wired491.2–605.4MiB, backing71.8–184.2MiB, backing repeatedly
+released back to~72MiB and ended96.3MiB; zero VM waiters/GPU allocation failures,
+zero DVFS failures/faults. Do not claim wallpaper rendering fixed or task14's
+separate GPU buffer-free hang universally resolved.
+
+Final clean temporary boot dvfs-ready8 uses GREEN CI40520184930/headba35bbc,
+job122244862831, kernelSHA256
+156b9ebf43cf605dd752993bfb7f3c10e52e01b2a4ab902aab663966906a540a,
+imageSHA256 b704c63935b57dd41e96facb84c45e8ce2d7d4ad1e2f65d074b86f41c8dece1a.
+Booted15:42:27, cpus8,sweetdvfs1,sweetdvfsauto1. Automatically ready1/auto1
+after worker initialization without host auto-enable command. Arithmetic8x20
+PASS, five additional8-core cross-cluster memorychecks PASS under active scaling.
+Both stock maxima observed. Bounded startup idle window minGold1113.6/Silver300;
+later final status also observedGold300 (Silver1843.2 busy84%). Prior same-code
+auto run observed both300 floors. Startup/final failures0/fault0. User explicitly
+confirmed physical unlock/touch responsive after this FINAL reboot too.
+
+Phone LEFT RUNNING this temporary8-core automatic iOS image for user use, NOT
+parked in charging shell. Persistent boot partition/defaults unchanged; reboot
+returns existing installed kernel. Thermal policy remains off per user's scope.
+Stopped only our verified dvfs-ready8 log collector; no CPU-DVFS Python scripts
+remained. Released ONLY our exact phone lock15:47:43.918+01:00. Do not use the
+phone now without reacquiring the shared lock. Final state/rails/creator dump
+ignored dvfs-ready8-final.json; startup-result.json records exact test window.
+
+Completed source commits: isolatedCPU worktreef74baa6 diagnostics andd5f8701
+surface fix; publishedf52ccce/50ea09c/ba35bbc. CI40517147150 was compile-success/
+guard-failure,40516338522 cancelled; final40520184930 all gates green. All
+source changes committed/pushed. Current code uses opt-in boot args; ready
+4/8 auto images/manifests are under ignored research/cpu-dvfs/dvfs-ready-images.
+Task2 controller + temporary8-core UI acceptance complete. Future work: only
+explicitly requested persistent deployment, extended usage, thermal policy or
+deferred wallpaper rendering. No claim of exhaustive hardware qualification.
+
 ### 2026-10-27 15:38: green CI; auto8 UI responsive; Wallpaper trial ongoing
 
 CI40520184930/headba35bbc SUCCESS, job122244862831. KernelSHA256

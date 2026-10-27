@@ -3,13 +3,20 @@
 2026-10-26. Scope requested by the user: make all eight CPUs available, allow
 stock maximum frequencies, and scale with demand to control power and heat.
 This supersedes the starting assumptions in HANDOFF-CPUCLK.md, not its historical
-observations. An opt-in governor is implemented and device electrical/scaling
-tests pass, but physical UI acceptance is blocked by a repeated frozen screen.
+observations. The opt-in governor passes both clusters' stock OPP and scaling
+tests. After fixing released-surface pixel retention, eight-core physical UI
+responsiveness while swiping is also confirmed.
 
-**Current result:** [full DVFS validation and remaining UI blocker](PERF-CPU-DVFS-20261027.md).
-Code2550347/CI40444015228 passes both clusters' full stock OPP sweeps and demand
-scaling on eight CPUs. Defaults remain unchanged. Work is paused in charging
-shell; earlier findings below are historical and may be superseded by that report.
+**Current result:** [DVFS validation](PERF-CPU-DVFS-20261027.md) and
+[UI freeze fix and device acceptance](PERF-CPU-UI-FREEZE-20261027.md).
+Codeba35bbc/CI40520184930 is green.33 cross-core RAM/cache checks pass across
+all stock OPPs; automatic scaling reaches both300MHz floors and2208/1843.2MHz
+ceilings. Final clean auto-on boot passed arithmetic and memory checks, with
+physical unlock/touch responsiveness confirmed. The user also confirmed the
+Wallpaper gallery hang is gone; incorrect rendering is deferred separately.
+The phone is left running that temporary eight-core image. Persistent defaults
+remain unchanged. Earlier
+findings below are historical and may be superseded by those reports.
 
 **Latest user direction, 2026-10-27:** finish CPU clock transitions, stock-max
 validation and load scaling first. Defer thermal throttling; GPU/RAM power

@@ -1,11 +1,13 @@
 # Performance, bug-fix and diagnostic tasks
 
 Reviewed 2026-10-24 against [NOTES.md](NOTES.md) and the measurement reports.
-Task2 update2026-10-27: serialized SAW16 helper passes on4/8 cores; APM crossover
-works on both clusters at existing clocks. Gold948mV range sweep stopped on the
-70C diagnostic gate; higher PLL/array states, governor and thermal caps remain
-open. User requested a default-on thermal-cap test flag; contract and evidence:
-[active DVFS plan](PERF-TASK2-DVFS.md), [voltage report](PERF-CPU-VOLTAGE-20261027.md).
+Task2 update2026-10-27: opt-in eight-core DVFS passes both clusters' full stock
+OPP sweeps, cross-core RAM/cache checks and automatic floor/ceiling scaling.
+Physical UI swiping and final auto-on boot are responsive after fixing released-
+surface pixel retention; the user confirms the Wallpaper hang is gone (incorrect
+rendering is deferred). CI40520184930 passes. Thermal throttling is
+deferred per latest user direction; persistent defaults remain unchanged.
+[Active DVFS plan](PERF-TASK2-DVFS.md), [UI fix and validation](PERF-CPU-UI-FREEZE-20261027.md).
 Task numbers stay unchanged so existing handoffs and logs still refer to the same work.
 Tasks are grouped by purpose and status. The recommended order below ranks benefit
 versus effort; category tables keep stable task-number order. New tasks 17-21 were
@@ -77,7 +79,7 @@ stays here until its remaining scope is finished and the result is on by default
 
 | # | Task | Status / evidence | Kernel patch |
 | --- | --- | --- | --- |
-| [2](#2-gold-clock-and-dvfs) | Both-cluster CPU DVFS: Gold up to 2208, Silver up to 1843 MHz | SAW16 small voltage steps proven on both clusters 2026-10-27. Current 4/8 baseline and checker repair tested; serialized transitions, governor and thermal caps next. [Active plan](PERF-TASK2-DVFS.md). | j0059 reserved; j0059a/j0102 diagnostics |
+| [2](#2-gold-clock-and-dvfs) | Both-cluster CPU DVFS: Gold up to 2208, Silver up to 1843 MHz | Opt-in8-core stock OPPs, memory integrity and demand scaling pass; physical UI responsive after surface-retention fix. Persistent defaults unchanged; thermal policy deferred. [Active plan](PERF-TASK2-DVFS.md). | j0104/j0104a controller; j0105 diagnostics; j0106 surface fix |
 | [3](#3-gpu-clock-and-validation) | GPU stock clock levels and validation | Levels up to 647 MHz work; default is 588. Historical GPU-wait gain ~0.5-0.6 ms; long top-level validation open, task 14 unresolved. | j0060 |
 | [5](#5-cut-mesas-per-draw-cpu-cost) | Cut Mesa per-draw CPU cost | Partial: active-sampler barrier fix installed; +3% home / +5% Control Center swap arrivals, not confirmed display FPS. More CPU work open. | Mesa only |
 | [6](#6-make-8-cores-beat-4-j0052-tuning) | Make 8 cores beat 4 | Older rounds: 96-128 ms vs 81 ms on 4 Gold; repeat on the current baseline. | j0061 reserved |
@@ -259,21 +261,25 @@ on a CPU 85-90 % of the time while the UI moves, so the frame is one CPU-bound t
 
 ### 2. Gold clock and DVFS
 
-**Restarted 2026-10-26:** user requested all eight CPUs with stock maximum clocks,
-load scaling and heat control. Treat both clusters, task-13 caps and task-6
-placement/measurement as one program, validated in separate steps. Eight-core
-bring-up already works with 4K pages; enabling it alone is not a performance or
-power fix. [Active plan and first milestone](PERF-TASK2-DVFS.md) supersede the
-historical scope below. Checker and small voltage-step device results are now
-recorded; the governor remains unimplemented.
+2026-10-27: both-cluster controller and temporary eight-core automatic boot pass
+stock OPP, cross-core memory and physical UI acceptance. User-confirmed Wallpaper
+hang resolved by the released-surface retention fix; rendering is separate.
+See [current DVFS plan](PERF-TASK2-DVFS.md) and [final validation](PERF-CPU-UI-FREEZE-20261027.md).
+Thermal policy is deferred and persistent boot defaults are unchanged. The
+starting assumptions below are historical.
 
-**Now.** Gold runs at a fixed 1747 MHz on XBL's voltage (`sweetgold=1747`, j0015 in `osfmk/arm64/sweet_cpuclk.c`).
+**Scope restarted 2026-10-26:** all eight CPUs with stock maximum clocks and
+load scaling. The user subsequently deferred thermal throttling. The controller
+and physical acceptance results are now complete for the temporary images in
+the [active plan](PERF-TASK2-DVFS.md); persistent deployment is separate.
+
+**Historical starting point.** Gold ran at a fixed1747MHz on XBL's voltage (`sweetgold=1747`, j0015 in `osfmk/arm64/sweet_cpuclk.c`).
 Silver stays at XBL's 1382 MHz. OSM (Qualcomm's hardware DVFS) is dead on this boot path: TrustZone owns its
 sequencer. So the plan is software DVFS: switch PLLs in software, set the voltage through the SAW / PM660 SPMI,
 run a load governor with a TSENS limit, and cover both clusters (Gold on PM660 S2+S3, Silver on S1).
 The voltage-commit blocker was resolved with small SAW16 steps on2026-10-27:
 [hardware evidence](PERF-CPU-VOLTAGE-20261027.md). Higher clocks, full-range
-transitions and the governor remain open. The old HANDOFF-CPUCLK.md and NOTES.md
+transitions and the governor were subsequently validated as linked above. The old HANDOFF-CPUCLK.md and NOTES.md
 "CPU clock (OSM + CPRh)" retain the historical investigation.
 The live tool `tools/cpuclk/osmctl.py` (j0045-j0048: register reads/writes, sequences, SPMI reads, `check`,
 `tsens`) turns experiments into command lines instead of kernel builds. The per-chip table comes from

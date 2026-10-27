@@ -1,9 +1,11 @@
-# Dual-cluster CPU DVFS: electrical tests pass; UI acceptance open
+# Dual-cluster CPU DVFS: electrical validation
 
 The opt-in eight-core controller reaches both stock ceilings and scales down
-with demand. The physical iOS screen froze during acceptance, before user
-interaction, so this is not yet an accepted daily-use configuration. Four-core
-defaults remain unchanged. Work is paused with the phone in charging shell.
+with demand. The initial physical UI freeze described below was subsequently
+investigated: a released-surface pixel-retention fix now passes physical UI
+swiping under automatic scaling. See the [follow-up validation](PERF-CPU-UI-FREEZE-20261027.md)
+for current CI, memory checks and the ongoing Wallpaper trial. Persistent
+four-core defaults remain unchanged; all device boots are temporary.
 
 Implementation: repository commit `2550347`, source commit `736adf1` in the
 isolated `~/xnu-cpu-dvfs` worktree. Successful CI run `40444015228`, job

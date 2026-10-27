@@ -3,8 +3,8 @@
 The earlier screen freeze was reproduced without a synthetic stress sweep or
 user interaction. After fixing released-surface pixel retention, eight-core
 stock-OPP memory checks and automatic scaling pass, and the user confirms the
-physical UI is responsive while swiping. A separate Wallpaper-gallery trial is
-currently being observed; its physical result is pending.
+physical UI is responsive while swiping. The user also confirms the Wallpaper
+gallery hang is gone. Incorrect wallpaper rendering is deferred separately.
 
 ## Fixed-kernel validation
 
@@ -35,11 +35,24 @@ observed. The user explicitly confirmed physical responsiveness while swiping.
 Old/new baseline wired totals alone are not a matched saving measurement:
 the earlier run also allocated the larger legacy profiler buffer.
 
-The user then requested a Wallpaper trial. Dense2s monitoring observed backing
-rise to184.2MiB and fall to about72MiB rather than accumulating past1.5GiB.
-Physical gallery acceptance is still pending. A green-CI temporary auto-on
-eight-core image is prepared under ignored `dvfs-ready-images/`; no flash or
-persistent boot/default change has been performed.
+The user then requested a Wallpaper trial.140 observations at2s cadence showed
+backing rise to184.2MiB and repeatedly fall to about72MiB, ending96.3MiB rather
+than accumulating past1.5GiB. Wired memory ranged491.2–605.4MiB, with no page
+waiters or new GPU allocation failures. The user explicitly confirmed that the
+gallery hang is gone, while rendering remains incorrect and is deferred.
+
+Finally, the green-CI auto-on eight-core image was clean-booted. Scaling enabled
+itself after initialization. Arithmetic8x20 and five additional cross-core
+memory checks passed under auto, with zero faults. Both stock ceilings were
+observed; startup observation minima were Gold1113.6/Silver300MHz amid background
+activity, and the final status subsequently observed Gold300MHz too. The user
+confirmed physical unlock/touch responsiveness after this final boot.
+
+The phone is left running that temporary automatic eight-core image. Manifest
+and image are under ignored `dvfs-ready-images/`; image SHA256
+`b704c63935b57dd41e96facb84c45e8ce2d7d4ad1e2f65d074b86f41c8dece1a`.
+The collector stopped and own phone lock was released. Persistent boot/defaults
+are unchanged; a reboot returns to the previously installed kernel.
 
 ## Controlled reproduction
 
@@ -117,8 +130,10 @@ diagnostic. Use framebench lifetime allocation totals alongside it.
 Published milestones: diagnosticsf52ccce/sourcef74baa6; retention fix50ea09c/
 sourced5f8701; CI guard correctionba35bbc. Diagnostic-only CI40516338522 was
 cancelled. CI40517147150 compiled successfully but failed the symbol regex;
-CI40520184930 is green. Next finish Wallpaper acceptance and validate a clean
-auto-on boot. No governor, voltage or default-core policy changed here.
+CI40520184930 is green. Wallpaper acceptance and clean auto-on boot validation
+are complete for these bounded tests. No governor, voltage or persistent
+default-core policy changed during the retention fix; thermal policy remains
+deferred as requested. Future wallpaper-rendering work is separate.
 
 Ignored artifacts and scripts remain under `research/cpu-dvfs/`: `ui-idle8*`,
 `ui-auto8*`, `ui-fixed4*`, `ui-recovery4c*` and the exact CI logs/manifests.
