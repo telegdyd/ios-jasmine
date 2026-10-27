@@ -6,8 +6,8 @@
 
 Needs sweetcmd=1 or sweetosm=. For status reads on the normal sweetgold clock,
 use sweetcmd=1 without sweetosm. sweetosm=8 computes tables but skips sweetgold
-(the clock code skips it for all sweetosm>=2). The historical live check needs
-sweetosm reference initialization; with sweetcmd alone its reference is unset.
+(the clock code skips it for all sweetosm>=2). Live check on sweetcmd-only boots
+requires j0059a; older kernels leave its reference unset.
 Commands (osfmk/arm64/sweet_osm.c, osm_cmd_one):
   r ADDR [N]   read N (1..16) words          w ADDR VAL   write, then read back
   tr ADDR      TZ IO read                    tw ADDR VAL  TZ IO write, TZ read back
@@ -19,7 +19,11 @@ Sequences (j0048): one line runs back to back in the kernel.
   m ADDR MASK VAL     read-modify-write      d US         delay      t   us since line start
   poll ADDR MASK VAL [US]   wait for a value; a timeout skips the rest of the line
   rep N        run the rest of the line N times (stops at a failed poll)
-  e.g. 'w 0x17812c1c 1; w 0x17812900 0x3b4; poll 0x17812c18 0x300ff 0xb4 2000; t; rails'
+SAW4 voltage writes need SIZE bit20 and a full sixteen-bit payload/status check;
+the old eight-bit examples did not commit PMIC voltage. Validated neutral Gold
+868 mV example (hold the phone lock and confirm live rails before writing):
+  'w 0x17812c1c 1; m 0x17812900 0x17ffff 0x100364; m 0x1781204c 0x17ffff 0x100364; poll 0x17812c18 0x3ffff 0x364 2000; t; rails'
+See jasmine/PERF-CPU-VOLTAGE-20261027.md for limits and actual readback evidence.
 Direct accesses are limited to the clock / OSM / CPRh / SAW / APCS / GCC / TSENS blocks.
 Goes over the USB command port (TCP 5141, the same as tools/sweet-cmd.py).
 """

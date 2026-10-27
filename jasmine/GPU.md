@@ -1,5 +1,11 @@
 # GPU acceleration plan (Adreno 512)
 
+**2026-10-27: CPU voltage-commit blocker resolved with SAW4 sixteen-bit requests.**
+[Hardware evidence and next gate](PERF-CPU-VOLTAGE-20261027.md): Silver872→876→872mV
+and both Gold supplies868→872→868mV confirmed in target+valid registers. CPU
+checks PASS, baseline supplies restored, PLL/APM/MEM-ACC unchanged. Higher clocks,
+governor and thermal caps remain open. Probe CI40414145643/40b6e3d PASS.
+
 **2026-10-26: current 4/8 CPU baseline captured; CPU checker build PASS.**
 [Matched two-repeat report](PERF-CPU-BASELINE-20261026.md): no clear8core UI gain
 at current clocks, sampled CA render thread on Gold in all valid runs. No CPU/GPU/

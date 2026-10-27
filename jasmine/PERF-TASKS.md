@@ -46,7 +46,7 @@ does not need to block the first focused Mesa optimization.
 | 4 | **Task 11: hardware clock gating only** | Performance: power/heat | Low-medium | Smallest GPU power-management part, with an A512 reference. No immediate FPS gain established. |
 | 5 | **Task 19: SpringBoard CPU profiling** | Diagnostics | Low-medium for diagnosis | Check the other substantial CPU consumer for cheaper opportunities before large architecture changes. |
 | 6 | **Task 16: presentation pipelining** | Performance | High | Task 18 must establish useful overlap first. Fence ordering and surface reuse make implementation delicate. |
-| 7 | **Tasks 2 + 13: CPU DVFS with thermal limits** | Performance: speed/power/heat | High; voltage path blocked | A faster CPU fits the bottleneck, but hardware voltage work is not low-hanging fruit. Thermal limits should accompany higher clocks. |
+| 7 | **Tasks 2 + 13: CPU DVFS with thermal limits** | Performance: speed/power/heat | High; transition/governor work | Small voltage steps now work on both clusters (2026-10-27); PLL/array sequencing, full-range validation and thermal limits must accompany higher clocks. |
 | 8 | **Task 10: DDR governor** | Performance: power/latency | Medium | Raising fixed DDR already showed no measurable UI gain. Calibrate load counters before using them as policy inputs. |
 | 9 | **Remaining task 11, then task 12** | Performance: power/heat | High | GPU power-down/DCVS and CPU power collapse involve substantial transition and resume work. |
 
@@ -72,7 +72,7 @@ stays here until its remaining scope is finished and the result is on by default
 
 | # | Task | Status / evidence | Kernel patch |
 | --- | --- | --- | --- |
-| [2](#2-gold-clock-and-dvfs) | Both-cluster CPU DVFS: Gold up to 2208, Silver up to 1843 MHz | Restarted 2026-10-26 with task-13 thermal caps and task-6 eight-core validation. Dual-cluster offline model implemented; voltage commit remains unproven. [Active plan](PERF-TASK2-DVFS.md). | j0059 reserved |
+| [2](#2-gold-clock-and-dvfs) | Both-cluster CPU DVFS: Gold up to 2208, Silver up to 1843 MHz | SAW16 small voltage steps proven on both clusters 2026-10-27. Current 4/8 baseline and checker repair tested; serialized transitions, governor and thermal caps next. [Active plan](PERF-TASK2-DVFS.md). | j0059 reserved; j0059a/j0102 diagnostics |
 | [3](#3-gpu-clock-and-validation) | GPU stock clock levels and validation | Levels up to 647 MHz work; default is 588. Historical GPU-wait gain ~0.5-0.6 ms; long top-level validation open, task 14 unresolved. | j0060 |
 | [5](#5-cut-mesas-per-draw-cpu-cost) | Cut Mesa per-draw CPU cost | Partial: active-sampler barrier fix installed; +3% home / +5% Control Center swap arrivals, not confirmed display FPS. More CPU work open. | Mesa only |
 | [6](#6-make-8-cores-beat-4-j0052-tuning) | Make 8 cores beat 4 | Older rounds: 96-128 ms vs 81 ms on 4 Gold; repeat on the current baseline. | j0061 reserved |
@@ -259,13 +259,17 @@ load scaling and heat control. Treat both clusters, task-13 caps and task-6
 placement/measurement as one program, validated in separate steps. Eight-core
 bring-up already works with 4K pages; enabling it alone is not a performance or
 power fix. [Active plan and first milestone](PERF-TASK2-DVFS.md) supersede the
-historical scope below. No new CPU governor or device result yet.
+historical scope below. Checker and small voltage-step device results are now
+recorded; the governor remains unimplemented.
 
 **Now.** Gold runs at a fixed 1747 MHz on XBL's voltage (`sweetgold=1747`, j0015 in `osfmk/arm64/sweet_cpuclk.c`).
 Silver stays at XBL's 1382 MHz. OSM (Qualcomm's hardware DVFS) is dead on this boot path: TrustZone owns its
 sequencer. So the plan is software DVFS: switch PLLs in software, set the voltage through the SAW / PM660 SPMI,
 run a load governor with a TSENS limit, and cover both clusters (Gold on PM660 S2+S3, Silver on S1).
-The work is paused at the voltage path. Read `jasmine/HANDOFF-CPUCLK.md` and NOTES.md "CPU clock (OSM + CPRh)".
+The voltage-commit blocker was resolved with small SAW16 steps on2026-10-27:
+[hardware evidence](PERF-CPU-VOLTAGE-20261027.md). Higher clocks, full-range
+transitions and the governor remain open. The old HANDOFF-CPUCLK.md and NOTES.md
+"CPU clock (OSM + CPRh)" retain the historical investigation.
 The live tool `tools/cpuclk/osmctl.py` (j0045-j0048: register reads/writes, sequences, SPMI reads, `check`,
 `tsens`) turns experiments into command lines instead of kernel builds. The per-chip table comes from
 `tools/cpuclk/cpuclk_model.py`: perfcl speed bin 1 reaches 2208 MHz and pwrcl reaches

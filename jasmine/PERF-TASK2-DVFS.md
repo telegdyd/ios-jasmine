@@ -3,34 +3,29 @@
 2026-10-26. Scope requested by the user: make all eight CPUs available, allow
 stock maximum frequencies, and scale with demand to control power and heat.
 This supersedes the starting assumptions in HANDOFF-CPUCLK.md, not its historical
-observations. Implementation is in progress; no new device result is claimed.
+observations. Implementation is in progress; a working governor is not installed.
 
-Diagnostic follow-up: j0059a initializes the live check reference on sweetcmd-only
-boots before sweetgold runs, then returns without OSM setup/workers. Four extracted
-actual-function host-compiler tests PASS; pre-fix source fails the same test.
-ARM CI build and device validation pending. AMP ADT generation already overrides
-Silver's generic maximum with the correct Jasmine1843.2MHz; verified, no change.
+**2026-10-27 milestone:** [SAW4 wide voltage requests work on both clusters](PERF-CPU-VOLTAGE-20261027.md).
+SIZE bit20 selects a full sixteen-bit request; delayed PMIC target/valid readings
+tracked Silver872→876→872mV and both Gold supplies868→872→868mV. Clocks/APM/
+MEM-ACC remained unchanged, and Gold's all-core checker passed while raised and
+after restoration. The earlier voltage-commit blocker is resolved for these
+small tests; full-range/PLL/array transitions remain unvalidated.
 
-CI40410605951/e74a086 now PASS: actual ARM compile, four host scenarios and
-integration guards passed. Kernel hash and artifacts recorded in root NOTES.md;
-checker device validation pending. [Current 2+2 CPU baseline](PERF-CPU-BASELINE-20261026.md)
-found no clear eight-core UI gain, with sampled CA render work entirely on Gold.
+j0059a repairs the live check reference on sweetcmd-only boots before sweetgold,
+then returns without OSM setup/workers. CI40410605951/e74a086 and subsequent
+CI40414145643/40b6e3d pass actual ARM compilation and host/source/symbol guards.
+Device startup100runs/core and live20runs/core pass on4 and8 CPUs, with each
+worker on the correct CPU/MPIDR/cluster. No clock or core-count default changed.
 
-New voltage lead: the stock DT declares RPM `smpa` IDs1/2/3 for CPU supplies,
-though their Linux consumers are disabled for OSM. The now-working RPM transport
-postdates the old SAW investigation. j0102 adds an opt-in **neutral-only** probe:
-`sweetcpurpm=1`, `cpurpm 1` / `cpurpm 2` / `cpurpm 3`. It checks existing
-set/valid/enable, sends explicit UV+enable together, then checks unchanged
-readback. It cannot request a voltage increase, disable, mode change, sleep
-vote or clock change. Twelve host scenarios PASS; CI/device gate pending.
-Firmware support remains unknown; an ACK at the same voltage would not prove
-voltage scaling. Never send an implicit single-key first CPU-rail vote.
+[Current 2+2 CPU baseline](PERF-CPU-BASELINE-20261026.md) found no clear eight-core
+UI gain at existing clocks, with sampled CA render work entirely on Gold.
+The AMP ADT already sets the correct Jasmine Silver1843.2MHz maximum metadata.
 
-Device follow-up: CI40410605951 checker passes on both4 and8 CPUs with
-sweetcmd-only boots, OSM setup disabled. Startup100runs/core and live20runs/core
-have zero errors, with every worker on its expected CPU/MPIDR/cluster. Clocks
-and rails remain at baseline. Probe CI40414145643/40b6e3d is building; no live
-CPU-RPM request yet. Current image hashes and console references are in NOTES.md.
+j0102's opt-in neutral RPM probes ACK on S1/S2/S3, but a subsequent S1 request
+for876mV left target/valid at872mV. Do not treat RPM ACK as voltage control.
+SAW16 is the demonstrated path. Never send an implicit single-key first CPU
+RPM vote; the bounded neutral probe explicitly initializes UV+enable together.
 
 ## Findings and first milestone
 
@@ -44,10 +39,11 @@ CPU-RPM request yet. Current image hashes and console references are in NOTES.md
 - The recorded OSM attempts did not start its clock/sequencer; secure writes were
   dropped. Software DVFS remains the working direction. This is an observation
   about this boot path, not proof that OSM can never work.
-- The last voltage experiment requested 988 mV and changed PMIC setpoints, but
+- Before this restart, a voltage experiment requested988mV and changed PMIC setpoints, but
   **valid voltage stayed 868 mV**. Rollback restored requested/set/valid to 868.
   APM control/status stayed in MX mode. An APM relationship remains a hypothesis;
-  neither this experiment nor a SAW echo proves a usable voltage transition.
+  neither that experiment nor a SAW echo proved a usable voltage transition.
+  The new SAW16 tests now establish a small-step path without switching APM.
 - `spm-regulator.c` reads FTS426 voltage from offset 0x42/0x43 and writes the
   two-byte target at 0x40/0x41. The existing SAW path masks `0x700ff` in VCTL
   and PMIC_DATA_3. These paths must not be assumed equivalent. PMIC valid voltage
@@ -73,6 +69,29 @@ request as the next experiment. The model retains OSM LUT/register output as a
 reference, even though OSM is not functioning. Software PLL switching needs its
 own transition implementation, including divider handling at low steps.
 
+## Thermal reference audit
+
+The stock DT's thermal client IDs are not raw TSENS register indices. The
+downstream [TSENS driver](https://android.googlesource.com/kernel/msm/+/6e80ff47b2884814419d9c9daee41ed6b44ea237/drivers/thermal/msm-tsens.c)
+maps `qcom,client-id` through `qcom,sensor-id`. Current XNU `tsens` output is in
+raw hardware order, so use the mapping before assigning per-cluster limits:
+
+| Stock policy zone | Client ID | Raw hardware index | XNU cluster |
+| --- | ---: | ---: | --- |
+| cpuss-0-step (Android CPUs0-3) | 1 | 10 | Silver, XNU CPUs4-7 |
+| cpu-1-0-step (Android CPU4) | 3 | 4 | Gold, XNU CPU0 |
+| cpu-1-1-step (Android CPU5) | 4 | 5 | Gold, XNU CPU1 |
+| cpu-1-2-step (Android CPU6) | 5 | 6 | Gold, XNU CPU2 |
+| cpu-1-3-step (Android CPU7) | 6 | 7 | Gold, XNU CPU3 |
+
+Those CPU isolation trips are105C with10C hysteresis; they are not a suitable
+comfort target. Stock `quiet-therm-step` instead caps Gold at50C and Silver at53C
+using an ADC thermal provider (phandle0x20, channel0x51), not the TSENS CPU
+temperature. Do not apply those50/53 thresholds to raw CPU sensors or claim a
+CPU-only cap reproduces stock board-temperature control. Board/skin sensing,
+per-cluster caps and an independent emergency limit need separate validation.
+No production thermal thresholds have been selected or installed yet.
+
 ## Implementation sequence and gates
 
 1. **Re-establish a read-only baseline.** Use the current integrated 4K kernel
@@ -88,9 +107,9 @@ own transition implementation, including divider handling at low steps.
    reference initialization before relying on it. Until then the existing Gold
    startup checker covers all online CPUs. Do not use `sweetosm=1` casually:
    historical broad probes encountered SError on some CPRh registers.
-2. **Resolve voltage commit semantics first.** Audit the PMIC multi-byte command
-   format and the stock APM/MEM-ACC ordering. Prove a bounded transition at an
-   already-supported low clock, one cluster at a time. Capture target, SAW status,
+2. **Voltage commit: small-step gate passed.** SAW4 SIZE/full-width data is now
+   proven on both supplies. Audit the stock APM/MEM-ACC ordering and extend the
+   bounded tests to target operating points, one cluster at a time. Capture target, SAW status,
    both Gold supply statuses, APM acknowledgement and delayed valid voltage.
    Predefine rollback. A mismatch, timeout or unreadable status rejects the step;
    it must never unlock a higher clock. Do not blindly toggle APM to test a theory.

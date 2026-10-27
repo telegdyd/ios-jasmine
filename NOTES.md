@@ -1,3 +1,54 @@
+### 2026-10-27: CPU voltage blocker resolved by SAW4 wide requests
+
+User resumed after credit-related automatic-review failure; successful build
+40414145643/40b6e3d downloaded and verified. Kernel SHA256
+9cbfef7aee241bfbd9ca488e03766339cba408cfea169580dce2360de2b570c8. CI4 checker
+and12probe host scenarios, integration/source/symbol guards PASS; only4 expected
+upstream skips. Device kit research/cpu-dvfs/probe-images/manifest.json:
+4imgSHAa01d83b816634fbd9648b273fabff2ffd387b0a6e7c109bfab3e6601a4a81fae;
+8imgSHA9b15f4b1c8ddbfa3828babce9a8f32e5782994a3682e67f417da89cd76f193fb.
+Only4coreprobe image booted;8core checker already passed on e74a086.
+
+RPM neutral S1/S2/S3 ACK+unchanged. A same-boot S1 request872->876mV after
+explicit UV+swen initialization ACKed but changed neither target nor valid;
+restored872vote, verifiedCPU0errors, rebooted/parked. This does NOT demonstrate
+RPM voltage control. No Gold RPM increase attempted.
+
+Root-cause breakthrough: pinned public SDM660 HALavsHWIOSAW4.h defines VCTL
+SIZE bit20, data15:0, address index18:16; PMIC_DATA_3 has same fields. SAW IDs
+0x2020016f on both include wide-data capabilitybit8. Old Linux mask0x700ff and
+size0 requests only sent one byte. No port remapping needed. Fullwidth request
+0x100000|mV and fullstatus mask0x3ffff commit the upper byte. Source/report:
+jasmine/PERF-CPU-VOLTAGE-20261027.md, pinned hashes and links. Firmware source
+ignored in research/cpu-dvfs/reference/, no source copied into kernel/git.
+
+Temporary saw16 boot02:53:09, Gold4online, Silverparked. S1 neutral872 passed;
+at02:54:39 S1 target+valid872->876->872 PASS. At02:58:22 Gold SAW neutral868
+then bothS2/S3 target+valid868->872->868 PASS. FourGoldx20 pinnedcheck0errors
+at872 and afterrestore; finalcheck0errors. Delayed100ms readbacks, all supply
+mode06/enable80/limits unchanged; GoldL0x5b/RCG0x301, SilverL0x48/RCG0x501,
+APM/MEM-ACC unchanged, GPU588/DDR1804. No PLL/frequency increase, no APM switch.
+SAW controller request/shadow state now wide; voltage restored to boot values.
+Transaction lines420-480us are not isolated voltage settling measurements.
+
+Production readback after tests SHA14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261
+matches before. Raw logs/scripts/snapshots: research/cpu-dvfs/saw16*, neutral-s*,
+s1-step*, ci-40414145643/, comparison.json. User confirmed screenshot artifacts
+are absent from physical display. Baseline report remains 2026-10-26: no clear8
+coreUIgain at existingclocks, sampledCA render Gold-only. No drop/flash/root or
+library change. Voltage proof is small-step only, not governor/max-frequency
+acceptance. Next implement serialized SAW16 per-cluster backend with per-chip
+OPP bounds and rollback; audit/validate PLL/APM/MEM-ACC transitions; add load
+policy and independent CPU+board thermal caps before higher-clock defaults.
+Stock CPU thermal client IDs map to physical TSENS; Goldraw4-7, Silverraw10.
+Stock50/53C quiet trips are ADCboard temperatures, not CPU limits. Active plan
+records mapping and source; no arbitrary production thermal limits installed.
+
+Repo latest published49d4e7b, WSL sourceworktree ~/xnu-cpu-dvfs branch
+codex/cpu-dvfs source12fd873; shared jasmine-merge untouched. Current completed
+voltage-report/CLI doc edits require commit/push. Own lock and collector held;
+final clean reboot/park, charging readback and owner-only lock release pending.
+
 ### 2026-10-26 23:44: CPU checker device PASS on4/8; neutral RPM kernel building
 
 Published40b6e3d (matched baseline report + bounded neutral probe). Probe
