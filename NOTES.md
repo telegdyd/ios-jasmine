@@ -1,3 +1,23 @@
+### 2026-10-27: corrected promotion CI40529045995 compiling; installation staged
+
+Publishedf9b1bfd includes source53d1842/j0107a compile fix. Corrected default
+buildCI40529045995/job122276484978 running; watcher native42840 saves logs and
+downloads only green kernel. Local Mac builder also now defaults4K (a33fe71);
+OSM rounds preserve manual semantics with CPU_DVFS0 and inferred AMP profile.
+package-promotion.py expects this corrected run/head. Backup is complete and
+phone remains r109 charging shell with own lock held. No flash yet.
+
+Staged scripts: package-promotion.py invokesactualmkimg with overrides cleared,
+checks8CPUADT and persistentargsabmarkb, emits promotion-images manifest plus
+promotion-default-probe without explicitDVFSargs. validate-startup.py now takes
+an output name (use promotion-default8, preserve older logs). flash-promoted.py
+requires --confirmed-boot-b, temporary startup result and verified rollback;
+checks singleJasminefastbootdevice, slotb,64MiB boot_b; flashes ONLYboot_b, boots
+Linux temporarily, verifies exact image prefix/boot_a/GPTunchanged. Then
+normal-installed-boot.py uses fastbootreboot (NOTfastbootboot) and records proof.
+User-facing physical/flash confirmation still to request after concrete image
+passes temporary test. Do not execute flash before that confirmation.
+
 ### 2026-10-27 16:14: promotion build include-path failure fixed; no flash yet
 
 CI40526565989/af69432 FAILED actualARM compile: sweet_dvfs.h249 cannotfind
