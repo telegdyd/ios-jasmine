@@ -51,6 +51,8 @@ static int kernel_thread_start(void (*entry)(void), void *arg, thread_t *thread)
 }
 static void thread_deallocate(thread_t t) { (void)t; ++dealloc_calls; }
 '''
+    if 'sweet_dvfs_start();' in function:
+        harness += 'static void sweet_dvfs_start(void) {}\n'
     harness += function + r'''
 static void scenario(unsigned mode, unsigned cmd, unsigned expected_work, unsigned expected_threads) {
     input_mode=mode; input_cmd=cmd; osm_mode=0; osm_ref=0;

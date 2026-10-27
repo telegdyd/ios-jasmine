@@ -5,6 +5,13 @@ stock maximum frequencies, and scale with demand to control power and heat.
 This supersedes the starting assumptions in HANDOFF-CPUCLK.md, not its historical
 observations. Implementation is in progress; a working governor is not installed.
 
+**Latest user direction, 2026-10-27:** finish CPU clock transitions, stock-max
+validation and load scaling first. Defer thermal throttling; GPU/RAM power
+management is unfinished, so heat/cooldown alone is not a bring-up rejection.
+Temperature remains recorded. Electrical limits, acknowledgement, timeouts,
+checker correctness and rollback remain requirements. Earlier thermal-gate
+results below describe the previous test procedure, not the current scope.
+
 **2026-10-27 milestone:** [SAW4 wide voltage requests work on both clusters](PERF-CPU-VOLTAGE-20261027.md).
 SIZE bit20 selects a full sixteen-bit request; delayed PMIC target/valid readings
 tracked Silver872→876→872mV and both Gold supplies868→872→868mV. Clocks/APM/

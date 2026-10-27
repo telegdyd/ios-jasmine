@@ -1,3 +1,54 @@
+### 2026-10-27: all stock CPU frequency points pass; complete governor prepared
+
+On fresh temporarydvfs-max8 boot using bcdc037/CI40437789398, Gold1958/2150/
+2208 and Silver1401/1536/1747/1843.2 passed all8x20 checker runs, including both
+clusters at stock maximum together. RailsGold948/Silver900, APMAPC. Ordered
+restore of boot clocks/rails/APMsPASS. Temperatures recorded; user deferred
+thermal throttling and heat/cooldown acceptance gates. No frequency above stock.
+Raw scripts/results ignored max-clocks-*. No persistent flash/default change.
+
+Lower OPP sweep low-opps2 PASS: Gold300/692mV,1113.6/692,1401.6/748,1747.2/828;
+Silver300/612,633.6/612,902.4/648,1113.6/696,1401.6/780,1536/816,1747.2/876.
+All8x20 correct at each, ordered boot restorePASS. Initiallow-opps Gold300check
+passed but following read-only TCPconnect hit existing1s timeout; finallyrestore
+PASS. Repeated using5s connection timeout and no retryafter-send; allpointsPASS.
+Gold300 timed~84ms/run, Silver1382~26ms; no arbitrary thermal rejection.
+
+Pinned firmware HALclkHWIO.h confirms actual CPU array registers: SilverC0
++0x360/364; GoldC1+0x368/36c/370; PLL LOCK_DET atSTATUS+0x2c bit16. Existingboot
+array settings retained throughout successful stock-max and low-OPP tests.
+No guessed MEM-ACC setting written. Publicheader ignoredreference/; facts only.
+
+Newj0104 source276c227 in ~/xnu-cpu-dvfs implements runtime fuse OPP tables
+(bin1/rev2 validated DT path), full SAW16/APM/PLL transitions via300MHz safe
+source, fast independent PMIC-valid polling, sharedmutex with oldcpuvolt,
+ordered rollback/fault latch and per-cluster demand governor.20ms sampling of
+recount busy/idle, busiestcorepercluster; >=65% fast stockmax, <35% five-sample
+hysteresis; <10% floor300, otherwise one step down. No thermal policy as directed.
+Oldj0103 70C guard affects onlylegacycpuvolt helper, notnewDVFS. New bootarg
+sweetdvfs=1 starts after30s; sweetdvfsauto=0/1 controls initialmanual/auto.
+Commands dvfs stat|auto 0/1|set 0/1 kHz|restore. Bothrequested/actualfreq,mV,
+load/changes/failures/fault exposed. Auto muststopbeforemanualset; restore stops
+it and restores originalbootpoints includingSilver1382.4. Headerhosttests cover
+alllevels/divider/order/fiveinjectedfailures/rollback/latch/policy; runtime tables
+match independentPython+stockDT+localrealchipfuses exactly; no fusedump committed.
+Source,behaviorandlinkedmarkerCIgatesprepared; actualARMbuild/devicepending.
+Phone stillrunningmanualtestkernel atrestored bootstate, ownlockheld, collector
+active. Nextpush/buildj0104, verifyhash/gates, temporarymanualthenautogovernor
+validation through allpoints/repeatedramps/load/idle and UI. Continue until CPU
+scaling is usable; do not stop just after the next diagnostic milestone.
+
+### 2026-10-27: user directs completing CPU DVFS first, thermal policy deferred
+
+Latest explicit scope supersedes prior thermal acceptance gates: complete both
+clusters' clock transitions, stock maximum validation and demand scaling now.
+Do not reject bring-up solely for heat/cooldown; GPU/RAM power policy is still
+unfinished. Observe temperatures, but defer thermal throttling until the CPU
+backend/governor works. Keep electrical limits, status checks, checker errors,
+timeouts and rollback. User already authorized milestone pushes/builds/phone.
+Phone lock reacquired: charging94%,34C,+631835uA,4305408uV,online1/Good,slot_b.
+Next temporary8-core boot and max-clock validation; no flash.
+
 ### 2026-10-27: SAW16 backend 4/8 PASS; APM crossover proven; upper rail tests bounded
 
 Published implementationbcdc037; source00866db in ~/xnu-cpu-dvfs (branch

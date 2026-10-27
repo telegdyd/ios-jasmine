@@ -1,0 +1,425 @@
+From 276c227e6b028b720acb1a95c24e3a718b590cc9 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 04:09:10 +0100
+Subject: [PATCH] jasmine-j0104: runtime-fused dual-cluster DVFS and demand
+ governor
+
+---
+ osfmk/arm64/sweet_dvfs.h | 374 +++++++++++++++++++++++++++++++++++++++
+ osfmk/arm64/sweet_osm.c  |   5 +
+ 2 files changed, 379 insertions(+)
+ create mode 100644 osfmk/arm64/sweet_dvfs.h
+
+diff --git a/osfmk/arm64/sweet_dvfs.h b/osfmk/arm64/sweet_dvfs.h
+new file mode 100644
+index 0000000..b86a752
+--- /dev/null
++++ b/osfmk/arm64/sweet_dvfs.h
+@@ -0,0 +1,374 @@
++/* SDM660 software DVFS. Register facts: pinned SAW4/APCS headers and stock DT.
++ * No thermal policy yet (user's bring-up scope). Boot array settings retained.
++ * One mutex is shared with the old bounded CPU voltage diagnostic.
++ */
++#define DVFS_CLUSTERS 2
++#define DVFS_LEVELS 8
++struct dvfs_opp { uint32_t khz, l, cfg, mv; };
++static struct dvfs_opp dvfs_opps[2][8] = {
++	{{300000,0,0x403,0},{1113600,0x3a,0x301,0},{1401600,0x49,0x301,0},
++	 {1747200,0x5b,0x301,0},{1958400,0x66,0x301,0},{2150400,0x70,0x301,0},{2208000,0x73,0x301,0}},
++	{{300000,0,0x403,0},{633600,0x42,0x503,0},{902400,0x2f,0x501,0},
++	 {1113600,0x3a,0x501,0},{1401600,0x49,0x501,0},{1536000,0x50,0x501,0},
++	 {1747200,0x5b,0x501,0},{1843200,0x60,0x501,0}}
++};
++static const unsigned dvfs_count[2] = {7,8};
++static const struct dvfs_opp dvfs_boot[2] = {{1747200,0x5b,0x301,868},{1382400,0x48,0x501,872}};
++static const uint64_t dvfs_pll[2] = {0x17816000,0x17916000};
++static const uint64_t dvfs_rcg[2] = {0x17811050,0x17911050};
++static const uint64_t dvfs_ctl[2] = {0x179d0010,0x179d0004};
++static struct {
++	struct dvfs_opp current;
++	uint32_t requested, apc, busy, quiet;
++	uint64_t changes, failures;
++	bool fault;
++} dvfs_state[2];
++static uint32_t dvfs_mem_boot[5];
++static bool dvfs_ready, dvfs_auto;
++
++/* Runtime open-loop values, bin1/revision2 DT path. No chip fuse dump is baked
++ * into this image. Unsupported bins/revisions refuse instead of guessing.
++ * Signed-magnitude voltage fuses, monotonic interpolation and final floors
++ * agree with cpuclk_model.py; closed-loop CPR/OSM stays disabled.
++ */
++static bool
++dvfs_build_table(void)
++{
++	static const uint8_t init_row[2][5] = {{69,69,69,69,70},{67,67,71,67,67}};
++	static const uint8_t init_bit[2][5] = {{17,23,11,5,42},{34,28,3,22,16}};
++	static const int ref[2][5] = {{724000,788000,868000,988000,1068000},{644000,724000,788000,868000,1068000}};
++	static const int adj[2][5] = {{16000,27000,39000,39000,20000},{-4000,4000,7000,19000,-8000}};
++	static const unsigned fmax[2][5] = {{1,2,3,5,6},{1,2,3,4,7}};
++	static const int floor[2][8] = {{588000,596000,652000,712000,744000,784000,844000},
++	    {588000,588000,596000,652000,712000,744000,784000,844000}};
++	static const int ceiling[2][8] = {{724000,724000,788000,868000,988000,988000,1068000},
++	    {724000,724000,724000,788000,868000,1068000,1068000,1068000}};
++	if (((fuse_rows[38] >> 29) & 7) != 1 || ((fuse_rows[71] >> 28) & 7) != 2) {
++		return false;
++	}
++	for (unsigned c=0; c<2; c++) {
++		int fv[5], last_floor=0;
++		for (unsigned f=0; f<5; f++) {
++			unsigned raw=(unsigned)(fuse_rows[init_row[c][f]] >> init_bit[c][f]) & 63;
++			fv[f]=ref[c][f]+((raw & 32) ? -(int)(raw & 31) : (int)(raw & 31))*10000+adj[c][f];
++			if (f && fv[f]<fv[f-1]) { fv[f]=fv[f-1]; }
++		}
++		for (unsigned i=0,f=0; i<dvfs_count[c]; i++) {
++			while (f<4 && i>fmax[c][f]) { f++; }
++			int v=fv[f];
++			if (f) {
++				uint64_t x1=dvfs_opps[c][fmax[c][f-1]].khz, x2=dvfs_opps[c][fmax[c][f]].khz;
++				v-= (int)((x2-dvfs_opps[c][i].khz)*(uint64_t)(fv[f]-fv[f-1])/(x2-x1));
++			}
++			v=(v+3999)/4000*4000;
++			if (v<floor[c][i]) { v=floor[c][i]; }
++			if (v>ceiling[c][i]) { v=ceiling[c][i]; }
++			/* Scaled open-loop is the ceiling; floor-range tightening never
++			 * raises it here except the monotonic per-corner floor rule. */
++			int fl=floor[c][i];
++			if (v>=872000 && fl<852000 && ceiling[c][i]>=872000) { fl=852000; }
++			if (fl<last_floor) { fl=last_floor; }
++			if (v<fl) { v=fl; }
++			last_floor=fl;
++			if (v<400000 || v>1068000 || v%4000) { return false; }
++			dvfs_opps[c][i].mv=(uint32_t)v/1000;
++		}
++	}
++	return true;
++}
++
++static bool
++dvfs_poll(uint64_t pa, uint32_t mask, uint32_t want)
++{
++	for (unsigned us=0; us<2000; us++) {
++		if ((*osm_ptr(pa)&mask)==want) { return true; }
++		delay(1);
++	}
++	return false;
++}
++
++static bool
++dvfs_rail_read(unsigned c, uint32_t *mv)
++{
++	unsigned first=c==0 ? 2 : 1, last=c==0 ? 3 : 1;
++	uint32_t value=0;
++	for (unsigned id=first; id<=last; id++) {
++		uint32_t b=0x1400+(id-1)*0x300, v=0, mode=0, type=0;
++		if (sweet_pmic_peek(1,b+0x40,4,&v) || sweet_pmic_peek(1,b+0x45,2,&mode) ||
++		    sweet_pmic_peek(1,b+4,2,&type) || mode!=0x8006 || type!=0xa1c ||
++		    (v&0xffff)!=(v>>16) || (id!=first && (v&0xffff)!=value)) { return false; }
++		value=v&0xffff;
++	}
++	*mv=value;
++	return true;
++}
++
++static bool
++dvfs_saw(unsigned c, uint32_t mv)
++{
++	volatile uint32_t *s=osm_ptr(cpuvolt_base(c));
++	uint32_t word=0x100000|mv;
++	osm_wr(s,0xc1c,1);
++	osm_wr(s,0x900,(osm_rd(s,0x900)&~0x17ffffu)|word);
++	osm_wr(s,0x4c,(osm_rd(s,0x4c)&~0x17ffffu)|word);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	if (!dvfs_poll(cpuvolt_base(c)+0xc18,0x3ffff,mv)) { return false; }
++	/* Independently poll the PMIC valid words; a SAW echo alone is insufficient. */
++	for (unsigned us=0; us<2000; us+=20) {
++		uint32_t actual=0;
++		if (dvfs_rail_read(c,&actual) && actual==mv) { return true; }
++		delay(20);
++	}
++	return false;
++}
++
++static bool
++dvfs_apm(unsigned c, uint32_t apc)
++{
++	volatile uint32_t *p=osm_ptr(dvfs_ctl[c]);
++	osm_wr(p,0,(*p&~2u)|(apc ? 2u : 0u));
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return dvfs_poll(dvfs_ctl[c]+8,0x1f,apc ? 3 : 0) && ((*p&2)!=0)==(apc!=0);
++}
++
++static bool
++dvfs_voltage(unsigned c, uint32_t mv, uint32_t apc)
++{
++	uint32_t current=(*osm_ptr(dvfs_ctl[c])&2)!=0;
++	if (current!=apc) {
++		if (!dvfs_saw(c,872) || !dvfs_apm(c,apc)) { return false; }
++	}
++	return dvfs_saw(c,mv);
++}
++
++static bool
++dvfs_select(unsigned c, uint32_t cfg)
++{
++	volatile uint32_t *p=osm_ptr(dvfs_rcg[c]);
++	osm_wr(p,4,(p[1]&~0x71fu)|cfg);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	osm_wr(p,0,p[0]|1);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return dvfs_poll(dvfs_rcg[c],1,0) && (p[1]&0x71f)==cfg;
++}
++
++static bool
++dvfs_clock(unsigned c, uint32_t l, uint32_t cfg)
++{
++	if (cfg==0x403) { return dvfs_select(c,cfg); }
++	if (!dvfs_select(c,0x403)) { return false; }
++	volatile uint32_t *p=osm_ptr(dvfs_pll[c]);
++	osm_wr(p,0,0); osm_wr(p,4,l); osm_wr(p,0,2);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	delay(50); osm_wr(p,0,6);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	delay(100); osm_wr(p,0,7);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	delay(50);
++	return dvfs_poll(dvfs_pll[c]+0x2c,0x10000,0x10000) && p[1]==l && dvfs_select(c,cfg);
++}
++
++static uint32_t
++dvfs_actual_khz(unsigned c)
++{
++	uint32_t cfg=*osm_ptr(dvfs_rcg[c]+4), source=(cfg>>8)&7, div=(cfg&31)+1;
++	if (source==4) { return 1200000/div; }
++	if (source!=3 && source!=5) { return 0; }
++	if (*osm_ptr(dvfs_pll[c])!=7 || !(*osm_ptr(dvfs_pll[c]+0x2c)&0x10000)) { return 0; }
++	return *osm_ptr(dvfs_pll[c]+4)*38400/div;
++}
++
++static bool
++dvfs_context(unsigned c, const struct dvfs_opp *o, uint32_t apc)
++{
++	uint32_t mv=0;
++	if (dvfs_actual_khz(c)!=o->khz || (*osm_ptr(dvfs_rcg[c]+4)&0x71f)!=o->cfg ||
++	    (*osm_ptr(dvfs_rcg[c])&1) || *osm_ptr(OSM_BASE+(c==0 ? 0x2000 : 0)+0x1004) ||
++	    ((*osm_ptr(dvfs_ctl[c])&2)!=0)!=(apc!=0) ||
++	    (*osm_ptr(dvfs_ctl[c]+8)&0x1f)!=(apc ? 3u : 0u) ||
++	    !dvfs_rail_read(c,&mv) || mv!=o->mv) { return false; }
++	for (unsigned i=0; i<5; i++) {
++		if (*osm_ptr(APCS_COMMON+0x360+4*i)!=dvfs_mem_boot[i]) { return false; }
++	}
++	return true;
++}
++
++/* Lock held by command/worker. Always move to the validated 300MHz source
++ * before changing rails or arrays, in both directions. On failure, restore
++ * the old supply/APM first, then the old PLL. Never raise a clock on an
++ * unverified supply, or lower supply while a high clock may still be selected.
++ */
++static bool
++dvfs_transition(unsigned c, const struct dvfs_opp *want, uint32_t apc)
++{
++	struct dvfs_opp before=dvfs_state[c].current;
++	uint32_t old_apc=dvfs_state[c].apc;
++	dvfs_state[c].requested=want->khz;
++	if (!dvfs_ready || dvfs_state[c].fault || !dvfs_context(c,&before,old_apc)) {
++		dvfs_state[c].fault=true; dvfs_auto=false; return false;
++	}
++	if (before.khz==want->khz && before.mv==want->mv && old_apc==apc) { return true; }
++	bool safe=dvfs_select(c,0x403);
++	bool ok=safe && dvfs_voltage(c,want->mv,apc) && dvfs_clock(c,want->l,want->cfg) && dvfs_context(c,want,apc);
++	if (ok) {
++		dvfs_state[c].current=*want; dvfs_state[c].apc=apc; dvfs_state[c].changes++;
++		return true;
++	}
++	dvfs_state[c].failures++; dvfs_auto=false;
++	bool rollback;
++	if (!safe) {
++		/* No supply write occurred. Re-select the old source only. */
++		rollback=dvfs_select(c,before.cfg) && dvfs_context(c,&before,old_apc);
++	} else {
++		rollback=dvfs_select(c,0x403) && dvfs_voltage(c,before.mv,old_apc) &&
++		    dvfs_clock(c,before.l,before.cfg) && dvfs_context(c,&before,old_apc);
++	}
++	if (!rollback) { dvfs_state[c].fault=true; }
++	printf("SWEET DVFS: c%u transition %u failed; rollback %s; auto disabled\n",c,want->khz,rollback ? "verified" : "UNVERIFIED");
++	return false;
++}
++
++static unsigned
++dvfs_policy(unsigned c, unsigned busy)
++{
++	unsigned current=0;
++	for (unsigned i=0; i<dvfs_count[c]; i++) {
++		if (dvfs_opps[c][i].khz<=dvfs_state[c].current.khz) { current=i; }
++	}
++	if (busy>=65) { dvfs_state[c].quiet=0; return dvfs_count[c]-1; }
++	if (busy<35) {
++		if (++dvfs_state[c].quiet>=5) {
++			dvfs_state[c].quiet=0;
++			return busy<10 ? 0 : (current ? current-1 : 0);
++		}
++	} else { dvfs_state[c].quiet=0; }
++	return current;
++}
++
++/* DVFS kernel worker */
++#include <kern/recount.h>
++static uint64_t dvfs_last_busy[MAX_CPUS], dvfs_last_idle[MAX_CPUS];
++static bool dvfs_sample_valid;
++
++static void
++dvfs_sample(unsigned peak[2])
++{
++	peak[0]=peak[1]=0;
++	for (unsigned i=0; i<real_ncpus && i<8; i++) {
++		processor_t p=cpu_to_processor((int)i);
++		if (p==PROCESSOR_NULL) { continue; }
++		struct recount_usage usage={0}; uint64_t idle=0;
++		recount_processor_usage(&p->pr_recount,&usage,&idle);
++		uint64_t busy=usage.ru_user_time_mach+usage.ru_system_time_mach;
++		if (dvfs_sample_valid && busy>=dvfs_last_busy[i] && idle>=dvfs_last_idle[i]) {
++			uint64_t b=busy-dvfs_last_busy[i], d=idle-dvfs_last_idle[i];
++			unsigned percent=b+d ? (unsigned)(b*100/(b+d)) : 0;
++			unsigned c=i<4 ? 0 : 1;
++			if (percent>peak[c]) { peak[c]=percent; }
++		}
++		dvfs_last_busy[i]=busy; dvfs_last_idle[i]=idle;
++	}
++	dvfs_sample_valid=true;
++}
++
++static void
++dvfs_worker(void *arg, wait_result_t result)
++{
++	(void)arg; (void)result;
++	uint64_t deadline;
++	clock_interval_to_deadline(30,NSEC_PER_SEC,&deadline);
++	(void)assert_wait_deadline(&dvfs_ready,THREAD_UNINT,deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++	lck_mtx_lock(&cpuvolt_lock);
++	bool ok=real_ncpus==4 || real_ncpus==8;
++	volatile uint32_t *f=osm_map(QFPROM_CORR,0x1000);
++	static const unsigned rows[]={38,65,66,67,68,69,70,71};
++	for (unsigned i=0; i<sizeof(rows)/sizeof(rows[0]); i++) {
++		unsigned row=rows[i]; fuse_rows[row]=(uint64_t)f[row*2+1]<<32|f[row*2];
++	}
++	ok=ok && dvfs_build_table();
++	for (unsigned i=0; i<5; i++) { dvfs_mem_boot[i]=*osm_ptr(APCS_COMMON+0x360+4*i); }
++	for (unsigned c=0; c<2; c++) {
++		dvfs_state[c].current=dvfs_boot[c]; dvfs_state[c].requested=dvfs_boot[c].khz;
++		ok=ok && ((*osm_ptr(cpuvolt_base(c)+0xc04)&0x100)!=0) && dvfs_context(c,&dvfs_boot[c],0);
++		for (unsigned i=0; i<dvfs_count[c]; i++) {
++			printf("SWEET DVFS: OPP c%u %u kHz %u mV L%#x cfg%#x\n",c,dvfs_opps[c][i].khz,dvfs_opps[c][i].mv,dvfs_opps[c][i].l,dvfs_opps[c][i].cfg);
++		}
++	}
++	dvfs_ready=ok;
++	uint32_t automatic=0;
++	(void)PE_parse_boot_argn("sweetdvfsauto",&automatic,sizeof(automatic));
++	dvfs_auto=ok && automatic==1;
++	printf("SWEET DVFS: ready=%u auto=%u thermal=off; array boot settings retained\n",ok,dvfs_auto);
++	lck_mtx_unlock(&cpuvolt_lock);
++	if (!ok) { return; }
++	for (;;) {
++		lck_mtx_lock(&cpuvolt_lock);
++		unsigned peak[2]; dvfs_sample(peak);
++		for (unsigned c=0; c<2; c++) {
++			dvfs_state[c].busy=peak[c];
++			if (dvfs_auto && (c==0 || real_ncpus==8)) {
++				unsigned level=dvfs_policy(c,peak[c]);
++				(void)dvfs_transition(c,&dvfs_opps[c][level],dvfs_opps[c][level].mv>=872);
++			}
++		}
++		lck_mtx_unlock(&cpuvolt_lock);
++		clock_interval_to_deadline(20,NSEC_PER_MSEC,&deadline);
++		(void)assert_wait_deadline(&dvfs_ready,THREAD_UNINT,deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
++static void
++sweet_dvfs_start(void)
++{
++	uint32_t enabled=0;
++	(void)PE_parse_boot_argn("sweetdvfs",&enabled,sizeof(enabled));
++	if (enabled!=1 || osm_mode!=0) { return; }
++	thread_t thread;
++	if (kernel_thread_start(dvfs_worker,NULL,&thread)==KERN_SUCCESS) { thread_deallocate(thread); }
++}
++
++static int
++dvfs_command(int argc, char **argv, char *out, size_t len)
++{
++	lck_mtx_lock(&cpuvolt_lock);
++	const char *message="status";
++	if (!dvfs_ready) { message="not ready (sweetdvfs=1; wait30s; see console)"; goto report; }
++	if (argc==3 && !strcmp(argv[1],"auto") && (!strcmp(argv[2],"0") || !strcmp(argv[2],"1"))) {
++		if (dvfs_state[0].fault || dvfs_state[1].fault) { message="fault; reboot required"; }
++		else { dvfs_auto=argv[2][0]=='1'; dvfs_sample_valid=false; message="mode changed"; }
++	} else if (argc==4 && !strcmp(argv[1],"set") && (!strcmp(argv[2],"0") || !strcmp(argv[2],"1"))) {
++		unsigned c=argv[2][0]-'0'; uint64_t khz=0; bool valid=true;
++		for (const char *p=argv[3]; *p; p++) {
++			if (*p<'0' || *p>'9' || khz>3000000) { valid=false; break; }
++			khz=khz*10+(unsigned)(*p-'0');
++		}
++		message="unsupported OPP";
++		if (dvfs_auto) { message="disable auto before manual set"; }
++		else if (valid) {
++			for (unsigned i=0; i<dvfs_count[c]; i++) {
++				if (dvfs_opps[c][i].khz==khz) {
++					message=dvfs_transition(c,&dvfs_opps[c][i],dvfs_opps[c][i].mv>=872) ? "OK" : "FAILED (see console)";
++				}
++			}
++		}
++	} else if (argc==2 && !strcmp(argv[1],"restore")) {
++		dvfs_auto=false;
++		bool ok=true;
++		for (unsigned c=0; c<2; c++) { if (!dvfs_transition(c,&dvfs_boot[c],0)) { ok=false; } }
++		message=ok ? "boot restored" : "restore FAILED (see console)";
++	} else if (argc!=2 || strcmp(argv[1],"stat")) {
++		message="use dvfs stat|auto 0/1|set 0/1 kHz|restore";
++	}
++report:
++	int n=snprintf(out,len,"SWEET DVFS: %s ready=%u auto=%u thermal=off\n",message,dvfs_ready,dvfs_auto);
++	for (unsigned c=0; c<2 && n<(int)len-160; c++) {
++		uint32_t mv=0; bool rail=dvfs_ready && dvfs_rail_read(c,&mv);
++		n+=snprintf(out+n,len-n," %s requested=%u actual=%u kHz rail=%u mV valid=%u apc=%u busy=%u%% changes=%llu failures=%llu fault=%u\n",
++		    c==0 ? "Gold" : "Silver",dvfs_state[c].requested,dvfs_ready ? dvfs_actual_khz(c) : 0,
++		    mv,rail && !dvfs_state[c].fault && dvfs_context(c,&dvfs_state[c].current,dvfs_state[c].apc),
++		    dvfs_state[c].apc,dvfs_state[c].busy,dvfs_state[c].changes,dvfs_state[c].failures,dvfs_state[c].fault);
++	}
++	lck_mtx_unlock(&cpuvolt_lock); return n;
++}
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index a932074..9326222 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1321,6 +1321,7 @@ osm_num(const char *s)                          /* 0x... hex or decimal */
+ 
+ extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);   /* bsd/dev/sweet_pmic.c */
+ #include "sweet_cpu_voltage.h"
++#include "sweet_dvfs.h"
+ 
+ static int osm_abort;                   /* a failed poll skips the rest of the line */
+ static int osm_quiet;                   /* inside "rep": no log line per write */
+@@ -1435,6 +1436,9 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		printf("SWEET OSM: ctl tw %#llx %#llx st %#llx\n", a, b, st);
+ 		return snprintf(out, len, "tz %#llx <- %#llx: st %#llx, reads st %#llx val %#llx\n", a, b, st, st2, r);
+ 	}
++	if (!strcmp(c, "dvfs")) {
++		return dvfs_command(argc, argv, out, len);
++	}
+ 	if (!strcmp(c, "cpuvolt")) {
+ 		if ((argc != 2 && argc != 3) ||
+ 		    (strcmp(argv[1], "0") && strcmp(argv[1], "1")) ||
+@@ -1766,6 +1770,7 @@ sweet_osm_init(void)
+ 	uint64_t t0 = mach_absolute_time();
+ 	osm_ref = osm_workload(OSM_WORK);
+ 	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &osm_ns_boot);
++	sweet_dvfs_start();
+ 	/* sweetcmd exposes check without OSM setup. Capture its known-good
+ 	 * reference here, before sweet_gold_clock changes the boot clock;
+ 	 * never establish a new reference after an experimental transition. */
+-- 
+2.47.3
+
