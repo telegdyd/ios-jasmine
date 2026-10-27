@@ -2040,6 +2040,7 @@ struct surf_fmt {
    GLint swz[4];
    bool swizzled;
    GLenum gl_format, gl_type, gl_internal; /* for the copy path */
+   bool argb; /* memory is A,R,G,B (CA's own 32-bit images): bytes reversed against BGRA when copied */
 };
 
 static const GLint SWZ_A8[4] = {GL_ZERO, GL_ZERO, GL_ZERO, GL_RED};
@@ -2141,14 +2142,23 @@ copy_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, const struct surf
    glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(pitch / bpe));
    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
    GLenum e;
-   if (invert) {
-      /* rows bottom first: the texture is the surface flipped vertically */
-      uint8_t *flipped = malloc(pitch * h);
-      for (size_t y = 0; flipped && y < h; y++)
-         memcpy(flipped + y * pitch, (const uint8_t *)base + (h - 1 - y) * pitch, pitch);
+   if (invert || f->argb) {
+      /* rows bottom first: the texture is the surface flipped vertically; A,R,G,B
+       * pixels reversed into the B,G,R,A the texture holds */
+      uint8_t *tmp = malloc(pitch * h);
+      for (size_t y = 0; tmp && y < h; y++) {
+         uint8_t *dst = tmp + y * pitch;
+         memcpy(dst, (const uint8_t *)base + (invert ? h - 1 - y : y) * pitch, pitch);
+         for (size_t x = 0; f->argb && x < w; x++) {
+            uint32_t v;
+            memcpy(&v, dst + 4 * x, 4);
+            v = __builtin_bswap32(v);
+            memcpy(dst + 4 * x, &v, 4);
+         }
+      }
       glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type,
-                   flipped ? flipped : base);
-      free(flipped);
+                   tmp ? tmp : base);
+      free(tmp);
    } else {
       glTexImage2D(target, 0, f->gl_internal, (GLsizei)w, (GLsizei)h, 0, f->gl_format, f->gl_type, base);
    }
@@ -2345,6 +2355,15 @@ shadow_write_back(struct sca_ctx *c)
       glPixelStorei(GL_PACK_ALIGNMENT, 1);
       glReadPixels(0, 0, (GLsizei)k->w, (GLsizei)k->h, k->f.gl_format, k->f.gl_type, IOSurfaceGetBaseAddress(k->s));
       GLenum e = glGetError();
+      for (size_t y = 0; k->f.argb && y < k->h; y++) {
+         uint8_t *p = (uint8_t *)IOSurfaceGetBaseAddress(k->s) + y * k->pitch;
+         for (size_t x = 0; x < k->w; x++) {
+            uint32_t v;
+            memcpy(&v, p + 4 * x, 4);
+            v = __builtin_bswap32(v);
+            memcpy(p + 4 * x, &v, 4);
+         }
+      }
       glPixelStorei(GL_PACK_ROW_LENGTH, row);
       glPixelStorei(GL_PACK_ALIGNMENT, align);
       glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
@@ -2370,6 +2389,9 @@ shadow_target(struct sca_ctx *c, IOSurfaceRef s, GLenum target)
    struct surf_fmt f;
    if (IOSurfaceGetPlaneCount(s) > 1 || bpe != 4 || !fmt_from_surface(IOSurfaceGetPixelFormat(s), bpe, &f))
       return false;
+   /* no pixel format: one of CA's own images, A,R,G,B in memory (the home Search
+    * pill's 28x28 glyph has its coverage in byte 0 only and was invisible as BGRA) */
+   f.argb = IOSurfaceGetPixelFormat(s) == 0;
    GLenum t = tgt(c, target);
    set_swizzle(c, t, f.swz, f.swizzled);
    uint32_t seed = IOSurfaceGetSeed(s);
