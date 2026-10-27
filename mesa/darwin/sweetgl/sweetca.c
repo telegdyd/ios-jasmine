@@ -36,6 +36,7 @@
 #include <objc/runtime.h>
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -117,7 +118,9 @@ struct sca_ctx {
    unsigned frame;                     /* glFlush count: CA flushes once per frame */
    GLuint shadows[64];                 /* textures standing in for render-target surfaces */
    GLuint program, fbo;
-   bool followed;                      /* Mesa's driver thread has this one's priority */
+   GLuint last_program, zero_prog;     /* SWEETCA_ZERO_PROBE: last CA program, our magenta one */
+   GLint zero_pos;                     /* vertex_position location zero_prog was linked with */
+   bool followed;                     /* Mesa's driver thread has this one's priority */
    GLuint fbo_tex[FBOMAX];             /* color attachment 0 texture of each framebuffer */
    uint16_t tex_w[TEXMAX], tex_h[TEXMAX]; /* level 0 sizes, as given to us */
    uint8_t tex_swizzled[TEXMAX];
@@ -349,6 +352,8 @@ w_UseProgram(void *rctx, GLuint p)
 {
    CUR(rctx);
    c->program = p;
+   if (p)
+      c->last_program = p;
    glUseProgram(p);
    POST(600);
 }
@@ -1733,6 +1738,110 @@ kick_after_draw(struct sca_ctx *c)
    }
 }
 
+/*
+ * SWEETCA_ZERO_PROBE=1: CA sometimes draws with no program bound (its create_shader gave
+ * up before making one), which GL ignores. Such draws are logged (the first 40: vertex
+ * count, unit 0 texture, bounds of the client-memory positions before vertex_matrix)
+ * and drawn magenta with the last CA program's vertex_matrix, to show what is missing.
+ */
+static int zero_probe = -1;
+
+static GLuint
+zero_shader(GLenum type, const char *src)
+{
+   GLuint s = glCreateShader(type);
+   glShaderSource(s, 1, &src, NULL);
+   glCompileShader(s);
+   return s;
+}
+
+static int
+zero_index(GLenum type, const void *indices, GLint i)
+{
+   if (!indices)
+      return i;
+   if (type == GL_UNSIGNED_SHORT)
+      return ((const GLushort *)indices)[i];
+   if (type == GL_UNSIGNED_INT)
+      return (int)((const GLuint *)indices)[i];
+   return ((const GLubyte *)indices)[i];
+}
+
+/* true when the magenta program is now bound; the caller draws, then unbinds it */
+static bool
+zero_probe_bind(struct sca_ctx *c, GLenum mode, GLint first, GLsizei count, GLenum itype,
+                const void *indices)
+{
+   if (zero_probe < 0) {
+      const char *v = getenv("SWEETCA_ZERO_PROBE");
+      zero_probe = v && strcmp(v, "1") == 0;
+   }
+   if (!zero_probe || c->program || c->api < 3 || count <= 0)
+      return false;
+   static unsigned logged;
+   GLuint last = c->last_program;
+   GLint pos = last ? glGetAttribLocation(last, "vertex_position") : -1;
+   if (logged < 40) {
+      logged++;
+      char box[96] = "positions not in client memory";
+      GLint buf = 1, type = 0, size = 0, stride = 0, on = 0;
+      void *ptr = NULL;
+      GLint ebuf = 0;
+      glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ebuf);
+      if (pos >= 0) {
+         glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &on);
+         glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buf);
+         glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+         glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+         glGetVertexAttribiv(pos, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+         glGetVertexAttribPointerv(pos, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
+      }
+      if (on && !buf && ptr && type == GL_FLOAT && size >= 2 && (!indices || !ebuf)) {
+         float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+         size_t st = stride ? (size_t)stride : (size_t)size * sizeof(float);
+         for (GLsizei i = 0; i < count; i++) {
+            const float *p = (const float *)((const char *)ptr + st * zero_index(itype, indices, first + i));
+            x0 = fminf(x0, p[0]), x1 = fmaxf(x1, p[0]), y0 = fminf(y0, p[1]), y1 = fmaxf(y1, p[1]);
+         }
+         snprintf(box, sizeof(box), "positions %.1f,%.1f .. %.1f,%.1f", x0, y0, x1, y1);
+      }
+      GLint blend = glIsEnabled(GL_BLEND), src = 0, dst = 0;
+      glGetIntegerv(GL_BLEND_SRC_RGB, &src);
+      glGetIntegerv(GL_BLEND_DST_RGB, &dst);
+      sca_log("sweetca: draw without program: frame %u mode %#x n %d%s fbo %u unit0 tex %u (%ux%u) "
+              "last program %u, %s, blend %d %#x/%#x",
+              c->frame, mode, count, indices ? " (elements)" : "", c->fbo, c->held[0],
+              c->held[0] < TEXMAX ? c->tex_w[c->held[0]] : 0, c->held[0] < TEXMAX ? c->tex_h[c->held[0]] : 0,
+              last, box, blend, src, dst);
+   }
+   if (pos < 0)
+      return false;
+   if (!c->zero_prog) {
+      c->zero_prog = glCreateProgram();
+      glAttachShader(c->zero_prog, zero_shader(GL_VERTEX_SHADER,
+         "attribute highp vec4 vertex_position;\n"
+         "uniform highp mat4 vertex_matrix;\n"
+         "void main() { gl_Position = vertex_matrix * vertex_position; }\n"));
+      glAttachShader(c->zero_prog, zero_shader(GL_FRAGMENT_SHADER,
+         "void main() { gl_FragColor = vec4(1., 0., 1., 1.); }\n"));
+      glBindAttribLocation(c->zero_prog, pos, "vertex_position");
+      glLinkProgram(c->zero_prog);
+      c->zero_pos = pos;
+      GLint ok = 0;
+      glGetProgramiv(c->zero_prog, GL_LINK_STATUS, &ok);
+      sca_log("sweetca: zero probe program %u (vertex_position %d): %s", c->zero_prog, pos,
+              ok ? "linked" : "FAILED");
+   }
+   GLint ml = glGetUniformLocation(last, "vertex_matrix"), zl = glGetUniformLocation(c->zero_prog, "vertex_matrix");
+   if (pos != c->zero_pos || ml < 0 || zl < 0)
+      return false;
+   GLfloat m[16];
+   glGetUniformfv(last, ml, m);
+   glUseProgram(c->zero_prog);
+   glUniformMatrix4fv(zl, 1, GL_FALSE, m);
+   return true;
+}
+
 static void
 w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
 {
@@ -1743,10 +1852,13 @@ w_DrawArrays(void *rctx, GLenum mode, GLint first, GLsizei count)
    trace_draw(c, mode, count);
    if (count > 0 && !ticket_draw(c))
       return; /* preparation may read back/seal earlier writes; BEGIN comes after it */
+   bool zero = zero_probe_bind(c, mode, first, count, 0, NULL);
    {
       SWEET_SCOPE(sp_call, SP_DRAW_CALL);
       glDrawArrays(mode, first, count);
    }
+   if (zero)
+      glUseProgram(0);
    shadow_drawn(c);
    ticket_after_write(c);
    kick_after_draw(c);
@@ -1763,10 +1875,13 @@ w_DrawElements(void *rctx, GLenum mode, GLsizei count, GLenum type, const void *
    trace_draw(c, mode, count);
    if (count > 0 && !ticket_draw(c))
       return;
+   bool zero = zero_probe_bind(c, mode, 0, count, type, indices);
    {
       SWEET_SCOPE(sp_call, SP_DRAW_CALL);
       glDrawElements(mode, count, type, indices);
    }
+   if (zero)
+      glUseProgram(0);
    shadow_drawn(c);
    ticket_after_write(c);
    kick_after_draw(c);
