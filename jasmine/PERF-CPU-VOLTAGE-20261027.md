@@ -63,7 +63,11 @@ independent physical rail measurement. Silver was not executing during its step.
 
 The failed RPM step was restored to the872mV vote before reboot. Following the
 SAW tests, supplies were restored to S1872/S2-S3868mV. Production library readback
-and final charging/lock cleanup are recorded in root NOTES.md.
+matches its pre-test SHA256
+`14e32aea4121e9c8a357da8f5e6322fe572a85f1c22e496990af0e687cb19261`.
+Final clean reboot returned to fastboot
+at03:04:04; the phone was parked in r109,86%,34C,charging with backlight0 and
+slot_b. Own lock released; exact charging and cleanup records are in root NOTES.md.
 
 ## Next gate
 

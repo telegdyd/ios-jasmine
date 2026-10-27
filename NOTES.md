@@ -44,10 +44,15 @@ Stock CPU thermal client IDs map to physical TSENS; Goldraw4-7, Silverraw10.
 Stock50/53C quiet trips are ADCboard temperatures, not CPU limits. Active plan
 records mapping and source; no arbitrary production thermal limits installed.
 
-Repo latest published49d4e7b, WSL sourceworktree ~/xnu-cpu-dvfs branch
-codex/cpu-dvfs source12fd873; shared jasmine-merge untouched. Current completed
-voltage-report/CLI doc edits require commit/push. Own lock and collector held;
-final clean reboot/park, charging readback and owner-only lock release pending.
+Completed voltage milestone published2ba7681 on origin/jasmine. WSL sourceworktree ~/xnu-cpu-dvfs branch
+codex/cpu-dvfs source12fd873; shared jasmine-merge untouched. Final actualfastboot
+03:04:04 followed by successful temporaryr109 boot. RootUnmount+574ms, zero
+wrapped GPU imports/pins. Fresh final charging:86%,+658202uA,4201893uV,34C,
+online1/Charging/Good,backlight0,slot_b. final-charging.txt and lock-released.txt
+record exact times. Own lock released after verifying ownership and readiness;
+no session Python/console collector remained. Own CI watchers completed0.
+No partition flash, root/library change, higher CPU frequency or new default.
+Keep phone parked and take a fresh shared lock/readiness check for next work.
 
 ### 2026-10-26 23:44: CPU checker device PASS on4/8; neutral RPM kernel building
 
