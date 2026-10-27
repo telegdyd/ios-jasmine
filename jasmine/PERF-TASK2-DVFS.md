@@ -92,6 +92,15 @@ CPU-only cap reproduces stock board-temperature control. Board/skin sensing,
 per-cluster caps and an independent emergency limit need separate validation.
 No production thermal thresholds have been selected or installed yet.
 
+User-requested testing control (2026-10-27): the governor will accept
+`sweetthermal=0|1`, default1. Zero bypasses the normal temperature-dependent
+frequency caps for controlled comparisons; one enforces them. Status must show
+the active setting and limiting reason. Keep the emergency over-temperature
+guard, invalid/stale-sensor handling, validated OPP limits and stock frequency
+ceilings independent of this flag. It is a boot-time test control; runtime
+toggling can follow once serialized policy updates are tested. This is the
+agreed implementation contract, not an already working thermal governor.
+
 ## Implementation sequence and gates
 
 1. **Re-establish a read-only baseline.** Use the current integrated 4K kernel

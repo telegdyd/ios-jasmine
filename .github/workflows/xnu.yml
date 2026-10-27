@@ -264,6 +264,11 @@ jobs:
             python3 ../tools/cpuclk/rpm-probe-test.py xnu/bsd/dev/sweet_rpm.c
             nm fakeroot/System/Library/Kernels/kernel.development.sweet | grep -E '[[:space:]][TtSs][[:space:]]_sweet_rpm_cpu_probe$'
           fi
+          if [ -f patches/j0103-jasmine-cpu-saw16-backend.patch ]; then
+            grep -q '#include "sweet_cpu_voltage.h"' xnu/osfmk/arm64/sweet_osm.c
+            python3 ../tools/cpuclk/voltage-test.py xnu/osfmk/arm64/sweet_cpu_voltage.h
+            strings fakeroot/System/Library/Kernels/kernel.development.sweet | grep 'SWEET CPUVOLT:'
+          fi
           if [ -f patches/j0100-jasmine-wifi-defaults.patch ]; then
             python3 ../tools/check-wifi-integration.py --source xnu --log kernel-build.log
             nm fakeroot/System/Library/Kernels/kernel.development.sweet > wifi-symbols.txt

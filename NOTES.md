@@ -1,3 +1,28 @@
+### 2026-10-27: serialized SAW16 backend prepared; thermal test flag requested
+
+User resumed CPU work and requested thermal caps on/off for testing. Planned
+sweetthermal=0|1 (default1) bypasses normal policy caps only; emergency protection,
+invalid/stale sensor handling and validated OPP/stock ceilings remain independent.
+Flag is a documented contract until governor integration, not functional yet.
+
+New j0103 source00866db in ~/xnu-cpu-dvfs adds mutex-serialized SAW16 helper,
+opt-in sweetcpuvolt=1, cpuvolt 0|1 [mV] (0Gold/1Silver; omittedmV=status).
+Only demonstrated levels Gold868/872 and Silver872/876 accepted. Exact boot
+PLL/RCG, OSMoff, APM/MEM-ACC baseline, wide-capability and PMIC type/mode/enable
+required. Both Gold supplies must match target+valid. Request uses full16bits,
+bounded2ms SAWpoll and100ms diagnostic delayed readback. Failure requests prior
+verified voltage; unverified rollback latches fault until reboot. State shows
+requested versus live-revalidated verified mV. Raises require all14valid TSENS
+below70C (diagnostic precondition, not production thermal policy). Restoration
+is allowed with hot/invalid sensors. No PLL/APM/MEM-ACC writes or new defaults.
+
+Host actual-header fault-injection tests PASS (gates, pairedrails, ordering,
+status timeout, PMIC mismatch, rollback and stickyfault). Six model tests PASS,
+whitespacePASS. CI now requires source include, behavior test and linked marker.
+Image tool strips inherited sweetcpuvolt unless --cpu-voltage-probe explicitly
+requested; requires kernel marker before image output. Kernel ARM build/device
+results pending. Phone has not been acquired/rebooted in this continuation yet.
+
 ### 2026-10-27: CPU voltage blocker resolved by SAW4 wide requests
 
 User resumed after credit-related automatic-review failure; successful build

@@ -24,7 +24,7 @@ def digest(blob):
     return hashlib.sha256(blob).hexdigest()
 
 
-def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False):
+def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False, cpu_voltage_probe=False):
     if out.exists():
         raise ValueError('refusing to overwrite ' + str(out))
     blob = baseline.read_bytes()
@@ -51,7 +51,7 @@ def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False):
     # Omit broad OSM probes and retain the normal manual Gold clock. DDR is
     # held at the current production setting in both variants, even if the
     # accepted Wi-Fi image inherited a baseline without a sweetddr argument.
-    replace = {'cpus', 'sweetosm', 'osmwatch', 'sweetcmd', 'sweetddr', 'sweetcpurpm'}
+    replace = {'cpus', 'sweetosm', 'osmwatch', 'sweetcmd', 'sweetddr', 'sweetcpurpm', 'sweetcpuvolt'}
     common = [a for a in args if a.split('=')[0] not in replace]
     model = mkpayload.parse_macho(kernel.read_bytes())
     if model['cputype'] != 0x100000c or model['cpusub'] != 0:
@@ -60,6 +60,10 @@ def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False):
         if b'SWEET CPURPM: neutral S' not in kernel.read_bytes():
             raise ValueError('kernel has no neutral CPU RPM probe')
         common.append('sweetcpurpm=1')
+    if cpu_voltage_probe:
+        if b'SWEET CPUVOLT:' not in kernel.read_bytes():
+            raise ValueError('kernel has no SAW16 CPU voltage helper')
+        common.append('sweetcpuvolt=1')
     out.mkdir(parents=True)
     dtpath = out / 'hardware.adt'
     dtpath.write_bytes(dt)
@@ -68,6 +72,7 @@ def prepare(kernel, baseline, out, revision, ci_run, cpu_rpm_probe=False):
                   baseline_sha256=digest(blob), adt_sha256=digest(dt),
                   checker_reference=b'SWEET CPUCHECK: boot reference ready' in kernel.read_bytes(),
                   cpu_rpm_probe=cpu_rpm_probe,
+                  cpu_voltage_probe=cpu_voltage_probe,
                   four_k_provenance='caller must verify CI topaz_4k=1', images={})
     for count in (4, 8):
         cmdline = ' '.join(common + [f'cpus={count}', 'sweetcmd=1', 'sweetddr=1804'])
@@ -96,5 +101,6 @@ if __name__ == '__main__':
     parser.add_argument('--revision', required=True)
     parser.add_argument('--ci-run', required=True, type=int)
     parser.add_argument('--cpu-rpm-probe', action='store_true', help='opt in to the gated neutral-only diagnostic')
+    parser.add_argument('--cpu-voltage-probe', action='store_true', help='opt in to the bounded SAW16 diagnostic')
     a = parser.parse_args()
-    prepare(a.kernel, a.baseline, a.out, a.revision, a.ci_run, a.cpu_rpm_probe)
+    prepare(a.kernel, a.baseline, a.out, a.revision, a.ci_run, a.cpu_rpm_probe, a.cpu_voltage_probe)

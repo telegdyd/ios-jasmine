@@ -1,0 +1,207 @@
+From 00866db7d01b6f153238e913b88c30b2a08c4cec Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 03:19:12 +0100
+Subject: [PATCH] jasmine-j0103: serialized bounded SAW16 CPU voltage backend
+
+---
+ osfmk/arm64/sweet_cpu_voltage.h | 152 ++++++++++++++++++++++++++++++++
+ osfmk/arm64/sweet_osm.c         |  10 +++
+ 2 files changed, 162 insertions(+)
+ create mode 100644 osfmk/arm64/sweet_cpu_voltage.h
+
+diff --git a/osfmk/arm64/sweet_cpu_voltage.h b/osfmk/arm64/sweet_cpu_voltage.h
+new file mode 100644
+index 0000000..0d2c69f
+--- /dev/null
++++ b/osfmk/arm64/sweet_cpu_voltage.h
+@@ -0,0 +1,152 @@
++/* Task 2 SAW16 voltage backend, diagnostic window only (j0103).
++ * No PLL/APM/MEM-ACC writes. These two levels per cluster were demonstrated
++ * at the boot clocks; widening them requires separate OPP validation.
++ * Caller holds the shared transaction mutex across preflight and rollback.
++ */
++static LCK_GRP_DECLARE(cpuvolt_grp, "sweet_cpuvolt");
++static LCK_MTX_DECLARE(cpuvolt_lock, &cpuvolt_grp);
++static struct { uint32_t requested, verified; bool fault; } cpuvolt_state[2];
++
++static uint64_t
++cpuvolt_base(unsigned cluster)
++{
++	return cluster == 0 ? 0x17812000ull : 0x17912000ull;
++}
++
++/* One read includes both the target and independent valid-voltage word. */
++static bool
++cpuvolt_rails(unsigned cluster, uint32_t mv)
++{
++	unsigned first = cluster == 0 ? 2 : 1, last = cluster == 0 ? 3 : 1;
++	for (unsigned id = first; id <= last; id++) {
++		uint32_t base = 0x1400 + (id - 1) * 0x300;
++		uint32_t volts = 0, mode_enable = 0, type = 0;
++		if (sweet_pmic_peek(1, base + 0x40, 4, &volts) != 0 ||
++		    sweet_pmic_peek(1, base + 0x45, 2, &mode_enable) != 0 ||
++		    sweet_pmic_peek(1, base + 0x04, 2, &type) != 0 ||
++		    volts != (mv | mv << 16) || mode_enable != 0x8006 || type != 0x0a1c) {
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool
++cpuvolt_context(unsigned cluster)
++{
++	uint64_t pll = cluster == 0 ? 0x17816000ull : 0x17916000ull;
++	uint64_t rcg = cluster == 0 ? 0x17811050ull : 0x17911050ull;
++	if (*osm_ptr(pll) != 7 || *osm_ptr(pll + 4) != (cluster == 0 ? 0x5bu : 0x48u) ||
++	    *osm_ptr(rcg) != 2 || *osm_ptr(rcg + 4) != (cluster == 0 ? 0x301u : 0x501u) ||
++	    *osm_ptr(OSM_BASE + (cluster == 0 ? 0x2000 : 0) + 0x1004) != 0 ||
++	    (*osm_ptr(cpuvolt_base(cluster) + 0xc04) & 0x100) == 0) {
++		return false;
++	}
++	/* Both APMs and the observed MEM-ACC state must still be at baseline. */
++	for (unsigned off = 4; off <= 0x18; off += 4) {
++		if (*osm_ptr(APCS_APM + off) != 0) {
++			return false;
++		}
++	}
++	for (unsigned off = 0x368; off <= 0x370; off += 4) {
++		if (*osm_ptr(APCS_COMMON + off) != 0) {
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool
++cpuvolt_send(unsigned cluster, uint32_t mv)
++{
++	volatile uint32_t *saw = osm_ptr(cpuvolt_base(cluster));
++	uint32_t word = 0x100000u | mv;
++	osm_wr(saw, 0xc1c, 1); /* enable software control, as in the proven sequence */
++	osm_wr(saw, 0x900, (osm_rd(saw, 0x900) & ~0x17ffffu) | word);
++	osm_wr(saw, 0x04c, (osm_rd(saw, 0x04c) & ~0x17ffffu) | word);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	bool idle = false;
++	for (unsigned us = 0; us < 2000; us++) {
++		if ((osm_rd(saw, 0xc18) & 0x3ffffu) == mv) {
++			idle = true;
++			break;
++		}
++		delay(1);
++	}
++	/* This deliberately matches the 100ms diagnostic observation window,
++	 * not a production governor's settling-time claim. Always read the PMIC,
++	 * even after a SAW timeout; a timeout still rejects the transaction. */
++	delay(100000);
++	bool valid = cpuvolt_rails(cluster, mv);
++	return idle && valid;
++}
++
++/* 0 Gold, 1 Silver. mv=0 is read-only status (also when opt-in is absent).
++ * The fault latch clears only on reboot. A failed rollback must never become
++ * a new assumed-good voltage or enable a later higher-frequency request.
++ */
++static int
++sweet_cpu_voltage(unsigned cluster, uint32_t mv, char *out, size_t len)
++{
++	if (cluster > 1) {
++		return snprintf(out, len, "cpuvolt: cluster 0=Gold, 1=Silver\n");
++	}
++	uint32_t enabled = 0;
++	(void)PE_parse_boot_argn("sweetcpuvolt", &enabled, sizeof(enabled));
++	lck_mtx_lock(&cpuvolt_lock);
++	const char *result = "status";
++	uint32_t low = cluster == 0 ? 868 : 872, before = 0;
++	if (mv != 0) {
++		result = "REFUSED";
++		if (enabled != 1 || cpuvolt_state[cluster].fault ||
++		    (mv != low && mv != low + 4) || !cpuvolt_context(cluster)) {
++			goto done;
++		}
++		if (cpuvolt_rails(cluster, low)) {
++			before = low;
++		} else if (cpuvolt_rails(cluster, low + 4)) {
++			before = low + 4;
++		} else {
++			cpuvolt_state[cluster].verified = 0;
++			goto done;
++		}
++		/* Match the measured small-step test's <70C precondition. Restoration
++		 * to the lower level remains possible if a sensor fails or heats up.
++		 * This is a diagnostic guard, not the future thermal-cap policy. */
++		if (mv > before) {
++			for (unsigned i = 0; i < 14; i++) {
++				uint32_t v = *osm_ptr(0x10ae0a0ull + 4 * i);
++				int t = (int)(v & 0xfff);
++				if (t & 0x800) { t -= 0x1000; }
++				if (!(v & (1u << 21)) || t < -400 || t >= 700) {
++					goto done;
++				}
++			}
++		}
++		cpuvolt_state[cluster].requested = mv;
++		cpuvolt_state[cluster].verified = 0;
++		if (cpuvolt_send(cluster, mv) && cpuvolt_context(cluster)) {
++			cpuvolt_state[cluster].verified = mv;
++			result = "OK";
++		} else if (cpuvolt_send(cluster, before) && cpuvolt_context(cluster)) {
++			cpuvolt_state[cluster].verified = before;
++			result = "FAILED, restored";
++		} else {
++			cpuvolt_state[cluster].fault = true;
++			result = "FAULT, rollback unverified; reboot required";
++		}
++	}
++done:
++	/* Report live evidence rather than a cached success after raw diagnostics. */
++	if (cpuvolt_state[cluster].verified &&
++	    (!cpuvolt_rails(cluster, cpuvolt_state[cluster].verified) || !cpuvolt_context(cluster))) {
++		cpuvolt_state[cluster].verified = 0;
++		cpuvolt_state[cluster].fault = true;
++		result = "FAULT, state changed; reboot required";
++	}
++	int n = snprintf(out, len, "SWEET CPUVOLT: %s %s enabled=%u requested=%u verified=%u mV fault=%u\n",
++	    cluster == 0 ? "Gold" : "Silver", result, enabled == 1,
++	    cpuvolt_state[cluster].requested, cpuvolt_state[cluster].verified, cpuvolt_state[cluster].fault);
++	lck_mtx_unlock(&cpuvolt_lock);
++	return n;
++}
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 878551c..a932074 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -30,6 +30,7 @@
+ #include <kern/thread.h>
+ #include <kern/sched_prim.h>
+ #include <kern/processor.h>
++#include <kern/locks.h>
+ #include <arm/cpu_internal.h>
+ #include <string.h>
+ 
+@@ -1319,6 +1320,7 @@ osm_num(const char *s)                          /* 0x... hex or decimal */
+ }
+ 
+ extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);   /* bsd/dev/sweet_pmic.c */
++#include "sweet_cpu_voltage.h"
+ 
+ static int osm_abort;                   /* a failed poll skips the rest of the line */
+ static int osm_quiet;                   /* inside "rep": no log line per write */
+@@ -1433,6 +1435,14 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		printf("SWEET OSM: ctl tw %#llx %#llx st %#llx\n", a, b, st);
+ 		return snprintf(out, len, "tz %#llx <- %#llx: st %#llx, reads st %#llx val %#llx\n", a, b, st, st2, r);
+ 	}
++	if (!strcmp(c, "cpuvolt")) {
++		if ((argc != 2 && argc != 3) ||
++		    (strcmp(argv[1], "0") && strcmp(argv[1], "1")) ||
++		    (argc == 3 && strcmp(argv[2], "868") && strcmp(argv[2], "872") && strcmp(argv[2], "876"))) {
++			return snprintf(out, len, "cpuvolt 0|1 [mV]: Gold 868/872, Silver 872/876; sweetcpuvolt=1\n");
++		}
++		return sweet_cpu_voltage((unsigned)a, argc == 3 ? (uint32_t)b : 0, out, len);
++	}
+ 	if (!strcmp(c, "cpurpm")) {
+ 		if (argc != 2 || a < 1 || a > 3) {
+ 			return snprintf(out, len, "cpurpm: use cpurpm 1|2|3 (neutral only, sweetcpurpm=1)\n");
+-- 
+2.47.3
+
