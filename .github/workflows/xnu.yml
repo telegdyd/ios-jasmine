@@ -29,6 +29,9 @@ on:
       topaz_4k:
         description: 1 = 4 KiB pages + AMP (TOPAZ_4K, all eight cores with mkadt.py --amp), 0 = 16 KiB pages, Gold only
         default: "1"
+      mesa_runner:
+        description: macOS runner for the Mesa job (macos-15 queues less; output still targets iOS 16.0)
+        default: macos-14
   push:
     branches: [main]
     paths:
@@ -92,7 +95,7 @@ jobs:
   # cross-built with Xcode's iPhoneOS SDK (mesa/ios-arm64.ini).
   mesa:
     if: ${{ inputs.build == 'mesa' }}
-    runs-on: macos-14
+    runs-on: ${{ inputs.mesa_runner || 'macos-14' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
