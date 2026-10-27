@@ -1,3 +1,14 @@
+### 2026-10-28 00:50: ds8 libsweetca INSTALLED as production (user OK)
+
+/usr/local/bin/libsweetca.dylib = Mesa CI 40601658380 (52b450f: ds8 + opt-in SWEETCA_TRIGGER/region inputs),
+SHA256 4780fbaaafcf680cbf709f4c40512499576ba09e3442f62ace41e7031ee214b8 (phone readback matches). Backup of the
+previous production lib (8cb5863ccf7c1ded43fc1bbb868e20e994ecdb3ac7b5c83e1d8754cc90779e1e, CI 40585335072):
+phone /usr/local/bin/libsweetca-pre-ds8.dylib (readback verified) and ignored research/libsweetca-backup/.
+Rollback = copy it over libsweetca.dylib and reboot. Rebooted into installed boot_b: backboardd logs all five
+texture functions installed and the ds8 shader built; no SMMU fault/panic (logs/netlog-ds8-installed.txt);
+home screen renders (research/ds8-installed.png). boot_b image unchanged. Note: the console port 5140 replays its
+backlog on every connect, so a reconnecting reader sees duplicated lines.
+
 ### 2026-10-28 00:40: texture function 0x1c = ds8 implemented; material chain verified; NOT installed
 
 0x1c is "ds8" (names from MetalContext::get_TextureFunction_decoder dictionary 0x1d5b82198; 0x1a ds4, 0x1b ds6,
