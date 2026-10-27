@@ -1,3 +1,36 @@
+### 2026-10-27 14:54: freeze reproduced after auto enable without interaction
+
+Resumed by user. Own exclusive phone lock reacquired. Temporary verified
+2550347 manual8 image booted as ui-idle8. User explicitly confirmed physical
+UI responsive. Six fixed-clock observations, zero DVFS transitions: wired
+memory settled ~470MiB, compression/pageout flattened, kernel idle profile
+~32ms/s. Then enabled auto on SAME boot without synthetic checker/stress.
+User confirms frozen again and NO interaction. This is a tighter reproduction;
+do not attribute it to wallpaper interaction, heat or established voltage error.
+
+Within the first automatic observation interval wired rose to ~1.55GiB.
+Kernel snapshots before/pressure: wired506937344 ->1756545024 bytes,
+surface requested backing276397704 ->1709990656, surface count169 ->627;
+GPU BO mapped114393088 ->261390336, pool98959360 ->140902400. Counters overlap.
+Process footprints remain small/compressed. Profiles show compression and
+eMMC busy-poll writes; no observed outstanding GPU jobs or DVFS faults.
+Ordered dvfs restore succeeded: auto0, boot1747.2/1382.4MHz,868/872mV,APMsMX,
+Gold37/Silver680 changes, failures0/fault0. UI/userland pressure did not recover;
+later vm_stat/ps timed out despite kernel port responding. No causal proof yet:
+need distinguish clock/voltage-induced corruption from surface retention.
+Clean reboot DID succeed: actual fastboot14:54:12.761. Recovery baseline4 next.
+
+Prepared sourcef74baa6 in isolated CPU worktree: j0105 adds checkmem (1MiB per
+CPU, four patterns, verified pinned writer/readers across half-CPU offset;
+all allocations freed after started workers finish), plus surfaces command
+grouping live backing by creator PID/name (creator is NOT current holder).
+Actual header concurrent host tests4/8 CPUs PASS incl corruption injection,
+wrong binding, allocation/thread-start failures and cleanup. Actual ARM CI
+and device validation pending; no default/voltage/governor policy change.
+Ignored research/cpu-dvfs/ui-idle8*,ui-auto8* preserve exact observations.
+Own phone lock remains held. Next build j0105, compare memory integrity at
+boot/floor/max and capture creator growth during controlled auto reproduction.
+
 ### 2026-10-27: paused in charging shell; DVFS tests pass, physical UI freeze open
 
 Latest user request: put phone in charging shell and prepare for later. Usage

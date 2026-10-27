@@ -275,6 +275,12 @@ jobs:
             python3 ../tools/cpuclk/dvfs-test.py xnu/osfmk/arm64/sweet_dvfs.h
             strings fakeroot/System/Library/Kernels/kernel.development.sweet | grep 'SWEET DVFS: ready='
           fi
+          if [ -f patches/j0105-jasmine-cpu-memory-surface-diagnostics.patch ]; then
+            grep -q '#include "sweet_memcheck.h"' xnu/osfmk/arm64/sweet_osm.c
+            python3 ../tools/cpuclk/memcheck-test.py xnu/osfmk/arm64/sweet_memcheck.h
+            strings fakeroot/System/Library/Kernels/kernel.development.sweet | grep 'checkmem: %s'
+            nm fakeroot/System/Library/Kernels/kernel.development.sweet | grep -E '[[:space:]][Tt][[:space:]]_sweet_surface_stats$'
+          fi
           if [ -f patches/j0100-jasmine-wifi-defaults.patch ]; then
             python3 ../tools/check-wifi-integration.py --source xnu --log kernel-build.log
             nm fakeroot/System/Library/Kernels/kernel.development.sweet > wifi-symbols.txt

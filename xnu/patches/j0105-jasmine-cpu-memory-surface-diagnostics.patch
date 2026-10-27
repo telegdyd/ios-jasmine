@@ -1,0 +1,231 @@
+From f74baa653275ab3c6f02bc9bf016be1e6dfec71a Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Tue, 27 Oct 2026 14:54:10 +0100
+Subject: [PATCH] jasmine-j0105: bounded cross-core memory check and surface
+ creator counters
+
+---
+ iokit/Kernel/arm/SweetSurface.cpp |  41 +++++++++++
+ iokit/Kernel/arm/SweetSurface.h   |   2 +
+ osfmk/arm64/sweet_memcheck.h      | 113 ++++++++++++++++++++++++++++++
+ osfmk/arm64/sweet_osm.c           |   8 +++
+ 4 files changed, 164 insertions(+)
+ create mode 100644 osfmk/arm64/sweet_memcheck.h
+
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 9bfceda..ae70273 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -436,6 +436,8 @@ sweet_surface_alloc(void)
+ 		OSSafeReleaseNULL(s);
+ 		return NULL;
+ 	}
++	s->creatorPID = proc_selfpid();
++	proc_selfname(s->creatorName, sizeof(s->creatorName));
+ 	s->state = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryKernelUserShared, SWEET_UPAGE, SWEET_UPAGE);
+ 	if (s->state == NULL) {
+@@ -1835,3 +1837,42 @@ IOSurfaceRootUserClient::getTargetAndTrapForIndex(IOService **targetP, UInt32 in
+ 	return &sweet_surface_traps[index];
+ }
+ #endif /* SWEET */
++
++#if defined(SWEET)
++/* Creator attribution only: a creator is not necessarily the current holder. */
++extern "C" int sweet_surface_stats(char *out, int len);
++int
++sweet_surface_stats(char *out, int len)
++{
++    struct row { int pid; uint32_t count, wrapped; uint64_t bytes; char name[32]; } rows[32] = {};
++    uint32_t used = 0, overflow = 0, count = 0;
++    uint64_t bytes = 0, overflow_bytes = 0;
++    if (sweet_surface_lock == NULL) return snprintf(out, len, "surfaces: not initialized\n");
++    IOLockLock(sweet_surface_lock);
++    for (uint32_t id = 1; id < SWEET_SURFACE_MAX_ID; id++) {
++        SweetSurface *s = sweet_surface_table[id];
++        if (s == NULL) continue;
++        count++; bytes += s->allocSize;
++        uint32_t i;
++        for (i = 0; i < used; i++) if (rows[i].pid == s->creatorPID) break;
++        if (i == used) {
++            if (used == 32) { overflow++; overflow_bytes += s->allocSize; continue; }
++            rows[i].pid = s->creatorPID;
++            memcpy(rows[i].name, s->creatorName, sizeof(rows[i].name));
++            used++;
++        }
++        rows[i].count++; rows[i].bytes += s->allocSize;
++        if (s->wrapped) rows[i].wrapped++;
++    }
++    IOLockUnlock(sweet_surface_lock);
++    int n = snprintf(out, len, "surfaces: %u live, %llu requested bytes; grouped by creator, not holder\n",
++        count, (unsigned long long)bytes);
++    for (uint32_t i = 0; i < used && n < len; i++)
++        n += snprintf(out+n, len-n, " creator %d %s: %u surfaces, %llu bytes, %u wrapped\n",
++            rows[i].pid, rows[i].name, rows[i].count, (unsigned long long)rows[i].bytes, rows[i].wrapped);
++    if (n < len) n += snprintf(out+n, len-n, " overflow: %u surfaces, %llu bytes\n", overflow,
++        (unsigned long long)overflow_bytes);
++    return n;
++}
++
++#endif
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index dade219..df735fd 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -29,6 +29,8 @@ class SweetSurface : public OSObject {
+ 
+ public:
+ 	uint32_t id;
++	int creatorPID;
++	char creatorName[32];
+ 	uint32_t width, height, bytesPerRow, offset, pixelFormat, allocSize;
+ 	uint16_t bytesPerElement;
+ 	uint8_t  elementWidth, elementHeight;
+diff --git a/osfmk/arm64/sweet_memcheck.h b/osfmk/arm64/sweet_memcheck.h
+new file mode 100644
+index 0000000..c4f7eee
+--- /dev/null
++++ b/osfmk/arm64/sweet_memcheck.h
+@@ -0,0 +1,113 @@
++/* Bounded CPU/cache/RAM diagnostic. No hardware registers or storage writes. */
++#include <kern/kalloc.h>
++#define MEMCHECK_BYTES (1u << 20)
++#define MEMCHECK_WORDS (MEMCHECK_BYTES / sizeof(uint64_t))
++static LCK_GRP_DECLARE(memcheck_grp, "cpu_memcheck");
++static LCK_MTX_DECLARE(memcheck_lock, &memcheck_grp);
++static struct {
++    uint64_t *buffer;
++    unsigned cpus, round, phase;
++    uint32_t done;
++    uint64_t errors[MAX_CPUS];
++    int ran[MAX_CPUS];
++} memcheck;
++
++/* Address-dependent, complementary and all-zero/all-one patterns. */
++static uint64_t
++memcheck_pattern(uint64_t index, unsigned round)
++{
++    if (round == 0) return 0;
++    if (round == 1) return UINT64_MAX;
++    uint64_t v = index + 0x9e3779b97f4a7c15ull;
++    v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ull;
++    v = (v ^ (v >> 27)) * 0x94d049bb133111ebull;
++    v ^= v >> 31;
++    return round == 2 ? v : ~v;
++}
++
++static void
++memcheck_thread(void *arg, __unused wait_result_t result)
++{
++    unsigned cpu = (unsigned)(uintptr_t)arg;
++    processor_t p = cpu_to_processor(cpu);
++    if (p == PROCESSOR_NULL) {
++        memcheck.ran[cpu] = -1;
++        __atomic_fetch_add(&memcheck.done, 1, __ATOMIC_RELEASE);
++        return;
++    }
++    thread_bind(p);
++    thread_block(THREAD_CONTINUE_NULL);
++    memcheck.ran[cpu] = cpu_number();
++    /* A different CPU checks each writer's region, across cluster boundaries. */
++    unsigned region = memcheck.phase ? (cpu + memcheck.cpus / 2) % memcheck.cpus : cpu;
++    uint64_t base = (uint64_t)region * MEMCHECK_WORDS;
++    volatile uint64_t *words = memcheck.buffer + base;
++    for (uint64_t i = 0; i < MEMCHECK_WORDS; i++) {
++        uint64_t expected = memcheck_pattern(base + i, memcheck.round);
++        if (!memcheck.phase) words[i] = expected;
++        else if (words[i] != expected) memcheck.errors[cpu]++;
++    }
++    __atomic_fetch_add(&memcheck.done, 1, __ATOMIC_RELEASE);
++}
++
++static bool
++memcheck_phase(void)
++{
++    unsigned started = 0;
++    __atomic_store_n(&memcheck.done, 0, __ATOMIC_RELAXED);
++    for (unsigned cpu = 0; cpu < memcheck.cpus; cpu++) {
++        memcheck.ran[cpu] = -1;
++        thread_t t;
++        if (kernel_thread_start(memcheck_thread, (void *)(uintptr_t)cpu, &t) == KERN_SUCCESS) {
++            thread_deallocate(t);
++            started++;
++        }
++    }
++    /* Never free memory until every successfully started worker has returned. */
++    while (__atomic_load_n(&memcheck.done, __ATOMIC_ACQUIRE) < started) delay(1000);
++    bool ok = started == memcheck.cpus;
++    for (unsigned cpu = 0; cpu < memcheck.cpus; cpu++)
++        if (memcheck.ran[cpu] != (int)cpu) ok = false;
++    return ok;
++}
++
++static int
++memcheck_command(int argc, char *out, int len)
++{
++    if (argc != 1) return snprintf(out, len, "checkmem: no arguments\n");
++    lck_mtx_lock(&memcheck_lock);
++    unsigned cpus = real_ncpus;
++    if (!cpus || cpus > MAX_CPUS) {
++        lck_mtx_unlock(&memcheck_lock);
++        return snprintf(out, len, "checkmem: invalid CPU count\n");
++    }
++    size_t bytes = (size_t)cpus * MEMCHECK_BYTES;
++    memcheck.buffer = kalloc_data(bytes, Z_WAITOK | Z_ZERO);
++    if (!memcheck.buffer) {
++        lck_mtx_unlock(&memcheck_lock);
++        return snprintf(out, len, "checkmem: allocation failed\n");
++    }
++    memcheck.cpus = cpus;
++    bzero(memcheck.errors, sizeof(memcheck.errors));
++    bool ok = true;
++    uint64_t errors = 0, ns, begin = mach_absolute_time();
++    for (unsigned round = 0; round < 4 && ok; round++) {
++        memcheck.round = round;
++        for (unsigned phase = 0; phase < 2 && ok; phase++) {
++            memcheck.phase = phase;
++            ok = memcheck_phase();
++        }
++    }
++    for (unsigned cpu = 0; cpu < cpus; cpu++) errors += memcheck.errors[cpu];
++    absolutetime_to_nanoseconds(mach_absolute_time() - begin, &ns);
++    kfree_data(memcheck.buffer, bytes);
++    memcheck.buffer = NULL;
++    int n = snprintf(out, len, "checkmem: %s %u CPUs x 1 MiB x 4 patterns, %llu errors, %llu us\n",
++        ok && !errors ? "OK" : "FAILED", cpus, (unsigned long long)errors,
++        (unsigned long long)(ns / 1000));
++    for (unsigned cpu = 0; cpu < cpus && n < len; cpu++)
++        n += snprintf(out+n, len-n, " cpu %u on cpu %d: %llu errors\n", cpu,
++            memcheck.ran[cpu], (unsigned long long)memcheck.errors[cpu]);
++    lck_mtx_unlock(&memcheck_lock);
++    return n;
++}
+diff --git a/osfmk/arm64/sweet_osm.c b/osfmk/arm64/sweet_osm.c
+index 9326222..16953af 100755
+--- a/osfmk/arm64/sweet_osm.c
++++ b/osfmk/arm64/sweet_osm.c
+@@ -1322,6 +1322,8 @@ osm_num(const char *s)                          /* 0x... hex or decimal */
+ extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);   /* bsd/dev/sweet_pmic.c */
+ #include "sweet_cpu_voltage.h"
+ #include "sweet_dvfs.h"
++#include "sweet_memcheck.h"
++extern int sweet_surface_stats(char *, int);
+ 
+ static int osm_abort;                   /* a failed poll skips the rest of the line */
+ static int osm_quiet;                   /* inside "rep": no log line per write */
+@@ -1436,6 +1438,12 @@ osm_cmd_one(char *cmd, char *out, size_t len)
+ 		printf("SWEET OSM: ctl tw %#llx %#llx st %#llx\n", a, b, st);
+ 		return snprintf(out, len, "tz %#llx <- %#llx: st %#llx, reads st %#llx val %#llx\n", a, b, st, st2, r);
+ 	}
++	if (!strcmp(c, "checkmem")) {
++		return memcheck_command(argc, out, len);
++	}
++	if (!strcmp(c, "surfaces")) {
++		return sweet_surface_stats(out, len);
++	}
+ 	if (!strcmp(c, "dvfs")) {
+ 		return dvfs_command(argc, argv, out, len);
+ 	}
+-- 
+2.47.3
+
