@@ -48,16 +48,50 @@ From Mesa 26.2.5 `freedreno_screen.c`:
 
 Compute (`has_compute`), formatted image load/store and draw-indirect are available on a5xx.
 
-## 4. iOS 18 vs iOS 16 (likely the bigger job)
+## 4. iOS 18 vs iOS 16: checked 2026-10-28, mostly compatible
 
-jasmine runs iOS 16.7.x; Chlorophyll targets iOS 18 22H352.
+jasmine runs iOS 16.7 (cache header "OS Version 16.7", WSL `~/ios-work/gl/dsc`); Chlorophyll targets iOS 18 22H352.
+Checked offline with ipsw 3.1.739 (`class-dump`, `dyld symaddr`, `dyld macho --strings`, `dyld disass --quiet`; full
+symbolicated disassembly runs WSL out of memory) plus a small ADRP/ADD scanner over `ipsw dyld extract ... Metal`.
+Scratch outputs (not in git): session scratchpad `m16/`.
 
-- `src/bgmtl.m` subclasses private `_MTLDevice`/`_MTLResource`/... and adds `MTLDeviceSPI`. Ivars/selectors were read
-  from the iOS 18 shared cache; iOS 16's Metal.framework must be checked class by class.
-- `plugin/chlorophyll_plugin.m` hooks `MTLIOAccelServiceGlobalContext -init` (iOS 18), and `inject/` uses
-  `MTLAddDevice` and Renegade's `bgmtl` launch flags (Bergamota tooling). Both need iOS 16 equivalents and our own launch path (sweetenv).
-- AIR bitcode / metallib versions in iOS 16's QuartzCore are older; `air/air_bitcode.c` and `air_metallib.c` must
-  accept them. Their `results/` corpus is iOS 18 only.
+**Private classes and selectors `src/bgmtl.m` uses: all present in iOS 16.7 Metal**, same superclasses:
+`_MTLDevice : NSObject`, `_MTLObjectWithLabel : NSObject`, `_MTLResource`, `_MTLCommandQueue`, `_MTLCommandBuffer`,
+`_MTLCommandEncoder`, `_MTLLibrary` (`: _MTLObjectWithLabel`), `_MTLComputePipelineState`, `_MTLRenderPipelineState`,
+`_MTLSamplerState`, `_MTLDepthStencilState` (`: NSObject`). The super initialisers it calls exist on those exact classes:
+`-[_MTLCommandQueue initWithDevice:descriptor:]`, `-[_MTLCommandBuffer initWithQueue:retainedReferences:synchronousDebugMode:]`,
+`-[_MTLCommandEncoder initWithCommandBuffer:]`, `-[_MTLComputePipelineState/_MTLRenderPipelineState initWithDevice:pipelineStateDescriptor:]`,
+`-[_MTLSamplerState initWithDevice:samplerDescriptor:]`, `-[_MTLDepthStencilState initWithDevice:depthStencilDescriptor:]`,
+`-[_MTLDevice initWithAcceleratorPort:]`, `-[_MTLDevice targetDeviceInfo]`. Protocols `MTLDevice`, `MTLDeviceSPI` exist.
+`bitcodeData`, `newBinaryArchiveWithDescriptor:error:`, `supportsFamily:`, `supportsFeatureSet:`, `featureProfile` appear
+in the dump. (bgmtl.m's own comment: its registration methods came from hackios measurements on iOS 16.5.)
+Not checked: ivar layouts (irrelevant to subclasses under the non-fragile ABI) and every SPI method QuartzCore 16 calls
+(unknown ones reach bgmtl's zero-answer forwarding and get logged).
+
+**Device registration (`inject/`)**: `MTLAddDevice` is exported (0x181a1b368). It checks `conformsToProtocol:` MTLDevice
+and MTLDeviceSPI, then sends `initLimits`, `initFeatureQueries`, `allowLibrariesFromOtherPlatforms` to the device.
+**`MTLCopyAllDevices` is NOT exported on iOS 16.7** (the inject dlsyms it to build `_deviceArray` before MTLAddDevice and
+stays stock when it is missing). `MTLCreateSystemDefaultDevice` does the same `dispatch_once(MTLDeviceArrayInitialize)`,
+so call that instead (it returns nil with no device). Change in `inject/bgmtl_inject.m:341`, `:389`.
+
+**Plugin route (`plugin/`)**: iOS 16.7 has no `MTLIOAccelServiceGlobalContext` and no
+`processPendingCreateIOAccelServiceRequests`, but the same mechanism runs synchronously in `MTLRegisterDevices`
+(0x181b144c8, called from the MTLDeviceArrayInitialize block): `IOServiceGetMatchingServices(IOServiceMatching("IOAcceleratorES"))`,
+for each service `getMetalPluginClassForService` (0x181a3c7c8): registry property `MetalPluginName` ->
+`[NSBundle bundleWithPath:@"/System/Library/Extensions/<name>.bundle"]` -> `classNamed:` registry `MetalPluginClassName`,
+else `principalClass` -> must be `isSubclassOfClass:_MTLDevice` (class ref resolved to `_OBJC_CLASS_$__MTLDevice`) ->
+`[[cls alloc] initWithAcceleratorPort:service]` -> `MTLAddDevice`. So `chlorophyll_plugin.m` works as is apart from the
+comments. Kernel side: our patch `xnu/patches/0138-topaz-empty-ioacceleratores.patch` already publishes an empty
+`IOAcceleratorES` (`sweetaccel=0` disables it); adding `MetalPluginName`/`MetalPluginClassName` behind a boot-arg is the
+equivalent of Bergamota's xnu 0232.
+
+**Launch gating**: inject uses Renegade's `bgmtl` flag and `/private/var/tmp/bgmtl-bb.*` files (Bergamota tooling); we
+use sweetenv / boot-args. Rewire only, no Metal dependency.
+
+**AIR / metallib versions**: not checked against real files (the iOS 16 root image is on the other machine,
+`/run/media/dipa/android/ios-sweet-ipsw/`). `air/air_metallib.c` reads the MTLB major/minor version but refuses nothing
+on it; `air_bitcode.c` only checks the bitcode magic. Next: pull QuartzCore's and a few system metallibs off the phone (or
+the root image) and run `air2nir` on them on the host.
 
 ## 5. One process, two Mesas (unverified guess)
 

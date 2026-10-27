@@ -52,7 +52,14 @@ patches fail `git apply --check` on 26.2.5 (WSL ~/ios-work/mesa 052f0a0, temp in
 their CA SDF path); our xf86drm stub's drmOpenWithType returns -ENODEV; SweetGPU has no cache-sync selector (they call
 sweet_drm_bo_sync). Chlorophyll targets iOS 18 22H352 private Metal classes; we run iOS 16.7, so bgmtl.m/plugin/inject
 need re-reading against iOS 16 Metal.framework (likely the largest part).
-Next: decide order: (a) libbgair compute-only build on 26.2.5 + darwin backend in CI, or (b) first check iOS 16 _MTLDevice.
+2026-10-28 iOS 16 check (offline, ipsw on WSL ~/ios-work/gl/dsc, iOS 16.7): every private Metal class/initialiser bgmtl.m
+subclasses exists with the same superclass; MTLAddDevice exported; MTLCopyAllDevices NOT exported (inject must call
+MTLCreateSystemDefaultDevice to build _deviceArray); plugin route identical in MTLRegisterDevices (IOAcceleratorES ->
+MetalPluginName bundle -> MetalPluginClassName/principalClass, subclass of _MTLDevice -> initWithAcceleratorPort: -> MTLAddDevice);
+our patch 0138 already publishes an empty IOAcceleratorES. Details mesa/METAL-PORT.md section 4. Not checked: metallib/AIR
+versions of iOS 16 files (root image not on this PC).
+Next: libbgair compute-only build on 26.2.5 + darwin backend in CI (port air-frontend/air-ir3/ir3-* patches), and pull
+iOS 16 metallibs to run air2nir on the host.
 
 ### 2026-10-27 22:40: fixed libsweetca INSTALLED as production; glyph confirmed on normal boot_b
 
