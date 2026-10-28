@@ -1,3 +1,14 @@
+### 2026-10-28 20:30: task 25 small canvas: kernel/ADT path works, UIKit status bar blocks @2x; phone parked
+
+Report: jasmine/PERF-RENDER-SIZE-20261028.md. Added j0111 (boot-args sweetfb_lw/lh, default off, CI guard),
+`mkadt.py --canvas WxH --scale N`, `mkimg.sh CANVAS=`. Observed: 750x1624@2 boots, MDP upscales into
+996x2160 at x 40, no faults; the MG cache must be removed for scale 2, and then SpringBoard shows the red
+"No status bar visual provider" bar for 375x812@2 and 414x896@2 (radius 39); editing the MG cache's
+39.0 (+776) to 41.5 did not change UIScreen's radius. No measurements, no user look, no install.
+Only root change: MG cache plist deleted/edited/restored, byte-identical to the backup (c70accbb...) before
+parking. boot_b untouched. Phone r109 charging shell 71%. Next: find the corner-radius source or hook the
+provider choice (needs UIKitCore disassembly); see report.
+
 ### 2026-10-28 19:26: Mesa and ios-tools build on the local macOS VM too: `tools/vm-mesa.sh mesa|ios TAG`
 
 `tools/vm-mesa.sh mesa TAG` -> xnu/out-mesa-TAG (the mesa-ios artifact's 5 files), `tools/vm-mesa.sh

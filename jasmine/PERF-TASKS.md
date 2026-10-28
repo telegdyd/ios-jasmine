@@ -124,7 +124,7 @@ performance work, with its own implementation and validation.
 | [19](#19-profile-springboards-cpu-work) | Profile SpringBoard CPU work | Home-swipe main-thread load ~711-743 ms/s in the earlier baseline; identify layout/animation/IPC costs and whether they delay output. |
 | [20](#20-investigate-memory-and-cache-growth) | Investigate memory and cache growth | Buffer/surface/memory high-water marks, allocation stalls and pressure across repeated transitions; Wallpaper exhaustion remains a hypothesis. |
 | [21](#21-profile-cold-start-boot-and-storage-waits) | Profile cold-start, boot and storage waits | Separate storage, service/IOKit waits and compilation; five-second syscfg fallback waits are an existing lead. |
-| [25](PERF-TASK23-25-GPU-TRAFFIC.md#25-render-at-or-nearer-the-panel-resolution) | Render at (or nearer) the panel resolution | CA renders 1125x2436 for a 1080x2160 panel (fitted to 997x2160): ~27% unseen pixel work. Feasibility and options for the user. |
+| [25](PERF-TASK23-25-GPU-TRAFFIC.md#25-render-at-or-nearer-the-panel-resolution) -10-28: [kernel switch j0111 and mkadt option done and boot-tested; UIKit blocks scale 2 (no status bar provider for 375x812 or 414x896 @2x with radius 39), nothing measured](PERF-RENDER-SIZE-20261028.md). CA renders 1125x2436 for a 1080x2160 panel (fitted to 997x2160): ~27% unseen pixel work. Feasibility and options for the user. |
 
 Task 6's initial 4/8-core comparison is also diagnostic, but its scheduler implementation
 remains under performance. Task 16's shared timeline measurement is tracked in task 18;
