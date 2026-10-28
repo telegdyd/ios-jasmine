@@ -1,0 +1,59 @@
+From: jasmine
+Subject: [PATCH] jasmine: a j0111 canvas's frames are screen-sized too (GPU pool, reserve) (j0112)
+
+SweetSurface treated only surfaces of at least 1000x2000 as screen-sized. With sweetfb_lw=828
+(828x1792) backboardd's frames were below that: not from the GPU pool, so the MDP scaler, the
+direct present and the mode-2 queue refused them and AppleCLCD::composeFit scaled every frame
+on the CPU (render-display-driver-CPU 36-66 -> 380-1198 estimated ms per framebench phase,
+no ADMIT/FLIP events, 20% slower Home than 1125x2436). The bounds now scale with the canvas
+(same ratio as 1000/1125 and 2000/2436). Without sweetfb_lw: unchanged.
+---
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-10-28 23:55:13
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-10-28 23:55:13
+@@ -210,6 +210,8 @@
+ extern "C" { uint32_t sweet_fit_x, sweet_fit_w; }
+ /* j0058: jasmine's MDP scales the fitted frame itself (SweetSurface then gives backboardd's frames from the GPU pool) */
+ extern "C" { uint32_t sweet_fb_scaled; }
++/* j0112: smallest surface SweetSurface treats as screen-sized (GPU pool, reserve); scaled down with a j0111 canvas */
++extern "C" { uint32_t sweet_screen_min_w = 1000, sweet_screen_min_h = 2000; }
+ static void sweet_cons_show(void);
+ static AppleCLCD *sweet_fb_main;        /* j0058: for SweetGPU's wait for the panel */
+ class OSDictionary;
+@@ -560,6 +562,9 @@
+ 	if (fSmallCanvas) {
+ 		fLogicalW = lw;
+ 		fLogicalH = lh;
++		/* j0112: the frames of a smaller canvas are screen-sized too, or they miss the GPU pool and get composed by the CPU */
++		sweet_screen_min_w = lw * 1000 / SWEET_FB_LOGICAL_W;
++		sweet_screen_min_h = lh * 2000 / SWEET_FB_LOGICAL_H;
+ 	}
+ 	/* x rounded down to 4 pixels: the panel window must start 16-byte aligned (MDP fetch) */
+ 	fOffX = ((int32_t)(fLogicalW - fWidth) / 2) & ~3;
+--- a/iokit/Kernel/arm/SweetSurface.cpp	2026-10-28 23:55:13
++++ b/iokit/Kernel/arm/SweetSurface.cpp	2026-10-28 23:55:13
+@@ -61,6 +61,7 @@
+ extern "C" void sweet_gpu_pool_give(uint64_t pa, uint64_t size);
+ /* SweetFramebuffer.cpp (j0058): jasmine's MDP scales the fitted frame itself */
+ extern "C" { extern uint32_t sweet_fb_scaled; }
++extern "C" { extern uint32_t sweet_screen_min_w, sweet_screen_min_h; }   /* j0112 */
+ 
+ enum {
+ 	kSweetSurfaceCreate             = 0,
+@@ -531,7 +532,7 @@
+ 	}
+ 	bool on = gpu || (fbpool && sweet_fb_scaled && sweet_gpu_pool_ready());
+ 	if (!(on && s->bytesPerElement == 4 && s->planeCount <= 1 && s->elementWidth == 1 && s->elementHeight == 1 &&
+-	    s->width >= 1000 && s->height >= 2000 && s->allocSize <= (48u << 20))) {
++	    s->width >= sweet_screen_min_w && s->height >= sweet_screen_min_h && s->allocSize <= (48u << 20))) {
+ 		return false;
+ 	}
+ 	/* only the window server's own (the display's frames); applications' screen-sized surfaces came out black */
+@@ -1123,7 +1124,7 @@
+ 			uint64_t take = gpu_low ? sweet_round_upage(s->allocSize + 64ull * s->bytesPerRow) : s->allocSize;
+ 			if (gpu_low) {
+ 				sweet_res_fill();
+-				if (s->width >= 1000 && s->height >= 2000 && s->bytesPerElement == 4) {
++				if (s->width >= sweet_screen_min_w && s->height >= sweet_screen_min_h && s->bytesPerElement == 4) {
+ 					mem = sweet_res_take(take);
+ 				}
+ 			}

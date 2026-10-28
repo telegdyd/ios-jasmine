@@ -188,3 +188,36 @@ logs `logs/netlog-rs-*.txt`. No SMMU fault, panic or ticket error seen in the lo
    outside GL. Find it before revisiting the canvas size: compare base and xr per-frame timelines (SWEETCA_DRAWPROF scopes outside GL,
    CoreAnimation commit/render thread time, SwapWait/present waits, `sweetfb_queue` pacing) on the same cold device.
 3. Keep j0111, `mkadt --canvas/--scale`, `mkimg CANVAS=` and `ios/sweet_sbshape.c` (default off / not installed) for that follow-up.
+
+## CAUSE of the slowdown and fix j0112 (2026-10-29 00:30): 828x1792 @2x is now much FASTER
+
+The xr captures above show it directly: base runs have `ADMIT`/`FLIP`/`PRESENT_TICKET_WAIT` events (direct present through
+the VIG0 scaler, mode-2 queue high-water 1), xr runs have none (`CPU_TICKET_WAIT`, queue high-water 0) and
+render-display-driver-CPU 380-1198 instead of 36-66 est. ms per phase, top stack `AppleCLCD::composeFit`. Cause: SweetSurface
+takes only surfaces of at least 1000x2000 as screen-sized (`sweet_gpu_pool_eligible`, 0924/0927, and the 0949 reserve), so
+backboardd's 828x1792 frames were not GPU-pool surfaces, `directEligible`/`queueCandidate` refused them, and the CPU scaled
+every frame into the panel (composeFit) without the pipelining. So the "~42 ms floor outside GL" was this fallback, not a
+hidden CA/CPU limit (base ran at 30 ms, so a 42 ms floor could not have existed there).
+
+Fix `xnu/patches/j0112-jasmine-small-canvas-pool.patch`: the bounds scale with the j0111 canvas (lw*1000/1125, lh*2000/2436);
+without `sweetfb_lw` unchanged. VM build 72 s, image `shim/out/shim-boot-j0112-rx3.img` (cmdline byte-identical to rx2, 603 bytes).
+
+One framebench, `rs-xr3b` (same lib 4780fbaa, same args as rx2, 150 s settle, ~51 C), against the four runs above:
+
+| run | Home B /s (median / p95 ms) | CC A /s | CC B /s | Spotlight /s |
+| --- | --- | --- | --- | --- |
+| base mean (base1, base2) | 29.5 (30.7 / 47.5) | 22.7 | 22.1 | 27.6 |
+| xr before (xr1, xr2) | 23.7 (41.6 / 50.4) | 20.7 | 19.4 | 21.4 |
+| **xr j0112 (xr3b)** | **41.06 (24.2 / 30.4)** | **30.02** | **29.54** | **32.46** |
+
+vs base: Home +39%, CC A +32%, CC B +34%, Spotlight +18%, and p95 much lower. Events back: ADMIT/FLIP 1375, queue high-water 1;
+display-driver CPU 62 est. ms (control-a), no composeFit in the top stacks. No panic or SMMU fault. Caveats: one run only, cooler
+phone than the base runs (51 vs 61-70 C), base not re-run on this kernel (j0112 does not change the 1125x2436 path); no user look
+at sharpness yet; status bar still needs the SpringBoard hook (sweet_sbshape) and the edited MG cache.
+
+Root changes reverted: MG cache restored (c70accbb... read back), /s.dylib, /usr/local/bin/sbs.conf and the leftover
+/usr/local/bin/sbs.dylib (same file as s.dylib) removed; production lib 4780fbaa unchanged; phone back in installed boot_b.
+The stale phone.lock of session local_b57c5c9a (2026-10-27) was deleted (user: no other agent runs).
+
+Next: user look at 828x1792 sharpness/motion; if accepted, an install needs a persistent way to supply the status bar
+(hook in SpringBoard + MG cache) and the boot_b args `sweetfb_lw=828` + ADT canvas.

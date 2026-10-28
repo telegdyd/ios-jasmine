@@ -1,3 +1,13 @@
+### 2026-10-29 00:30: task 25 slowdown FIXED by j0112: 828x1792@2 Home 41.1/s vs base 29.5 (+39%); not installed
+
+Report: jasmine/PERF-RENDER-SIZE-20261028.md ("CAUSE" section). Cause: SweetSurface's screen-sized bounds 1000x2000 excluded
+828x1792 frames from the GPU pool -> no direct/MDP-scaler present, no mode-2 queue, CPU composeFit every frame. j0112 scales the
+bounds with the j0111 canvas (no change without sweetfb_lw). One run rs-xr3b (shim-boot-j0112-rx3.img): Home B 41.06/s (24.2/30.4
+ms), CC 30.0/29.5, Spotlight 32.5; ADMIT/FLIP back, no panic/SMMU fault. Single run, cooler phone; base not re-run.
+Phone: MG cache restored (c70accbb), /s.dylib, sbs.conf, leftover sbs.dylib removed, lib 4780fbaa, back in installed boot_b.
+Stale phone.lock (local_b57c5c9a, Oct 27) deleted. Next: user look at sharpness; install would need sweetfb_lw=828 + ADT canvas
+in boot_b plus a persistent SpringBoard status-bar hook and the XR MG cache.
+
 ### 2026-10-28 22:50: task 25: 828x1792@2 works (SpringBoard notch hook) but is 20% SLOWER; not installed; phone parked
 
 Report: jasmine/PERF-RENDER-SIZE-20261028.md (RESULT section). j0111 (lh optional), ios/sweet_sbshape.c (SpringBoard hook of

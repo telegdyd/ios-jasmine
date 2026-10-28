@@ -326,6 +326,9 @@ jobs:
             grep -q sweetfb_lw xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
             grep -q fSmallCanvas xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
           fi
+          if [ -f patches/j0112-jasmine-small-canvas-pool.patch ]; then
+            grep -q sweet_screen_min_w xnu/iokit/Kernel/arm/SweetSurface.cpp
+          fi
           ccache -s
 
       - name: Package build tree for local compiles
