@@ -106,6 +106,8 @@ gm_clear(struct gm_target *t, const uint8_t c[4])
 }
 
 /* every pixel against the model; for imported targets also the canaries */
+static void gm_map(struct gm_target *t, const char *what);
+
 static bool
 gm_check(struct gm_target *t, const char *what)
 {
@@ -154,6 +156,8 @@ gm_check(struct gm_target *t, const char *what)
       }
       for (size_t b = (size_t)t->pitch * t->h; b < alloc; b++)
          info_tail += base[b] != GM_CANARY;
+      if (bad)
+         gm_map(t, what);
       IOSurfaceUnlock(t->surface, kIOSurfaceLockReadOnly, NULL);
    } else {
       glReadPixels(0, 0, t->w, t->h, GL_RGBA, GL_UNSIGNED_BYTE, t->read);
@@ -165,6 +169,8 @@ gm_check(struct gm_target *t, const char *what)
          }
       }
    }
+   if (bad && !t->surface)
+      gm_map(t, what);
    GLenum e = glGetError();
    bool ok = !bad && !bad_pad && e == GL_NO_ERROR;
    printf("%s: %ux%u pitch %u: %u pixels wrong", what, t->w, t->h, t->pitch, bad);
@@ -178,6 +184,36 @@ gm_check(struct gm_target *t, const char *what)
       printf("; GL error %#x", e);
    printf("\n%s %s\n", ok ? "PASS:" : "FAIL:", what);
    return ok;
+}
+
+/* on failure: which 128x128 blocks hold wrong pixels ('#'), top row of the image first */
+static void
+gm_map(struct gm_target *t, const char *what)
+{
+   unsigned bw = (t->w + 127) / 128, bh = (t->h + 127) / 128;
+   printf("%s: wrong-pixel map, %ux%u blocks of 128x128, GL row 0 at the bottom:\n", what, bw, bh);
+   for (unsigned by = bh; by-- > 0;) {
+      char line[64] = "";
+      for (unsigned bx = 0; bx < bw && bx < 63; bx++) {
+         unsigned bad = 0;
+         for (unsigned y = by * 128; y < GM_MIN(t->h, by * 128 + 128); y++)
+            for (unsigned x = bx * 128; x < GM_MIN(t->w, bx * 128 + 128); x++) {
+               const uint8_t *m = t->model + 4 * ((size_t)y * t->w + x);
+               uint8_t c[4];
+               if (t->surface) {
+                  const uint8_t *p = (const uint8_t *)IOSurfaceGetBaseAddress(t->surface) +
+                                     (size_t)t->pitch * y + 4 * x;
+                  c[0] = p[2], c[1] = p[1], c[2] = p[0], c[3] = p[3];
+               } else {
+                  memcpy(c, t->read + 4 * ((size_t)y * t->w + x), 4);
+               }
+               bad += !gm_same(c, m);
+            }
+         line[bx] = bad ? '#' : '.';
+         line[bx + 1] = 0;
+      }
+      printf("  %s\n", line);
+   }
 }
 
 static bool

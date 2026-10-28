@@ -55,21 +55,29 @@ index e0ce8f0..1377580 100644
     /* Existing a5xx primitives, now in draw order rather than at batch end:
      * publish color writes; complete prior work; invalidate sampler storage.
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_emit.h b/src/gallium/drivers/freedreno/a5xx/fd5_emit.h
-index 7add21a..db2949d 100644
+index 7add21a..0bd548c 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_emit.h
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_emit.h
-@@ -154,7 +154,8 @@ fd5_emit_render_cntl(struct fd_context *ctx, bool blit, bool binning) assert_dt
+@@ -13,6 +13,7 @@
+ 
+ #include "fd5_context.h"
+ #include "fd5_format.h"
++#include "fd5_gmem.h"
+ #include "fd5_program.h"
+ #include "fd5_screen.h"
+ #include "freedreno_batch.h"
+@@ -154,7 +155,8 @@ fd5_emit_render_cntl(struct fd_context *ctx, bool blit, bool binning) assert_dt
      * Other bits seem to depend on query state, like if samples-passed
      * query is active.
      */
 -   bool samples_passed = (ctx->occlusion_queries_active > 0);
 +   /* task 24 stage 3: the GMEM rule counts every batch's samples */
-+   bool samples_passed = (ctx->occlusion_queries_active > 0) || fd5_context(ctx)->sweet_gmem;
++   bool samples_passed = (ctx->occlusion_queries_active > 0) || fd5_sweet_gmem_counting(fd5_context(ctx));
     OUT_PKT4(ring, REG_A5XX_RB_RENDER_CNTL, 1);
     OUT_RING(ring, 0x00000000 | /* RB_RENDER_CNTL */
                       COND(binning, A5XX_RB_RENDER_CNTL_BINNING_PASS) |
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
-index cdece22..b7216c7 100644
+index cdece22..590d457 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 @@ -24,6 +24,8 @@
@@ -81,7 +89,20 @@ index cdece22..b7216c7 100644
  static void
  emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
           struct pipe_surface *bufs, const struct fd_gmem_stateobj *gmem)
-@@ -426,6 +428,7 @@ fd5_emit_tile_init(struct fd_batch *batch) assert_dt
+@@ -259,6 +261,12 @@ use_hw_binning(struct fd_batch *batch)
+    if ((gmem->maxpw > 15) || (gmem->maxph > 15))
+       return false;
+ 
++   /* task 24 stage 3: SWEETCA_GMEM_BIN=0 (default) renders the rule's GMEM batches
++    * without the hardware binning pass (every draw in every bin)
++    */
++   if (fd5_context(batch->ctx)->sweet_gmem && !fd5_sweet_gmem_binning(batch))
++      return false;
++
+    return fd_binning_enabled && ((gmem->nbins_x * gmem->nbins_y) > 2) &&
+           (batch->num_draws > 0);
+ }
+@@ -426,6 +434,7 @@ fd5_emit_tile_init(struct fd_batch *batch) assert_dt
        patch_draws(batch, IGNORE_VISIBILITY);
     }
  
@@ -89,7 +110,7 @@ index cdece22..b7216c7 100644
     fd5_set_render_mode(batch->ctx, ring, GMEM);
  
     /* XXX If we're in gmem mode but not doing HW binning, then after the first
-@@ -688,6 +691,8 @@ fd5_emit_tile_fini(struct fd_batch *batch) assert_dt
+@@ -688,6 +697,8 @@ fd5_emit_tile_fini(struct fd_batch *batch) assert_dt
  {
     struct fd_ringbuffer *ring = batch->gmem;
  
@@ -98,7 +119,7 @@ index cdece22..b7216c7 100644
     OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
     OUT_RING(ring, 0x0);
  
-@@ -762,6 +767,7 @@ fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
+@@ -762,6 +773,7 @@ fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
     emit_zs(ring, &pfb->zsbuf, NULL);
     emit_mrt(ring, pfb->nr_cbufs, pfb->cbufs, NULL);
     emit_msaa(ring, pfb->samples);
@@ -106,7 +127,7 @@ index cdece22..b7216c7 100644
  }
  
  static void
-@@ -769,6 +775,8 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
+@@ -769,6 +781,8 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
  {
     struct fd_ringbuffer *ring = batch->gmem;
  
@@ -115,7 +136,7 @@ index cdece22..b7216c7 100644
     OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
     OUT_RING(ring, 0x0);
  
-@@ -778,11 +786,398 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
+@@ -778,11 +792,413 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
     fd5_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
  }
  
@@ -197,6 +218,7 @@ index cdece22..b7216c7 100644
 +   struct sg_slot slot[SG_SLOTS];
 +   struct sg_entry e[SG_ENTRIES];
 +   bool told_gmem, told_split;
++   bool bin, count;
 +};
 +
 +enum sg_why { SG_GMEM, SG_BARRIER, SG_INELIGIBLE, SG_UNSAFE, SG_NOHIST, SG_COST };
@@ -431,11 +453,23 @@ index cdece22..b7216c7 100644
 +   return split;
 +}
 +
++bool
++fd5_sweet_gmem_binning(struct fd_batch *b)
++{
++   return fd5_context(b->ctx)->sweet_gmem->bin;
++}
++
++bool
++fd5_sweet_gmem_counting(struct fd5_context *fd5_ctx)
++{
++   return fd5_ctx->sweet_gmem && fd5_ctx->sweet_gmem->count;
++}
++
 +static void
 +sg_emit(struct fd_batch *b, struct fd_ringbuffer *ring, unsigned which)
 +{
 +   struct fd5_sweet_gmem *s = fd5_context(b->ctx)->sweet_gmem;
-+   if (!s || !b->sweet_meas)
++   if (!s || !s->count || !b->sweet_meas)
 +      return;
 +   unsigned i = (b->sweet_meas - 1) % SG_SLOTS;
 +   OUT_PKT4(ring, REG_A5XX_RB_SAMPLE_COUNT_CONTROL, 1);
@@ -498,10 +532,12 @@ index cdece22..b7216c7 100644
 +   s->level = level;
 +   s->margin = debug_get_num_option("SWEETCA_GMEM_MARGIN", 150);
 +   s->min_bytes = (uint64_t)debug_get_num_option("SWEETCA_GMEM_MIN_KB", 1024) << 10;
++   s->bin = debug_get_num_option("SWEETCA_GMEM_BIN", 0) > 0;
++   s->count = debug_get_num_option("SWEETCA_GMEM_COUNT", 1) > 0;
 +   fd5_context(ctx)->sweet_gmem = s;
 +   ctx->sweet_gmem_select = fd5_sweet_gmem_select;
-+   fprintf(stderr, "sweetca: gmem rule on (SWEETCA_GMEM=%d, margin %u%%, min %llu KiB)\n", level,
-+           s->margin, (unsigned long long)(s->min_bytes >> 10));
++   fprintf(stderr, "sweetca: gmem rule on (SWEETCA_GMEM=%d, margin %u%%, min %llu KiB, binning %d, "
++           "counting %d)\n", level, s->margin, (unsigned long long)(s->min_bytes >> 10), s->bin, s->count);
 +}
 +
  void
@@ -515,10 +551,10 @@ index cdece22..b7216c7 100644
     ctx->emit_tile_prep = fd5_emit_tile_prep;
     ctx->emit_tile_mem2gmem = fd5_emit_tile_mem2gmem;
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.h b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.h
-index 3dbfc3c..8e1ab68 100644
+index 3dbfc3c..ea82592 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.h
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.h
-@@ -13,4 +13,11 @@
+@@ -13,4 +13,13 @@
  
  void fd5_gmem_init(struct pipe_context *pctx);
  
@@ -528,6 +564,8 @@ index 3dbfc3c..8e1ab68 100644
 +bool fd5_sweet_gmem_split(struct fd_batch *batch);
 +void fd5_sweet_gmem_prefix(struct fd_batch *batch);
 +void fd5_sweet_gmem_destroy(struct fd5_context *fd5_ctx);
++bool fd5_sweet_gmem_binning(struct fd_batch *batch);
++bool fd5_sweet_gmem_counting(struct fd5_context *fd5_ctx);
 +
  #endif /* FD5_GMEM_H_ */
 diff --git a/src/gallium/drivers/freedreno/freedreno_batch.h b/src/gallium/drivers/freedreno/freedreno_batch.h

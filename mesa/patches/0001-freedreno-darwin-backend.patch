@@ -1,6 +1,6 @@
-From b8ddd277fee718d65e727ec3099115be7ad58be9 Mon Sep 17 00:00:00 2001
+From a8ac019d12064a0b3bf87b94a6c246b6ccc431ff Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 28 Oct 2026 05:51:03 +0100
+Date: Wed, 28 Oct 2026 06:02:56 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -31,11 +31,11 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
  .../sweetgl/sweetgpu_feedback_test.inc        |  272 ++
- .../frontends/sweetgl/sweetgpu_gltest.c       |  698 ++++
- .../frontends/sweetgl/sweetgpu_gmem_test.inc  |  324 ++
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  708 ++++
+ .../frontends/sweetgl/sweetgpu_gmem_test.inc  |  360 ++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   89 +
- 30 files changed, 9052 insertions(+), 6 deletions(-)
+ 30 files changed, 9098 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -8272,10 +8272,10 @@ index 0000000..8f7d211
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 new file mode 100644
-index 0000000..b3e045d
+index 0000000..172acc7
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
-@@ -0,0 +1,698 @@
+@@ -0,0 +1,708 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -8892,12 +8892,14 @@ index 0000000..b3e045d
 +         /* task 24 stage 3: 1 = per-batch cost rule, 2 = every eligible batch through GMEM */
 +         setenv("SWEETCA_GMEM", !strcmp(argv[i], "--gmem") ? "1" : "2", 1);
 +         setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
++      } else if (!strncmp(argv[i], "--env=", 6) && strchr(argv[i] + 6, '=')) {
++         /* applied after every other option: --env=SWEETCA_GMEM_BIN=1 */
 +      } else if (!strcmp(argv[i], "--no-tc")) {
 +         setenv("GALLIUM_THREAD", "0", 1);
 +      } else if (!strcmp(argv[i], "--feedback-diagnostics")) {
 +         feedback_diagnostics = true;
 +      } else {
-+         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--gmem|--gmem-force] [--no-tc] [--feedback-diagnostics]\n");
++         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--gmem|--gmem-force] [--env=NAME=VALUE] [--no-tc] [--feedback-diagnostics]\n");
 +         return 2;
 +      }
 +   }
@@ -8905,6 +8907,14 @@ index 0000000..b3e045d
 +      /* Diagnostics isolate the disabled baseline, never enable retention. */
 +      setenv("SWEETCA_SYS_BARRIER", "0", 1);
 +      setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
++   }
++   for (int i = 1; i < argc; i++) {
++      if (!strncmp(argv[i], "--env=", 6)) {
++         char *kv = strdup(argv[i] + 6), *eq = strchr(kv, '=');
++         *eq = 0;
++         setenv(kv, eq + 1, 1);
++         printf("env: %s=%s\n", kv, eq + 1);
++      }
 +   }
 +   setvbuf(stdout, NULL, _IONBF, 0);
 +   printf("step: display\n");
@@ -8976,10 +8986,10 @@ index 0000000..b3e045d
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc b/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc
 new file mode 100644
-index 0000000..b59d18a
+index 0000000..15d5c43
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,360 @@
 +/* SPDX-License-Identifier: MIT
 + * Task 24 stage 3: GMEM pixel and memory-safety checks on CoreAnimation-like
 + * targets. Included after the IOSurface helpers and the feedback test.
@@ -9088,6 +9098,8 @@ index 0000000..b59d18a
 +}
 +
 +/* every pixel against the model; for imported targets also the canaries */
++static void gm_map(struct gm_target *t, const char *what);
++
 +static bool
 +gm_check(struct gm_target *t, const char *what)
 +{
@@ -9136,6 +9148,8 @@ index 0000000..b59d18a
 +      }
 +      for (size_t b = (size_t)t->pitch * t->h; b < alloc; b++)
 +         info_tail += base[b] != GM_CANARY;
++      if (bad)
++         gm_map(t, what);
 +      IOSurfaceUnlock(t->surface, kIOSurfaceLockReadOnly, NULL);
 +   } else {
 +      glReadPixels(0, 0, t->w, t->h, GL_RGBA, GL_UNSIGNED_BYTE, t->read);
@@ -9147,6 +9161,8 @@ index 0000000..b59d18a
 +         }
 +      }
 +   }
++   if (bad && !t->surface)
++      gm_map(t, what);
 +   GLenum e = glGetError();
 +   bool ok = !bad && !bad_pad && e == GL_NO_ERROR;
 +   printf("%s: %ux%u pitch %u: %u pixels wrong", what, t->w, t->h, t->pitch, bad);
@@ -9160,6 +9176,36 @@ index 0000000..b59d18a
 +      printf("; GL error %#x", e);
 +   printf("\n%s %s\n", ok ? "PASS:" : "FAIL:", what);
 +   return ok;
++}
++
++/* on failure: which 128x128 blocks hold wrong pixels ('#'), top row of the image first */
++static void
++gm_map(struct gm_target *t, const char *what)
++{
++   unsigned bw = (t->w + 127) / 128, bh = (t->h + 127) / 128;
++   printf("%s: wrong-pixel map, %ux%u blocks of 128x128, GL row 0 at the bottom:\n", what, bw, bh);
++   for (unsigned by = bh; by-- > 0;) {
++      char line[64] = "";
++      for (unsigned bx = 0; bx < bw && bx < 63; bx++) {
++         unsigned bad = 0;
++         for (unsigned y = by * 128; y < GM_MIN(t->h, by * 128 + 128); y++)
++            for (unsigned x = bx * 128; x < GM_MIN(t->w, bx * 128 + 128); x++) {
++               const uint8_t *m = t->model + 4 * ((size_t)y * t->w + x);
++               uint8_t c[4];
++               if (t->surface) {
++                  const uint8_t *p = (const uint8_t *)IOSurfaceGetBaseAddress(t->surface) +
++                                     (size_t)t->pitch * y + 4 * x;
++                  c[0] = p[2], c[1] = p[1], c[2] = p[0], c[3] = p[3];
++               } else {
++                  memcpy(c, t->read + 4 * ((size_t)y * t->w + x), 4);
++               }
++               bad += !gm_same(c, m);
++            }
++         line[bx] = bad ? '#' : '.';
++         line[bx + 1] = 0;
++      }
++      printf("  %s\n", line);
++   }
 +}
 +
 +static bool
