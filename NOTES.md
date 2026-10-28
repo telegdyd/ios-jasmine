@@ -1,3 +1,18 @@
+### 2026-10-28 01:25: GPU per-batch/per-draw profile on today's build (user OK for temporary boots)
+
+Two temporary boots (no flash): shim/out/shim-boot-j0108-gprof1.img (sweetenv + SWEETCA_GPUPROF=1,
+SWEETCA_DRAWPROF=1) and -gprof2.img (GPUPROF=2); boot-args otherwise = installed boot_b minus abmark=b. Workload
+tools/g2/gpwork.py; logs/netlog-gprof1.txt, logs/netlog-gprof2.txt (marker lines in
+research/bottleneck-20261028/gprof*-work.txt). Per frame: Home 100 draws, 54 batches (45 full-screen, ~34 with one
+draw), GPU 26-27 ms (23 in draws); CC 195 draws, 103 batches, GPU 30-35 ms (24 in draws, ~10 outside: ~26 glClear
+per frame on full-size intermediates in sysmem). Batch ends: barriers 37-39 (Home) / 54-56 (CC) per frame from
+self-sampling draws. Top Home costs: shader 0 (14 small quads, 5.2 ms), shader 3 full-screen blended copy (5.5 ms
+each, 4.6 ms/frame), wallpaper passes (shaders 14+7, 4.2 ms), dock material (2.7 ms). Full-res blur (87-instr,
+~11 ms/draw) only in a few CC-open frames. No SMMU fault/panic. Then command-port reboot -> fastboot reboot: phone
+back in installed boot_b (log shows abmark=b, no gpuprof lines, DVFS auto). Report section "Where the GPU time
+goes" in jasmine/PERF-BOTTLENECK-20261028.md. Next candidates: drop redundant sysmem clears/copies (CC), cut barrier
+splits then GMEM (task 24), panel-sized rendering (task 25). Shader ids are not yet mapped to CA layers.
+
 ### 2026-10-28 01:00: frame-rate bottleneck measured fresh: GPU DRAM traffic
 
 [Report](jasmine/PERF-BOTTLENECK-20261028.md). Installed boot_b (j0108) + production lib 4780fbaa, one boot,

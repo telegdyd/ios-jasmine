@@ -94,11 +94,68 @@ proportional changes. `sweetfb_hz=30` in the boot-args does not apply here: with
 - To go from ~27 to a steady 30 (Home), shave a few ms off the slow frames; 60 fps needs
   the whole serialized frame (CPU gap + GPU) under 16.7 ms, about a 3x cut in GPU time.
 
+## Where the GPU time goes (per-batch and per-draw profile, same day)
+
+Two temporary boots of the same j0108 kernel and production library. Boot-args are identical to
+the installed boot_b except for added `sweetenv` variables (and no `abmark=b`):
+`shim/out/shim-boot-j0108-gprof1.img` (`SWEETCA_GPUPROF=1,SWEETCA_DRAWPROF=1`) and `-gprof2.img`
+(`SWEETCA_GPUPROF=2,SWEETCA_DRAWPROF=1`). Workload: `tools/g2/gpwork.py` (unlock, settle, ~35 s
+of home swipes, ~25 s of Control Center open/close). Logs: `logs/netlog-gprof1.txt`, `logs/netlog-gprof2.txt`.
+The end stamps serialize batches (mode 2 also serializes draws), so these are GPU execution times
+without overlap. Frame intervals matched the unprofiled runs (Home 35-36 ms, CC 40-46 ms).
+No SMMU fault or panic; only the startup FSR 0x400 baseline. Phone returned to installed boot_b afterwards.
+
+Per frame, steady windows (`python tools/g2/gpuwin.py LOG FIRST LAST`):
+
+| | Draws | Batches (full-screen) | 1-draw batches | GPU ms (in draws) | Batch ends: barrier / dependency / context |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Home | 100-102 | 54-56 (44-46) | ~34 | 26-27 (23.1) | 37-39 / 10.4 / 6.2 |
+| Control Center | 194-198 | 102-105 (63-66) | ~69 | 30-35 (23.8) | 54-56 / 38 / 10 |
+
+Every batch is sysmem; every full-screen batch is its own render pass over a 1125x2436 (or
+1127x2438 / 1131x2442) target. Costliest shaders per frame (gprof2, window of 100 frames / 100):
+
+| Home | Draws | GPU ms | What it is (slowest instance) |
+| --- | ---: | ---: | --- |
+| shader 0 | 14 | 5.2 | 5-instruction opaque textured quad (46x33 r8 mask), ~0.37 ms each |
+| shader 3 | 1.9 | 4.6 | full-screen blended copy of a 1125x2436 RGBA texture, **5.2-5.8 ms when full-screen** |
+| shader 36 | 1.7 | 2.7 | dock/pill material composite (284x611 blurred backdrop + 32x32) |
+| shader 14 | 3.3 | 2.2 | opaque 1125x2436 BGRA texture (54 verts) |
+| shader 7 | 1 | 2.0 | full-screen opaque gradient (256x1 fp16 ramp), i.e. the fallback wallpaper |
+| shaders 28, 27, 8 | 27 | 3.2 | draws that **sample their own render target** (labels/vibrancy, 264x134 l8a8 masks) |
+| shader 1 | 15 | 1.1 | 10-instruction copy |
+
+| Control Center | Draws | GPU ms | What it is |
+| --- | ---: | ---: | --- |
+| shader 0 | 10 | 3.9 | as Home, also 1125x2436 + 148x148 inputs |
+| shader 3 | 18 | 3.8 | full-screen blended copy (5.9 ms max) |
+| shader 1 | 33 | 3.1 | copies of the 1125x2436 frame into 1127x2438 backdrop targets (3.1 ms max) |
+| shader 36 | 1.4 | 1.8 | material composite sampling a 1127x2438 backdrop |
+| shader 52 | 12 | 1.7 | 72-instruction module draws |
+| shader 7 | 1 | 1.5 | gradient wallpaper |
+| shaders 28, 10, 27 | 31 | 3.1 | self-sampling (feedback) draws |
+| shaders 11 / 46 | rare | - | full-resolution blur, 87 / 80 instructions, **8-11 ms per draw**, only in a few frames of the open animation |
+
+Not in draws: ~3.7 ms/frame (Home) and **~10 ms/frame (CC)** go to batch work outside draws.
+CC issues ~26 `glClear` calls per frame; in sysmem each one writes its whole intermediate target
+(1127x2438 / 1131x2442 clears head the slowest-batch list, e.g. 9.3 ms for clear + 2 draws).
+
+Reading:
+
+- Over half of Home's GPU time is moving full-screen layers through DRAM: opaque wallpaper passes,
+  full-screen blended copies and many small textured quads, all at 1125x2436 and all in sysmem.
+- Batches are short because ~40 (Home) / ~55 (CC) barriers per frame end them. The barriers come
+  from draws that read their own target (texture barrier before each). Those draws are cheap
+  themselves (~3 ms/frame); what they cost is the batch split that keeps GMEM from paying.
+- CC adds full-target clears and backdrop copies into 1127x2438 targets on top.
+- So, in order: (1) avoid redundant full-target clears and copies in sysmem (CC ~10 ms/frame
+  outside draws), (2) fewer barrier splits, then GMEM for the framebuffer passes (blending and
+  feedback on-chip), (3) fewer pixels (1125x2436 -> panel-sized) helps every row above.
+
 ## Not established
 
-- Per-batch/per-draw GPU cost on today's build (needs a temporary boot with
-  `SWEETCA_GPUPROF=1/2` in sweetenv; the 2026-10-25 breakdown in
-  [PERF-GPU-TIME-20261025.md](PERF-GPU-TIME-20261025.md) ran at the same GPU/DDR clocks).
+- Which CoreAnimation layers the shader numbers belong to (program ids only; mapping needs a
+  libsweetca region/pass trace).
 - Displayed FPS and touch-to-photon (framebench limits unchanged).
 - home-a again had no swap arrivals (known framebench issue); Home numbers use home-b.
 - `ddr state` shows `bimc_gfx 28 MHz`. GCC debug mux 0x0ac is `gcc_bimc_gfx_clk`, which
