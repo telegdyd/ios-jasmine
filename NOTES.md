@@ -1,3 +1,13 @@
+### 2026-10-28 16:34: GMEM Mesa build re-dispatched on macOS 15 (user request)
+
+User asked to try macOS 15 again. Dispatched xnu.yml on jasmine with build=mesa,
+mesa_runner=macos-15: **CI 40717125371**, head 26ad0b2 (includes d7db729's pitch/extent fix).
+Observed via GitHub API: Mesa job 122917756131 labels=[macos-15], queued, no runner assigned yet.
+The superseded macOS 13 run 40710191541 is now completed/cancelled (workflow concurrency).
+No build result or new artifacts yet; no device action. Next: check 40717125371, download its
+mesa-ios artifact on success, then perform the 16-case pixel gate from the handoff below.
+Run: https://github.com/telegdyd/ios-jasmine/actions/runs/40717125371
+
 ### 2026-10-28 16:25: GMEM stage 3 PAUSED again (user request): extent question answered, baseline GPUPROF done
 
 Resumed from the 06:55 handoff (below). Nothing installed or flashed, no clock change, production lib 4780fbaa
