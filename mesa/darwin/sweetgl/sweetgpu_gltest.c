@@ -538,6 +538,7 @@ iosurface_texture(struct sgl_context *ctx)
    return check("iosurface texture", iosurface_tex_expected, 0);
 }
 #include "sweetgpu_feedback_test.inc"
+#include "sweetgpu_gmem_test.inc"
 #endif
 
 /* Active sampler state must describe the next draw, even before validation.
@@ -609,12 +610,16 @@ main(int argc, char **argv)
          setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" :
                 !strcmp(argv[i], "--sysbarrier-wide") ? "2" : "0", 1);
          setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
+      } else if (!strcmp(argv[i], "--gmem") || !strcmp(argv[i], "--gmem-force")) {
+         /* task 24 stage 3: 1 = per-batch cost rule, 2 = every eligible batch through GMEM */
+         setenv("SWEETCA_GMEM", !strcmp(argv[i], "--gmem") ? "1" : "2", 1);
+         setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
       } else if (!strcmp(argv[i], "--no-tc")) {
          setenv("GALLIUM_THREAD", "0", 1);
       } else if (!strcmp(argv[i], "--feedback-diagnostics")) {
          feedback_diagnostics = true;
       } else {
-         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--no-tc] [--feedback-diagnostics]\n");
+         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--gmem|--gmem-force] [--no-tc] [--feedback-diagnostics]\n");
          return 2;
       }
    }
@@ -676,6 +681,11 @@ main(int argc, char **argv)
    printf("step: %s\n", feedback_diagnostics ? "feedback diagnostic controls (barrier off)" : "ordered framebuffer feedback");
    ok &= feedback(ctx, feedback_diagnostics);
    steps += 3;
+   if (!feedback_diagnostics) {
+      printf("step: gmem targets (odd sizes, imported and GL-allocated)\n");
+      ok &= gmem_targets(ctx);
+      steps++;
+   }
 #endif
    printf("%u steps in %.1f ms\n", steps, (os_time_get_nano() - t0) / 1e6);
 

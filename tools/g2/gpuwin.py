@@ -21,7 +21,7 @@ for k, (i, each, draws) in enumerate(wins):
         x = re.search(r'drawevent: (\S+) (\d+)', l)
         if x:
             ev[x.group(1)] = int(x.group(2))
-    cls = [re.sub(r'.*gpuprof: ', '', l) for l in w if re.search(r'gpuprof: (sysmem|gmem|nondraw) ', l)]
+    cls = [re.sub(r'.*gpuprof: ', '', l) for l in w if re.search(r'gpuprof: (sysmem|gmem|nondraw|sysfb) ', l)]
     fl = {k[6:]: v for k, v in ev.items() if k.startswith('flush-')}
     print(f'line {i}: {each:.1f} ms/frame, {draws/100:.0f} draws, {nb/100:.0f} batches, GPU {busy/100:.1f} ms per frame; '
           f'flushes/frame ' + ', '.join(f'{k} {v/100:.1f}' for k, v in fl.items()))

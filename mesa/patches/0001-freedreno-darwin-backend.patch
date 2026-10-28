@@ -1,6 +1,6 @@
-From 4f2aecd02d5a54d6e1f9b89867ef23d02153de53 Mon Sep 17 00:00:00 2001
+From 7f1343bc620743a80411cd980ab9c8fdebe37666 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 28 Oct 2026 03:42:09 +0100
+Date: Wed, 28 Oct 2026 05:45:47 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -12,7 +12,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/darwin/darwin_pipe.c        |  313 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  146 +
  .../drm/darwin/sweet_batch_trace.inc          |  139 +
- src/freedreno/drm/darwin/sweet_profile.c      |  151 +
+ src/freedreno/drm/darwin/sweet_profile.c      |  154 +
  src/freedreno/drm/freedreno_bo.c              |    5 +
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
@@ -31,10 +31,11 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
  .../sweetgl/sweetgpu_feedback_test.inc        |  272 ++
- .../frontends/sweetgl/sweetgpu_gltest.c       |  688 ++++
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  698 ++++
+ .../frontends/sweetgl/sweetgpu_gmem_test.inc  |  324 ++
  src/gallium/meson.build                       |    5 +
- src/util/sweet_profile.h                      |   85 +
- 29 files changed, 8711 insertions(+), 6 deletions(-)
+ src/util/sweet_profile.h                      |   89 +
+ 30 files changed, 9052 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -53,6 +54,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  create mode 100644 src/gallium/frontends/sweetgl/sweetgl_tickets.inc
  create mode 100644 src/gallium/frontends/sweetgl/sweetgpu_feedback_test.inc
  create mode 100644 src/gallium/frontends/sweetgl/sweetgpu_gltest.c
+ create mode 100644 src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc
  create mode 100644 src/util/sweet_profile.h
 
 diff --git a/include/darwin-drm/xf86drm.h b/include/darwin-drm/xf86drm.h
@@ -1253,10 +1255,10 @@ index 0000000..419e3cc
 +}
 diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
 new file mode 100644
-index 0000000..75eaff0
+index 0000000..938c6f4
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/sweet_profile.c
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,154 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT */
 +#include "util/sweet_profile.h"
@@ -1292,7 +1294,10 @@ index 0000000..75eaff0
 +   "clear-fast", "clear-blit-after-draw", "clear-blit-zs",
 +   "sysbarrier-retained", "sysbarrier-reject-draws", "sysbarrier-reject-cleared",
 +   "sysbarrier-reject-deps", "sysbarrier-reject-fence", "sysbarrier-reject-fb",
-+   "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split"
++   "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split",
++   "gmem-select", "gmem-split", "gmem-sys-barrier", "gmem-sys-ineligible",
++   "gmem-sys-unsafe", "gmem-sys-nohist", "gmem-sys-cost", "gmem-measured",
++   "gmem-pred-sys-kb", "gmem-pred-gmem-kb"
 +};
 +
 +__attribute__((constructor)) static void
@@ -8267,10 +8272,10 @@ index 0000000..8f7d211
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 new file mode 100644
-index 0000000..3183cf7
+index 0000000..b3e045d
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
-@@ -0,0 +1,688 @@
+@@ -0,0 +1,698 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -8811,6 +8816,7 @@ index 0000000..3183cf7
 +   return check("iosurface texture", iosurface_tex_expected, 0);
 +}
 +#include "sweetgpu_feedback_test.inc"
++#include "sweetgpu_gmem_test.inc"
 +#endif
 +
 +/* Active sampler state must describe the next draw, even before validation.
@@ -8882,12 +8888,16 @@ index 0000000..3183cf7
 +         setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" :
 +                !strcmp(argv[i], "--sysbarrier-wide") ? "2" : "0", 1);
 +         setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
++      } else if (!strcmp(argv[i], "--gmem") || !strcmp(argv[i], "--gmem-force")) {
++         /* task 24 stage 3: 1 = per-batch cost rule, 2 = every eligible batch through GMEM */
++         setenv("SWEETCA_GMEM", !strcmp(argv[i], "--gmem") ? "1" : "2", 1);
++         setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
 +      } else if (!strcmp(argv[i], "--no-tc")) {
 +         setenv("GALLIUM_THREAD", "0", 1);
 +      } else if (!strcmp(argv[i], "--feedback-diagnostics")) {
 +         feedback_diagnostics = true;
 +      } else {
-+         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--no-tc] [--feedback-diagnostics]\n");
++         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--gmem|--gmem-force] [--no-tc] [--feedback-diagnostics]\n");
 +         return 2;
 +      }
 +   }
@@ -8949,6 +8959,11 @@ index 0000000..3183cf7
 +   printf("step: %s\n", feedback_diagnostics ? "feedback diagnostic controls (barrier off)" : "ordered framebuffer feedback");
 +   ok &= feedback(ctx, feedback_diagnostics);
 +   steps += 3;
++   if (!feedback_diagnostics) {
++      printf("step: gmem targets (odd sizes, imported and GL-allocated)\n");
++      ok &= gmem_targets(ctx);
++      steps++;
++   }
 +#endif
 +   printf("%u steps in %.1f ms\n", steps, (os_time_get_nano() - t0) / 1e6);
 +
@@ -8958,6 +8973,336 @@ index 0000000..3183cf7
 +   sgl_display_destroy(dpy);
 +   printf("%s\n", ok ? "PASS: all" : "FAIL");
 +   return ok ? 0 : 1;
++}
+diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc b/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc
+new file mode 100644
+index 0000000..b59d18a
+--- /dev/null
++++ b/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc
+@@ -0,0 +1,324 @@
++/* SPDX-License-Identifier: MIT
++ * Task 24 stage 3: GMEM pixel and memory-safety checks on CoreAnimation-like
++ * targets. Included after the IOSurface helpers and the feedback test.
++ *
++ * Each target (imported BGRA IOSurfaces of odd sizes, one with extra row
++ * padding, and one GL allocation) runs three sequences, three times each, so
++ * that the cost rule (SWEETCA_GMEM=1) has measured history from the second
++ * round on:
++ *
++ *   A cleared batch: clear, 3 additive full-screen draws, an opaque rectangle;
++ *   B restored batch (no clear): 4 additive full-screen draws, a rectangle;
++ *   C cleared GMEM prefix followed by feedback: clear, 3 additive draws, a
++ *     rectangle, then 2 barrier+self-sampling draws (with SWEETCA_SYS_BARRIER
++ *     the prefix is split off and the feedback batch reads its resolve).
++ *
++ * All blending is additive (exact in 8 bits). A CPU model of the image gives
++ * the expected pixels. For imported targets the surface memory is checked
++ * directly (IOSurfaceLock), every pixel, and every byte the GPU must not
++ * write is a canary filled before the first draw: row padding beyond the
++ * width rounded to 16 pixels (must stay intact: FAIL otherwise), row padding
++ * inside that rounding and the allocation's tail after the last row
++ * (reported: they show whether a resolve writes past its window).
++ */
++extern const CFStringRef kIOSurfaceBytesPerRow;
++size_t IOSurfaceGetAllocSize(IOSurfaceRef surface);
++
++#define GM_CANARY 0xa5
++#define GM_MIN(a, b) ((a) < (b) ? (a) : (b))
++#define GM_ALIGN(v, a) (((v) + (a) - 1) / (a) * (a))
++
++struct gm_target {
++   unsigned w, h, pitch;
++   IOSurfaceRef surface;             /* NULL: GL allocation */
++   uint8_t *model;                   /* RGBA, row 0 = GL row 0 (bottom) */
++   uint8_t *read;                    /* scratch for glReadPixels */
++};
++
++/* equal within 1 per channel (the feedback test's tolerance) */
++static bool
++gm_same(const uint8_t a[4], const uint8_t b[4])
++{
++   for (unsigned i = 0; i < 4; i++)
++      if (abs((int)a[i] - (int)b[i]) > 1)
++         return false;
++   return true;
++}
++
++static void
++gm_model_fill(struct gm_target *t, unsigned x0, unsigned y0, unsigned x1, unsigned y1,
++              const uint8_t c[4], bool add)
++{
++   for (unsigned y = y0; y < y1; y++) {
++      uint8_t *p = t->model + 4 * ((size_t)y * t->w + x0);
++      for (unsigned x = x0; x < x1; x++, p += 4)
++         for (unsigned i = 0; i < 4; i++)
++            p[i] = add ? (uint8_t)GM_MIN(255, p[i] + c[i]) : c[i];
++   }
++}
++
++static void
++gm_draw(GLuint prog, const uint8_t c[4])
++{
++   glUseProgram(prog);
++   glUniform4f(glGetUniformLocation(prog, "color"), c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f,
++               c[3] / 255.0f);
++   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++}
++
++/* additive full-screen draws */
++static void
++gm_add(struct gm_target *t, GLuint solid, unsigned n, const uint8_t c[4])
++{
++   glDisable(GL_SCISSOR_TEST);
++   glEnable(GL_BLEND);
++   glBlendFunc(GL_ONE, GL_ONE);
++   for (unsigned i = 0; i < n; i++) {
++      gm_draw(solid, c);
++      gm_model_fill(t, 0, 0, t->w, t->h, c, true);
++   }
++   glDisable(GL_BLEND);
++}
++
++/* opaque rectangle through the scissor (odd position and size) */
++static void
++gm_rect(struct gm_target *t, GLuint solid, unsigned x, unsigned y, unsigned w, unsigned h,
++        const uint8_t c[4])
++{
++   x = GM_MIN(x, t->w - 1);
++   y = GM_MIN(y, t->h - 1);
++   w = GM_MIN(w, t->w - x);
++   h = GM_MIN(h, t->h - y);
++   glEnable(GL_SCISSOR_TEST);
++   glScissor(x, y, w, h);
++   gm_draw(solid, c);
++   glDisable(GL_SCISSOR_TEST);
++   gm_model_fill(t, x, y, x + w, y + h, c, false);
++}
++
++static void
++gm_clear(struct gm_target *t, const uint8_t c[4])
++{
++   glDisable(GL_SCISSOR_TEST);
++   glClearColor(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, c[3] / 255.0f);
++   glClear(GL_COLOR_BUFFER_BIT);
++   gm_model_fill(t, 0, 0, t->w, t->h, c, false);
++}
++
++/* every pixel against the model; for imported targets also the canaries */
++static bool
++gm_check(struct gm_target *t, const char *what)
++{
++   glFinish();
++   unsigned bad = 0, info_pad = 0, info_tail = 0, bad_pad = 0;
++   size_t first_bad = 0;
++   uint8_t got[4] = {0}, want[4] = {0};
++   if (t->surface) {
++      IOSurfaceLock(t->surface, kIOSurfaceLockReadOnly, NULL);
++      const uint8_t *base = IOSurfaceGetBaseAddress(t->surface);
++      size_t alloc = IOSurfaceGetAllocSize(t->surface);
++      unsigned w16 = GM_ALIGN(t->w, 16);
++      for (unsigned y = 0; y < t->h; y++) {
++         const uint8_t *row = base + (size_t)t->pitch * y;   /* texture row y = memory row y */
++         const uint8_t *m = t->model + 4 * (size_t)y * t->w;
++         for (unsigned x = 0; x < t->w; x++) {
++            const uint8_t *p = row + 4 * x;
++            const uint8_t c[4] = {p[2], p[1], p[0], p[3]};
++            if (!gm_same(c, m + 4 * x)) {
++               if (!bad++) {
++                  first_bad = (size_t)y * t->w + x;
++                  memcpy(got, c, 4);
++                  memcpy(want, m + 4 * x, 4);
++               }
++            }
++         }
++         for (unsigned b = 4 * t->w; b < t->pitch; b++) {
++            if (row[b] == GM_CANARY)
++               continue;
++            if (b >= 4 * w16)
++               bad_pad++;
++            else
++               info_pad++;
++         }
++      }
++      if (bad) {
++         unsigned flipped = 0;
++         for (unsigned y = 0; y < t->h; y++) {
++            const uint8_t *row = base + (size_t)t->pitch * (t->h - 1 - y);
++            for (unsigned x = 0; x < t->w; x++) {
++               const uint8_t c[4] = {row[4 * x + 2], row[4 * x + 1], row[4 * x], row[4 * x + 3]};
++               flipped += !gm_same(c, t->model + 4 * ((size_t)y * t->w + x));
++            }
++         }
++         printf("%s: diagnostic: %u pixels wrong if rows were flipped\n", what, flipped);
++      }
++      for (size_t b = (size_t)t->pitch * t->h; b < alloc; b++)
++         info_tail += base[b] != GM_CANARY;
++      IOSurfaceUnlock(t->surface, kIOSurfaceLockReadOnly, NULL);
++   } else {
++      glReadPixels(0, 0, t->w, t->h, GL_RGBA, GL_UNSIGNED_BYTE, t->read);
++      for (size_t i = 0; i < (size_t)t->w * t->h; i++) {
++         if (!gm_same(t->read + 4 * i, t->model + 4 * i) && !bad++) {
++            first_bad = i;
++            memcpy(got, t->read + 4 * i, 4);
++            memcpy(want, t->model + 4 * i, 4);
++         }
++      }
++   }
++   GLenum e = glGetError();
++   bool ok = !bad && !bad_pad && e == GL_NO_ERROR;
++   printf("%s: %ux%u pitch %u: %u pixels wrong", what, t->w, t->h, t->pitch, bad);
++   if (bad)
++      printf(" (first (%zu,%zu) %02x%02x%02x%02x, expected %02x%02x%02x%02x)", first_bad % t->w,
++             first_bad / t->w, got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
++   if (t->surface)
++      printf("; row padding past 16-px rounding %u bytes changed (must be 0), inside it %u, "
++             "tail after last row %u", bad_pad, info_pad, info_tail);
++   if (e != GL_NO_ERROR)
++      printf("; GL error %#x", e);
++   printf("\n%s %s\n", ok ? "PASS:" : "FAIL:", what);
++   return ok;
++}
++
++static bool
++gm_run(struct gm_target *t, GLuint solid, GLuint sample, GLuint tex, const char *kind)
++{
++   static const uint8_t c0[4] = {10, 20, 30, 255}, add[4] = {5, 3, 1, 0};
++   static const uint8_t r0[4] = {1, 2, 3, 255}, r1[4] = {200, 7, 90, 255};
++   static const uint8_t c1[4] = {40, 24, 8, 255}, fb[4] = {4, 2, 1, 0};
++   char name[160];
++   bool ok = true;
++   glViewport(0, 0, t->w, t->h);
++   for (unsigned round = 1; round <= 3; round++) {
++      gm_clear(t, c0);
++      gm_add(t, solid, 3, add);
++      gm_rect(t, solid, t->w / 3 + 1, t->h / 4 + 3, t->w / 2 + 5, t->h / 3 + 7, r0);
++      snprintf(name, sizeof(name), "gmem %s cleared batch round %u", kind, round);
++      ok &= gm_check(t, name);
++
++      gm_add(t, solid, 4, add);
++      gm_rect(t, solid, 7, t->h / 2 + 1, t->w / 4 + 3, t->h / 5 + 1, r1);
++      snprintf(name, sizeof(name), "gmem %s restored batch round %u", kind, round);
++      ok &= gm_check(t, name);
++
++      gm_clear(t, c1);
++      gm_add(t, solid, 3, add);
++      gm_rect(t, solid, t->w / 5, t->h / 3, t->w / 3, t->h / 4, r0);
++      glUseProgram(sample);
++      glBindTexture(GL_TEXTURE_2D, tex);
++      glUniform1i(glGetUniformLocation(sample, "tex"), 0);
++      glUniform2f(glGetUniformLocation(sample, "size"), (float)t->w, (float)t->h);
++      for (unsigned i = 0; i < 2; i++) {
++         sgl_texture_barrier();
++         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++         gm_model_fill(t, 0, 0, t->w, t->h, fb, true);
++      }
++      snprintf(name, sizeof(name), "gmem %s prefix then feedback round %u", kind, round);
++      ok &= gm_check(t, name);
++   }
++   return ok;
++}
++
++/* an imported BGRA IOSurface (extra: bytes per row beyond 64-byte rounding) or a GL allocation */
++static bool
++gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int extra, GLuint solid, GLuint sample)
++{
++   struct gm_target t = {.w = w, .h = h};
++   char kind[64];
++   bool ok = true;
++   t.model = malloc((size_t)w * h * 4);
++   if (!t.model)
++      return false;
++   GLuint tex, fbo;
++   glGenTextures(1, &tex);
++   glGenFramebuffers(1, &fbo);
++   glBindTexture(GL_TEXTURE_2D, tex);
++   if (extra >= 0) {
++      CFMutableDictionaryRef props = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
++                                                               &kCFTypeDictionaryValueCallBacks);
++      dict_set_u32(props, kIOSurfaceWidth, w);
++      dict_set_u32(props, kIOSurfaceHeight, h);
++      dict_set_u32(props, kIOSurfaceBytesPerElement, 4);
++      dict_set_u32(props, kIOSurfacePixelFormat, SGL_IOSURFACE_BGRA);
++      if (extra > 0)
++         dict_set_u32(props, kIOSurfaceBytesPerRow, GM_ALIGN(w * 4, 64) + extra);
++      t.surface = IOSurfaceCreate(props);
++      CFRelease(props);
++      if (!t.surface) {
++         printf("FAIL: gmem IOSurfaceCreate %ux%u\n", w, h);
++         free(t.model);
++         return false;
++      }
++      t.pitch = IOSurfaceGetBytesPerRow(t.surface);
++      size_t alloc = IOSurfaceGetAllocSize(t.surface);
++      IOSurfaceLock(t.surface, 0, NULL);
++      memset(IOSurfaceGetBaseAddress(t.surface), GM_CANARY, alloc);
++      IOSurfaceUnlock(t.surface, 0, NULL);
++      snprintf(kind, sizeof(kind), "imported %ux%u%s", w, h, extra > 0 ? " padded rows" : "");
++      printf("gmem target %s: IOSurface %u, %u bytes per row, alloc %zu (rows to 32: %zu)\n", kind,
++             IOSurfaceGetID(t.surface), t.pitch, alloc, (size_t)t.pitch * GM_ALIGN(h, 32));
++      ok &= sgl_tex_image_iosurface(ctx, GL_TEXTURE_2D, IOSurfaceGetID(t.surface), w, h, t.pitch,
++                                    SGL_IOSURFACE_BGRA);
++   } else {
++      t.pitch = w * 4;
++      t.read = malloc((size_t)w * h * 4);
++      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++      snprintf(kind, sizeof(kind), "GL allocation %ux%u", w, h);
++   }
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
++   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
++   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
++      printf("FAIL: gmem %s framebuffer incomplete\n", kind);
++      ok = false;
++   } else if (extra < 0 && !t.read) {
++      ok = false;
++   } else {
++      ok &= gm_run(&t, solid, sample, tex, kind);
++   }
++   glBindFramebuffer(GL_FRAMEBUFFER, 0);
++   glDeleteFramebuffers(1, &fbo);
++   glDeleteTextures(1, &tex);
++   glFinish();
++   if (t.surface)
++      CFRelease(t.surface);
++   free(t.model);
++   free(t.read);
++   return ok;
++}
++
++static bool
++gmem_targets(struct sgl_context *ctx)
++{
++   const char *vs = "attribute vec2 pos; void main() {gl_Position=vec4(pos,0.,1.);}";
++   GLuint solid = program(vs, "precision highp float; uniform vec4 color; void main(){gl_FragColor=color;}");
++   GLuint sample = program(vs, "precision highp float; uniform sampler2D tex; uniform vec2 size; void main(){"
++                              "gl_FragColor=texture2D(tex,gl_FragCoord.xy/size)"
++                              "+vec4(4./255.,2./255.,1./255.,0.);}");
++   const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
++   glBindBuffer(GL_ARRAY_BUFFER, 0);
++   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
++   glEnableVertexAttribArray(0);
++   glDisableVertexAttribArray(1);
++   glDisable(GL_BLEND);
++   glDisable(GL_DEPTH_TEST);
++   glDisable(GL_STENCIL_TEST);
++   glDisable(GL_SCISSOR_TEST);
++   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++   glActiveTexture(GL_TEXTURE0);
++   bool ok = true;
++   ok &= gm_target(ctx, 1127, 2438, 0, solid, sample);   /* CC backdrop size */
++   ok &= gm_target(ctx, 1131, 2442, 0, solid, sample);   /* CC blur size */
++   ok &= gm_target(ctx, 1125, 2436, 0, solid, sample);   /* the frame */
++   ok &= gm_target(ctx, 1125, 2436, 256, solid, sample); /* rows with visible padding */
++   ok &= gm_target(ctx, 67, 45, 64, solid, sample);      /* small, odd */
++   ok &= gm_target(ctx, 1127, 2438, -1, solid, sample);  /* GL allocation */
++   glDisableVertexAttribArray(0);
++   glUseProgram(0);
++   glDeleteProgram(solid);
++   glDeleteProgram(sample);
++   return ok;
 +}
 diff --git a/src/gallium/meson.build b/src/gallium/meson.build
 index 67011f5..05a144b 100644
@@ -8974,10 +9319,10 @@ index 67011f5..05a144b 100644
 +endif
 diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
 new file mode 100644
-index 0000000..9817b5f
+index 0000000..8b9e8f9
 --- /dev/null
 +++ b/src/util/sweet_profile.h
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,89 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + *
@@ -9013,6 +9358,10 @@ index 0000000..9817b5f
 +   SPE_SYSBAR_RETAINED, SPE_SYSBAR_REJECT_DRAWS, SPE_SYSBAR_REJECT_CLEARED,
 +   SPE_SYSBAR_REJECT_DEPS, SPE_SYSBAR_REJECT_FENCE, SPE_SYSBAR_REJECT_FB,
 +   SPE_SYSBAR_REJECT_OTHER_BATCH, SPE_SYSBAR_REJECT_STATE, SPE_SYSBAR_CLEAR_SPLIT,
++   /* Task 24 stage 3: per-batch GMEM selection (SWEETCA_GMEM, fd5_gmem.c) */
++   SPE_GMEM_SELECT, SPE_GMEM_SPLIT, SPE_GMEM_SYS_BARRIER, SPE_GMEM_SYS_INELIGIBLE,
++   SPE_GMEM_SYS_UNSAFE, SPE_GMEM_SYS_NOHIST, SPE_GMEM_SYS_COST, SPE_GMEM_MEASURED,
++   SPE_GMEM_PRED_SYS_KB, SPE_GMEM_PRED_GMEM_KB,
 +   SPE_COUNT
 +};
 +

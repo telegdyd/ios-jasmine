@@ -33,7 +33,10 @@ static const char *const event_names[SPE_COUNT] = {
    "clear-fast", "clear-blit-after-draw", "clear-blit-zs",
    "sysbarrier-retained", "sysbarrier-reject-draws", "sysbarrier-reject-cleared",
    "sysbarrier-reject-deps", "sysbarrier-reject-fence", "sysbarrier-reject-fb",
-   "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split"
+   "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split",
+   "gmem-select", "gmem-split", "gmem-sys-barrier", "gmem-sys-ineligible",
+   "gmem-sys-unsafe", "gmem-sys-nohist", "gmem-sys-cost", "gmem-measured",
+   "gmem-pred-sys-kb", "gmem-pred-gmem-kb"
 };
 
 __attribute__((constructor)) static void

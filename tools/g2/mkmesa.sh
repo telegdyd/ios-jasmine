@@ -15,7 +15,8 @@ git add -A
 git -c user.name=telegdyd -c user.email=telegdyd93@gmail.com commit -q -m "freedreno: darwin backend for the SweetGPU IOKit driver (ios-jasmine)"
 git format-patch -1 --stdout > "$R/mesa/patches/0001-freedreno-darwin-backend.patch"
 git diff --stat HEAD~1 HEAD
-for p in "$R"/mesa/patches/000[2-9]-*.patch; do
+for p in "$R"/mesa/patches/00[0-9][0-9]-*.patch; do
+  case "$p" in *0001-*) continue;; esac
   [ -e "$p" ] || continue
   git apply --check "$p"
   git apply "$p"
