@@ -1,3 +1,19 @@
+### 2026-10-28 02:20: task 16 mode 2 ported to j0110, +22% Home; NOT installed, phone charging
+
+[Report](jasmine/PERF-TASK16-MODE2-20261028.md). User asked to stop measuring and implement the most
+beneficial task; chose pipelined presentation (GPU sat idle ~10 ms/frame waiting for CA's next frame).
+Kernel: t16-build1 commits (j0100/b/c, j0101) cherry-picked cleanly onto j0108 as xnu/patches/j0109,
+j0109b, j0109c, j0110 (fb9e470), boot-arg gated (sweetfb_sleep/queue, sweetgpu_tickets). CI 40609825244
+failed only in tools/cpuclk/surface-release-test.py (harness lacked writeLocks); fixed; CI 40611111142
+PASS, kernel 02b946d9... in xnu/out-jasmine-j0110/. WSL port tree ~/xnu-t16port (branch t16port).
+A/B temporary boots, same kernel/lib (tools/g2/abround.py): mode 0 Home B 27.1/s, CC 21.7/22.0, Spotlight
+20.4; mode 2 Home B 33.1/s (+22%, 69 frames at one period), CC 23.2/23.0 (+4-7%), Spotlight 25.6 (+26%).
+Mode 2 stayed on: 1239 BEGIN = 1239 SEAL, 0 aborts, 0 guard rejections, no SMMU fault/panic, dumps correct.
+Images shim/out/shim-boot-j0110-m0.img / -m2.img (no abmark). Battery fell 39% -> 14% over the night's
+USB-powered iOS boots: phone parked in r109 charging shell (backlight 0, +0.85 A, 10% at 02:15). Next:
+charge to >=30%, user eye-check of mode-2 motion, then (user OK) build abmark=b image of j0110 with the
+mode-2 args and flash boot_b. Rollback = current boot_b image research/cpu-dvfs/promotion2-images/cpu8-slotb.img.
+
 ### 2026-10-28 01:25: GPU per-batch/per-draw profile on today's build (user OK for temporary boots)
 
 Two temporary boots (no flash): shim/out/shim-boot-j0108-gprof1.img (sweetenv + SWEETCA_GPUPROF=1,
