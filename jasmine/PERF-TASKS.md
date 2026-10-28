@@ -26,7 +26,7 @@ approved by the user on 2026-10-24; implementation has not started.
   draws (full-target clears in sysmem); full-screen blended copies cost 5-6 ms each.
 - **2026-10-28 task 16 mode 2 ported to the current kernel (j0109/j0110), not yet default:** same-kernel
   A/B Home B 27.1 -> 33.1/s (+22%), CC +4-7%, Spotlight +26%, no faults.
-  [Report](PERF-TASK16-MODE2-20261028.md). Needs the user's look and a boot_b install.
+  [Report](PERF-TASK16-MODE2-20261028.md). **Installed to boot_b 2026-10-28 02:50** (image 9096026c...).
 - **2026-10-25: the GPU is now the limit for Home and memory-bound** (65% of busy cycles RAM-starved, every batch in
   sysmem at 1125x2436): [GPU time report](PERF-GPU-TIME-20261025.md), new **tasks 23-25** in
   [PERF-TASK23-25-GPU-TRAFFIC.md](PERF-TASK23-25-GPU-TRAFFIC.md). DDR 1804 is the default since then (task 10).

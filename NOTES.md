@@ -1,3 +1,19 @@
+### 2026-10-28 02:50: j0110 + mode 2 INSTALLED to boot_b (user OK "Yes, flash when charged")
+
+boot_b = research/t16port/j0110-mode2-slotb.img, SHA256 9096026c48341ba083cc8d0e593953eb7aae7cb2d8ee3418177fb89f464684a3
+(kernel CI 40611111142, 02b946d9...; args = previous boot_b + sweetfb_sleep=1 sweetfb_queue=1 sweetgpu_tickets=1 and
+SWEETCA_PIPELINE=2 in sweetenv; same as the A/B-tested shim-boot-j0110-m2.img plus abmark=b). Production library unchanged
+(4780fbaa). Before flashing, in the r109 shell at 21-32% battery: full 64 MiB boot_b backup (SHA256 8cffb7d3..., prefix =
+the Oct 27 image 5c81dba1) + both GPT copies in ignored research/t16port/install-backup/ (manifest.json). Install by
+research/t16port/flash-mode2.py: only boot_b flashed; exact readback PASS, boot_a unchanged (7ac7aeb5), both GPT copies
+valid and equal to the backup except boot_b attrs 0x6f.. -> 0x3f.. + CRCs (flash-verified.json, flash-mode2.log).
+Normal boot (fastboot reboot, research/t16port/normal-boot-mode2.py, logs/netlog-j0110-installed.txt): SWEET ENV
+PIPELINE=2, tickets begin/seal/abort 1212/1211/0, stale/error/timeout 0/0/0, no ticket/submit error, no panic/SMMU fault;
+SWEET AB marked boot_b successful in both GPTs (0x77..); home screen dump correct (3 surfaces 2/4/9). Rollback:
+write research/t16port/install-backup/boot_b-before.img to boot_b (fastboot flash boot_b), or the Oct 27
+research/cpu-dvfs/promotion2-images/cpu8-slotb.img. Phone left in installed boot_b, unlocked, home screen, USB.
+Open: user's own look at motion; longer use (task 14 freeze history); CC A p95 slightly worse in the one A/B.
+
 ### 2026-10-28 02:20: task 16 mode 2 ported to j0110, +22% Home; NOT installed, phone charging
 
 [Report](jasmine/PERF-TASK16-MODE2-20261028.md). User asked to stop measuring and implement the most

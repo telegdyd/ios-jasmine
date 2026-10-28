@@ -53,10 +53,15 @@ high-water 1. No GPU write waits for the panel (they become the 1.8-3.0 s of Swa
 sleeping per phase). No SMMU fault or panic (only the usual boot-time lines). Screen dumps
 `research/ab/j0110-m2/shot.{2,4,8}.png`: home screen correct; CA now cycles three surfaces.
 
-## Remaining before it can be the default
+## Installed (2026-10-28 02:50)
+
+User OK, battery 32%. boot_b = `research/t16port/j0110-mode2-slotb.img` (SHA256 9096026c..., the m2 args plus
+`abmark=b`). Backup of the previous boot_b and both GPT copies first; exact readback, boot_a and GPT checks PASS
+(only boot_b's slot attributes changed). Normal boot: mode 2 on (tickets 1212/1211/0 aborts, no errors), slot marked
+successful, home screen correct. Rollback: `fastboot flash boot_b research/t16port/install-backup/boot_b-before.img`.
+
+## Still open
 
 - The user's look at motion on the phone (Oct 25 mode 2 "looks right"; not re-checked today).
 - Control Center A p95 got worse (62 -> 67 ms); B unchanged. One capture each; not significant.
 - A longer session (task 14 freeze history): only ~10 minutes of mode 2 so far today.
-- Installing = flashing boot_b with an `abmark=b` image of j0110 + the mode-2 args: needs the
-  user's OK and battery >= 30% (the phone reached 14% in iOS during these tests).
