@@ -1,3 +1,59 @@
+### 2026-10-28 06:55: GMEM stage 3 PAUSED (user request): rule v2 built, not yet gated or measured
+
+Task: per-batch GMEM in the driver (jasmine/PERF-GMEM-PLAN-20261028.md stage 3). Nothing installed, nothing flashed,
+no clock change; production lib 4780fbaa read back unchanged at every gate run. No boot with GMEM in backboardd yet.
+
+**Code (all pushed to jasmine):** c6a9d51, 81a9c97, a9b28b3, 9e0bc32, 32cf9cd, 77f9316. New
+`mesa/patches/0010-freedreno-a5xx-gmem-select.patch` (default off: needs `SWEETCA_GMEM>=1` and forced sysmem;
+`FD_MESA_DEBUG` stays `sysmem,nofp16`). Current rule (v2, 32cf9cd/77f9316): each kind of batch (batch-key hash,
+draws, cost, clear/restore masks) is timed with RB_DONE_TS stamps around its whole pass (gpuprof's mechanism):
+2 sysmem times, then 2 GMEM times (exploration), then the faster mode (GMEM must win by `SWEETCA_GMEM_MARGIN`,
+default 110%); timed 1/`SWEETCA_GMEM_SAMPLE` (8), other mode retried 1/`SWEETCA_GMEM_RETRY` (64); 1-draw uncleared
+batches never tried. Never GMEM: retained feedback barrier, depth/stencil, MSAA, layers, queries, tess, tiled/UBWC,
+or unsafe extents (need offset + pitch*align(h,32) <= bo size, +124 KiB of j0033's 128 KiB scratch pad for imported
+buffers; pitch >= align(w,16)*cpp). Feedback split: at the first barrier, if the prefix would go GMEM the barrier
+ends the batch (prefix timed in retained batches by a mid stamp). `SWEETCA_GMEM=2` = force (tests).
+`SWEETCA_GMEM_LOG=1` logs every decision. gpuprof: class `sysfb` (sysmem with retained barriers) and `fb N pre N`
+in top lines; drawevents `gmem-select/-split/-sys-*/-measured/-time-*-us`. gltest: `--gmem`, `--gmem-force`,
+`--env=K=V`, new step "gmem targets" (imported 1127x2438, 1131x2442, 1125x2436, 1125x2436 with 4800-byte rows,
+67x45; GL alloc 1127x2438; cleared / restored / prefix+feedback, 3 rounds each, CPU model, canaries).
+tools/g2/appwork.py (Settings scroll / sub-page / Safari open-close with bench marks, framebench manual capture;
+coordinates from the home dump, UNTESTED on the phone), gpuwin.py accepts `sysfb`, mkmesa.sh applies 0010+.
+
+**Observed on the phone (installed boot_b, test-name gltest, CI builds):**
+- v1 used RB_SAMPLE_COUNT/SAMPLES_PASSED to estimate sysmem bytes. With counting on, large targets lose the second
+  triangle of a full-screen strip (diagonal wrong-pixel maps, 1.37M of 2.75M pixels) in **sysmem too** (rule round 1);
+  with `SWEETCA_GMEM_COUNT=0` (CI 40635722378, gltest ff662186) force-GMEM passes all 54 gmem-target checks,
+  `--sysbarrier-wide --gmem-force` and `--feedback-diagnostics --gmem-force` PASS, hw binning on or off PASS.
+  Hence v2 (no counting). Patching the bits out of GMEM batches only (CI 40636476995) still failed (sysmem side).
+- Sysmem today already writes in 16x4 blocks: row padding up to align(w,16) and 2 rows after a 2438-row image change
+  (canaries), in sysmem and GMEM alike; padding beyond the 16-px rounding never changed.
+- Stage-2 six cases with the new gltest (incl. gmem-targets step in sysmem): PASS (gate1, CI 40636476995).
+- NOT yet known: whether imported big IOSurfaces pass `sg_safe` (in the v1 runs no GMEM decision was logged for
+  them; the decision log exists only from 77f9316 on). Guess: kernel-reported bo size is smaller than alloc.
+
+**Latest build (not run yet):** Mesa CI 40638109900 (77f9316): libsweetca dab30309...5e25, gltest 2baf8911...6b41,
+in ignored research/t24/stage3/ci-40638109900/.
+
+**Exact next step:** boot installed iOS (battery >= 30%, gauge reading in r109), push the 40638109900 lib as
+`/usr/local/bin/libsweetca-s3.dylib` (readback hash), run
+`python research/t24/stage3/gate.py research/t24/stage3/ci-40638109900/mesa-ios/sweetgpu_gltest research/t24/stage3/gate2 1`
+(14 cases; it now requires GMEM decisions on the three big sizes). If imported targets log `sysmem:unsafe`, check
+`fd_bo_size` of imported bos (darwin_bo_from_handle size = kernel BUFFER_INFO out[1]) vs IOSurface alloc. Then GPUPROF
+boots `shim/out/shim-boot-j0110-s3gp-g0.img` (s3 lib, GMEM off) and `-s3gp-g1.img` (GMEM=1) via
+`python research/t24/stage3/s3run.py IMG NAME gp --lib <lib>` (+ `bash research/t24/stage3/summ3.sh NAME`), then
+framebench `s3fb-base` (= stage-2 s2fb-l2 args, lib s2) and `s3fb-g1`, 2 runs each (`s3run.py ... fb --lock <private>`).
+Images were built for the earlier lib path name only (sweetenv points at libsweetca-s3.dylib / -s2.dylib), so they
+stay valid. Expect ~20-25%/h drain in iOS with GPU tests; park between boots.
+
+**Phone:** r109 charging shell (temporary boot, slot b unchanged), backlight 0, charge voltage 4050000, 53% at 06:50,
++0.87 A. Test libs on the phone: `/usr/local/bin/libsweetca-s3.dylib` = bb34cc58 (CI 40636476995, OBSOLETE v1,
+inert), `/usr/local/bin/libsweetca-s2.dylib` = 1772b043 (stage 2). No gltest binary left. No lock held.
+Local: private Mesa tree `~/ios-work/mesa-t24s3` (WSL; working copy = 0010), helper scripts in ignored
+research/t24/stage3/scripts/ (sg_block.c + sg_apply_v2.py regenerate 0010 onto a clean tree; mkmesa-s3.sh
+regenerates 0001 and 0010), stage-3 scripts gate.py, s3run.py, one.py, summ3.sh, s3sum.py in research/t24/stage3/.
+jasmine/PERF-GMEM-STAGE3-20261028.md not written yet.
+
 ### 2026-10-28 05:35: GMEM stage 2: fewer batches measured; batches -66% Home, GPU time and fps unchanged
 
 [Report](jasmine/PERF-GMEM-STAGE2-20261028.md). Commit 167c44a: drawevent counters for sysmem clears and 0008's

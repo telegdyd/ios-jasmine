@@ -81,6 +81,9 @@ contains an overrun but does not prove correct output. This must be re-checked b
    blended draws on the same target), keep sysmem for small or feedback-heavy ones. Check
    IOSurface padding/overrun safety on jasmine first. Measure as in stage 2; the user checks
    motion by eye for glitches. Install only after that.
+   **PAUSED 2026-10-28 06:55** (NOTES.md handoff): patch 0010 (SWEETCA_GMEM, default off) built; v1
+   sample-count rule broke large-target rendering (counting itself), v2 times each batch kind in both
+   modes (CI 40638109900, 77f9316) and is not yet gated; no GMEM boot of backboardd, no measurements.
 
 Each stage is its own milestone with its own measurement; stop if a stage's premise fails.
 
