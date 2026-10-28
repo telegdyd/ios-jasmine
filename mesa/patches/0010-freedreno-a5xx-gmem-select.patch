@@ -69,7 +69,7 @@ index 7add21a..db2949d 100644
     OUT_RING(ring, 0x00000000 | /* RB_RENDER_CNTL */
                       COND(binning, A5XX_RB_RENDER_CNTL_BINNING_PASS) |
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
-index cdece22..c150977 100644
+index cdece22..b7216c7 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 @@ -24,6 +24,8 @@
@@ -285,7 +285,7 @@ index cdece22..c150977 100644
 +}
 +
 +static bool
-+sg_eligible(struct fd_batch *b)
++sg_eligible(struct fd_batch *b) assert_dt
 +{
 +   struct fd_context *ctx = b->ctx;
 +   struct pipe_framebuffer_state *pfb = &b->framebuffer;
@@ -338,7 +338,7 @@ index cdece22..c150977 100644
 +
 +/* with s->lock */
 +static enum sg_why
-+sg_decide(struct fd5_sweet_gmem *s, struct fd_batch *b, const struct sg_key *k, bool count)
++sg_decide(struct fd5_sweet_gmem *s, struct fd_batch *b, const struct sg_key *k, bool count) assert_dt
 +{
 +   struct pipe_framebuffer_state *pfb = &b->framebuffer;
 +   if (b->a5xx_sysmem_barrier)
@@ -412,7 +412,7 @@ index cdece22..c150977 100644
 + * true = end the batch here (its draws so far go through GMEM)
 + */
 +bool
-+fd5_sweet_gmem_split(struct fd_batch *b)
++fd5_sweet_gmem_split(struct fd_batch *b) disable_thread_safety_analysis
 +{
 +   struct fd5_sweet_gmem *s = fd5_context(b->ctx)->sweet_gmem;
 +   if (!s || b->a5xx_sysmem_barrier)
@@ -448,7 +448,7 @@ index cdece22..c150977 100644
 +
 +/* fd5_texture_barrier(), at the first retained barrier: measure the prefix */
 +void
-+fd5_sweet_gmem_prefix(struct fd_batch *b)
++fd5_sweet_gmem_prefix(struct fd_batch *b) disable_thread_safety_analysis
 +{
 +   struct fd5_sweet_gmem *s = fd5_context(b->ctx)->sweet_gmem;
 +   if (!s || !sg_eligible(b))
@@ -476,7 +476,7 @@ index cdece22..c150977 100644
 +}
 +
 +static void
-+fd5_sweet_gmem_init(struct fd_context *ctx)
++fd5_sweet_gmem_init(struct fd_context *ctx) disable_thread_safety_analysis
 +{
 +   int level = debug_get_num_option("SWEETCA_GMEM", 0);
 +   if (level <= 0 || !FD_DBG(SYSMEM))
