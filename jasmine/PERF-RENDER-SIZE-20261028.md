@@ -118,3 +118,20 @@ Where the exclusion area comes from is NOT found: UIKit reads `[[_UIScreenInitia
 MobileGestalt cache rectangles equals 209x30 (so MG is not the source). Finding that source (another framework in the shared cache, or
 SpringBoard/backboardd) is the missing piece for both the 1080 and the 828 class. The MG cache hashed key names could not be matched with
 md5(name).
+
+### Where the exclusion area comes from, and the 1080x2340@3 test (21:40)
+
+`exclusionArea` is produced by SpringBoard (SpringBoardHome/SpringBoard frameworks): `+[UISDisplaySingleRectShape(SpringBoard)
+sb_displayShapeForScreenType:]` returns a rect from a table indexed by **SBHScreenType**, divided by that type's native scale. The screen
+type comes from `_SBHScreenTypeForDeviceAndDisplayContexts` -> `_SBHScreenTypeLookup(deviceInfo ints, artworkSubtype,
+display bounds, scale)`. So the notch is whatever the table holds for the screen type SpringBoard picks, not anything in MG's rectangles.
+
+Test rs-b4 (user OK; MG cache deleted, regenerated at 1080x2340 @3 by the boot, then edited): kernel `1080x2340 fitted into 996x2160 at x 40`, UIScreen
+360x780 @3, MG regenerated main-screen size 1080x2340 / scale 3.0. Without edits and with `ArtworkDeviceSubType` edited 2436 -> 2340, SpringBoard
+and chronod still log "No status bar visual provider" (width 360, scale 3). So either the screen type is not selected from that cache value
+(deviceInfo keys 1/2 and the identity iPhone10,3 may pick the iPhone X type anyway), or the table needs more than the subtype.
+Restored the original cache afterwards (sha256 c70accbb... verified), phone parked.
+
+Open: read `_SBHScreenTypeLookup` (SpringBoardHome, `SBHome.txt` on the Mac VM) and the device-info keys it uses (`deviceInfoIntegerValueForKey:`
+with two keys from the display context) to see which MG/identity values select the screen type; then supply the 12 mini (or XR) values.
+Extracted images and disassembly: research/render-size/uik/ (ignored), /tmp/{uik-text,SBfw,SBHome}.txt on the Mac VM.
