@@ -55,6 +55,16 @@ contains an overrun but does not prove correct output. This must be re-checked b
    cause known, any real bug fixed, the four-case acceptance matrix
    (`--sysbarrier-off/on`, each with and without `--no-tc`) passes, and the enabled cases print
    the retained-path marker.
+   **DONE 2026-10-28** ([pixel gate](PERF-TASK24-PIXEL-GATE.md#2026-10-28-root-causes-found-fixed-four-case-gate-pass)):
+   two real bugs, neither in the test nor in 0008. (a) In forced sysmem the a5xx fast clear
+   (a GMEM BLIT event) is not ordered after earlier draws of the same batch: draw -> clear
+   kept the draw's pixels; fixed by patch 0009 (u_blitter clear after draws and for depth).
+   (b) Mesa's CPU reads of imported (cacheable) IOSurfaces skipped the kernel's lazy cache
+   upkeep, so glReadPixels returned lines cached by an earlier read; fixed in
+   `darwin_bo_cpu_prep` (IOSurface lock/unlock protocol). Commit 97c59cf, Mesa CI 40620265076:
+   all four cases PASS (enabled ones print the marker), 28 diagnostics PASS, 30 repeat runs
+   clean. Not installed in production. For stage 2: check whether CA hits draw -> clear in
+   one batch and what the u_blitter clear costs.
 2. **Fewer batches.** Turn on in-batch barriers (0008 or its successor) in a test library,
    measure batches and GPU ms per frame with `SWEETCA_GPUPROF=1,SWEETCA_DRAWPROF=1`
    (`tools/g2/gpuwin.py`) and frame rate with framebench (`tools/g2/abround.py`). Also look at the

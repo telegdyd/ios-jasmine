@@ -1,3 +1,24 @@
+### 2026-10-28 03:35: task 24 pixel gate (GMEM plan stage 1) explained, fixed, four-case PASS
+
+[Pixel gate result](jasmine/PERF-TASK24-PIXEL-GATE.md#2026-10-28-root-causes-found-fixed-four-case-gate-pass).
+Installed iOS (boot_b) only, no reboot/flash/clock change; test-name sweetgpu_gltest binaries, removed
+afterwards; production lib readback 4780fbaa... before and after. Observed (Mesa CI 40618671188, source
+cac0ae9, `--feedback-diagnostics`, current + pre-0008, TC on/off, all four alike): draw -> clear in one
+batch keeps the draw's pixels (imported and GL-allocated, also with glFinish after the clear; finish
+before the clear passes); separately, 16-112 stale pixels in whole 64-byte lines only on imported
+IOSurfaces, equal to the previous glReadPixels result; one depth-step failure in cur --no-tc. 0008 is
+not involved. Causes: (a) a5xx fast clear (GMEM BLIT event) unordered after draws in forced sysmem;
+(b) Mesa's CPU reads of cacheable imported IOSurfaces bypassed the kernel's lazy upkeep (j0053,
+invalidate at IOSurfaceLock): darwin cpu_prep was a no-op and not even called. Fix commit 97c59cf: patch
+0009 (sysmem: u_blitter clear after draws and for depth/stencil), darwin_bo_cpu_prep does
+IOSurfaceLock/Unlock (fd_bo_cpu_prep calls it on Darwin), regenerated 0001. Mesa CI 40620265076 PASS
+(test ec7135de..., lib bdba84c3..., NOT installed). Phone: 28 diagnostics PASS x4; --sysbarrier-off,
+-on, -off --no-tc, -on --no-tc all PASS 21/21, marker only in the on cases; 5 more rounds of all six
+(30 runs) clean; no SMMU fault/hang/panic. Guesses: the blit's write is overwritten (not dropped); the
+depth flake is the same blit path. Open (stage 2, not started): does CA hit draw -> clear in one batch
+(possible live glitch source), cost of u_blitter clears, then batch counts with 0008. Phone left in
+installed boot_b, home screen, USB; own lock (scratchpad) released. Evidence: research/t24/stage1/.
+
 ### 2026-10-28 02:50: j0110 + mode 2 INSTALLED to boot_b (user OK "Yes, flash when charged")
 
 boot_b = research/t16port/j0110-mode2-slotb.img, SHA256 9096026c48341ba083cc8d0e593953eb7aae7cb2d8ee3418177fb89f464684a3

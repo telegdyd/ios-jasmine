@@ -1,6 +1,8 @@
 # Task 24: default-off pixel gate failed
 
-**Latest readiness check, 2026-10-26 02:10:02 Budapest:** user approved the
+**Resolved 2026-10-28:** see [the final section](#2026-10-28-root-causes-found-fixed-four-case-gate-pass) (two real bugs fixed, four-case gate PASS).
+
+**Earlier readiness check, 2026-10-26 02:10:02 Budapest:** user approved the
 paired baseline diagnostic session. Acquired the shared lock, but charging
 shell capacity was13%, below the agreed30% threshold. Reported Charging,
 +41503uA,3718984uV, chargeronline1, backlight0,float4050000. No iOS boot,
@@ -165,3 +167,99 @@ charger online1/Charging, battery Charging, +162597 uA, 3701650 uV, 16%;
 backlight readback0, charge voltage4050000. Charger current/voltage sysfs reads
 return errors, so the quoted current/voltage are from qcom-battery. Shared
 phone lock released only after this restoration was verified.
+
+## 2026-10-28: root causes found, fixed, four-case gate PASS
+
+Stage 1 of the [GMEM plan](PERF-GMEM-PLAN-20261028.md). Installed iOS (boot_b, j0110 + mode 2,
+production library 4780fbaa) on the home screen; GL tests are separate processes, so no
+reboot, flash or library change. Test-name binaries only, all removed afterwards; production
+library readback before and after: SHA256 `4780fbaa...e214b8`, unchanged. No GPU/SMMU fault,
+hang or panic in the console during either session (`netlog-diag.txt`, `netlog-fix.txt`).
+Raw evidence ignored under `research/t24/stage1/`.
+
+### Diagnostic run (before the fix)
+
+Source `cac0ae9` (= current Mesa incl. ds8, plus 0008), Mesa CI `40618671188`
+(`mesa_task24_controls=true`): test `69ec78fe...`, pre-0008 control `4c997757...`.
+`--feedback-diagnostics`, each with and without `--no-tc` (`diag-cur-tc/-notc`,
+`diag-pre/-pre-notc`). Same picture in all four; pre-0008 is no different, so **patch 0008
+is not the cause** (its hook is off there anyway):
+
+| Check (imported and GL-allocated targets alike) | Result |
+| --- | --- |
+| clear only; finish before clear; solid draw instead of clear | PASS |
+| draw then clear; clear then sample; feedback then clear then sample | FAIL 4096/4096 |
+| finish **after** clear (draw, clear, glFinish) | FAIL 4096/4096 |
+
+The wrong value is always the draw's (draw then clear reads `(16,32,64)`, the solid draw,
+instead of the clear `(32,64,96)`), even with a finish after the clear. So a clear that
+follows a draw **in the same batch** is lost in memory; one that starts a batch works.
+
+Separately, small failures (16-112 pixels, always whole runs of 16 pixels = 64-byte lines)
+only on **imported** IOSurfaces, never on GL allocations, in checks that are otherwise
+right, including the "before alias checkpoint" readback. The stale value is exactly the
+**previous glReadPixels result** of that target (e.g. `(48,48,72)`, the eight-draw result, in
+the original alias failure; `(0,63)` of the original clear failure also shows it). That is
+the CPU cache, not the GPU. One more: `cur --no-tc` failed the old **depth** step once
+(1800/3600, both quads rejected by the depth test after a depth clear at batch start).
+The original acceptance `--sysbarrier-off` also reproduced on today's Mesa
+(`accept-old-off-tc.txt`: clear 4096/4096, alias 16/4096).
+
+### Root causes
+
+1. **Sysmem clear ordering (driver).** `fd5_clear` uses the a5xx fast clear, a BLIT event
+   made for GMEM. Upstream a5xx never takes a batch with clears to sysmem (the autotune
+   fallback picks GMEM when `batch->cleared`); our forced `FD_MESA_DEBUG=sysmem` does, and in
+   bypass mode that blit is not ordered after the batch's earlier draws (their color is
+   written to memory after it). With barriers off, every `glTextureBarrierNV` ends the batch,
+   which is why the acceptance clear (feedback draw, clear, barrier) shared a batch with a
+   draw. Whether the blit's write is dropped or overwritten by the CCU flush is not
+   distinguished (guess: overwritten). The depth flake is attributed to the same blit path
+   for depth (guess; seen once in four runs, absent in all 38 runs after the fix).
+2. **IOSurface CPU cache (darwin backend).** Imported IOSurfaces of kernel memory are
+   CPU-cacheable, also in Mesa's mapping; the kernel keeps them up lazily (j0053):
+   clean+invalidate at the CPU's next `IOSurfaceLock` after GPU work, clean before the next
+   job after a writing unlock. Mesa's own CPU access (glReadPixels maps the linear imported
+   resource directly) did neither: `darwin_bo_cpu_prep` was a no-op and `fd_bo_cpu_prep`
+   never even called it (darwin pipes use explicit sync). Lines cached by an earlier read
+   survived the GPU's later writes. GL allocations come from the write-combined pool, so
+   they never showed it. Not a test bug; the test simply is the first thing that CPU-reads
+   an imported surface twice.
+
+Neither is a test bug, and neither came from 0008. No expectation, tolerance or acceptance
+sequence was changed and no finish was inserted.
+
+### Fix (commit `97c59cf`)
+
+- `mesa/patches/0009-freedreno-a5xx-sysmem-clear-order.patch`: with `FD_DBG(SYSMEM)`,
+  `fd5_clear` returns false (u_blitter clear, i.e. a draw, ordered like any draw) when the
+  batch already has draws or when depth/stencil is cleared. A first-in-batch color clear
+  keeps the fast clear (it passed in every run). No effect without forced sysmem.
+- `mesa/darwin/darwin_bo.c` (+ `darwin_priv.h`, `apply.py`, regenerated patch 0001):
+  imported buffers remember their IOSurface id; `darwin_bo_cpu_prep` looks the surface up
+  once and does `IOSurfaceLock`/`IOSurfaceUnlock` (read-only unless the CPU will write), so
+  the kernel invalidates before a CPU read and cleans before the GPU's next use after a CPU
+  write. `fd_bo_cpu_prep` calls the backend for shared buffers on Darwin despite explicit
+  sync. libfreedreno_drm now links IOSurface.framework. Costs only on Mesa CPU access to
+  imported surfaces (two traps, plus a flush when the GPU wrote).
+
+### After the fix
+
+Mesa CI `40620265076` PASS (source `97c59cf`): test `ec7135de...`, pre-0008 control
+`dd961279...`, libsweetca `bdba84c3...` (not installed). On the phone:
+
+| Run | Result |
+| --- | --- |
+| `--feedback-diagnostics` current / pre-0008, TC and `--no-tc` | 4 x PASS, 45/45 checks each |
+| `--sysbarrier-off` | PASS 21/21, exit 0, no marker |
+| `--sysbarrier-on` | PASS 21/21, exit 0, retained-path marker printed |
+| `--sysbarrier-off --no-tc` | PASS 21/21, exit 0, no marker |
+| `--sysbarrier-on --no-tc` | PASS 21/21, exit 0, retained-path marker printed |
+| 5 more rounds of the four cases + both diagnostics (30 runs) | all exit 0, 0 FAIL, markers only in `on` cases |
+
+No nonzero GL error in any run. The four-case acceptance gate passes; the retained barrier
+path ran and produced correct pixels in this test. That validates correctness in these
+tests only; no performance claim. Production is unaffected until a library with these
+fixes is installed (user decision). Open for stage 2: whether CoreAnimation itself hits
+draw -> clear in one batch (a possible real glitch source today) and what the u_blitter
+clear costs there; measure with GPUPROF before installing.
