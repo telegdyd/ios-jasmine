@@ -1,6 +1,6 @@
-From 67b303931dcb7848fee8f91829f0112893bc5be4 Mon Sep 17 00:00:00 2001
+From ca8095362d51eb4778ce06d43774e2d18cde49e1 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 28 Oct 2026 14:45:08 +0100
+Date: Wed, 28 Oct 2026 15:20:52 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -32,10 +32,10 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
  .../sweetgl/sweetgpu_feedback_test.inc        |  272 ++
  .../frontends/sweetgl/sweetgpu_gltest.c       |  708 ++++
- .../frontends/sweetgl/sweetgpu_gmem_test.inc  |  360 ++
+ .../frontends/sweetgl/sweetgpu_gmem_test.inc  |  363 ++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   89 +
- 30 files changed, 9098 insertions(+), 6 deletions(-)
+ 30 files changed, 9101 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -8986,10 +8986,10 @@ index 0000000..172acc7
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc b/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc
 new file mode 100644
-index 0000000..15d5c43
+index 0000000..c71deca
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gmem_test.inc
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,363 @@
 +/* SPDX-License-Identifier: MIT
 + * Task 24 stage 3: GMEM pixel and memory-safety checks on CoreAnimation-like
 + * targets. Included after the IOSurface helpers and the feedback test.
@@ -9247,9 +9247,9 @@ index 0000000..15d5c43
 +   return ok;
 +}
 +
-+/* an imported BGRA IOSurface (extra: bytes per row beyond 64-byte rounding) or a GL allocation */
++/* an imported BGRA IOSurface (bpr: bytes per row, 0 = the kernel's choice) or a GL allocation (bpr < 0) */
 +static bool
-+gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int extra, GLuint solid, GLuint sample)
++gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int bpr, GLuint solid, GLuint sample)
 +{
 +   struct gm_target t = {.w = w, .h = h};
 +   char kind[64];
@@ -9261,15 +9261,15 @@ index 0000000..15d5c43
 +   glGenTextures(1, &tex);
 +   glGenFramebuffers(1, &fbo);
 +   glBindTexture(GL_TEXTURE_2D, tex);
-+   if (extra >= 0) {
++   if (bpr >= 0) {
 +      CFMutableDictionaryRef props = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
 +                                                               &kCFTypeDictionaryValueCallBacks);
 +      dict_set_u32(props, kIOSurfaceWidth, w);
 +      dict_set_u32(props, kIOSurfaceHeight, h);
 +      dict_set_u32(props, kIOSurfaceBytesPerElement, 4);
 +      dict_set_u32(props, kIOSurfacePixelFormat, SGL_IOSURFACE_BGRA);
-+      if (extra > 0)
-+         dict_set_u32(props, kIOSurfaceBytesPerRow, GM_ALIGN(w * 4, 64) + extra);
++      if (bpr > 0)
++         dict_set_u32(props, kIOSurfaceBytesPerRow, bpr);
 +      t.surface = IOSurfaceCreate(props);
 +      CFRelease(props);
 +      if (!t.surface) {
@@ -9282,7 +9282,7 @@ index 0000000..15d5c43
 +      IOSurfaceLock(t.surface, 0, NULL);
 +      memset(IOSurfaceGetBaseAddress(t.surface), GM_CANARY, alloc);
 +      IOSurfaceUnlock(t.surface, 0, NULL);
-+      snprintf(kind, sizeof(kind), "imported %ux%u%s", w, h, extra > 0 ? " padded rows" : "");
++      snprintf(kind, sizeof(kind), "imported %ux%u rows %d", w, h, bpr);
 +      printf("gmem target %s: IOSurface %u, %u bytes per row, alloc %zu (rows to 32: %zu)\n", kind,
 +             IOSurfaceGetID(t.surface), t.pitch, alloc, (size_t)t.pitch * GM_ALIGN(h, 32));
 +      ok &= sgl_tex_image_iosurface(ctx, GL_TEXTURE_2D, IOSurfaceGetID(t.surface), w, h, t.pitch,
@@ -9302,7 +9302,7 @@ index 0000000..15d5c43
 +   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
 +      printf("FAIL: gmem %s framebuffer incomplete\n", kind);
 +      ok = false;
-+   } else if (extra < 0 && !t.read) {
++   } else if (bpr < 0 && !t.read) {
 +      ok = false;
 +   } else {
 +      ok &= gm_run(&t, solid, sample, tex, kind);
@@ -9338,12 +9338,15 @@ index 0000000..15d5c43
 +   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 +   glActiveTexture(GL_TEXTURE0);
 +   bool ok = true;
-+   ok &= gm_target(ctx, 1127, 2438, 0, solid, sample);   /* CC backdrop size */
-+   ok &= gm_target(ctx, 1131, 2442, 0, solid, sample);   /* CC blur size */
-+   ok &= gm_target(ctx, 1125, 2436, 0, solid, sample);   /* the frame */
-+   ok &= gm_target(ctx, 1125, 2436, 256, solid, sample); /* rows with visible padding */
-+   ok &= gm_target(ctx, 67, 45, 64, solid, sample);      /* small, odd */
-+   ok &= gm_target(ctx, 1127, 2438, -1, solid, sample);  /* GL allocation */
++   /* rows of 64-pixel multiples (GMEM-capable; CoreAnimation's frames have 4608-byte rows) */
++   ok &= gm_target(ctx, 1127, 2438, 4608, solid, sample);   /* CC backdrop size */
++   ok &= gm_target(ctx, 1131, 2442, 4608, solid, sample);   /* CC blur size */
++   ok &= gm_target(ctx, 1125, 2436, 4608, solid, sample);   /* the frame */
++   ok &= gm_target(ctx, 1125, 2436, 4864, solid, sample);   /* a 64-pixel block of visible padding */
++   ok &= gm_target(ctx, 67, 45, 768, solid, sample);        /* small, odd */
++   /* the kernel's 64-byte rows (4544 = 1136 px): sysmem under the rule, GMEM only with PITCH_ANY */
++   ok &= gm_target(ctx, 1127, 2438, 0, solid, sample);
++   ok &= gm_target(ctx, 1127, 2438, -1, solid, sample);     /* GL allocation */
 +   glDisableVertexAttribArray(0);
 +   glUseProgram(0);
 +   glDeleteProgram(solid);

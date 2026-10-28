@@ -28,8 +28,8 @@ import uibench  # noqa: E402
 # first home page of the installed image (Photos, App Store, Settings; dock Phone, Safari, Messages)
 SETTINGS = (163, 523)
 SAFARI = (541, 2008)
-# a Settings row on the top-level list ("General" sits below the account block)
-SUB_ROW = (540, int(os.environ.get('APPWORK_SUB_Y', '1420')))
+# the "General" row of the top-level Settings list (checked with a screen dump 2026-10-28)
+SUB_ROW = (540, int(os.environ.get('APPWORK_SUB_Y', '1601')))
 BACK = (70, 150)
 
 
@@ -38,7 +38,7 @@ def c(line):
 
 
 def tap(xy):
-    c(f'swipe {xy[0]} {xy[1]} {xy[0]} {xy[1]} 40')
+    c(f'swipe {xy[0]} {xy[1]} {xy[0]} {xy[1]} 80')
 
 
 def marked(line, tail):
@@ -55,8 +55,14 @@ def home():
     c('key 3 1'); c('key 3 0')
 
 
-def settings_scroll(rounds=8):
+def open_settings():
+    # Settings restores its last page: one edge swipe back reaches the top-level list (harmless there)
     tap(SETTINGS); time.sleep(3)
+    c('swipe 4 1100 800 1100 250'); time.sleep(1.5)
+
+
+def settings_scroll(rounds=8):
+    open_settings()
     for _ in range(rounds):
         marked('swipe 540 1750 540 450 300', .9)
         time.sleep(.3)
@@ -66,7 +72,7 @@ def settings_scroll(rounds=8):
 
 
 def settings_sub(rounds=6):
-    tap(SETTINGS); time.sleep(3)
+    open_settings()
     for _ in range(rounds):
         marked(lambda: tap(SUB_ROW), 1.2)
         time.sleep(.5)

@@ -255,9 +255,9 @@ gm_run(struct gm_target *t, GLuint solid, GLuint sample, GLuint tex, const char 
    return ok;
 }
 
-/* an imported BGRA IOSurface (extra: bytes per row beyond 64-byte rounding) or a GL allocation */
+/* an imported BGRA IOSurface (bpr: bytes per row, 0 = the kernel's choice) or a GL allocation (bpr < 0) */
 static bool
-gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int extra, GLuint solid, GLuint sample)
+gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int bpr, GLuint solid, GLuint sample)
 {
    struct gm_target t = {.w = w, .h = h};
    char kind[64];
@@ -269,15 +269,15 @@ gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int extra, GLuint sol
    glGenTextures(1, &tex);
    glGenFramebuffers(1, &fbo);
    glBindTexture(GL_TEXTURE_2D, tex);
-   if (extra >= 0) {
+   if (bpr >= 0) {
       CFMutableDictionaryRef props = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
                                                                &kCFTypeDictionaryValueCallBacks);
       dict_set_u32(props, kIOSurfaceWidth, w);
       dict_set_u32(props, kIOSurfaceHeight, h);
       dict_set_u32(props, kIOSurfaceBytesPerElement, 4);
       dict_set_u32(props, kIOSurfacePixelFormat, SGL_IOSURFACE_BGRA);
-      if (extra > 0)
-         dict_set_u32(props, kIOSurfaceBytesPerRow, GM_ALIGN(w * 4, 64) + extra);
+      if (bpr > 0)
+         dict_set_u32(props, kIOSurfaceBytesPerRow, bpr);
       t.surface = IOSurfaceCreate(props);
       CFRelease(props);
       if (!t.surface) {
@@ -290,7 +290,7 @@ gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int extra, GLuint sol
       IOSurfaceLock(t.surface, 0, NULL);
       memset(IOSurfaceGetBaseAddress(t.surface), GM_CANARY, alloc);
       IOSurfaceUnlock(t.surface, 0, NULL);
-      snprintf(kind, sizeof(kind), "imported %ux%u%s", w, h, extra > 0 ? " padded rows" : "");
+      snprintf(kind, sizeof(kind), "imported %ux%u rows %d", w, h, bpr);
       printf("gmem target %s: IOSurface %u, %u bytes per row, alloc %zu (rows to 32: %zu)\n", kind,
              IOSurfaceGetID(t.surface), t.pitch, alloc, (size_t)t.pitch * GM_ALIGN(h, 32));
       ok &= sgl_tex_image_iosurface(ctx, GL_TEXTURE_2D, IOSurfaceGetID(t.surface), w, h, t.pitch,
@@ -310,7 +310,7 @@ gm_target(struct sgl_context *ctx, unsigned w, unsigned h, int extra, GLuint sol
    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
       printf("FAIL: gmem %s framebuffer incomplete\n", kind);
       ok = false;
-   } else if (extra < 0 && !t.read) {
+   } else if (bpr < 0 && !t.read) {
       ok = false;
    } else {
       ok &= gm_run(&t, solid, sample, tex, kind);
@@ -346,12 +346,15 @@ gmem_targets(struct sgl_context *ctx)
    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
    glActiveTexture(GL_TEXTURE0);
    bool ok = true;
-   ok &= gm_target(ctx, 1127, 2438, 0, solid, sample);   /* CC backdrop size */
-   ok &= gm_target(ctx, 1131, 2442, 0, solid, sample);   /* CC blur size */
-   ok &= gm_target(ctx, 1125, 2436, 0, solid, sample);   /* the frame */
-   ok &= gm_target(ctx, 1125, 2436, 256, solid, sample); /* rows with visible padding */
-   ok &= gm_target(ctx, 67, 45, 64, solid, sample);      /* small, odd */
-   ok &= gm_target(ctx, 1127, 2438, -1, solid, sample);  /* GL allocation */
+   /* rows of 64-pixel multiples (GMEM-capable; CoreAnimation's frames have 4608-byte rows) */
+   ok &= gm_target(ctx, 1127, 2438, 4608, solid, sample);   /* CC backdrop size */
+   ok &= gm_target(ctx, 1131, 2442, 4608, solid, sample);   /* CC blur size */
+   ok &= gm_target(ctx, 1125, 2436, 4608, solid, sample);   /* the frame */
+   ok &= gm_target(ctx, 1125, 2436, 4864, solid, sample);   /* a 64-pixel block of visible padding */
+   ok &= gm_target(ctx, 67, 45, 768, solid, sample);        /* small, odd */
+   /* the kernel's 64-byte rows (4544 = 1136 px): sysmem under the rule, GMEM only with PITCH_ANY */
+   ok &= gm_target(ctx, 1127, 2438, 0, solid, sample);
+   ok &= gm_target(ctx, 1127, 2438, -1, solid, sample);     /* GL allocation */
    glDisableVertexAttribArray(0);
    glUseProgram(0);
    glDeleteProgram(solid);

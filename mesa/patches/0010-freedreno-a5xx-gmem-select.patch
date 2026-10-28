@@ -55,7 +55,7 @@ index e0ce8f0..1377580 100644
     /* Existing a5xx primitives, now in draw order rather than at batch end:
      * publish color writes; complete prior work; invalidate sampler storage.
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
-index cdece22..1bd58f4 100644
+index cdece22..eb074c6 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 @@ -24,6 +24,8 @@
@@ -91,7 +91,7 @@ index cdece22..1bd58f4 100644
     fd5_emit_restore(batch, ring);
  
     fd5_emit_lrz_flush(batch, ring);
-@@ -776,6 +781,436 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
+@@ -776,6 +781,443 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
  
     fd5_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
     fd5_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
@@ -131,7 +131,7 @@ index cdece22..1bd58f4 100644
 + * cannot hold the 32x32-granular mem<->gmem blits (fd5_layout pads its own
 + * allocations to 32 rows for this; imported IOSurfaces are not padded, so their
 + * overhang must fit in the scratch VA the kernel maps after every buffer,
-+ * j0033; rows must hold the width rounded to gmem_align_w).
++ * j0033; rows must be a multiple of gmem_align_w pixels, as upstream requires).
 + *
 + * Feedback split: at the first barrier of a batch (patch 0008, level >= 1),
 + * if the batch so far would go through GMEM (chosen or being explored), the
@@ -153,7 +153,7 @@ index cdece22..1bd58f4 100644
 +#define SG_ENTRIES 4096u               /* remembered batches (power of two) */
 +#define SG_PROBE   8u
 +#define SG_NONE    0xdeadbeefdeadbeefull
-+#define SG_PAD     (124u << 10)        /* of the 128 KiB of scratch VA the kernel maps after each buffer (j0033) */
++#define SG_PAD     (128u << 10)        /* scratch VA the kernel maps after each buffer (j0033 GPU_VA_PAD) */
 +#define SG_SANE    (19200ull * 500)    /* longer than 500 ms: not a batch time */
 +
 +struct sg_key {
@@ -183,6 +183,7 @@ index cdece22..1bd58f4 100644
 +   struct sg_entry e[SG_ENTRIES];
 +   bool told_gmem, told_split;
 +   int log;                            /* SWEETCA_GMEM_LOG: every decision to stderr */
++   bool pitch_any;
 +};
 +
 +enum sg_why { SG_GMEM, SG_BARRIER, SG_INELIGIBLE, SG_UNSAFE, SG_NOHIST, SG_COST, SG_ONE_DRAW };
@@ -294,8 +295,8 @@ index cdece22..1bd58f4 100644
 +
 +/* mem<->gmem blits work in 32x32 blocks (see fdl5_layout_image): the rows up
 + * to the next multiple of 32 must be inside the buffer, or for an imported
-+ * buffer inside the kernel's scratch pad after it. Rows must hold the width
-+ * rounded up to gmem_align_w (upstream's pitch rule for GMEM resolves).
++ * buffer inside the kernel's scratch pad after it. Rows must be a multiple of
++ * gmem_align_w pixels (upstream's pitch rule for GMEM-capable imports).
 + */
 +static bool
 +sg_safe(struct fd_batch *b)
@@ -310,10 +311,15 @@ index cdece22..1bd58f4 100644
 +         return false;
 +      uint32_t w = u_minify(ps->texture->width0, lvl), h = u_minify(ps->texture->height0, lvl);
 +      uint64_t pitch = fd_resource_pitch(rsc, lvl);
-+      if (pitch < (uint64_t)align(w, align_w) * rsc->layout.cpp) {
++      /* upstream's rule for GMEM-capable imports (fd_layout_resource_for_handle): rows aligned to
++       * gmem_align_w pixels; SWEETCA_GMEM_PITCH_ANY=1 (tests) only requires them to hold that width
++       */
++      uint64_t unit = (uint64_t)align_w * rsc->layout.cpp;
++      if (pitch < align(w, align_w) * (uint64_t)rsc->layout.cpp ||
++          (pitch % unit && !fd5_context(b->ctx)->sweet_gmem->pitch_any)) {
 +         if (fd5_context(b->ctx)->sweet_gmem->log)
-+            fprintf(stderr, "sweetca: gmem unsafe %ux%u: pitch %llu < %u px\n", w, h, (unsigned long long)pitch,
-+                    align(w, align_w));
++            fprintf(stderr, "sweetca: gmem unsafe %ux%u: pitch %llu, rows must be a multiple of %llu bytes\n", w, h,
++                    (unsigned long long)pitch, (unsigned long long)unit);
 +         return false;
 +      }
 +      uint64_t need = fd_resource_offset(rsc, lvl, ps->first_layer) + pitch * align(h, 32);
@@ -521,6 +527,7 @@ index cdece22..1bd58f4 100644
 +   s->sample = MAX2(1, debug_get_num_option("SWEETCA_GMEM_SAMPLE", 8));
 +   s->retry = MAX2(2, debug_get_num_option("SWEETCA_GMEM_RETRY", 64));
 +   s->log = debug_get_num_option("SWEETCA_GMEM_LOG", 0);
++   s->pitch_any = debug_get_num_option("SWEETCA_GMEM_PITCH_ANY", 0) > 0;
 +   fd5_context(ctx)->sweet_gmem = s;
 +   ctx->sweet_gmem_select = fd5_sweet_gmem_select;
 +   fprintf(stderr, "sweetca: gmem rule on (SWEETCA_GMEM=%d, margin %u%%, timed 1/%u, retry 1/%u)\n", level,
@@ -528,7 +535,7 @@ index cdece22..1bd58f4 100644
  }
  
  void
-@@ -783,6 +1218,8 @@ fd5_gmem_init(struct pipe_context *pctx) disable_thread_safety_analysis
+@@ -783,6 +1225,8 @@ fd5_gmem_init(struct pipe_context *pctx) disable_thread_safety_analysis
  {
     struct fd_context *ctx = fd_context(pctx);
  
