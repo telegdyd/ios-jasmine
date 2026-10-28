@@ -1,3 +1,21 @@
+### 2026-10-28 17:32: framebench sequence active
+
+Baseline1 complete, no SMMU fault/panic/ticket error; GPU588 DDR1804 CPUauto verified,
+max tsens 57.6 C at end. r109 71% before starting s3fb-g1a (first GMEM framebench).
+Active helper research/t24/stage3/from-parked.py with private phone-gmem-active.lock;
+framebench-private.lock is held only during capture. Run uses --standard-only (Home/CC/Spotlight),
+150 s settle, no app captures/dumps repeated because GPUPROF already captured them.
+After g1a: s3fb-base2 then s3fb-g1b; all return to charging shell. Report is WIP.
+
+### 2026-10-28 17:30: first uninstrumented baseline framebench complete
+
+s3fb-base1 (stage2 lib 1772b043, full mode2/tickets/queue args, 150 s settle):
+Home B 33.90/s (median 28.169, p95 45.661 ms); CC A 25.30/s (37.325/56.815),
+CC B 24.16/s (37.216/63.550); Spotlight repeat 26.26/s (34.443/66.036).
+Evidence research/ab/s3fb-base1/ and logs/netlog-s3fb-base1.txt. Standard workload only;
+app profiles/screenshots already captured in GPUPROF boots. Phone parking after run.
+Next s3fb-g1a, then s3fb-base2 and s3fb-g1b. No install/flash/clock changes.
+
 ### 2026-10-28: corrected GMEM GPUPROF has no gain so far
 
 s3gp-g1-fixed confirms full sweetgpu_tickets=1 and live BEGIN/SEAL, no errors.

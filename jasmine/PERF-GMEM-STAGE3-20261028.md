@@ -1,6 +1,6 @@
 # GMEM plan stage 3: per-batch selection (2026-10-28)
 
-Work in progress. The pixel gate passes; the corrected mode-2 performance comparison is still running.
+Work in progress. The pixel gate passes; corrected GPUPROF shows no gain. Framebench is pending.
 Nothing installed in production or flashed. This report covers stage 3 of
 [the GMEM plan](PERF-GMEM-PLAN-20261028.md).
 
@@ -60,8 +60,31 @@ Boundary checks verified 608-byte rejection, NUL rejection, and 607-byte accepta
 
 ## Measurements and recommendation
 
-Same-library GMEM-off control `s3gp-g0`, Home: 1000 trimmed frames, 101.5 draws,
-18.6 batches, 27.46 ms GPU/frame, consistent with the earlier stage-2 baseline (27.40 ms).
-The corrected GMEM profiling boot and alternating framebench runs are pending.
+Same-library GMEM-off control `s3gp-g0` versus corrected `s3gp-g1-fixed`, j0110 mode 2,
+GPU 588 MHz / DDR 1804 / CPU auto, no clock changes. Home/CC discard first and last
+100-frame windows. In-app windows include idle and phase boundaries; their wall times are
+not frame rates. Settings sub-page content is not demonstrated identical across the boots,
+so it is not an acceptance metric.
+
+| Phase | g0 GPU ms/frame | g1 GPU ms/frame | g0 / g1 batches/frame | g1 GMEM batches/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Home (1000 frames each) | 27.46 | 27.94 | 18.6 / 19.4 | 2.67 |
+| Control Center (300 / 400 frames) | 34.61 | 36.75 | 55.4 / 62.6 | 13.22 |
+| Settings scroll | 8.80 | 9.73 | 25.4 / 25.7 | 1.2 full-screen, plus small |
+| App open/close | 18.62 | 17.88 | 16.1 / 17.3 | 1.2 full-screen, plus small |
+
+Home has 1.7 full-screen GMEM batches costing 5.86 ms/frame, but retained-feedback full-screen
+sysmem still costs 14.37 ms/frame (g0: 15.73). CC has 3.2 full-screen GMEM batches costing
+6.47 ms/frame, and 5.67 feedback splits/frame. Extra splits and restore/resolve/exploration
+costs are plausible explanations for the lack of net gain; this is an inference, not a
+separately isolated measurement. The profile's top GMEM passes include 1131x2442 and 1125x2436,
+so the real CA intermediate does reach GMEM. Unsafe decisions remain uncommon; this image
+does not enable per-decision reason logging.
+
+Both valid profiling boots have zero SMMU faults, panics, or ticket/submit errors. The
+corrected g1 shows live BEGIN/SEAL with zero stale/error/timeout counters in the checked logs.
+Static Home and CC dumps show no obvious corruption relative to baseline (clock/battery differ).
+Alternating uninstrumented framebench runs are pending; both framebench images were checked
+to retain the full mode-2, queue, and ticket arguments.
 No installation recommendation yet; the user's motion check and explicit installation approval
 remain outstanding.
