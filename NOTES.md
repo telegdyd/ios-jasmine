@@ -1,3 +1,23 @@
+### 2026-10-28 17:52: second baseline captured, final GMEM run next
+
+s3fb-base2 complete/exported: Home32.28/s (median28.304 p9550.857),
+CC A23.56/s (38.564/62.162), CC B23.58/s (39.101/67.412),
+Spotlight25.74/s (34.021/67.436). Baseline Home range32.28-33.90 already
+encompasses g1a2 Home32.88; no supported Home uplift yet.
+Phone parking; next s3fb-g1b --standard-only --final-check, then report/plan/NOTES.
+Final-check verifies production4780fbaa and removes only test libs s2/s3 before parking.
+All original CI artifacts remain local. No production replacement or flash authorized/performed.
+
+### 2026-10-28 17:44: first VALID GMEM framebench complete
+
+s3fb-g1a2 captured/exported successfully; same image/env/settle as excluded g1a.
+Home B 32.88/s (median28.184 p9546.227), CC A22.51/s (40.173/65.167),
+CC B23.58/s (39.848/60.799), Spotlight27.81/s (35.003/56.156).
+Baseline1 Home33.90, CC25.30/24.16, Spotlight26.26. Mixed result, no global gain.
+Fresh attempt passed all phases; original timeout cause still unproven. GPU588/DDR1804
+readback, all10102 GPU submits completed. Phone parking; next baseline2 then g1b.
+Evidence research/ab/s3fb-g1a2/; report must exclude partial s3fb-g1a.
+
 ### 2026-10-28 17:38: first GMEM framebench PARTIAL; fresh attempt next
 
 s3fb-g1a stopped at 17:36:18 with command-port timed out during Home A (capture23.3s),
