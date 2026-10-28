@@ -84,7 +84,20 @@ does not enable per-decision reason logging.
 Both valid profiling boots have zero SMMU faults, panics, or ticket/submit errors. The
 corrected g1 shows live BEGIN/SEAL with zero stale/error/timeout counters in the checked logs.
 Static Home and CC dumps show no obvious corruption relative to baseline (clock/battery differ).
+Settings list and Safari content also look intact; scroll position/content differ between captures.
+Notification Center is not visually signed off: baseline and GMEM surface dumps both contain
+banded/stale regions, and the date/header differs between individual surfaces. This may involve
+capture timing or rendering; the cause is not established here and it is not evidence of a
+GMEM-specific regression. These captures cannot substitute for the user's motion check.
 Alternating uninstrumented framebench runs are pending; both framebench images were checked
 to retain the full mode-2, queue, and ticket arguments.
+
+`s3fb-g1a` is excluded: command-port timeout during Home A after 23.3 seconds, and metadata
+export also timed out. Spotlight repeat was 25.35/s and warmup 31.00/s, but Home A had no swap
+arrivals during commanded motion; Home B and CC were not captured. GPU completed 4271/4271
+afterward, no SMMU fault/panic/ticket error, and reboot/park succeeded. The cause is unresolved;
+neither a GPU hang nor a clean acceptance run is established. A fresh bounded attempt is
+`s3fb-g1a2`. Framebench now records the exact command/snapshot that fails, without changing
+timeouts or retrying commands.
 No installation recommendation yet; the user's motion check and explicit installation approval
 remain outstanding.

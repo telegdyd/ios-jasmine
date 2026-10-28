@@ -1,3 +1,13 @@
+### 2026-10-28 17:38: first GMEM framebench PARTIAL; fresh attempt next
+
+s3fb-g1a stopped at 17:36:18 with command-port timed out during Home A (capture23.3s),
+metadata export also timed out. Spotlight repeat 25.35/s and warmup31.00/s, but
+Home A no swap arrivals during commanded motion; no Home B/CC comparison data.
+Manifest status partial; EXCLUDE from performance comparison. Evidence research/ab/s3fb-g1a/.
+GPU completed4271/4271 afterwards; no SMMU fault/panic/ticket error. Cause not established
+(transport/sampling/UI response); do not claim GPU hang or clean acceptance.
+Phone parked r109 71% at 17:38. Next fresh s3fb-g1a2, then baseline2/g1b.
+
 ### 2026-10-28 17:32: framebench sequence active
 
 Baseline1 complete, no SMMU fault/panic/ticket error; GPU588 DDR1804 CPUauto verified,

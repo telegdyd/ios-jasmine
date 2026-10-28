@@ -165,7 +165,11 @@ class Run:
         left = self.deadline - time.monotonic()
         if left <= 0:
             raise TimeoutError('device activity deadline reached')
-        reply = self.client.request(command, timeout=min(3, left))
+        try:
+            reply = self.client.request(command, timeout=min(3, left))
+        except OSError as exc:
+            log(self.out, 'command-failed', command=command, error=str(exc))
+            raise
         log(self.out, 'command', command=command, reply=reply)
         return reply
 
@@ -179,6 +183,9 @@ class Run:
         except ValueError as exc:
             log(self.out, 'snapshot-unavailable', error=str(exc))
             return
+        except OSError as exc:
+            log(self.out, 'snapshot-failed', command='bench snapshot', error=str(exc))
+            raise
         log(self.out, 'memory', snapshot=snap)
         # Only emergency pressure aborts input. Low free alone can be normal when
         # reclaimable caches exist; do not impose an arbitrary cache budget.
