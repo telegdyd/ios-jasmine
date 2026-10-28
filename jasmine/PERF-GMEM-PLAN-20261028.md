@@ -70,6 +70,13 @@ contains an overrun but does not prove correct output. This must be re-checked b
    (`tools/g2/gpuwin.py`) and frame rate with framebench (`tools/g2/abround.py`). Also look at the
    resource-dependency (10/frame Home, 38 CC) and context (6/10) batch ends. Expected: a frame
    in a handful of large batches; GPU time itself may move little (sysmem traffic is the same).
+   **DONE 2026-10-28** ([stage 2 report](PERF-GMEM-STAGE2-20261028.md)): CA never clears after a
+   draw in one batch (0009's u_blitter path unused, no live lost-clear glitch, zero cost).
+   Widened rule `SWEETCA_SYS_BARRIER=2` (commit 167c44a, Mesa CI 40622879956): Home 54.6 -> 18.5
+   batches/frame, CC 104 -> 54; GPU ms/frame unchanged (Home 27.6 -> 27.4, CC 32.2 -> 30.9);
+   framebench unchanged within noise. Pixel gate (6 cases incl. `--sysbarrier-wide`) 24/24 PASS.
+   Not installed. Stage 3 caveat: retained-barrier batches are forced sysmem, so GMEM needs
+   a split at the first feedback draw or barrier-free batches (CC backdrop/blur clears).
 3. **GMEM for the big batches.** Select GMEM per batch where it is cheaper than sysmem (many
    blended draws on the same target), keep sysmem for small or feedback-heavy ones. Check
    IOSurface padding/overrun safety on jasmine first. Measure as in stage 2; the user checks

@@ -1,3 +1,23 @@
+### 2026-10-28 05:35: GMEM stage 2: fewer batches measured; batches -66% Home, GPU time and fps unchanged
+
+[Report](jasmine/PERF-GMEM-STAGE2-20261028.md). Commit 167c44a: drawevent counters for sysmem clears and 0008's
+decisions; `SWEETCA_SYS_BARRIER` is now a level (1 = old narrow rule, 2 = widened: any draw count, cleared batches
+without clear split, other pending batches/deps, any uncompressed color format; still forced sysmem only); gltest
+`--sysbarrier-wide` + one new check (fast clear + 7 feedback draws). Mesa CI 40622879956: lib 1772b043..., gltest
+dd0c6707.... 9 temporary boots of j0110 with the installed mode-2 args (only sweetenv differs), no flash, nothing
+installed. Observed: (a) CA never clears after a draw in one batch (`clear-blit-after-draw` 0, `clear-blit-zs` 0 in
+all Home/CC windows; all clears fast, first-in-batch), so no live lost-clear glitch in these screens and 0009 costs
+nothing. GPUPROF per frame Home prod/L0/L1/L2: batches 50.8/54.6/25.7/18.5, GPU 26.5/27.6/27.4/27.4 ms; CC
+100.6/104.2/72.5/54.3, GPU 33.1/32.2/30.5/30.9 ms. L2 leaves 0 barrier ends on Home; remaining ends = resource
+dependencies (11 Home/37 CC) + context (6/11). Framebench Home B L0 33.7/32.9, L1 33.2, L2 33.8/33.5; CC A/B within
+noise. Pixel gate 6 cases x 4 rounds = 24/24 PASS (markers correct); Home/CC dumps correct for prod/L0/L1/L2; no SMMU
+fault/panic/hang/ticket error. Guess: GPU time is the draws' DRAM traffic, not batch overhead. Stage 3 caveat:
+retained-barrier batches are forced sysmem, i.e. L2 keeps the big Home composites out of GMEM; GMEM needs a split
+at the first feedback draw, or targets barrier-free batches (CC 1127x2438 backdrop / 1131x2442 blur batches with
+clears, ~10-11 ms each). Phone: installed boot_b, unlocked home screen, USB, iOS battery 56% (r109 read 64% at
+04:47); production lib 4780fbaa read back; test lib /usr/local/bin/libsweetca-s2.dylib left (test name). Own lock
+released (framebench). Evidence: research/t24/stage2/, logs/netlog-s2*.txt, research/ab/s2fb-*.
+
 ### 2026-10-28 03:35: task 24 pixel gate (GMEM plan stage 1) explained, fixed, four-case PASS
 
 [Pixel gate result](jasmine/PERF-TASK24-PIXEL-GATE.md#2026-10-28-root-causes-found-fixed-four-case-gate-pass).
