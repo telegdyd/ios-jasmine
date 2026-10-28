@@ -13,6 +13,20 @@ OpenSSL 3.5.9, Python 3.13.18, bison 3.8.2 from upstream source into ~/topaz-mes
 venv (Mesa 26 needs Python >= 3.10, bison >= 3; Sonoma has 3.9.6/2.3); system flex 2.6.4.
 Known: TASK24_CONTROLS=1 fails (reverse of patch0008 conflicts with 0009/0010); CI would fail the same.
 
+### 2026-10-28 19:15: kernel builds now on the local macOS VM (no CI queue): `tools/vm-build.sh TAG`
+
+`tools/vm-build.sh TAG` sends this checkout's xnu/patches + tools (uncommitted edits too) to the
+Sonoma VM on the Proxmox server (`ssh mac` = telegdyd@192.168.1.123), runs tools/build-local.sh
+there and writes xnu/out-jasmine-TAG/kernel.development.sweet, same place as the CI artifact, so
+tools/g2/mkimg.sh TAG follows as usual. Warm build ~60 s (ccache 100%), cold 233 s; CI was 3-4 min
+plus up to 16 min queue. Lock on the VM serializes sessions. Same 4 skipped darwin-xnu-build
+patches as CI run 40609825244; all of ours apply. Kernels are not byte-reproducible (UUID etc.)
+but size and segment layout match between VM builds. Not yet booted on the phone.
+VM toolchain: Xcode 16.0 exported from macos-15-intel (branch xcode-export), IIG replayed from
+~/topaz-xnu-build/legacy-iig like xnu.yml; KDK 13.5 + ccache/ninja/jq/cmake in ~/topaz-xnu-build
+(no Homebrew: it dropped Intel). Mesa/ios-tools: see the 19:26 entry. The VM is now the default
+build path (AGENTS.md); `tools/g2/gpu-round.sh vm vm TAG` builds both there (IOS_RUN=vm too).
+
 ### 2026-10-28 18:02: GMEM stage 3 EVALUATED; no global gain, no promotion, phone parked
 
 Evaluation/report commit: d973634; code fixes: 649993e and ac758d5.
