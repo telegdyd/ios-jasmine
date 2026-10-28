@@ -1,0 +1,43 @@
+From dd80c371d2bfebb261feb83853b7eee16157f471 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Wed, 28 Oct 2026 03:18:48 +0100
+Subject: [PATCH] freedreno/a5xx: no fast clear after draws or of depth in
+ forced sysmem
+
+The a5xx fast clear (a BLIT event, made for GMEM) is not ordered after the
+batch's earlier draws in bypass rendering: draw -> clear kept the draw's
+pixels, even after a finish. A depth clear at the start of a batch let a
+later depth test fail once in four runs. With FD_MESA_DEBUG=sysmem, clear
+those with u_blitter (a draw); a color clear before any draw keeps the
+fast clear, which behaved in every run.
+---
+ src/gallium/drivers/freedreno/a5xx/fd5_draw.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+index f4f3483..f3a8cc8 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -455,6 +455,19 @@ fd5_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
+        is_z32(pfb->zsbuf.format))
+       return false;
+ 
++   /* ios-jasmine: the fast clear is a BLIT event, made for GMEM. In forced
++    * sysmem (bypass) rendering it is not ordered after this batch's earlier
++    * draws: draw -> clear left the draw's pixels in memory even after a
++    * finish (task 24 pixel gate, 2026-10-28, imported and GL-allocated color
++    * targets alike), and a depth clear at the start of a batch let a later
++    * depth test fail in one of four runs. Only a color clear before any draw
++    * of the batch behaved; everything else clears with a draw (u_blitter),
++    * which is ordered like any other draw.
++    */
++   if (FD_DBG(SYSMEM) &&
++       (ctx->batch->num_draws > 0 || (buffers & (FD_BUFFER_DEPTH | FD_BUFFER_STENCIL))))
++      return false;
++
+    fd5_emit_render_cntl(ctx, true, false);
+ 
+    if (buffers & FD_BUFFER_COLOR) {
+-- 
+2.47.3
+

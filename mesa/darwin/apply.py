@@ -77,8 +77,28 @@ sub('src/freedreno/drm/meson.build',
     "    'darwin/darwin_priv.h',\n"
     "    'darwin/sweet_profile.c',\n"
     "  )\n"
-    "  libfreedreno_drm_deps += dependency('appleframeworks', modules : ['IOKit', 'CoreFoundation'])\n"
+    "  libfreedreno_drm_deps += dependency('appleframeworks', modules : ['IOKit', 'IOSurface', 'CoreFoundation'])\n"
     "endif\n")
+# Imported IOSurfaces are CPU-cacheable with lazy kernel upkeep (j0053): darwin_bo_cpu_prep must
+# see every CPU access to them, also with explicit sync (task 24 pixel gate, 2026-10-28).
+sub('src/freedreno/drm/freedreno_bo.c',
+    '''   /* If buffer is shared, but we are using explicit sync, no need to
+    * fallback to implicit sync:
+    */
+   if (pipe && pipe->no_implicit_sync)
+      return 0;
+''',
+    '''#ifdef __APPLE__
+   /* ios-jasmine: not for sync but for the CPU caches of an imported IOSurface (darwin_bo_cpu_prep) */
+   return bo->funcs->cpu_prep(bo, pipe, op);
+#endif
+
+   /* If buffer is shared, but we are using explicit sync, no need to
+    * fallback to implicit sync:
+    */
+   if (pipe && pipe->no_implicit_sync)
+      return 0;
+''')
 # libdrm stand-in for Apple platforms (include/darwin-drm/xf86drm.h), on the include path there
 (root / 'include/darwin-drm').mkdir(exist_ok=True)
 (root / 'include/darwin-drm/xf86drm.h').write_text((here / 'xf86drm.h').read_text(encoding='utf-8'),

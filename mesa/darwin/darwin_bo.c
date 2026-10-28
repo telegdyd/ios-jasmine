@@ -30,13 +30,64 @@ darwin_bo_map(struct fd_bo *bo)
    return (void *)(uintptr_t)addr;
 }
 
+/* IOSurface.framework (declared here like IOKit in darwin_priv.h) */
+struct __IOSurface;
+struct __IOSurface *IOSurfaceLookup(uint32_t csid);
+int IOSurfaceLock(struct __IOSurface *surface, uint32_t options, uint32_t *seed);
+int IOSurfaceUnlock(struct __IOSurface *surface, uint32_t options, uint32_t *seed);
+void CFRelease(const void *cf);
+#define DARWIN_kIOSurfaceLockReadOnly 1
+
 /* Only reached for shared buffers (imported IOSurfaces), after
- * fd_bo_cpu_prep waited on this process's own fences. GPU work of other
- * processes on the same surface is not tracked (no implicit sync yet).
+ * fd_bo_cpu_prep waited on this process's own fences (on Darwin also with
+ * explicit sync, see apply.py). GPU work of other processes on the same
+ * surface is not tracked (no implicit sync yet).
+ *
+ * An imported IOSurface of kernel memory is CPU-cacheable, in our mapping
+ * too, and the GPU is not coherent with the CPU caches. The kernel keeps it
+ * up lazily (j0053): it cleans and invalidates the surface's lines when the
+ * CPU next locks it after GPU work, and cleans before the next GPU job after
+ * a writing unlock. Mesa's own CPU access (glReadPixels and transfer maps of
+ * an imported texture) used to bypass that, so a read could return lines the
+ * CPU had cached from an earlier read instead of what the GPU wrote since
+ * (task 24 pixel gate, 2026-10-28), and a CPU write could stay in the cache
+ * while the GPU read memory. Take part in the same protocol: a lock now
+ * (invalidates what the GPU wrote), and an unlock that is read-only unless
+ * the CPU is about to write (then the kernel cleans before the GPU's next
+ * use). Pool surfaces are write-combined; the kernel does nothing for them.
  */
 static int
 darwin_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op)
 {
+   struct darwin_bo *darwin_bo = to_darwin_bo(bo);
+
+   if (!darwin_bo->iosurface_id || !(op & (FD_BO_PREP_READ | FD_BO_PREP_WRITE)))
+      return 0;
+
+   struct __IOSurface *s = __atomic_load_n((struct __IOSurface **)&darwin_bo->iosurface, __ATOMIC_ACQUIRE);
+   if (!s) {
+      struct __IOSurface *found = IOSurfaceLookup(darwin_bo->iosurface_id);
+      if (!found) {
+         ERROR_MSG("IOSurface %u of buffer %u not found for CPU access", darwin_bo->iosurface_id, bo->handle);
+         return 0;
+      }
+      struct __IOSurface *expected = NULL;
+      if (__atomic_compare_exchange_n((struct __IOSurface **)&darwin_bo->iosurface, &expected, found, false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+         s = found;
+      } else {
+         CFRelease(found);
+         s = expected;
+      }
+   }
+
+   uint32_t options = (op & FD_BO_PREP_WRITE) ? 0 : DARWIN_kIOSurfaceLockReadOnly;
+   int ret = IOSurfaceLock(s, options, NULL);
+   if (ret) {
+      ERROR_MSG("IOSurface %u lock for CPU access failed: 0x%x", darwin_bo->iosurface_id, ret);
+      return 0;
+   }
+   IOSurfaceUnlock(s, options, NULL);
    return 0;
 }
 
@@ -66,6 +117,8 @@ darwin_bo_destroy(struct fd_bo *bo)
                              (mach_vm_address_t)(uintptr_t)bo->map);
       bo->map = NULL;
    }
+   if (to_darwin_bo(bo)->iosurface)
+      CFRelease(to_darwin_bo(bo)->iosurface);
    fd_bo_fini_common(bo);
 }
 
@@ -133,7 +186,10 @@ darwin_bo_from_iosurface(struct fd_device *dev, int iosurface_id)
     * covers the whole pages; the importer puts the resource at that offset
     * (winsys_handle.offset, which freedreno's layout takes as slice 0's offset). */
    /* one handle per surface: the device's handle table finds a second import */
-   return fd_bo_from_handle(dev, (uint32_t)out[0], (uint32_t)out[2]);
+   struct fd_bo *bo = fd_bo_from_handle(dev, (uint32_t)out[0], (uint32_t)out[2]);
+   if (bo)
+      to_darwin_bo(bo)->iosurface_id = (uint32_t)iosurface_id;   /* for CPU access (darwin_bo_cpu_prep) */
+   return bo;
 }
 
 struct fd_bo *

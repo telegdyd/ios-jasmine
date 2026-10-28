@@ -114,6 +114,8 @@ FD_DEFINE_CAST(fd_pipe, darwin_pipe);
 struct darwin_bo {
    struct fd_bo base;
    uint64_t iova;
+   uint32_t iosurface_id;      /* imported IOSurface (0: our own buffer) */
+   void *iosurface;            /* its IOSurfaceRef, looked up at the first CPU access */
 };
 FD_DEFINE_CAST(fd_bo, darwin_bo);
 
