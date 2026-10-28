@@ -30,6 +30,7 @@ def main():
     p.add_argument('--lib', required=True)
     p.add_argument('--settle', type=int, default=150)
     p.add_argument('--lock')
+    p.add_argument('--pin-cpu', action='store_true', help='dvfs auto 0 and both clusters at their top rate after the unlock')
     a = p.parse_args()
     os.chdir(ROOT)
     log = f'logs/netlog-{a.name}.txt'
@@ -49,6 +50,9 @@ def main():
     time.sleep(45)
     uibench.cmd('key 3 1'); uibench.cmd('key 3 0'); time.sleep(1.5)
     uibench.cmd('swipe 540 2150 540 900 250')
+    if a.pin_cpu:
+        for c_ in ('dvfs auto 0', 'dvfs set 0 2208000', 'dvfs set 1 1843200'):
+            print(uibench.cmd(c_), flush=True)
     print(f'{time.strftime("%H:%M:%S")} unlocked; settling {a.settle} s', flush=True)
     time.sleep(a.settle)
     cmd = [sys.executable, 'tools/g2/framebench.py', 'run', '--out', out, '--ui-ready',

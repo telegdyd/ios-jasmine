@@ -16,6 +16,8 @@ log = sys.argv[1]
 settle = int(sys.argv[3]) if len(sys.argv) > 3 else 90
 
 def lines():
+    while not os.path.exists(log):
+        time.sleep(2)
     with open(log, 'rb') as f:
         return f.read().count(b'\n')
 

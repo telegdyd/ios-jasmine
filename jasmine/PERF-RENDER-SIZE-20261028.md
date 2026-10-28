@@ -135,3 +135,56 @@ Restored the original cache afterwards (sha256 c70accbb... verified), phone park
 Open: read `_SBHScreenTypeLookup` (SpringBoardHome, `SBHome.txt` on the Mac VM) and the device-info keys it uses (`deviceInfoIntegerValueForKey:`
 with two keys from the display context) to see which MG/identity values select the screen type; then supply the 12 mini (or XR) values.
 Extracted images and disassembly: research/render-size/uik/ (ignored), /tmp/{uik-text,SBfw,SBHome}.txt on the Mac VM.
+
+## RESULT (22:50): 828x1792 @2x works, but is slower, not faster
+
+### Working configuration
+- Kernel j0111 (`sweetfb_lw=828`, lh defaults to lw x 2436/1125 = 1792), ADT `--canvas 828x1792 --scale 2`
+  (`mkimg.sh CANVAS=828x1792`), MobileGestalt cache regenerated at that size (original cache deleted before the boot).
+- UIKit's status bar provider (`Split828`) needs exclusionArea * (nativeScale/scale) == its notch 227x32 within 1e-4.
+  SpringBoard's `sb_displayShapeForScreenType:` table (keyed by SBHScreenType) returns the iPhone X notch (209x30), so a
+  small injected dylib (`ios/sweet_sbshape.c`, DYLD_INSERT into SpringBoard only via `sweetenv=...;SpringBoard:...`,
+  values in `/usr/local/bin/sbs.conf` = `227,32,414`) replaces the shape SpringBoard puts into its `UISMutableDisplayContext`
+  (`setExclusionArea:`). With it: status bar, layout 414x896 pt, Control Center and Settings look right
+  (`research/render-size/s2-home.2.png`, `d-cc.2.png`, `d-settings.2.png`, ignored dir), and a tap at panel coordinates
+  opens Settings (touch mapping through sweet_fit_x/w is unchanged). Kernel: `828x1792 fitted into 998x2160 at x 40`.
+- 1080x2340 @3x (the iPhone 12 mini class, closest to the panel) was tried first and did not get a status bar (screen-type
+  lookup is by point size + scale + artwork subtype, and the 12 mini mode is itself a 1125x2436 render downscaled, so it
+  would not save pixels either). It was dropped for the 828 class, which is the only table entry that renders fewer pixels.
+
+### Framebench, alternating, 150 s settle, GPU 588 / DDR 1804 / CPU auto (same kernel, same library 4780fbaa)
+Image args = installed boot_b mode 2 (`j0111b`); baseline `rb2` = 1125x2436 @3, XR `rx2` = 828x1792 @2 plus the SpringBoard hook.
+
+| run | Home B /s (median / p95 ms) | CC A /s | CC B /s | Spotlight /s |
+| --- | --- | --- | --- | --- |
+| base 1 | 27.71 (30.5 / 47.4) | 22.13 | 23.63 | 29.43 |
+| xr 1 | 24.07 (41.6 / 50.4) | 21.07 | 19.31 | 20.92 |
+| base 2 | 31.30 (30.9 / 47.6) | 23.36 | 20.65 | 25.69 |
+| xr 2 | 23.41 (41.5 / 50.3) | 20.34 | 19.55 | 21.89 |
+| base, CPU pinned top | 30.75 (31.5 / 45.4) | 21.35 | 20.30 | 27.89 |
+| xr, CPU pinned top | 23.04 (42.8 / 50.7) | 19.37 | 18.57 | 21.52 |
+
+Mean change xr vs base (two alternating pairs): Home **-20%**, CC A -9%, CC B -12%, Spotlight **-22%**. Pinning both CPU clusters at their top
+rate changes neither side, so it is not the CPU governor. Evidence: `research/ab/rs-{base1,xr1,base2,xr2,basepin,xrpin}`,
+logs `logs/netlog-rs-*.txt`. No SMMU fault, panic or ticket error seen in the logs I looked at.
+
+### GPUPROF (gpwork workload, one boot each; `logs/netlog-rs-gb.txt`, `-gx.txt`)
+- xr: Home windows **GPU 14.7-15.2 ms per frame** (all batches 'sysmem large' 46/frame, 14.5 ms), but 43.7 ms per frame wall time: backboardd's
+  GL calls take only 1206 of 4366 ms per 100 flushes, so ~70% of the frame is outside GL (CoreAnimation CPU work and/or waiting on swap/present).
+  GPU is therefore no longer the limit, something else sets a ~42 ms floor.
+- base: that boot ran at 77-80 C (xr 67 C), frames 62 ms with GPU 44 ms; not comparable with the framebench numbers (30 ms), do not use it.
+- So the bandwidth lever works (GPU time per frame about 3x lower at 46% fewer pixels), but the present/CPU side now caps at ~24 fps.
+
+### Root changes this round, all reverted
+- MobileGestalt cache: deleted/edited/replaced several times (xr variant for the xr boots); original restored and read back
+  byte-identical (c70accbb...) at the end; boot_b untouched, nothing flashed.
+- Added and removed: `/s.dylib`, `/usr/lib/s.dylib`, `/usr/local/bin/sbs.dylib`, `/usr/local/bin/sbs.conf`, `/var/tmp/sweet_sbshape.log`.
+  A final listing of `/usr/local/bin` still matched one name for `sbs|rsshot` (not identified, probably an older file): check `ls /usr/local/bin`.
+- Production libsweetca re-read: 4780fbaa... unchanged. Phone parked in r109, ~64%.
+
+### Recommendation
+1. Do not install 828x1792 now: it is 20% slower on Home/Spotlight and the user has no sharpness verdict to trade against.
+2. The finding that matters: with 46% fewer pixels the GPU drops to ~15 ms/frame, so the next limit is a ~42 ms CPU/latency floor
+   outside GL. Find it before revisiting the canvas size: compare base and xr per-frame timelines (SWEETCA_DRAWPROF scopes outside GL,
+   CoreAnimation commit/render thread time, SwapWait/present waits, `sweetfb_queue` pacing) on the same cold device.
+3. Keep j0111, `mkadt --canvas/--scale`, `mkimg CANVAS=` and `ios/sweet_sbshape.c` (default off / not installed) for that follow-up.

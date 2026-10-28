@@ -1,3 +1,11 @@
+### 2026-10-28 22:50: task 25: 828x1792@2 works (SpringBoard notch hook) but is 20% SLOWER; not installed; phone parked
+
+Report: jasmine/PERF-RENDER-SIZE-20261028.md (RESULT section). j0111 (lh optional), ios/sweet_sbshape.c (SpringBoard hook of
+UISMutableDisplayContext setExclusionArea:, via sweetenv "...;SpringBoard:DYLD_INSERT_LIBRARIES=/s.dylib" + /usr/local/bin/sbs.conf "227,32,414"),
+mkimg B_DROP, abround --pin-cpu, gpwork waits for the log. Framebench 2 alternating pairs: Home 29.5 -> 23.7 /s, Spotlight 27.6 -> 21.4, CC -9..-12%.
+GPUPROF: GPU 15 ms/frame at xr (3x lower) but 43 ms frame, only 28% of it in GL: next limit is outside GL. User look NOT done (no point yet).
+Root: MG cache restored byte-identical, test files removed (one unexplained name matching sbs|rsshot in /usr/local/bin: check). Nothing flashed.
+
 ### 2026-10-28 21:45: task 25: UIKit status bar rule found (pixel width in a fixed list); 750 impossible, 828x1792@2 possible
 
 Disassembled UIKitCore (report section "UIKit status bar analysis"): the provider needs the render pixel width in
