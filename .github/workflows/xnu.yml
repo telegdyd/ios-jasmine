@@ -313,6 +313,15 @@ jobs:
               grep -E "[[:space:]][TtSs][[:space:]]_$symbol$" framebench-symbols.txt
             done
           fi
+          # task 16: the present queue and render tickets must be in the source that was built
+          if [ -f patches/j0109-jasmine-present-queue.patch ]; then
+            grep -q 'sweetfb_queue' xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+            grep -q 'sweet_fb_present_capability' xnu/bsd/dev/sweet_gpu.c
+          fi
+          if [ -f patches/j0110-jasmine-render-tickets.patch ]; then
+            test -f xnu/iokit/Kernel/arm/SweetRenderTickets.inc
+            grep -q 'sweetgpu_tickets' xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+          fi
           ccache -s
 
       - name: Package build tree for local compiles

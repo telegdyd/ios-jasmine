@@ -1,0 +1,1507 @@
+From 23fb1585cbb22fc226883deba91091b878ba13f8 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 17:52:03 +0100
+Subject: [PATCH 1/4] jasmine: present queue with latch-based reuse and
+ sleeping waits (j0100)
+
+Task 16 build 1, all new behavior off by default.
+sweetfb_sleep=1: the CTL_FLUSH, write-wait and timed SwapWait polls sleep
+instead of spinning (IODelay), with the same timeouts; slept/spun time in the
+SWEET FB and SWEET GPU lines.
+sweetfb_queue=1 (needs sweetfb_sleep=1): SwapEnd admits one frame and returns;
+a presenter thread flips it once its surfaces finished on the GPU and the
+previous flip latched. SwapWait is done only after a later swap latched, so
+CoreAnimation draws the next frame into a third surface. A latch that stays
+pending is retried and then released by the old timeout, and any protocol fault
+switches the boot back to synchronous presentation; the display never halts.
+Selector 3 accepts out-of-line BO tables (parameter 9 bit 2) and counts nbo=0
+jobs; parameter 9 reports sleep (bit 0) and queue (bit 1). Framebench events
+32-36: admit, flip, drop, fallback, guard.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/sweet_gpu.c                   |   4 +
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 691 ++++++++++++++++++++++++--
+ iokit/Kernel/arm/SweetGPU.cpp         | 155 +++++-
+ iokit/Kernel/arm/SweetSurface.cpp     |  63 ++-
+ iokit/Kernel/arm/SweetSurface.h       |   3 +-
+ 5 files changed, 856 insertions(+), 60 deletions(-)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 4a1deb5..0ed8ebf 100755
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -1197,6 +1197,7 @@ ring_space(void)
+ #include <os/atomic_private.h>
+ extern bool sweet_bench_enabled(void);
+ extern void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
++extern bool sweet_fb_queue_boot(void);
+ int sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno);
+ int
+ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno)
+@@ -1222,6 +1223,7 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+ 	}
+ 	uint64_t fence = sg.mem_pa + FENCE_OFF;
+ 	*seqno = ++gpu_seqno;
++	if (*seqno == 0 && sweet_fb_queue_boot()) { *seqno = ++gpu_seqno; } /* gpuSeqno uses 0 for no work */
+ 	ring_pkt7(CP_EVENT_WRITE, 4);
+ 	ring_out(CACHE_FLUSH_TS);
+ 	ring_out((uint32_t)fence);
+@@ -1506,6 +1508,7 @@ gpu_heartbeat(void)
+ 	}
+ }
+ 
++extern uint64_t sweet_fb_present_capability(void);
+ uint64_t sweet_gpu_param(uint32_t which);
+ uint64_t
+ sweet_gpu_param(uint32_t which)
+@@ -1519,6 +1522,7 @@ sweet_gpu_param(uint32_t which)
+ 	case 5: return GPU_VA_BASE;                     /* client VA start */
+ 	case 6: return GPU_VA_END - GPU_VA_BASE;        /* client VA size */
+ 	case 7: return 1;                               /* number of rings */
++	case 9: return sweet_fb_present_capability();   /* bit 0 sleep, bit 1 queue, bit 2 descriptor input */
+ 	case 8: return (uint64_t)gpu_rd(RBBM_ALWAYSON_COUNTER_LO);   /* timestamp (19.2 MHz) */
+ 	default: return 0;
+ 	}
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 9918587..4c562ec 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -38,10 +38,15 @@
+ extern "C" void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+ extern "C" void sweet_bench_alloc(uint32_t, int64_t);
+ extern "C" bool sweet_bench_enabled(void);
++extern "C" uint32_t sweet_gpu_completed(void);
++extern "C" void sweet_fb_submit_fault(uint32_t reason);
+ 
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include <mach/vm_param.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ extern "C" void sweet_console_retarget(vm_offset_t va);   /* osfmk/console/video_console.c */
+@@ -139,6 +144,26 @@ sweet_fb_flicker_note(const uint8_t *dst, uint32_t rowBytes, uint32_t w, uint32_
+  * thread, instead of at the next tick of our timer. Copied at a tick, a surface
+  * CoreAnimation had already started to redraw showed half its next frame.
+  */
++static bool sweet_fb_force_sync;
++static bool sweet_fb_sleeping;
++static uint64_t sweet_fb_slept_us, sweet_fb_spun_us;
++
++static void
++sweet_fb_pause(uint32_t us = 100)
++{
++	uint64_t start = mach_absolute_time(), ns = 0;
++	if (sweet_fb_sleeping) {
++		uint64_t deadline;
++		clock_interval_to_deadline(us, kMicrosecondScale, &deadline);
++		assert_wait_deadline((event_t)&sweet_fb_slept_us, THREAD_UNINT, deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++	} else {
++		IODelay(us);
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++	OSAddAtomic64(ns / 1000, (volatile SInt64 *)(sweet_fb_sleeping ? &sweet_fb_slept_us : &sweet_fb_spun_us));
++}
++
+ static bool
+ sweet_fb_sync(void)
+ {
+@@ -147,9 +172,12 @@ sweet_fb_sync(void)
+ 		uint32_t v = 0;
+ 		on = PE_parse_boot_argn("sweetfb_sync", &v, sizeof(v)) && v != 0;
+ 	}
+-	return on;
++	return sweet_fb_force_sync || on;
+ }
+ 
++extern "C" uint64_t sweet_fb_sleep_us(void) { return sweet_fb_slept_us; }
++extern "C" uint64_t sweet_fb_spin_us(void) { return sweet_fb_spun_us; }
++
+ /* j0058: SwapWait calls, those that found the swap not done yet, time spent in them */
+ static uint32_t sweet_fb_wait_calls, sweet_fb_wait_busy;
+ static uint64_t sweet_fb_wait_us;
+@@ -280,7 +308,7 @@ public:
+ 	uint64_t      fScanPhys;      /* what VIG0 currently fetches */
+ 	uint32_t      fScanStride;
+ 	uint32_t      fBootSrc, fBootStride;
+-	bool          directPresent(const uint8_t *rec);
++	bool          directPresent(const uint8_t *rec, SweetSurface **sources = NULL);
+ 	/*
+ 	 * Direct frames go to a thread of ours (presenter): SwapEnd returns at once and backboardd is
+ 	 * at its next frame while this one waits for the GPU and the MDP's latch (8-10 ms a frame,
+@@ -333,7 +361,7 @@ public:
+ 	uint64_t      fLatchAt;
+ 	void          noteShown(uint32_t id);
+ 	void          retireLatched(void);
+-	IOReturn      swapWait(uint32_t id, uint32_t timeout);
++	IOReturn      swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient *client);
+ 	bool          fWled;          /* jasmine: backlight is the PM660L WLED */
+ 	uint32_t      fWledOn;        /* WLED level to restore when the display turns on */
+ 	void          composeFit(uint8_t *dst, SweetSurface *s, int32_t sx, int32_t sy,
+@@ -369,8 +397,37 @@ public:
+ 	void          setPanelLevel(uint32_t level);
+ 	void addClient(IOMobileFramebufferUserClient *client);
+ 	void removeClient(IOMobileFramebufferUserClient *client);
+-	void swap(const uint8_t *rec);
+-	bool present(const uint8_t *rec);
++	IOReturn swap(const uint8_t *rec);
++	/* Build 1: fLock protects queue, tokens, ownership and submit reservations. */
++	bool          fProtocol, fQueueActive, fPresentBusy, fQueueWaiting;
++	volatile bool fTerminal;
++	bool terminal(void) const { return __atomic_load_n(&fTerminal, __ATOMIC_ACQUIRE); }
++	uint32_t      fEpoch, fWriters, fFallbacks, fDrops, fAdmissions, fLatchRetries, fLatchTimeoutChecks;
++	uint32_t      fGuard[5], fGuardReject[5], fDropReason[16];
++	uint64_t      fGuardUS[5];
++	SweetSurface *fFaultHold[4], *fSyncHold[4];
++	uint64_t      fAdmissionUS;
++	uint8_t       fQueueRec[SWEET_FB_SWAP_REC_SIZE];
++	SweetSurface *fQueueHold[4];
++	uint32_t      fQueueSeq[4], fQueueEpoch;
++	uint64_t      fSerial, fAcceptedSerial, fProgramSerial, fLatchedSerial;
++	bool          fWrapped;
++	bool          fLatchValid, fShownValid;
++	struct Token {
++		IOMobileFramebufferUserClient *owner;
++		uint64_t serial;
++		uint32_t id, epoch;
++		bool ended, cancelled;
++	} fTokens[128];
++	bool queueCandidate(const uint8_t *rec, SweetSurface **held);
++	void queueFallback(uint32_t reason); /* fLock held */
++	IOReturn rejectFrame(uint32_t id, uint32_t reason, IOReturn error);
++	bool waitLatch(void);
++	bool drainPresent(void);
++	void releasePresent(void);
++	void queuePresent(void);
++	uint32_t writeState(SweetSurface *s); /* fLock held */
++	bool present(const uint8_t *rec, SweetSurface **sources = NULL);
+ };
+ 
+ /*
+@@ -403,12 +460,20 @@ class IOAcceleratorES : public IOService {
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+ 
++struct SweetPresentScope {
++	AppleCLCD *fb;
++	bool owned;
++	~SweetPresentScope() { if (owned) { fb->releasePresent(); } }
++};
++
+ class IOMobileFramebufferUserClient : public IOUserClient {
+ 	OSDeclareDefaultStructors(IOMobileFramebufferUserClient);
+ 
+ public:
+ 	AppleCLCD          *fFB;
+ 	task_t              fTask;
++	uint64_t            fNewestSerial;
++	bool                fClosed;
+ 	mach_port_t         fPort;
+ 	io_user_reference_t fFunc[SWEET_FB_NOTIFY_TYPES];
+ 	io_user_reference_t fRefcon[SWEET_FB_NOTIFY_TYPES];
+@@ -636,17 +701,32 @@ AppleCLCD::start(IOService *provider)
+ 	(void)PE_parse_boot_argn("sweetfb_swapwait", &swapwait, sizeof(swapwait));
+ 	fSwapWait = swapwait;
+ 	sweet_fb_main = this;
++	uint32_t sleep = 0, queue = 0, console = 0;
++	PE_parse_boot_argn("sweetfb_console", &console, sizeof(console));
++	PE_parse_boot_argn("sweetfb_sleep", &sleep, sizeof(sleep));
++	PE_parse_boot_argn("sweetfb_queue", &queue, sizeof(queue));
++	sweet_fb_sleeping = sleep != 0;
++	if (queue && (!sleep || topaz || !fScaler || console || !fFlipVA[0] || !fFlipVA[1] || sweet_fb_nohold())) {
++		IOLog("SWEET FB: queue refused: requires sleep, jasmine scaler, flip buffers, holds and GUI\n");
++		queue = 0;
++	}
++	fProtocol = queue != 0;
++	fQueueActive = false;
++	fEpoch = 1;
++	if (fProtocol) { sweet_fb_force_sync = true; }
+ 	uint32_t sync = 0;
+-	if (!(PE_parse_boot_argn("sweetfb_sync", &sync, sizeof(sync)) && sync != 0) && (fQLock = IOLockAlloc()) != NULL) {
++	if ((fProtocol || !(PE_parse_boot_argn("sweetfb_sync", &sync, sizeof(sync)) && sync != 0)) && (fQLock = IOLockAlloc()) != NULL) {
+ 		thread_t thread;
+ 		if (kernel_thread_start(&AppleCLCD::presenterMain, this, &thread) == KERN_SUCCESS) {
+ 			thread_deallocate(thread);
++			if (fProtocol) { fQueueActive = true; }
+ 			IOLog("SWEET FB: direct frames through a presenter thread (SwapEnd returns at once)\n");
+ 		} else {
+ 			IOLockFree(fQLock);
+ 			fQLock = NULL;
+ 		}
+ 	}
++	if (fProtocol && fQLock == NULL) { fProtocol = fQueueActive = false; }
+ 
+ 	publishModes();
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+@@ -882,6 +962,8 @@ void
+ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ {
+ 	AppleCLCD *fb = (AppleCLCD *)owner;
++	SweetPresentScope scope = { fb, false };
++	if (fb->fProtocol) { fb->retireLatched(); }
+ 	uint64_t now = mach_absolute_time();
+ 	uint64_t count = ++fb->fVsyncCount;
+ 	sweet_fps_tick = now;
+@@ -912,6 +994,14 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		    frames - fb->fIntfFrames, fb->fIntf1[(0x800 + 0x0b0) / 4], fb->fIntf1[0x800 / 4]);
+ 		fb->fIntfFrames = frames;
+ 	}
++	if (fb->fProtocol) {
++		if (fb->fPresentBusy || fb->fQueueWaiting || fb->fLatchValid || fb->terminal()) {
++			IOLockUnlock(fb->fLock);
++			sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++			return;
++		}
++		fb->fPresentBusy = scope.owned = true;
++	}
+ 	if (fb->fPowerOff) {
+ 		/*
+ 		 * topaz: fade in cached memory and flip whole frames to the MDP.
+@@ -979,7 +1069,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 		return;
+ 	}
+-	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0;
++	bool flush = !fb->fProtocol && fb->fDirty && (count % fb->fFlushTicks) == 0;
+ 	uint8_t *rec = NULL;
+ 	SweetSurface *taken[4] = {};
+ 	if (flush) {
+@@ -1212,7 +1302,7 @@ sweet_fps_count(void)
+ 	}
+ }
+ 
+-void
++IOReturn
+ AppleCLCD::swap(const uint8_t *rec)
+ {
+ 	sweet_fps_count();
+@@ -1227,6 +1317,90 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			}
+ 		}
+ 	}
++	SweetPresentScope scope = { this, false };
++	if (fProtocol) {
++		if ((mask & ~15u) != 0) {
++			sweet_hold_set(held, false);
++			return rejectFrame(get32(rec, 0x50), 12, kIOReturnBadArgument);
++		}
++		for (uint32_t i = 0; i < 4; i++) {
++			if ((mask & (1u << i)) && held[i] == NULL) {
++				sweet_hold_set(held, false);
++				return rejectFrame(get32(rec, 0x50), 12, kIOReturnNotFound);
++			}
++		}
++		uint64_t start = mach_absolute_time(), ns = 0;
++		for (;;) {
++			IOLockLock(fLock);
++			bool token = !fQueueActive;
++			uint64_t serial = 0;
++			for (unsigned i = 0; i < 128; i++) {
++				if (fTokens[i].owner && fTokens[i].id == get32(rec, 0x50) && fTokens[i].epoch == fEpoch) { token = true; serial = fTokens[i].serial; }
++			}
++			if (!token || (fQueueActive && serial <= fAcceptedSerial)) {
++				IOLockUnlock(fLock);
++				sweet_hold_set(held, false);
++				return rejectFrame(get32(rec, 0x50), 11, kIOReturnAborted);
++			}
++			bool queued = fQueueActive && queueCandidate(rec, held);
++			bool writers = false;
++			for (unsigned i = 0; i < 4; i++) { writers = writers || (held[i] && held[i]->displayWriters); }
++			bool available = !fPresentBusy && !fQueueWaiting && (!fQueueActive || !writers);
++			if (terminal()) {
++				IOLockUnlock(fLock);
++				sweet_hold_set(held, false);
++				return kIOReturnAborted;
++			}
++			if (available && queued) {
++				memcpy(fQueueRec, rec, sizeof(fQueueRec));
++				memcpy(fQueueHold, held, sizeof(fQueueHold));
++				for (unsigned i = 0; i < 4; i++) { fQueueSeq[i] = held[i] ? held[i]->gpuSeqno : 0; }
++				fQueueEpoch = fEpoch;
++				fAcceptedSerial = serial;
++				fQueueWaiting = true;
++				fAdmissions++;
++				fAdmissionUS += ns / 1000;
++				sweet_bench_event(32, get32(rec, 0x50), fEpoch, 1, 0);
++				IOLockWakeup(fLock, fQueueRec, true);
++				IOLockUnlock(fLock);
++				sweet_bench_event(12, get32(rec, 0x50), 1, 0, 0);
++				return kIOReturnSuccess;
++			}
++			if (available) {
++				if (fQueueActive) { fAcceptedSerial = serial; }
++				fPresentBusy = scope.owned = true;
++				memcpy(fSyncHold, held, sizeof(fSyncHold));
++				IOLockUnlock(fLock);
++				if (!waitLatch()) {
++					sweet_hold_set(held, false);
++					return kIOReturnAborted;
++				}
++				uint64_t until;
++				clock_interval_to_deadline(100, kMillisecondScale, &until);
++				for (;;) {
++					bool ready = true;
++					uint32_t completed = sweet_gpu_completed();
++					for (unsigned i = 0; i < 4; i++) {
++						if (held[i] && held[i]->gpuSeqno && (int32_t)(completed - held[i]->gpuSeqno) < 0) { ready = false; }
++					}
++					if (ready) { break; }
++					if (mach_absolute_time() >= until) {
++						sweet_hold_set(held, false);
++						return rejectFrame(get32(rec, 0x50), 2, kIOReturnTimeout);
++					}
++					sweet_fb_pause(1000);
++				}
++				break;
++			}
++			IOLockUnlock(fLock);
++			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++			if (ns >= 200 * NSEC_PER_MSEC) {
++				sweet_hold_set(held, false);
++				return rejectFrame(get32(rec, 0x50), 1, kIOReturnTimeout);
++			}
++			sweet_fb_pause(1000);
++		}
++	}
+ 	/*
+ 	 * topaz GPU: a frame that is one GPU-pool surface (the window server's, drawn by the GPU, scanned
+ 	 * by the MDP itself) is shown at once rather than at the next tick of our timer, and the frame
+@@ -1234,10 +1408,12 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	 * vsync, 8 ms at most). Held two ticks, the two surfaces CoreAnimation draws into paced it
+ 	 * to 20 frames a second.
+ 	 */
+-	if (sweet_fb_sync() && fFlipVA[0] != NULL && (fScaler || !directEligible(rec, held))) {
++	if (sweet_fb_sync() && fFlipVA[0] != NULL && (fProtocol || fScaler || !directEligible(rec, held))) {
+ 		/* the previous flip latched first: the back buffer is not about to be scanned */
+-		for (int t = 0; t < 250 && (fCtl0[0x18 / 4] & 0x20001) != 0; t++) {
+-			IODelay(100);
++		uint64_t until;
++		clock_interval_to_deadline(25, kMillisecondScale, &until);
++		while ((fCtl0[0x18 / 4] & 0x20001) != 0 && mach_absolute_time() < until) {
++			sweet_fb_pause();
+ 		}
+ 		retireLatched();
+ 		IOLockLock(fLock);
+@@ -1248,7 +1424,8 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		IOLockUnlock(fLock);
+ 		sweet_hold_set(dropped, false);
+ 		uint64_t t0 = mach_absolute_time(), ns = 0;
+-		bool inPlace = present(rec);
++		bool inPlace = present(rec, fProtocol ? held : NULL);
++		if (terminal()) { return kIOReturnAborted; }
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+ 		sweet_fps_wait_ns += ns;
+ 		/*
+@@ -1275,12 +1452,12 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		static uint32_t frames, scaled;
+ 		scaled += inPlace;
+ 		if (++frames == 600) {
+-			IOLog("SWEET FB: 600 frames: %u scaled by the MDP, %u copied; SwapWait %u calls, %u not done yet, %llu us in it\n",
+-			    scaled, frames - scaled, sweet_fb_wait_calls, sweet_fb_wait_busy, sweet_fb_wait_us);
++			IOLog("SWEET FB: 600 frames: %u scaled by the MDP, %u copied; SwapWait %u calls, %u not done yet, %llu us in it; sleep %llu us spin %llu us\n",
++			    scaled, frames - scaled, sweet_fb_wait_calls, sweet_fb_wait_busy, sweet_fb_wait_us, sweet_fb_slept_us, sweet_fb_spun_us);
+ 			frames = scaled = sweet_fb_wait_calls = sweet_fb_wait_busy = 0;
+ 			sweet_fb_wait_us = 0;
+ 		}
+-		return;
++		return kIOReturnSuccess;
+ 	}
+ 	if (directEligible(rec, held) && fQLock != NULL) {
+ 		AbsoluteTime deadline;
+@@ -1290,7 +1467,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			if (IOLockSleepDeadline(fQLock, &fQWaiting, deadline, THREAD_UNINT) == THREAD_TIMED_OUT && fQWaiting >= 2) {
+ 				IOLockUnlock(fQLock);
+ 				sweet_hold_set(held, false);    /* (the presenter is stuck: this frame is lost) */
+-				return;
++				return kIOReturnSuccess;
+ 			}
+ 		}
+ 		unsigned slot = (fQFirst + fQWaiting) % 2;
+@@ -1299,13 +1476,286 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		fQWaiting++;
+ 		IOLockWakeup(fQLock, fQRec, true);
+ 		IOLockUnlock(fQLock);
+-		return;
++		return kIOReturnSuccess;
+ 	}
+ 	if (directEligible(rec, held)) {
+ 		showDirect(rec, held);
+-		return;
++		return kIOReturnSuccess;
+ 	}
+ 	showPending(rec, held);
++	return kIOReturnSuccess;
++}
++
++/* Only whole jasmine scaler frames use the asynchronous path. */
++bool
++AppleCLCD::queueCandidate(const uint8_t *rec, SweetSurface **held)
++{
++	uint32_t mask = get32(rec, 0x104);
++	if (mask == 0 || (mask & (mask - 1)) != 0) { return false; }
++	if (!fScaler || !directEligible(rec, held)) { return false; }
++	unsigned layer = 0;
++	while (layer < 4 && !(get32(rec, 0x104) & (1u << layer))) { layer++; }
++	if (layer == 4) { return false; }
++	SweetSurface *v = held[layer];
++	const uint8_t *a = rec + 0x64 + 16 * layer, *b = rec + 0xc4 + 16 * layer;
++	uint64_t pa = v->scanoutPhys + v->offset;
++	return v->bytesPerElement == 4 && v->width == fLogicalW && v->height == fLogicalH &&
++	    (pa & 15) == 0 && (v->bytesPerRow & 15) == 0 &&
++	    pa + (uint64_t)fLogicalH * v->bytesPerRow < (1ull << 32) &&
++	    get32(a, 0) == 0 && get32(a, 4) == 0 && get32(b, 0) == 0 && get32(b, 4) == 0 &&
++	    (get32(a, 8) == 0 || get32(a, 8) == fLogicalW) &&
++	    (get32(a, 12) == 0 || get32(a, 12) == fLogicalH) &&
++	    ((int32_t)get32(b, 8) <= 0 || get32(b, 8) == fLogicalW) &&
++	    ((int32_t)get32(b, 12) <= 0 || get32(b, 12) == fLogicalH);
++}
++
++IOReturn
++AppleCLCD::rejectFrame(uint32_t id, uint32_t reason, IOReturn error)
++{
++	IOLockLock(fLock);
++	fDrops++;
++	if (reason < 16) { fDropReason[reason]++; }
++	sweet_bench_event(34, id, fEpoch, reason, 0);
++	queueFallback(reason);
++	IOLockUnlock(fLock);
++	return error;
++}
++
++void
++AppleCLCD::queueFallback(uint32_t reason)
++{
++	if (fQueueActive) {
++		fQueueActive = false;
++		fSwapWait = 1;
++		fEpoch++;
++		fFallbacks++;
++		sweet_fb_force_sync = true;
++		sweet_bench_event(35, fEpoch, reason, 0, 0);
++		IOLog("SWEET FB: QUEUE FALLBACK reason %u, epoch %u; synchronous for rest of boot\n", reason, fEpoch);
++		IOLockWakeup(fLock, fQueueRec, false);
++	}
++}
++
++void
++AppleCLCD::releasePresent(void)
++{
++	IOLockLock(fLock);
++	fPresentBusy = false;
++	bzero(fSyncHold, sizeof(fSyncHold));
++	IOLockWakeup(fLock, &fPresentBusy, false);
++	IOLockWakeup(fLock, fQueueRec, false);
++	IOLockUnlock(fLock);
++}
++
++bool
++AppleCLCD::drainPresent(void)
++{
++	uint64_t until;
++	clock_interval_to_deadline(200, kMillisecondScale, &until);
++	for (;;) {
++		IOLockLock(fLock);
++		if (!fPresentBusy && !fQueueWaiting) {
++			fPresentBusy = true;
++			IOLockUnlock(fLock);
++			if (waitLatch()) { return true; }
++			releasePresent();
++			return false;
++		}
++		IOLockUnlock(fLock);
++		if (mach_absolute_time() >= until) { return false; }
++		sweet_fb_pause(1000);
++	}
++}
++
++bool
++AppleCLCD::waitLatch(void)
++{
++	for (;;) {
++		retireLatched();
++		IOLockLock(fLock);
++		bool pending = fLatchValid;
++		bool stopped = terminal();
++		IOLockUnlock(fLock);
++		if (!pending || stopped) { return !stopped; }
++		sweet_fb_pause(1000);
++	}
++}
++
++extern "C" uint32_t sweet_gpu_completed(void);
++
++void
++AppleCLCD::queuePresent(void)
++{
++	uint8_t rec[SWEET_FB_SWAP_REC_SIZE];
++	SweetSurface *held[4];
++	uint32_t seq[4], epoch;
++	IOLockLock(fLock);
++	while (!fQueueWaiting || fPresentBusy) {
++		IOLockSleep(fLock, fQueueRec, THREAD_UNINT);
++	}
++	fPresentBusy = true;
++	memcpy(rec, fQueueRec, sizeof(rec));
++	memcpy(held, fQueueHold, sizeof(held));
++	memcpy(seq, fQueueSeq, sizeof(seq));
++	epoch = fQueueEpoch;
++	IOLockUnlock(fLock);
++	SweetPresentScope scope = { this, true };
++	uint64_t until;
++	clock_interval_to_deadline(100, kMillisecondScale, &until);
++	bool ready = false;
++	while (!terminal()) {
++		uint32_t done = sweet_gpu_completed();
++		ready = true;
++		for (unsigned i = 0; i < 4; i++) {
++			if (seq[i] && (int32_t)(done - seq[i]) < 0) { ready = false; }
++		}
++		if (ready || mach_absolute_time() >= until) { break; }
++		sweet_fb_pause(1000);
++	}
++	bool latched = waitLatch();
++	IOLockLock(fLock);
++	bool valid = ready && latched && !terminal() && fQueueActive && epoch == fEpoch && queueCandidate(rec, held);
++	if (!valid && fQueueActive) { queueFallback(ready ? 3 : 2); }
++	IOLockUnlock(fLock);
++	if (valid) {
++		unsigned layer = 0;
++		while (layer < 4 && !held[layer]) { layer++; }
++		SweetSurface *source = held[layer];
++		/* Pool storage is stable under this retain; do not resolve its ID again. */
++		sweet_surface_cpu_access(source, false);
++		sweet_bench_event(13, get32(rec, 0x50), source->id, seq[layer], 1);
++		scanScaled(source->scanoutPhys + source->offset, source->bytesPerRow);
++		if (terminal()) { return; }
++		IOLockLock(fLock);
++		memcpy(fRetireHold, fShowHold, sizeof(fRetireHold));
++		memcpy(fShowHold, held, sizeof(fShowHold));
++		IOLockUnlock(fLock);
++		noteShown(get32(rec, 0x50));
++	} else {
++		sweet_bench_event(34, get32(rec, 0x50), epoch, ready ? 3 : 2, 0);
++		IOLockLock(fLock);
++		fDrops++;
++		fDropReason[ready ? 3 : 2]++;
++		for (unsigned i = 0; i < 128; i++) {
++			if (fTokens[i].id == get32(rec, 0x50) && fTokens[i].owner) { fTokens[i].cancelled = ready; }
++		}
++		if (!ready || terminal()) {
++			/* Bounded quarantine: only one admitted record; never free unfinished GPU storage. */
++			memcpy(fFaultHold, held, sizeof(fFaultHold));
++			uint64_t bytes = 0;
++			uint32_t objects = 0;
++			for (unsigned i = 0; i < 4; i++) {
++				if (held[i]) { objects++; bytes += held[i]->allocSize; }
++			}
++			IOLog("SWEET FB: quarantine %u layer objects, %llu bytes held for boot\n", objects, bytes);
++			bzero(held, sizeof(held));
++		}
++		IOLockUnlock(fLock);
++		sweet_hold_set(held, false);
++	}
++	IOLockLock(fLock);
++	bzero(fQueueHold, sizeof(fQueueHold));
++	fQueueWaiting = false;
++	IOLockWakeup(fLock, fQueueRec, false);
++	if (fAdmissions && fAdmissions % 600 == 0) {
++		IOLog("SWEET FB: queue admitted %u depth 0 high-water 1, drops %u fallback %u, admission %llu us; guard q/s/r %u/%u/%u; sleep %llu spin %llu us\n",
++		    fAdmissions, fDrops, fFallbacks, fAdmissionUS, fGuard[1], fGuard[2], fGuard[3], sweet_fb_slept_us, sweet_fb_spun_us);
++		IOLog("SWEET FB: guard rejected q/s/r %u/%u/%u, wait us %llu/%llu/%llu, latch checks %u; drops admission/GPU/epoch/record %u/%u/%u/%u\n",
++		    fGuardReject[1], fGuardReject[2], fGuardReject[3], fGuardUS[1], fGuardUS[2], fGuardUS[3], fLatchTimeoutChecks,
++		    fDropReason[1], fDropReason[2], fDropReason[3], fDropReason[12]);
++	}
++	IOLockUnlock(fLock);
++}
++
++/* State numbers in GUARD: 1 queued, 2 scanning, 3 retiring, 4 quarantine. */
++uint32_t
++AppleCLCD::writeState(SweetSurface *s)
++{
++	if (!fQueueActive) { return 0; }
++	for (unsigned i = 0; i < 4; i++) {
++		if (fFaultHold[i] == s) { return 4; }
++	}
++	for (unsigned i = 0; i < 4; i++) {
++		if (fQueueHold[i] == s || fSyncHold[i] == s) { return 1; }
++		if (fQueueActive && fShowHold[i] == s) { return 2; }
++		if (fRetireHold[i] == s) { return 3; }
++	}
++	return 0;
++}
++
++/* 1: reserved, 0: queue off, -1: rejected. End only a reservation actually acquired. */
++extern "C" int
++sweet_fb_write_begin(SweetSurface **surfaces, uint32_t count)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb) { return 0; }
++	IOLockLock(fb->fLock);
++	if (!fb->fQueueActive) { IOLockUnlock(fb->fLock); return 0; }
++	for (unsigned i = 0; i < count; i++) {
++		uint32_t state = surfaces[i] ? fb->writeState(surfaces[i]) : 0;
++		if (state == 4 || fb->terminal()) {
++			if (state) { fb->fGuard[state]++; fb->fGuardReject[state]++; }
++			sweet_bench_event(36, surfaces[i] ? surfaces[i]->id : 0, state, 1, 0);
++			fb->queueFallback(5);
++			IOLockUnlock(fb->fLock);
++			return -1;
++		}
++	}
++	for (unsigned i = 0; i < count; i++) { if (surfaces[i]) { surfaces[i]->displayWriters++; } }
++	fb->fWriters++;
++	IOLockUnlock(fb->fLock);
++	return 1;
++}
++
++/* Also balance reservations acquired before queue fallback. */
++extern "C" void
++sweet_fb_write_end(SweetSurface *s)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb || !fb->fProtocol) { return; }
++	IOLockLock(fb->fLock);
++	if (s && s->displayWriters) { s->displayWriters--; }
++	if (fb->fWriters) { fb->fWriters--; }
++	IOLockWakeup(fb->fLock, fb->fQueueRec, false);
++	IOLockUnlock(fb->fLock);
++}
++
++extern "C" void
++sweet_fb_submit_fault(uint32_t reason)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb || !fb->fProtocol) { return; }
++	IOLockLock(fb->fLock);
++	fb->queueFallback(reason);
++	IOLockUnlock(fb->fLock);
++}
++
++extern "C" uint32_t
++sweet_fb_write_state(SweetSurface *surface)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb || !fb->fProtocol) { return 0; }
++	IOLockLock(fb->fLock);
++	uint32_t state = fb->fQueueActive ? fb->writeState(surface) : 0;
++	IOLockUnlock(fb->fLock);
++	return state;
++}
++
++extern "C" bool
++sweet_fb_queue_boot(void)
++{
++	return sweet_fb_main && sweet_fb_main->fProtocol;
++}
++
++extern "C" uint64_t
++sweet_fb_present_capability(void)
++{
++	AppleCLCD *fb = sweet_fb_main;
++	if (!fb) { return 4; }
++	IOLockLock(fb->fLock);
++	uint64_t value = 4 | (sweet_fb_sleeping ? 1 : 0) | (fb->fQueueActive && !fb->terminal() ? 2 : 0);
++	IOLockUnlock(fb->fLock);
++	return value;
+ }
+ 
+ bool
+@@ -1330,6 +1780,9 @@ AppleCLCD::presenterMain(void *self, wait_result_t result __unused)
+ void
+ AppleCLCD::presenter(void)
+ {
++	if (fProtocol) {
++		for (;;) { queuePresent(); }
++	}
+ 	static uint8_t rec[SWEET_FB_SWAP_REC_SIZE];     /* (one thread) */
+ 	SweetSurface *held[4];
+ 
+@@ -1369,8 +1822,10 @@ AppleCLCD::showDirect(const uint8_t *rec, SweetSurface **heldIn)
+ 		sweet_hold_set(dropped, false);
+ 		uint64_t waited = mach_absolute_time(), wns = 0;  /* (present waits for the GPU too) */
+ 		present(rec);
+-		for (int t = 0; t < 250 && (fCtl0[0x18 / 4] & 0x20001) != 0; t++) {
+-			IODelay(100);                           /* until the MDP has latched it */
++		uint64_t until;
++		clock_interval_to_deadline(25, kMillisecondScale, &until);
++		while ((fCtl0[0x18 / 4] & 0x20001) != 0 && mach_absolute_time() < until) {
++			sweet_fb_pause();
+ 		}
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - waited, &wns);
+ 		sweet_fps_wait_ns += wns;
+@@ -1410,6 +1865,7 @@ AppleCLCD::showPending(const uint8_t *rec, SweetSurface **heldIn)
+ void
+ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+ {
++	if (terminal() && pa != fConsPhys) { return; }
+ 	if (fScaled) {
+ 		pipeLayout(false);      /* a panel-size buffer again (flip buffers, console, panic) */
+ 	}
+@@ -1426,6 +1882,7 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+ void
+ AppleCLCD::scanScaled(uint64_t pa, uint32_t stride)
+ {
++	if (terminal()) { return; }
+ 	if (!fScaled) {
+ 		pipeLayout(true);
+ 	}
+@@ -1451,13 +1908,28 @@ AppleCLCD::noteShown(uint32_t id)
+ {
+ 	IOLockLock(fLock);
+ 	fEndID = id;
+-	if (fCtl0 != NULL && (fCtl0[0x18 / 4] & fFlushMask) != 0) {
++	if (fProtocol) {
++		for (unsigned i = 0; i < 128; i++) {
++			if (fTokens[i].owner && fTokens[i].id == id) { fProgramSerial = fTokens[i].serial; }
++		}
++	}
++	fLatchRetries = 0;
++	if (fCtl0 != NULL && ((fProtocol && fQueueWaiting) || (fCtl0[0x18 / 4] & fFlushMask) != 0)) {
++		fLatchValid = fProtocol;
+ 		fLatchID = id;
+ 		fLatchAt = mach_absolute_time();
+ 	} else {
+ 		sweet_bench_event(16, id, 0, 0, 0);
+ 		fShownID = id;          /* (no flip pending: CPU copy into the scanned buffer) */
+ 		fLatchID = 0;
++		fLatchValid = false;
++		fShownValid = true;
++		fLatchedSerial = fProgramSerial;
++	}
++	if (fProtocol && fQueueWaiting) {
++		uint32_t seq = 0;
++		for (unsigned i = 0; i < 4; i++) { if (fQueueHold[i]) { seq = fQueueSeq[i]; } }
++		sweet_bench_event(33, id, fQueueEpoch, seq, 1);
+ 	}
+ 	IOLockUnlock(fLock);
+ }
+@@ -1469,16 +1941,38 @@ AppleCLCD::retireLatched(void)
+ 	SweetSurface *gone[4];
+ 	uint64_t ns = 0;
+ 	IOLockLock(fLock);
+-	if (fLatchID != 0) {
++	if (terminal()) { IOLockUnlock(fLock); return; }
++	if (fLatchValid || fLatchID != 0) {
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - fLatchAt, &ns);
+ 	}
+-	if (fLatchID == 0 || ((fCtl0[0x18 / 4] & fFlushMask) != 0 && ns < 50 * NSEC_PER_MSEC)) {
++	bool pending = fLatchValid || fLatchID != 0;
++	uint32_t ctl = fCtl0 != NULL ? fCtl0[0x18 / 4] : 0;
++	if (fQueueActive && pending && (ctl & fFlushMask) && ns >= 50 * NSEC_PER_MSEC) {
++		/* Re-read before each retry; the timeout event is never latch evidence. */
++		ctl = fCtl0[0x18 / 4];
++		if (ctl & fFlushMask) {
++			uint32_t retry = (uint32_t)(ns / (50 * NSEC_PER_MSEC));
++			if (retry > fLatchRetries) {
++				fLatchRetries = retry;
++				fLatchTimeoutChecks++;
++				IOLog("SWEET FB: latch still pending after %llu ms, holds kept\n", ns / NSEC_PER_MSEC);
++			}
++			if (ns >= 150 * NSEC_PER_MSEC) { queueFallback(6); }
++		}
++	}
++	uint64_t limit = fQueueActive ? 150 * NSEC_PER_MSEC : 50 * NSEC_PER_MSEC;
++	if (!pending || ((ctl & fFlushMask) != 0 && ns < limit)) {
+ 		IOLockUnlock(fLock);
+ 		return;
+ 	}
+-	sweet_bench_event((fCtl0[0x18 / 4] & fFlushMask) ? 15 : 14, fLatchID, fShownID, (uint32_t)(ns / 1000), fCtl0[0x18 / 4]);
++	sweet_bench_event((ctl & fFlushMask) ? 15 : 14, fLatchID, fShownID, (uint32_t)(ns / 1000), ctl);
++	if (!(ctl & fFlushMask)) {
++		fLatchedSerial = fProgramSerial;
++		fShownValid = true;
++	}
+ 	fShownID = fLatchID;
+ 	fLatchID = 0;
++	fLatchValid = false;
+ 	memcpy(gone, fRetireHold, sizeof(gone));
+ 	bzero(fRetireHold, sizeof(fRetireHold));
+ 	IOLockUnlock(fLock);
+@@ -1487,13 +1981,42 @@ AppleCLCD::retireLatched(void)
+ 
+ /* timeout: the top bit set for CoreAnimation's polls, the rest ms (0x80000001: up to 1 ms) */
+ IOReturn
+-AppleCLCD::swapWait(uint32_t id, uint32_t timeout)
++AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient *client)
+ {
+ 	uint64_t start = mach_absolute_time(), ns = 0;
+ 	uint32_t ms = timeout & 0x7fffffff;
+ 	if (ms > 100) {
+ 		ms = 100;
+ 	}
++	uint64_t serial = 0;
++	if (fProtocol) {
++		IOLockLock(fLock);
++		bool queueMode = fQueueActive;
++		if (queueMode && id == 0 && client->fNewestSerial == 0) {
++			IOLockUnlock(fLock);
++			return kIOReturnSuccess;
++		}
++		for (unsigned i = 0; i < 128; i++) {
++			Token &t = fTokens[i];
++			if ((id && t.id == id) || (!id && t.serial && t.serial == client->fNewestSerial)) {
++				if (t.epoch != fEpoch || t.cancelled) {
++					t.cancelled = true;
++					IOLockUnlock(fLock);
++					return kIOReturnSuccess;
++				}
++				if (queueMode && t.owner != client) {
++					IOLockUnlock(fLock);
++					return kIOReturnAborted;
++				}
++				serial = t.serial;
++				if (queueMode) { id = t.id; }
++				break;
++			}
++		}
++		bool future = !fWrapped && id > fSwapID && (int32_t)(id - fSwapID) > 0;
++		IOLockUnlock(fLock);
++		if (queueMode && !serial) { return future ? kIOReturnSuccess : kIOReturnBadArgument; }
++	}
+ 	sweet_fb_wait_calls++;
+ 	for (;;) {
+ 		retireLatched();
+@@ -1501,6 +2024,18 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout)
+ 		/* done: older than the last swap ended (1) or than the one on the panel (2), or never begun */
+ 		bool done = fSwapWait == 0 || (int32_t)((fSwapWait == 2 ? fShownID : fEndID) - id) > 0 ||
+ 		    (int32_t)(id - fSwapID) > 0;
++		bool cancelled = false;
++		if (fProtocol && serial) {
++			for (unsigned i = 0; i < 128; i++) {
++				Token &t = fTokens[i];
++				if (t.serial == serial) {
++					if (t.epoch != fEpoch) { t.cancelled = true; }
++					cancelled = t.cancelled;
++				}
++			}
++		}
++		if (fQueueActive) { done = fShownValid && fLatchedSerial > serial; }
++		done = done || cancelled;
+ 		IOLockUnlock(fLock);
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+ 		if (done || ns >= (uint64_t)ms * NSEC_PER_MSEC) {
+@@ -1509,7 +2044,7 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout)
+ 			sweet_fb_wait_busy += !done;
+ 			return done ? kIOReturnSuccess : kIOReturnTimeout;
+ 		}
+-		IODelay(100);
++		sweet_fb_pause();
+ 	}
+ }
+ 
+@@ -1522,7 +2057,7 @@ extern "C" int
+ sweet_fb_gpu_write_wait(SweetSurface *s, uint64_t *us)
+ {
+ 	AppleCLCD *fb = sweet_fb_main;
+-	if (fb == NULL || !fb->fScaler || fb->fSwapWait != 1) {
++	if (fb == NULL || !fb->fScaler || (!fb->fQueueActive && fb->fSwapWait != 1)) {
+ 		return 0;
+ 	}
+ 	uint64_t start = mach_absolute_time(), ns = 0;
+@@ -1530,6 +2065,16 @@ sweet_fb_gpu_write_wait(SweetSurface *s, uint64_t *us)
+ 		fb->retireLatched();
+ 		bool retiring = false, shown = false;
+ 		IOLockLock(fb->fLock);
++		if (fb->fQueueActive) {
++			uint32_t state = fb->writeState(s);
++			if (state) { fb->fGuard[state]++; }
++			bool reject = state == 4;
++			if (reject) { fb->fGuardReject[state]++; }
++			if (state) { sweet_bench_event(36, s->id, state, reject ? 1 : 0, 0); }
++			IOLockUnlock(fb->fLock);
++			return reject ? -1 : 0;
++		}
++		if (!s->gpuPool || fb->fSwapWait != 1) { IOLockUnlock(fb->fLock); return 0; }
+ 		for (uint32_t i = 0; i < 4; i++) {
+ 			retiring = retiring || fb->fRetireHold[i] == s;
+ 			shown = shown || fb->fShowHold[i] == s;
+@@ -1541,7 +2086,7 @@ sweet_fb_gpu_write_wait(SweetSurface *s, uint64_t *us)
+ 			*us += ns / 1000;
+ 			return shown ? 2 : waited;
+ 		}
+-		IODelay(100);
++		sweet_fb_pause();
+ 	}
+ }
+ 
+@@ -1781,8 +2326,11 @@ static void
+ sweet_cons_show(void)
+ {
+ 	AppleCLCD *fb = sweet_cons_fb;
+-	if (fb != NULL && fb->fVig0 != NULL && fb->fScanPhys != fb->fConsPhys) {
+-		fb->scanFrom(fb->fConsPhys, fb->fRowBytes);
++	if (fb != NULL) {
++		if (fb->fProtocol) { __atomic_store_n(&fb->fTerminal, true, __ATOMIC_RELEASE); }
++		if (fb->fVig0 != NULL && fb->fScanPhys != fb->fConsPhys) {
++			fb->scanFrom(fb->fConsPhys, fb->fRowBytes);
++		}
+ 	}
+ }
+ 
+@@ -1844,7 +2392,7 @@ AppleCLCD::flipFrom(const uint8_t *src, uint32_t srcStride)
+  * fall back to the copy path.
+  */
+ bool
+-AppleCLCD::directPresent(const uint8_t *rec)
++AppleCLCD::directPresent(const uint8_t *rec, SweetSurface **sources)
+ {
+ 	if (fVig0 == NULL) {
+ 		return false;
+@@ -1859,7 +2407,8 @@ AppleCLCD::directPresent(const uint8_t *rec)
+ 	if (n != 1) {
+ 		return false;
+ 	}
+-	SweetSurface *s = sweet_surface_copy(get32(rec, 0x54 + 4 * layer));
++	SweetSurface *s = sources ? sources[layer] : sweet_surface_copy(get32(rec, 0x54 + 4 * layer));
++	if (sources && s) { s->retain(); }
+ 	if (s == NULL) {
+ 		return false;
+ 	}
+@@ -1936,7 +2485,7 @@ AppleCLCD::directPresent(const uint8_t *rec)
+ 
+ /* Shows a swap's frame; true when the MDP scans one of its surfaces in place (not a copy) */
+ bool
+-AppleCLCD::present(const uint8_t *rec)
++AppleCLCD::present(const uint8_t *rec, SweetSurface **sources)
+ {
+ 	uint32_t mask = get32(rec, 0x104);
+ 	static int console_only = -1;
+@@ -1951,7 +2500,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 		return false;
+ 	}
+ 	fConsShown = false;
+-	if (directPresent(rec)) {
++	if (directPresent(rec, sources)) {
+ 		if (!fConsolePaused) {
+ 			int quiet = 0;
+ 			fConsolePaused = true;
+@@ -2000,7 +2549,8 @@ AppleCLCD::present(const uint8_t *rec)
+ 		if (!(mask & (1u << layer)) || id == 0) {
+ 			continue;
+ 		}
+-		SweetSurface *s = sweet_surface_copy(id);
++		SweetSurface *s = sources ? sources[layer] : sweet_surface_copy(id);
++		if (sources && s) { s->retain(); }
+ 		uint64_t sig = (uint64_t)(s ? s->pixelFormat : 0) * 0x9e3779b97f4a7c15ull;
+ 		const uint32_t parts[] = { (uint32_t)(s ? s->width : 0), (uint32_t)(s ? s->height : 0),
+ 			                   (uint32_t)(s ? s->bytesPerElement : 0), (uint32_t)(s ? s->bytesPerRow : 0),
+@@ -2118,6 +2668,31 @@ IOReturn
+ IOMobileFramebufferUserClient::clientClose(void)
+ {
+ 	if (fFB != NULL) {
++		if (fFB->fProtocol) {
++			IOLockLock(fFB->fLock);
++			fClosed = true;
++			bool drain = false;
++			for (unsigned i = 0; i < 128; i++) {
++				AppleCLCD::Token &t = fFB->fTokens[i];
++				if (fFB->fQueueActive && t.owner == this &&
++				    ((fFB->fQueueWaiting && t.id == get32(fFB->fQueueRec, 0x50)) ||
++				    (fFB->fPresentBusy && t.serial == fFB->fAcceptedSerial))) { drain = true; }
++			}
++			IOLockUnlock(fFB->fLock);
++			bool owned = drain && fFB->drainPresent();
++			if (drain && !owned) { sweet_fb_submit_fault(7); owned = fFB->drainPresent(); }
++			IOLockLock(fFB->fLock);
++			if (drain && !owned) { fFB->queueFallback(7); }
++			sweet_bench_event(35, fFB->fEpoch, 7, 0, 0);
++			for (unsigned i = 0; i < 128; i++) {
++				if (fFB->fTokens[i].owner == this) {
++					fFB->fTokens[i].cancelled = true;
++					fFB->fTokens[i].owner = NULL;
++				}
++			}
++			IOLockUnlock(fFB->fLock);
++			if (owned) { fFB->releasePresent(); }
++		}
+ 		fFB->removeClient(this);
+ 		IOLockLock(fFB->fLock);
+ 		mach_port_t old = fPort;
+@@ -2179,7 +2754,25 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		break;
+ 	case kSweetFBSwapBegin:
+ 		IOLockLock(fFB->fLock);
+-		out[0] = ++fFB->fSwapID;
++		if (fFB->fQueueActive) {
++			uint64_t serial = fFB->fSerial + 1;
++			AppleCLCD::Token &t = fFB->fTokens[serial % 128];
++			if (fClosed || serial == 0 || (t.owner && t.epoch == fFB->fEpoch && !t.cancelled && t.serial >= fFB->fLatchedSerial)) {
++				IOLockUnlock(fFB->fLock);
++				ret = kIOReturnBusy;
++				break;
++			}
++			if (++fFB->fSwapID == 0) { fFB->fWrapped = true; ++fFB->fSwapID; }
++			fFB->fSerial = fNewestSerial = serial;
++			t.owner = this;
++			t.id = fFB->fSwapID;
++			t.serial = serial;
++			t.epoch = fFB->fEpoch;
++			t.ended = t.cancelled = false;
++			out[0] = t.id;
++		} else {
++			out[0] = ++fFB->fSwapID;
++		}
+ 		sweet_bench_event(10, (uint32_t)out[0], 0, 0, 0);
+ 		IOLockUnlock(fFB->fLock);
+ 		outCount = 1;
+@@ -2187,12 +2780,26 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 	case kSweetFBSwapEnd: {
+ 		uint8_t rec[SWEET_FB_SWAP_REC_SIZE];
+ 		if (args->structureInputDescriptor != NULL ||
+-		    args->structureInputSize < SWEET_FB_SWAP_REC_SIZE) {
++		    args->structureInput == NULL || args->structureInputSize < SWEET_FB_SWAP_REC_SIZE) {
+ 			ret = kIOReturnBadArgument;
+ 			break;
+ 		}
+ 		memcpy(rec, args->structureInput, sizeof(rec));
+-		fFB->swap(rec);
++		if (fFB->fQueueActive) {
++			IOLockLock(fFB->fLock);
++			ret = kIOReturnBadArgument;
++			for (unsigned i = 0; i < 128; i++) {
++				AppleCLCD::Token &t = fFB->fTokens[i];
++				if (t.owner == this && t.id == get32(rec, 0x50) && !t.ended) {
++					ret = !fClosed && t.epoch == fFB->fEpoch ? kIOReturnSuccess : kIOReturnAborted;
++					t.ended = true;
++					break;
++				}
++			}
++			IOLockUnlock(fFB->fLock);
++			if (ret != kIOReturnSuccess) { ret = fFB->rejectFrame(get32(rec, 0x50), 11, ret); break; }
++		}
++		ret = fFB->swap(rec);
+ 		break;
+ 	}
+ 	case kSweetFBGetID:
+@@ -2251,6 +2858,12 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				IOLog("SWEET FB: display off ignored (sweetfb_stayon)\n");
+ 				break;
+ 			}
++			SweetPresentScope scope = { fFB, false };
++			if (fFB->fProtocol) {
++				scope.owned = fFB->drainPresent();
++				if (!scope.owned) { sweet_fb_submit_fault(8); scope.owned = fFB->drainPresent(); }
++				if (!scope.owned) { ret = kIOReturnTimeout; break; }
++			}
+ 			IOLockLock(fFB->fLock);
+ 			bool changed = off != fFB->fPowerOff;
+ 			if (changed) {
+@@ -2275,7 +2888,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 	case kSweetFBSwapWait:
+ 		/* IOMobileFramebufferSwapWait (kern_SwapWait): swap ID, timeout, 0 */
+ 		if (args->scalarInputCount >= 2) {
+-			ret = fFB->swapWait((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1]);
++			ret = fFB->swapWait((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1], this);
+ 		}
+ 		break;
+ 	default:
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index d41bb82..478f91b 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -99,9 +99,46 @@ static uint32_t sweet_gpu_debug;
+  * j0056: jobs that drew into a surface the display still held (in use since its
+  * swap, IOSurfaceClientIsInUse): CoreAnimation reusing a frame not yet copied.
+  */
+-static uint32_t sweet_gpu_held_draws;
++static uint32_t sweet_gpu_held_draws, sweet_gpu_protected_listings;
+ /* j0058: jobs that waited for the panel to latch a later frame first, and how long (SweetFramebuffer.cpp) */
+ extern "C" int sweet_fb_gpu_write_wait(SweetSurface *s, uint64_t *us);
++static uint32_t sweet_gpu_nbo_zero;
++extern "C" int sweet_fb_write_begin(SweetSurface **surfaces, uint32_t count);
++extern "C" void sweet_fb_write_end(SweetSurface *s);
++extern "C" uint64_t sweet_fb_present_capability(void);
++extern "C" bool sweet_fb_queue_boot(void);
++extern "C" uint32_t sweet_fb_write_state(SweetSurface *surface);
++extern "C" void sweet_fb_submit_fault(uint32_t reason);
++extern "C" uint64_t sweet_fb_sleep_us(void);
++extern "C" uint64_t sweet_fb_spin_us(void);
++
++struct SweetGPUCallScope {
++	IOLock *lock;
++	uint32_t *active;
++	~SweetGPUCallScope() {
++		if (lock) { IOLockLock(lock); (*active)--; IOLockUnlock(lock); }
++	}
++};
++
++struct SweetWriteScope {
++	OSArray *surfaces;
++	~SweetWriteScope() {
++		if (surfaces) {
++			for (unsigned i = 0; i < surfaces->getCount(); i++) {
++				sweet_fb_write_end((SweetSurface *)surfaces->getObject(i));
++			}
++			surfaces->release();
++		}
++	}
++};
++
++/* The out-of-line input is copied once, bounded before allocating or reading. */
++struct SweetSubmitInput {
++	uint8_t *bytes;
++	uint32_t size;
++	~SweetSubmitInput() { if (bytes) { IOFreeData(bytes, size); } }
++};
++
+ static uint32_t sweet_gpu_panel_waits;
+ static uint64_t sweet_gpu_panel_us;
+ static uint32_t sweet_gpu_wc;
+@@ -417,6 +454,8 @@ class SweetGPUUserClient : public IOUserClient {
+ 	char     fName[32];
+ 	uint64_t fStatT0, fStatNs, fStatBytes;
+ 	uint32_t fStatSubmits, fStatBufs, fStatBulk;
++	uint32_t fActiveCalls;
++	bool fClosing;
+ 
+ 	SweetGPUBuffer *buffer(uint64_t handle);
+ 	uint32_t addBuffer(SweetGPUBuffer *b);
+@@ -468,10 +507,44 @@ SweetGPUUserClient::free()
+ IOReturn
+ SweetGPUUserClient::clientClose(void)
+ {
++	if (sweet_fb_queue_boot()) {
++		IOLockLock(fLock);
++		fClosing = true;
++		IOLockUnlock(fLock);
++		uint64_t until;
++		clock_interval_to_deadline(100, kMillisecondScale, &until);
++		bool idle = false;
++		uint32_t seq = 0;
++		for (;;) {
++			IOLockLock(fLock);
++			idle = fActiveCalls == 0;
++			seq = fJobsTail ? fJobsTail->seqno : 0;
++			IOLockUnlock(fLock);
++			if (idle || mach_absolute_time() >= until) { break; }
++			IOSleep(1);
++		}
++		clock_interval_to_deadline(100, kMillisecondScale, &until);
++		while (idle && seq && (int32_t)(sweet_gpu_completed() - seq) < 0 && mach_absolute_time() < until) {
++			IOSleep(1);
++		}
++		if (!idle || (seq && (int32_t)(sweet_gpu_completed() - seq) < 0)) {
++			/* Quiescence is unproved: retain the connection, mappings, pins and BOs for this boot. */
++			retain();
++			sweet_fb_submit_fault(14);
++			IOLog("SWEET GPU: close quarantined %s, active %u, last job %u; storage retained for boot\n",
++			    fName, fActiveCalls, seq);
++			terminate();
++			return kIOReturnSuccess;
++		}
++	}
+ 	retireJobs(0, true);
+-	IOLockLock(fLock);
+-	fBuffers->flushCollection();    /* unmaps and frees every buffer */
+-	IOLockUnlock(fLock);
++	if (sweet_fb_queue_boot()) {
++		fBuffers->flushCollection(); /* calls are quiesced; no lock across last release */
++	} else {
++		IOLockLock(fLock);
++		fBuffers->flushCollection();
++		IOLockUnlock(fLock);
++	}
+ 	terminate();
+ 	return kIOReturnSuccess;
+ }
+@@ -738,10 +811,10 @@ SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t n
+ 	absolutetime_to_nanoseconds(now - fStatT0, &since);
+ 	if (since >= 10ull * NSEC_PER_SEC) {
+ 		IOLog("SWEET GPU: %s: %u submits in %llu ms (%u buffers each), caches of %llu MB maintained in %llu ms (%u whole-cache flushes), "
+-		    "%u drew into a surface the display holds, %u waited for the panel (%llu ms)\n",
++		    "%u drew into a surface the display holds, %u waited for the panel (%llu ms), nbo=0 %u; FB sleep %llu spin %llu us; show/retire BO listings %u\n",
+ 		    fName, fStatSubmits, since / NSEC_PER_MSEC, fStatSubmits ? fStatBufs / fStatSubmits : 0,
+ 		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC, fStatBulk, sweet_gpu_held_draws,
+-		    sweet_gpu_panel_waits, sweet_gpu_panel_us / 1000);
++		    sweet_gpu_panel_waits, sweet_gpu_panel_us / 1000, sweet_gpu_nbo_zero, sweet_fb_sleep_us(), sweet_fb_spin_us(), sweet_gpu_protected_listings);
+ 		sweet_gpu_held_draws = sweet_gpu_panel_waits = 0;
+ 		sweet_gpu_panel_us = 0;
+ 		fStatT0 = now;
+@@ -753,6 +826,15 @@ SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t n
+ IOReturn
+ SweetGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
+ {
++	SweetGPUCallScope call = { NULL, NULL };
++	if (sweet_fb_queue_boot()) {
++		IOLockLock(fLock);
++		if (fClosing) { IOLockUnlock(fLock); return kIOReturnAborted; }
++		fActiveCalls++;
++		call.lock = fLock;
++		call.active = &fActiveCalls;
++		IOLockUnlock(fLock);
++	}
+ 	SweetGPUBuffer *b = buffer(type);
+ 	if (b == NULL) {
+ 		return kIOReturnBadArgument;
+@@ -768,6 +850,15 @@ IOReturn
+ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target, __unused void *reference)
+ {
++	SweetGPUCallScope call = { NULL, NULL };
++	if (sweet_fb_queue_boot()) {
++		IOLockLock(fLock);
++		if (fClosing) { IOLockUnlock(fLock); return kIOReturnAborted; }
++		fActiveCalls++;
++		call.lock = fLock;
++		call.active = &fActiveCalls;
++		IOLockUnlock(fLock);
++	}
+ 	const uint64_t *in = args->scalarInput;
+ 	uint32_t nin = args->scalarInputCount;
+ 
+@@ -821,6 +912,21 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		};
+ 		const uint8_t *s = (const uint8_t *)args->structureInput;
+ 		uint32_t len = args->structureInputSize;
++		SweetSubmitInput input = { NULL, 0 };
++		if (args->structureInputDescriptor != NULL) {
++			uint64_t size = args->structureInputDescriptor->getLength();
++			if (size < 8 || size > 8 + 16ull * SWEET_GPU_MAX_IBS + 4ull * SWEET_GPU_MAX_JOB_BUFS) {
++				return kIOReturnBadArgument;
++			}
++			input.size = (uint32_t)size;
++			input.bytes = (uint8_t *)IOMallocData(input.size);
++			if (!input.bytes) { return kIOReturnNoMemory; }
++			if (args->structureInputDescriptor->readBytes(0, input.bytes, input.size) != input.size) {
++				return kIOReturnBadArgument;
++			}
++			s = input.bytes;
++			len = input.size;
++		}
+ 		if (s == NULL || len < 8 || args->scalarOutputCount < 1) {
+ 			return kIOReturnBadArgument;
+ 		}
+@@ -831,6 +937,11 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		    len < 8 + n * sizeof(struct ib) + 4ull * nbo) {
+ 			return kIOReturnBadArgument;
+ 		}
++		bool queue_nbo_zero = nbo == 0 && (sweet_fb_present_capability() & 2);
++		if (nbo == 0) {
++			OSIncrementAtomic((volatile SInt32 *)&sweet_gpu_nbo_zero);
++			if (queue_nbo_zero) { sweet_fb_submit_fault(9); }
++		}
+ 		uint64_t iova[SWEET_GPU_MAX_IBS];
+ 		uint32_t dw[SWEET_GPU_MAX_IBS];
+ 		for (uint32_t i = 0; i < n; i++) {
+@@ -872,6 +983,10 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			SweetGPUBuffer *b = buffer(h);
+ 			if (b != NULL) {
+ 				job->bufs[job->n++] = b;
++			} else if (sweet_fb_present_capability() & 2) {
++				sweet_fb_submit_fault(10);
++				sweet_gpu_job_free(job);
++				return kIOReturnBadArgument;
+ 			}
+ 		}
+ 		/*
+@@ -884,10 +999,26 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		 * j0058: CoreAnimation goes on as soon as its swap ended (SwapWait); a frame the MDP
+ 		 * scans in place must not be drawn into before the panel latched the next one.
+ 		 */
++		SweetWriteScope writes = { NULL };
++		if (sweet_fb_present_capability() & 2) {
++			writes.surfaces = OSArray::withCapacity(job->n ? job->n : 1);
++			if (!writes.surfaces) { sweet_gpu_job_free(job); return kIOReturnNoMemory; }
++		}
+ 		for (uint32_t i = 0; i < job->n; i++) {
+ 			SweetSurface *js = job->bufs[i]->surface;
+-			if (js != NULL && js->gpuPool && !job->bufs[i]->readonly) {
+-				sweet_gpu_panel_waits += sweet_fb_gpu_write_wait(js, &sweet_gpu_panel_us) == 1;
++			if (js != NULL && (js->gpuPool || writes.surfaces) && !job->bufs[i]->readonly) {
++				int wait = sweet_fb_gpu_write_wait(js, &sweet_gpu_panel_us);
++				int reservation = wait < 0 ? -1 : writes.surfaces ? sweet_fb_write_begin(&js, 1) : 0;
++				if (reservation < 0) {
++					sweet_gpu_job_free(job);
++					return kIOReturnBusy;
++				}
++				if (reservation > 0 && !writes.surfaces->setObject(js)) {
++					sweet_fb_write_end(js);
++					sweet_gpu_job_free(job);
++					return kIOReturnNoMemory;
++				}
++				sweet_gpu_panel_waits += wait == 1;
+ 			}
+ 		}
+ 		retireJobs(sweet_gpu_completed(), false, job);
+@@ -896,21 +1027,25 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		args->scalarOutput[0] = seqno;
+ 		GPULOG("submit of %u IBs, %u buffers: seqno %u (err %d)", n, job->n, seqno, err);
+ 		if (err != 0) {
++			sweet_fb_submit_fault(15);
+ 			sweet_gpu_job_free(job);
+ 		} else {
+ 			job->seqno = seqno;
+ 			/* the display and IOSurfaceLock wait for this job before reading what it draws (j0055) */
+-			bool held = false;
++			bool held = false, protectedListing = false;
+ 			for (uint32_t i = 0; i < job->n; i++) {
+ 				SweetSurface *js = job->bufs[i]->surface;
+ 				if (js != NULL && !job->bufs[i]->readonly) {
+ 					sweet_bench_event(22, seqno, js->id, (uint32_t)job->bufs[i]->size, 0);
+ 					js->gpuSeqno = seqno;
++					uint32_t state = sweet_fb_write_state(js);
++					protectedListing = protectedListing || state == 2 || state == 3;
+ 					held = held || (js->state != NULL &&
+ 					    *(volatile uint64_t *)((uint8_t *)js->state->getBytesNoCopy() + 0x18) != 0);
+ 				}
+ 			}
+ 			sweet_gpu_held_draws += held;
++			sweet_gpu_protected_listings += protectedListing;
+ 			IOLockLock(fLock);
+ 			if (fJobsTail != NULL) {
+ 				fJobsTail->next = job;
+@@ -920,6 +1055,8 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 			fJobsTail = job;
+ 			IOLockUnlock(fLock);
+ 		}
++		/* Old nbo=0 libraries remain accepted, but cannot leave an untracked async job. */
++		if (err == 0 && queue_nbo_zero && sweet_gpu_wait(seqno, 100) != 0) { return kIOReturnTimeout; }
+ 		if (err == 0 && sweet_gpu_debug && sweet_gpu_hang_check(seqno, 1000) != 0) {
+ 			return kIOReturnTimeout;
+ 		}
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index f26cacf..c36d118 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -636,6 +636,10 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	return kIOReturnSuccess;
+ }
+ 
++extern "C" int sweet_fb_write_begin(SweetSurface **surfaces, uint32_t count);
++extern "C" void sweet_fb_write_end(SweetSurface *s);
++extern "C" uint64_t sweet_fb_present_capability(void);
++
+ /* Per-client mapping of one surface. */
+ class SweetSurfaceRef : public OSObject {
+ 	OSDeclareDefaultStructors(SweetSurfaceRef);
+@@ -645,10 +649,11 @@ public:
+ 	IOMemoryMap  *data;
+ 	IOMemoryMap  *state;
+ 	uint32_t      count;
++	uint32_t      writeLocks;
+ 	bool          detached;     /* trap 4 seen: the framework is releasing this view */
+ 	bool          released;     /* released: only its state page stays mapped (fZombies) */
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { detached = false; released = false; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { detached = false; released = false; writeLocks = 0; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+ };
+ 
+@@ -669,6 +674,7 @@ SweetSurfaceRef::free()
+ 		}
+ 	}
+ 	OSSafeReleaseNULL(data);
++	while (writeLocks) { writeLocks--; sweet_fb_write_end(surface); }
+ 	OSSafeReleaseNULL(state);
+ 	if (surface != NULL) {
+ 		if (!released) {
+@@ -1694,7 +1700,7 @@ sweet_surface_pinned_note(const char *when)
+ }
+ 
+ /* j0055: how often a CPU reader found the GPU still drawing (logged every 100) */
+-static uint32_t sweet_surface_waits;
++static uint32_t sweet_surface_waits, sweet_surface_read_timeouts;
+ static uint64_t sweet_surface_wait_us;
+ 
+ /*
+@@ -1741,11 +1747,41 @@ IOSurfaceRootUserClient::trapLock(void *id, void *options, void *seedOut,
+     void *, void *, void *)
+ {
+ 	SweetSurface *s = sweet_surface_held(fLock, fRefs, (uint32_t)(uintptr_t)id);
+-	if (s == NULL) {
+-		return kIOReturnNotFound;
++	if (s == NULL) { return kIOReturnNotFound; }
++	bool wrote = !((uintptr_t)options & kIOSurfaceLockReadOnly);
++	bool reserved = false;
++	if (wrote && (sweet_fb_present_capability() & 2)) {
++		int reservation = sweet_fb_write_begin(&s, 1);
++		if (reservation < 0) { s->release(); return kIOReturnBusy; }
++		reserved = reservation > 0;
++	}
++	IOReturn ret = kIOReturnSuccess;
++	bool sync = !((uintptr_t)options & kIOSurfaceLockAvoidSync);
++	if (sync && (sweet_fb_present_capability() & 2)) {
++		uint64_t until;
++		clock_interval_to_deadline(100, kMillisecondScale, &until);
++		while (s->gpuSeqno && (int32_t)(sweet_gpu_completed() - s->gpuSeqno) < 0) {
++			if (mach_absolute_time() >= until) {
++				ret = kIOReturnTimeout;
++				OSIncrementAtomic((volatile SInt32 *)&sweet_surface_read_timeouts);
++				IOLog("SWEET SURF: CPU read timeout id %u, total %u\n", s->id, sweet_surface_read_timeouts);
++				break;
++			}
++			IOSleep(1);
++		}
+ 	}
+-	sweet_surface_cpu_access(s, !((uintptr_t)options & kIOSurfaceLockAvoidSync));
+-	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
++	if (ret == kIOReturnSuccess) {
++		sweet_surface_cpu_access(s, sync);
++		ret = sweet_surface_seed_out(s, seedOut, false);
++	}
++	if (ret == kIOReturnSuccess && reserved) {
++		IOLockLock(fLock);
++		SweetSurfaceRef *ref = findRef(s->id, NULL);
++		if (ref && ref->surface == s && !ref->released) { ref->writeLocks++; reserved = false; }
++		else { ret = kIOReturnNotFound; }
++		IOLockUnlock(fLock);
++	}
++	if (reserved) { sweet_fb_write_end(s); }
+ 	s->release();
+ 	return ret;
+ }
+@@ -1755,14 +1791,18 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+     void *, void *, void *)
+ {
+ 	SweetSurface *s = sweet_surface_held(fLock, fRefs, (uint32_t)(uintptr_t)id);
+-	if (s == NULL) {
+-		return kIOReturnNotFound;
+-	}
++	if (s == NULL) { return kIOReturnNotFound; }
+ 	bool wrote = !((uintptr_t)options & kIOSurfaceLockReadOnly);
++	if (wrote) { s->cpuDirty = true; /* cleaned before the GPU's next use (j0053) */ }
++	IOReturn ret = sweet_surface_seed_out(s, seedOut, wrote);
++	bool reserved = false;
+ 	if (wrote) {
+-		s->cpuDirty = true;     /* cleaned before the GPU's next use (j0053) */
++		IOLockLock(fLock);
++		SweetSurfaceRef *ref = findRef(s->id, NULL);
++		if (ref && ref->surface == s && ref->writeLocks) { ref->writeLocks--; reserved = true; }
++		IOLockUnlock(fLock);
+ 	}
+-	IOReturn ret = sweet_surface_seed_out(s, seedOut, wrote);
++	if (reserved) { sweet_fb_write_end(s); }
+ 	s->release();
+ 	return ret;
+ }
+@@ -1805,6 +1845,7 @@ IOSurfaceRootUserClient::trapRelease(void *id, void *, void *, void *, void *, v
+ 		 * their page (16 KB each), the oldest goes first.
+ 		 */
+ 		OSSafeReleaseNULL(ref->data);
++		while (ref->writeLocks) { ref->writeLocks--; sweet_fb_write_end(ref->surface); }
+ 		sweet_surface_put(ref->surface);
+ 		/* Keep the independent state mapping, not the surface's pixel backing.
+ 		 * fZombies may hold 256 views per client; retaining the surface here
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index cc4e7a5..5ac56f5 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -58,9 +58,10 @@ public:
+ 	 * next use instead of around every GPU job.
+ 	 */
+ 	volatile bool             cpuDirty, gpuDirty;
++	uint32_t                  displayWriters; /* task 16: submit/CPU write reservations, framebuffer fLock */
+ 	volatile uint32_t         gpuSeqno;     /* jasmine: last SweetGPU job that writes it (j0055), or 0 */
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; cpuDirty = true; gpuDirty = false; gpuSeqno = 0; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; readOnly = false; cpuDirty = true; gpuDirty = false; gpuSeqno = 0; displayWriters = 0; return OSObject::init(); }
+ 	uint64_t benchBytes = 0;
+ 	bool benchCounted = false;
+ 	void free() APPLE_KEXT_OVERRIDE;
+-- 
+2.47.3
+

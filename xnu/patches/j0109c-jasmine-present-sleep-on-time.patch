@@ -1,0 +1,61 @@
+From 317feb02e3d6b9f69a294c27dc710d9259a61b84 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sun, 25 Oct 2026 18:51:49 +0100
+Subject: [PATCH 3/4] jasmine: sleeping present waits wake on time (j0100c)
+
+With sweetfb_sleep=1, CoreAnimation 1 ms SwapWait polls took 3.1 ms (median,
+2128 waits in one framebench capture) instead of 1.1 ms: the 100 us sleeps got
+the default timer leeway. Sleep with no leeway at critical urgency, as
+sweet_ufs.c does, and never past the SwapWait timeout.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 9cb8b21..fc7aa38 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -148,15 +148,24 @@ static bool sweet_fb_force_sync;
+ static bool sweet_fb_sleeping;
+ static uint64_t sweet_fb_slept_us, sweet_fb_spun_us;
+ 
++/*
++ * Sleeps us, or until `until` (mach time) if that comes first. No timer leeway: with the
++ * default one, CoreAnimation's 1 ms SwapWait polls took 3.1 ms (median) instead of 1.1.
++ */
+ static void
+-sweet_fb_pause(uint32_t us = 100)
++sweet_fb_pause(uint32_t us = 100, uint64_t until = 0)
+ {
+ 	uint64_t start = mach_absolute_time(), ns = 0;
+ 	if (sweet_fb_sleeping) {
+ 		uint64_t deadline;
+ 		clock_interval_to_deadline(us, kMicrosecondScale, &deadline);
+-		assert_wait_deadline((event_t)&sweet_fb_slept_us, THREAD_UNINT, deadline);
+-		thread_block(THREAD_CONTINUE_NULL);
++		if (until != 0 && until < deadline) {
++			deadline = until;
++		}
++		if (deadline > start && assert_wait_deadline_with_leeway((event_t)&sweet_fb_slept_us, THREAD_UNINT,
++		    TIMEOUT_URGENCY_SYS_CRITICAL, deadline, 0) == THREAD_WAITING) {
++			thread_block(THREAD_CONTINUE_NULL);
++		}
+ 	} else {
+ 		IODelay(us);
+ 	}
+@@ -2045,7 +2054,9 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 			sweet_fb_wait_busy += !done;
+ 			return done ? kIOReturnSuccess : kIOReturnTimeout;
+ 		}
+-		sweet_fb_pause();
++		uint64_t until;
++		nanoseconds_to_absolutetime((uint64_t)ms * NSEC_PER_MSEC, &until);
++		sweet_fb_pause(100, start + until);
+ 	}
+ }
+ 
+-- 
+2.47.3
+
