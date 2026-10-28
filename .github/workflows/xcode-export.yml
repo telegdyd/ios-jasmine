@@ -2,8 +2,10 @@ name: xcode-export
 
 # One-off: pack the Xcode that xnu.yml builds with (oldest Xcode_*.app on
 # macos-15-intel) for the local Sonoma build VM, which has no Apple ID to
-# download Xcode with. Trimmed to what xnu, ios-tools and mesa use: the
-# toolchain, xcodebuild/iig, and the macOS, DriverKit and iPhoneOS SDKs.
+# download Xcode with. Packed whole: removing anything breaks Apple's bundle
+# seal, and Gatekeeper then kills xcodebuild as "damaged" (an ad-hoc re-seal
+# is rejected too). The simulator runtimes live outside the bundle, so the
+# whole app is only ~4.4 GB.
 
 permissions:
   contents: read
@@ -36,18 +38,9 @@ jobs:
             DEVELOPER_DIR="$XC/Contents/Developer" xcodebuild -version
             sw_vers
           } > out/xcode-version.txt
-          # Simulators, the other device platforms, device disk images and the
-          # bundled apps (Simulator, Instruments) are not used by any build here.
-          tar -C /Applications -czf "out/$name.tgz" \
-            --exclude "$name/Contents/Applications" \
-            --exclude "$name/Contents/Developer/Platforms/iPhoneSimulator.platform" \
-            --exclude "$name/Contents/Developer/Platforms/AppleTV*.platform" \
-            --exclude "$name/Contents/Developer/Platforms/Watch*.platform" \
-            --exclude "$name/Contents/Developer/Platforms/XR*.platform" \
-            --exclude "$name/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport" \
-            --exclude "$name/Contents/Developer/Platforms/iPhoneOS.platform/Library/Developer/CoreSimulator" \
-            "$name"
-          shasum -a 256 "out/$name.tgz" | tee out/SHA256SUMS
+          codesign --verify --strict "$XC"
+          tar -C /Applications -czf "out/$name.tgz" "$name"
+          (cd out && shasum -a 256 "$name.tgz" | tee SHA256SUMS)
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
