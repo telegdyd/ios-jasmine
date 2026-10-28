@@ -35,8 +35,10 @@ struct Surface {
     void release(){assert(refs);if(!--refs){pixels--;dead=true;}}
 };
 static void sweet_surface_put(Surface *s){assert(s->users);if(!--s->users)s->release();}
+static int write_ends;
+static void sweet_fb_write_end(Surface *s){assert(s && !s->dead);write_ends++;}
 struct Ref {
-    Surface *surface;Mapping *data,*state;unsigned count=1,refs=1;bool detached=true,released=false;
+    Surface *surface;Mapping *data,*state;unsigned count=1,refs=1,writeLocks=0;bool detached=true,released=false;
     Ref(Surface *s):surface(s),data(new Mapping(false)),state(new Mapping(true)){s->retain();}
     void retain(){refs++;}
     void release(){assert(refs);if(!--refs){
@@ -83,10 +85,15 @@ int main(){
     assert(other.drop(500)==0 && shared.dead && pixels==0 && data_maps==0 && states==2);
     c.zombies.clear();other.zombies.clear();assert(states==0);
     assert(c.drop(999)==kIOReturnNotFound);
-    puts("PASS actual surface release: pixels freed, state pages preserved, 256-view bound, independent/live clients");
+    // Present-queue write reservations (j0109) end with the view, while its surface is still alive.
+    const bool reservations=RESERVATIONS;
+    Surface locked(600);auto w=new Ref(&locked);w->writeLocks=2;c.add(w);
+    assert(c.drop(600)==0 && locked.dead && pixels==0 && write_ends==(reservations?2:0));
+    c.zombies.clear();assert(states==0);
+    puts("PASS actual surface release: pixels freed, state pages preserved, 256-view bound, independent/live clients, write reservations ended");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
-    p=Path(tmp);(p/'test.cpp').write_text(harness+method+tail)
+    p=Path(tmp);(p/'test.cpp').write_text(harness+method+tail.replace('RESERVATIONS','true' if 'writeLocks' in method else 'false'))
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O2',str(p/'test.cpp'),'-o',str(p/'test')],check=True)
     subprocess.run([str(p/'test')],check=True,timeout=15)
