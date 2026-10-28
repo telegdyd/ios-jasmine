@@ -322,6 +322,10 @@ jobs:
             test -f xnu/iokit/Kernel/arm/SweetRenderTickets.inc
             grep -q 'sweetgpu_tickets' xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
           fi
+          if [ -f patches/j0111-jasmine-small-canvas.patch ]; then
+            grep -q sweetfb_lw xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+            grep -q fSmallCanvas xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+          fi
           ccache -s
 
       - name: Package build tree for local compiles

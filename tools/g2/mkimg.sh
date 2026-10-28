@@ -10,6 +10,7 @@
 # VARIANT=name writes shim/out/shim-boot-TAG-name.img instead of -gpu.
 # RO=1: root read-only (no ufsrw=1 rootrw=1), for a first boot of a risky kernel.
 # New 4K Jasmine kernels select AMP=1, CPUS=8, CPU_DVFS=1 automatically.
+# CANVAS=750x1624 [SCALE=2]: ADT canvas and display-scale for the j0111 small canvas (also needs EXTRA_ARGS="sweetfb_lw=750 sweetfb_lh=1624").
 # CPU_DVFS=0 disables scaling; CPUS=4 retains four Gold cores for diagnostics.
 # Older kernels retain their legacy AMP=0/CPUS=4 defaults. AMP=1 selects the AMP ADT.
 set -e
@@ -30,7 +31,7 @@ CPU_ARGS=" sweetdvfs=$CPU_DVFS sweetdvfsauto=$CPU_DVFS"
 B="debug=0xc serial=3 cpus=$CPUS keepsyms=1 -noprogress rd=ufsroot0 ufsroot=userdata unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 panicwait=60 sweetfb_hz=30 ufsrw=1 rootrw=1 rtcoffset=1790955133 sweetgold=1747"
 [ "${RO:-0}" = 1 ] && B=${B/ ufsrw=1 rootrw=1/}
 # The integrated kernel defaults to Wi-Fi. Explicit off images omit the wlan node.
-python3 tools/mkadt.py shim/out/jasmine-$T.adt --highmem $([ "${AMP:-0}" = 1 ] && echo --amp) $(case " ${EXTRA_ARGS:-} " in *" wifi=0 "*|*" modem=0 "*) echo --no-wlan;; esac) >/dev/null
+python3 tools/mkadt.py shim/out/jasmine-$T.adt --highmem $([ "${AMP:-0}" = 1 ] && echo --amp) ${CANVAS:+--canvas $CANVAS --scale ${SCALE:-2}} $(case " ${EXTRA_ARGS:-} " in *" wifi=0 "*|*" modem=0 "*) echo --no-wlan;; esac) >/dev/null
 for v in ${VARIANT:-gpu}:" sweetgpu=4 gpumhz=588 sweetddr=1804 sweetwdt=20 sweetgpu_debug=${GPUDBG:-1}$CPU_ARGS${EXTRA_ARGS:+ $EXTRA_ARGS}"; do n=${v%%:*}; extra=${v#*:}
   python3 tools/mkpayload.py $K shim/out/jasmine-$T.adt shim/out/payload-$T-$n.bin --cmdline "$B$extra" >/dev/null
   bash shim/build.sh shim/out/payload-$T-$n.bin >shim/out/build-$T-$n.log 2>&1 || { cat shim/out/build-$T-$n.log; exit 1; }

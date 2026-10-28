@@ -1,0 +1,54 @@
+From: jasmine
+Subject: [PATCH] jasmine: sweetfb_lw/sweetfb_lh present a smaller canvas (j0111)
+
+Default off. With sweetfb_lw=750 sweetfb_lh=1624 (both set, even width, within the iPhone X
+size, not with sweetfb_native) AppleCLCD presents that size instead of 1125x2436: CoreAnimation
+renders 55% fewer pixels (375x812 pt at @2x, needs tools/mkadt.py --canvas 750x1624 --scale 2)
+and the VIG0 QSEED3 scaler (j0058) upscales it into the same 996x2160 window at x 40. The fit
+is forced in this mode (the 95% rule would skip it). Touch maps panel pixels through
+sweet_fit_x/w and the panel height, so SweetHID needs no change. Without the boot-args the
+kernel is unchanged.
+---
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -292,6 +292,7 @@
+ 	uint64_t      fPhys;
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
++	bool          fSmallCanvas;             /* j0111: sweetfb_lw/lh canvas below the iPhone X size */
+ 	int32_t       fOffX, fOffY;             /* logical origin of the panel */
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+@@ -543,6 +544,20 @@
+ 		fLogicalW = SWEET_FB_LOGICAL_W;
+ 		fLogicalH = SWEET_FB_LOGICAL_H;
+ 	}
++	/*
++	 * j0111: sweetfb_lw=750 sweetfb_lh=1624 presents a smaller canvas (same 375x812 pt at @2x, see
++	 * mkadt.py --canvas): CoreAnimation renders fewer pixels and the MDP scaler fills the same panel
++	 * window. Unset: unchanged. Touch maps panel pixels through sweet_fit_x/w and the panel height,
++	 * so it does not depend on the canvas size.
++	 */
++	uint32_t lw = 0, lh = 0;
++	(void)PE_parse_boot_argn("sweetfb_lw", &lw, sizeof(lw));
++	(void)PE_parse_boot_argn("sweetfb_lh", &lh, sizeof(lh));
++	fSmallCanvas = !native && lw >= 320 && lh >= 640 && lw <= fLogicalW && lh <= fLogicalH && (lw & 1) == 0;
++	if (fSmallCanvas) {
++		fLogicalW = lw;
++		fLogicalH = lh;
++	}
+ 	/* x rounded down to 4 pixels: the panel window must start 16-byte aligned (MDP fetch) */
+ 	fOffX = ((int32_t)(fLogicalW - fWidth) / 2) & ~3;
+ 	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
+@@ -847,9 +862,9 @@
+ 	fFlushMask = pipes[pipe].flush | (1u << 17);
+ 
+ 	/* fit: uniform scale to the panel height, centred (sweetfb_fit=0: crop) */
+-	uint32_t fit = fHeight * 100 < fLogicalH * 95;
++	uint32_t fit = fHeight * 100 < fLogicalH * 95 || fSmallCanvas;
+ 	(void)PE_parse_boot_argn("sweetfb_fit", &fit, sizeof(fit));
+-	if (fit && fLogicalH > fHeight) {
++	if (fit && (fLogicalH > fHeight || fSmallCanvas)) {
+ 		fFitW = (fLogicalW * fHeight / fLogicalH) & ~1u;
+ 		fFitX = ((fWidth - fFitW) / 2) & ~3u;
+ 		fFitXMap = (uint16_t *)IOMalloc(fFitW * sizeof(uint16_t));

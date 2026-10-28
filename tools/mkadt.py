@@ -185,6 +185,12 @@ def node(name, props=(), children=()):
     return n
 
 
+# --canvas WxH --scale N (with the kernel's sweetfb_lw/sweetfb_lh boot-args, j0111): /arm-io/disp0
+# canvas size and /chosen display-scale, default the iPhone X's 1125x2436 @3x
+CANVAS = (1125, 2436)
+DISPLAY_SCALE = 3
+
+
 def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, amp=False):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = ((MID_PHYS_BASE, MID_MEM_SIZE) if midmem else
@@ -213,7 +219,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, amp=
         # from /chosen, the pixel size from IOMobileFramebuffer. Scale 0 makes
         # SpringBoard's FBSDisplayMode "infxinf@0x" invalid. 1080x2400 @3x =
         # 360x800 points (like iPhone X class devices).
-        ('display-scale', u32(3)),
+        ('display-scale', u32(DISPLAY_SCALE)),
         # XNU derives IOPlatformUUID (gethostuuid) from these on arm; without
         # them CFPreferences cannot use kCFPreferencesCurrentHost (no ByHost
         # files), so e.g. DataMigration never records LastSystemVersion and
@@ -323,8 +329,8 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, amp=
             # --native: present the real 1080x2400 panel (needed for direct MDP scanout,
             # which must match the canvas: sweetfb_native=1 with a 1125x2436 canvas makes
             # backboardd ask for a hardware scaler that does not exist)
-            ('canvas-width', u32(1080 if native else 1125)),
-            ('canvas-height', u32(2400 if native else 2436)),
+            ('canvas-width', u32(1080 if native else CANVAS[0])),
+            ('canvas-height', u32(2400 if native else CANVAS[1])),
         ])])
 
     fbcon = node('sweet-fbcon', [
@@ -419,6 +425,10 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, amp=
 
 
 if __name__ == '__main__':
+    if '--canvas' in sys.argv:
+        CANVAS = tuple(int(v) for v in sys.argv[sys.argv.index('--canvas') + 1].split('x'))
+    if '--scale' in sys.argv:
+        DISPLAY_SCALE = int(sys.argv[sys.argv.index('--scale') + 1])
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
                  native='--native' in sys.argv, midmem='--midmem' in sys.argv, amp='--amp' in sys.argv)
     blob = adt.serialize(root)
