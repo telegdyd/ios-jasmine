@@ -105,3 +105,16 @@ Corner radius is not part of the check (earlier guess was wrong). Consequences:
   class, 2.5 Mpx, only -8%) — no real gain.
 
 Files: UIKitCore extracted to `research/render-size/uik/` (ignored), disassembly on the Mac VM in `/tmp/uik-text.txt`.
+
+### 1080-wide class (iPhone 12 mini family) — constants read from UIKitCore
+
+`Split1080` / `Split1080_Wide`: nativeDisplayWidth 1080, referenceScreenScale **2.88**, notchSize 226 x 34.333 (Split1080). The
+tolerance in the check is **0.0001**, so the exclusion area must match exactly: exclusionArea * (nativeScale / 2.88) = notch. For
+1080x2340 @3x (360x780 pt, the 12 mini's own geometry) that needs an exclusion area of 216.96 x 33.0 (226 x 0.96, 34.333 x 0.96).
+Other widths: Split1125 notch 209x30 (reference = screen scale), Split828 notch 227x32.
+
+Where the exclusion area comes from is NOT found: UIKit reads `[[_UIScreenInitialDisplayConfigurationLoader initialDisplayContext] exclusionArea]`
+(a `_UIDisplayInfoShape` from FrontBoard's display context); it is not in FrontBoardServices/BackBoardServices strings, and none of the
+MobileGestalt cache rectangles equals 209x30 (so MG is not the source). Finding that source (another framework in the shared cache, or
+SpringBoard/backboardd) is the missing piece for both the 1080 and the 828 class. The MG cache hashed key names could not be matched with
+md5(name).
