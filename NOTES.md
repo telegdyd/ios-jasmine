@@ -1,3 +1,17 @@
+### 2026-10-28: GPUPROF g1 image bug found; original g1 result INVALID for mode2 comparison
+
+Observed: shim-boot-j0110-s3gp-g1.img has 607-byte truncated cmdline ending swee,
+so sweetgpu_tickets=1 is absent; g0/base retain it (606 bytes). This invalidates the
+first g1 vs baseline comparison; per-draw flushing may be the capability fallback.
+Same-library g0 Home: 18.6 batches/frame, GPU 27.46 ms, wall 29.3 (1000 trimmed frames).
+Built shim/out/shim-boot-j0110-s3gp-g1-fixed.img from g0: add GMEM=1, omit default-zero
+sweetgpu_debug=0; 604 bytes, full sweetgpu_tickets=1 retained. SHA256 d87902c85c8c88701087a00839a73321f25e42590685144f7c84bd4b1f31c2bd.
+Manifest research/t24/stage3/g1-fixed-image.json verifies only cmdline/digest changed.
+tools/mkpayload.py now rejects oversized/NUL cmdlines instead of silently truncating.
+Checked 608-byte rejection, NUL rejection, 607-byte acceptance. No driver fix or diagnostic CI
+needed yet; temporary diagnostic patch was reverted in repo (WSL source still has opt-in diag).
+Next: finish g0, park, rerun fixed g1 as s3gp-g1-fixed; then four framebench runs.
+
 ### 2026-10-28: first GMEM GPUPROF completed; batching regression under investigation
 
 s3gp-g1 (CI 40717125371 lib d39a3243): Home trimmed 200 frames, GPU 25.50 ms/frame
