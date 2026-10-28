@@ -1,3 +1,18 @@
+### 2026-10-28 19:26: Mesa and ios-tools build on the local macOS VM too: `tools/vm-mesa.sh mesa|ios TAG`
+
+`tools/vm-mesa.sh mesa TAG` -> xnu/out-mesa-TAG (the mesa-ios artifact's 5 files), `tools/vm-mesa.sh
+ios TAG` -> xnu/out-ios-TAG (ios-tools' 5 files); OUT=xnu/out-mesa for the tools/g2 push scripts.
+Sends mesa, ios, tools (uncommitted edits too) to `ssh mac`, runs tools/mesa-local.sh there with
+the same flags, meson options, ninja targets and ad-hoc signing as xnu.yml. Takes the same
+~/topaz-xnu-build/.lock as vm-build.sh. Mesa: cold 119 s, warm 6 s (~/topaz-mesa keeps the
+pristine 26.2.5 clone and mesa-src/build; patched tree synced by content, so only changed files
+rebuild); ios-tools 4 s. Entitlements byte-identical to CI 40717125371's gltest; SDK is iPhoneOS
+18.0 (Xcode 16, as on the macos-15 runner), so binaries differ slightly from macos-14 runs. Not yet
+run on the phone. Toolchain (one time, done): `ssh mac sh -s < tools/vm-mesa-setup.sh` built
+OpenSSL 3.5.9, Python 3.13.18, bison 3.8.2 from upstream source into ~/topaz-mesa/tools + meson 1.12.1
+venv (Mesa 26 needs Python >= 3.10, bison >= 3; Sonoma has 3.9.6/2.3); system flex 2.6.4.
+Known: TASK24_CONTROLS=1 fails (reverse of patch0008 conflicts with 0009/0010); CI would fail the same.
+
 ### 2026-10-28 18:02: GMEM stage 3 EVALUATED; no global gain, no promotion, phone parked
 
 Evaluation/report commit: d973634; code fixes: 649993e and ac758d5.
