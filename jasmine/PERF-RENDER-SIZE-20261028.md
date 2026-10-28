@@ -77,3 +77,31 @@ status bar is broken. The `rsbase` image is built but unbooted.
    (no UIKit change, large Mesa/EAGL change).
    Each needs UIKitCore disassembly (dyld cache extraction) first: the next concrete step.
 3. Re-test only with `rsbase` vs the new image, alternating twice, per plan step 5.
+
+## UIKit status bar analysis (follow-up, UIKitCore 16.7.16 from the shared cache, disassembled with otool)
+
+`+[_UIStatusBarVisualProvider_Split visualProviderSubclassForScreen:visualProviderInfo:]` walks nine
+provider classes (`Split1080`, `Split1080_Wide`, `Split1125`, `Split1170`, `Split1170_Wide`, `Split1242`,
+`Split828`, `Split1284`, `Split1284_Wide`) and picks the first whose class methods match the screen:
+
+1. `+nativeDisplayWidth` equals `[UIScreen _nativeDisplayBounds]` width. That is the display's
+   **pixelSize** (`FBSDisplayConfiguration`), i.e. the width CoreAnimation renders: 750 matches nothing, so no
+   scale-2 canvas of the iPhone X's width can work. Only 828, 1080, 1125, 1170, 1242, 1284 are accepted.
+2. With r = `_nativeScale` / (`+referenceScreenScale` if the class has one, else `_scale`):
+   `|+notchSize.width - exclusionArea.width * r|` and `|+notchSize.height - exclusionArea.height * r|` within
+   a small tolerance. `exclusionArea` comes from `-[_UIDisplayInfoProvider exclusionArea]`. `Split1125`'s notch
+   height is 30, `Split828`'s is 32.
+
+Corner radius is not part of the check (earlier guess was wrong). Consequences:
+
+- 828x1792 @2x (414x896 pt, -46% pixels) passes check 1. It failed because the exclusion area is not the XR
+  notch: MobileGestalt regenerates its screen rectangles by scaling the iPhone X values, so the height stays near
+  30, not 32 (the cache shows scaled rectangles after the 828 boot: 414x261/147 instead of 375x174/98).
+- Next experiment: find where `_UIDisplayInfoProvider` gets `exclusionArea` (and the periphery/safe-area insets)
+  and make it the iPhone XR's, either through the cache keys `aD51uq...`, `PdprWt...`, `rJkMAG...`, `pMeQxE...` or
+  an `ArtworkDeviceSubType` of 1792 (the cache has 2436), then boot `shim-boot-j0111-rsx.img` again. Read the
+  `Split828` constants with `otool -s __TEXT __const`; I only have the notch heights (30, 32) so far.
+- Not worth trying: any 750-wide canvas. Alternative sizes in the list: 1080 wide at @3x (360x780 pt, 12 mini
+  class, 2.5 Mpx, only -8%) — no real gain.
+
+Files: UIKitCore extracted to `research/render-size/uik/` (ignored), disassembly on the Mac VM in `/tmp/uik-text.txt`.

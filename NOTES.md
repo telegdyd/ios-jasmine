@@ -1,3 +1,10 @@
+### 2026-10-28 21:45: task 25: UIKit status bar rule found (pixel width in a fixed list); 750 impossible, 828x1792@2 possible
+
+Disassembled UIKitCore (report section "UIKit status bar analysis"): the provider needs the render pixel width in
+{828,1080,1125,1170,1242,1284} and exclusionArea*scaleRatio == the class's notch. 828x1792@2x (XR class, -46%
+pixels) is the only useful candidate; needs MG exclusionArea/ArtworkDeviceSubType edited to XR values. Phone
+parked r109 (MG cache original restored earlier). WSL/disk cleaned (xnu old builds, simg, dmgs, mesa-t24s*).
+
 ### 2026-10-28 20:30: task 25 small canvas: kernel/ADT path works, UIKit status bar blocks @2x; phone parked
 
 Report: jasmine/PERF-RENDER-SIZE-20261028.md. Added j0111 (boot-args sweetfb_lw/lh, default off, CI guard),
