@@ -1,3 +1,15 @@
+### 2026-10-28: first GMEM GPUPROF completed; batching regression under investigation
+
+s3gp-g1 (CI 40717125371 lib d39a3243): Home trimmed 200 frames, GPU 25.50 ms/frame
+(vs stage2 27.40), but 106.6 batches/frame (baseline 18.6), 101.3 one-draw,
+105.6 context-flush ends/frame; wall 85.7 ms/frame. Only 0.76 GMEM batches/frame.
+CC has insufficient windows to trim; untrimmed GPU 29.28, 178.6 batches/frame.
+Settings scroll GPU 10.78, 134.5 batches/frame. Settings-sub no complete 100-frame window.
+No SMMU fault/panic/ticket error observed. Home dump visually matches baseline except clock/battery.
+Evidence logs/netlog-s3gp-g1.txt, research/t24/stage3/s3gp-g1-* and *-summary.txt.
+Phone returned to r109; battery 73% at 17:03. Next: same-lib GMEM-off s3gp-g0 control
+to isolate per-draw flushing before spending four framebench boots. No install/flash.
+
 ### 2026-10-28: GMEM CI 40717125371 pixel gate PASS
 
 16/16 cases PASS (14 cases 84 checks each, two diagnostics 44 each); gate-ci40717125371.
