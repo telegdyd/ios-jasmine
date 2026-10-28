@@ -1,3 +1,11 @@
+### 2026-10-28: GMEM CI 40717125371 pixel gate PASS
+
+16/16 cases PASS (14 cases 84 checks each, two diagnostics 44 each); gate-ci40717125371.
+Required GMEM decisions: 1127x2438=200, 1131x2442=100, 1125x2436=200.
+Test lib readback d39a3243... matches CI; production 4780fbaa... verified before and after.
+Test binary removed by gate. Next: park then s3gp-g1 profiling, followed by alternating
+framebench runs and report. No production install or flash.
+
 ### 2026-10-28: GMEM macOS 15 CI PASS; pixel gate started
 
 CI 40717125371 PASS (head 26ad0b2, includes d7db729). Downloaded to ignored
