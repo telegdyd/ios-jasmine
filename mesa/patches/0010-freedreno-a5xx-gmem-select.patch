@@ -55,7 +55,7 @@ index e0ce8f0..1377580 100644
     /* Existing a5xx primitives, now in draw order rather than at batch end:
      * publish color writes; complete prior work; invalidate sampler storage.
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
-index cdece22..fa5df79 100644
+index cdece22..4406d40 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 @@ -24,6 +24,8 @@
@@ -91,7 +91,7 @@ index cdece22..fa5df79 100644
     fd5_emit_restore(batch, ring);
  
     fd5_emit_lrz_flush(batch, ring);
-@@ -776,6 +781,417 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
+@@ -776,6 +781,426 @@ fd5_emit_sysmem_fini(struct fd_batch *batch)
  
     fd5_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
     fd5_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
@@ -182,6 +182,7 @@ index cdece22..fa5df79 100644
 +   struct sg_slot slot[SG_SLOTS];
 +   struct sg_entry e[SG_ENTRIES];
 +   bool told_gmem, told_split;
++   int log;                            /* SWEETCA_GMEM_LOG: every decision to stderr */
 +};
 +
 +enum sg_why { SG_GMEM, SG_BARRIER, SG_INELIGIBLE, SG_UNSAFE, SG_NOHIST, SG_COST, SG_ONE_DRAW };
@@ -398,6 +399,13 @@ index cdece22..fa5df79 100644
 +   s->told_gmem |= tell;
 +   simple_mtx_unlock(&s->lock);
 +   sg_count(why);
++   if (s->log) {
++      static const char *const names[] = { "gmem", "sysmem:barrier", "sysmem:ineligible", "sysmem:unsafe",
++                                           "sysmem:nohist", "sysmem:cost", "sysmem:one-draw" };
++      fprintf(stderr, "sweetca: gmem decision %ux%u %u draws cleared %x restore %x: %s%s\n",
++              b->framebuffer.width, b->framebuffer.height, b->num_draws, b->cleared, b->restore, names[why],
++              measure ? " (timed)" : "");
++   }
 +   if (tell)
 +      fprintf(stderr, "sweetca: gmem batch selected (SWEETCA_GMEM=%d, margin %u%%) %ux%u, %u draws\n",
 +              s->level, s->margin, b->framebuffer.width, b->framebuffer.height, b->num_draws);
@@ -502,6 +510,7 @@ index cdece22..fa5df79 100644
 +   s->margin = debug_get_num_option("SWEETCA_GMEM_MARGIN", 110);
 +   s->sample = MAX2(1, debug_get_num_option("SWEETCA_GMEM_SAMPLE", 8));
 +   s->retry = MAX2(2, debug_get_num_option("SWEETCA_GMEM_RETRY", 64));
++   s->log = debug_get_num_option("SWEETCA_GMEM_LOG", 0);
 +   fd5_context(ctx)->sweet_gmem = s;
 +   ctx->sweet_gmem_select = fd5_sweet_gmem_select;
 +   fprintf(stderr, "sweetca: gmem rule on (SWEETCA_GMEM=%d, margin %u%%, timed 1/%u, retry 1/%u)\n", level,
@@ -509,7 +518,7 @@ index cdece22..fa5df79 100644
  }
  
  void
-@@ -783,6 +1199,8 @@ fd5_gmem_init(struct pipe_context *pctx) disable_thread_safety_analysis
+@@ -783,6 +1208,8 @@ fd5_gmem_init(struct pipe_context *pctx) disable_thread_safety_analysis
  {
     struct fd_context *ctx = fd_context(pctx);
  
