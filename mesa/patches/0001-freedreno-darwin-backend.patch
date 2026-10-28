@@ -1,6 +1,6 @@
-From e8ece9ed64b84c5b16ee4b7904955086a5b0d3d1 Mon Sep 17 00:00:00 2001
+From 4f2aecd02d5a54d6e1f9b89867ef23d02153de53 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 28 Oct 2026 03:19:02 +0100
+Date: Wed, 28 Oct 2026 03:42:09 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -12,7 +12,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/freedreno/drm/darwin/darwin_pipe.c        |  313 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  146 +
  .../drm/darwin/sweet_batch_trace.inc          |  139 +
- src/freedreno/drm/darwin/sweet_profile.c      |  147 +
+ src/freedreno/drm/darwin/sweet_profile.c      |  151 +
  src/freedreno/drm/freedreno_bo.c              |    5 +
  src/freedreno/drm/freedreno_bo_cache.c        |   36 +-
  src/freedreno/drm/freedreno_device.c          |   23 +
@@ -30,11 +30,11 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/frontends/sweetgl/sweetgl.h       |  120 +
  src/gallium/frontends/sweetgl/sweetgl_gles2.c |   14 +
  .../frontends/sweetgl/sweetgl_tickets.inc     |  228 ++
- .../sweetgl/sweetgpu_feedback_test.inc        |  257 ++
- .../frontends/sweetgl/sweetgpu_gltest.c       |  685 ++++
+ .../sweetgl/sweetgpu_feedback_test.inc        |  272 ++
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  688 ++++
  src/gallium/meson.build                       |    5 +
- src/util/sweet_profile.h                      |   79 +
- 29 files changed, 8683 insertions(+), 6 deletions(-)
+ src/util/sweet_profile.h                      |   85 +
+ 29 files changed, 8711 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -1253,10 +1253,10 @@ index 0000000..419e3cc
 +}
 diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
 new file mode 100644
-index 0000000..f3f05b1
+index 0000000..75eaff0
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/sweet_profile.c
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,151 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT */
 +#include "util/sweet_profile.h"
@@ -1288,7 +1288,11 @@ index 0000000..f3f05b1
 +   "batch-0", "batch-1", "batch-2-4", "batch-5+",
 +   "flush-barrier", "flush-kick", "flush-frame", "flush-resource-dependency",
 +   "flush-capacity", "flush-context", "flush-other",
-+   "barrier-needed", "barrier-skipped"
++   "barrier-needed", "barrier-skipped",
++   "clear-fast", "clear-blit-after-draw", "clear-blit-zs",
++   "sysbarrier-retained", "sysbarrier-reject-draws", "sysbarrier-reject-cleared",
++   "sysbarrier-reject-deps", "sysbarrier-reject-fence", "sysbarrier-reject-fb",
++   "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split"
 +};
 +
 +__attribute__((constructor)) static void
@@ -7985,10 +7989,10 @@ index 0000000..1ed5ee6
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_feedback_test.inc b/src/gallium/frontends/sweetgl/sweetgpu_feedback_test.inc
 new file mode 100644
-index 0000000..5fdb5de
+index 0000000..8f7d211
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_feedback_test.inc
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,272 @@
 +/* SPDX-License-Identifier: MIT
 + * Real GPU reference tests for the Task 24 experiment. Included after the
 + * IOSurface helpers. Each feedback draw reads its own pixel once; a barrier
@@ -8212,6 +8216,21 @@ index 0000000..5fdb5de
 +   feedback_draws(sample, textures[0], 3);
 +   ok &= feedback_check("feedback clear and partial scissor", 32, 64, 96, 3, true);
 +
++   /* Stage 2: a batch that starts with a (fast) clear and a draw that leaves
++    * the target unchanged (blend ZERO, ONE), then more feedback draws than
++    * patch 0008's narrow limit of five, so the widened path retains barriers
++    * in a cleared batch past that limit (the first barrier needs a draw).
++    */
++   glDisable(GL_SCISSOR_TEST);
++   glClearColor(40 / 255.0f, 24 / 255.0f, 8 / 255.0f, 1);
++   glClear(GL_COLOR_BUFFER_BIT);
++   glEnable(GL_BLEND);
++   glBlendFunc(GL_ZERO, GL_ONE);
++   feedback_solid(solid, 200, 200, 200);
++   glDisable(GL_BLEND);
++   feedback_draws(sample, textures[0], 7);
++   ok &= feedback_check("feedback after first-in-batch clear, seven draws", 40, 24, 8, 7, false);
++
 +   /* Keep another target pending, then revisit both; use a distinct texture
 +    * name aliasing the first IOSurface as the sampled input on the first one.
 +    */
@@ -8248,10 +8267,10 @@ index 0000000..5fdb5de
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 new file mode 100644
-index 0000000..2fb9d16
+index 0000000..3183cf7
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
-@@ -0,0 +1,685 @@
+@@ -0,0 +1,688 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -8857,15 +8876,18 @@ index 0000000..2fb9d16
 +{
 +   bool feedback_diagnostics = false;
 +   for (int i = 1; i < argc; i++) {
-+      if (!strcmp(argv[i], "--sysbarrier-on") || !strcmp(argv[i], "--sysbarrier-off")) {
-+         setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" : "0", 1);
++      if (!strcmp(argv[i], "--sysbarrier-on") || !strcmp(argv[i], "--sysbarrier-off") ||
++          !strcmp(argv[i], "--sysbarrier-wide")) {
++         /* 1 = patch 0008's narrow eligibility, 2 = task 24 stage 2's widened one */
++         setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" :
++                !strcmp(argv[i], "--sysbarrier-wide") ? "2" : "0", 1);
 +         setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
 +      } else if (!strcmp(argv[i], "--no-tc")) {
 +         setenv("GALLIUM_THREAD", "0", 1);
 +      } else if (!strcmp(argv[i], "--feedback-diagnostics")) {
 +         feedback_diagnostics = true;
 +      } else {
-+         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-off] [--no-tc] [--feedback-diagnostics]\n");
++         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--no-tc] [--feedback-diagnostics]\n");
 +         return 2;
 +      }
 +   }
@@ -8952,10 +8974,10 @@ index 67011f5..05a144b 100644
 +endif
 diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
 new file mode 100644
-index 0000000..3167e96
+index 0000000..9817b5f
 --- /dev/null
 +++ b/src/util/sweet_profile.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,85 @@
 +/* Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
 + *
@@ -8985,7 +9007,13 @@ index 0000000..3167e96
 +   SPE_BATCH_ZERO, SPE_BATCH_ONE, SPE_BATCH_TWO_FOUR, SPE_BATCH_FIVE_PLUS,
 +   SPE_FLUSH_BARRIER, SPE_FLUSH_KICK, SPE_FLUSH_FRAME, SPE_FLUSH_DEPENDENCY,
 +   SPE_FLUSH_CAPACITY, SPE_FLUSH_CONTEXT, SPE_FLUSH_OTHER,
-+   SPE_BARRIER_NEEDED, SPE_BARRIER_SKIPPED, SPE_COUNT
++   SPE_BARRIER_NEEDED, SPE_BARRIER_SKIPPED,
++   /* Task 24 stage 2: forced-sysmem clears (patch 0009) and barrier retention (0008) */
++   SPE_CLEAR_FAST, SPE_CLEAR_BLIT_AFTER_DRAW, SPE_CLEAR_BLIT_ZS,
++   SPE_SYSBAR_RETAINED, SPE_SYSBAR_REJECT_DRAWS, SPE_SYSBAR_REJECT_CLEARED,
++   SPE_SYSBAR_REJECT_DEPS, SPE_SYSBAR_REJECT_FENCE, SPE_SYSBAR_REJECT_FB,
++   SPE_SYSBAR_REJECT_OTHER_BATCH, SPE_SYSBAR_REJECT_STATE, SPE_SYSBAR_CLEAR_SPLIT,
++   SPE_COUNT
 +};
 +
 +#ifdef __APPLE__

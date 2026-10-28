@@ -603,15 +603,18 @@ main(int argc, char **argv)
 {
    bool feedback_diagnostics = false;
    for (int i = 1; i < argc; i++) {
-      if (!strcmp(argv[i], "--sysbarrier-on") || !strcmp(argv[i], "--sysbarrier-off")) {
-         setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" : "0", 1);
+      if (!strcmp(argv[i], "--sysbarrier-on") || !strcmp(argv[i], "--sysbarrier-off") ||
+          !strcmp(argv[i], "--sysbarrier-wide")) {
+         /* 1 = patch 0008's narrow eligibility, 2 = task 24 stage 2's widened one */
+         setenv("SWEETCA_SYS_BARRIER", !strcmp(argv[i], "--sysbarrier-on") ? "1" :
+                !strcmp(argv[i], "--sysbarrier-wide") ? "2" : "0", 1);
          setenv("FD_MESA_DEBUG", "sysmem,nofp16", 1);
       } else if (!strcmp(argv[i], "--no-tc")) {
          setenv("GALLIUM_THREAD", "0", 1);
       } else if (!strcmp(argv[i], "--feedback-diagnostics")) {
          feedback_diagnostics = true;
       } else {
-         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-off] [--no-tc] [--feedback-diagnostics]\n");
+         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--no-tc] [--feedback-diagnostics]\n");
          return 2;
       }
    }

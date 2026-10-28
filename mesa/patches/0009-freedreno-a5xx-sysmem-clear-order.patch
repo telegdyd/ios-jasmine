@@ -11,14 +11,17 @@ later depth test fail once in four runs. With FD_MESA_DEBUG=sysmem, clear
 those with u_blitter (a draw); a color clear before any draw keeps the
 fast clear, which behaved in every run.
 ---
- src/gallium/drivers/freedreno/a5xx/fd5_draw.c | 13 +++++++++++++
- 1 file changed, 13 insertions(+)
+ src/gallium/drivers/freedreno/a5xx/fd5_draw.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+Task 24 stage 2: counts fast clears and u_blitter clears (after a draw, or
+of depth/stencil) for SWEETCA_DRAWPROF.
 
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
-index f4f3483..f3a8cc8 100644
+index 493121f..e0ce8f0 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
-@@ -455,6 +455,19 @@ fd5_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
+@@ -455,6 +455,24 @@ fd5_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
         is_z32(pfb->zsbuf.format))
        return false;
  
@@ -32,8 +35,13 @@ index f4f3483..f3a8cc8 100644
 +    * which is ordered like any other draw.
 +    */
 +   if (FD_DBG(SYSMEM) &&
-+       (ctx->batch->num_draws > 0 || (buffers & (FD_BUFFER_DEPTH | FD_BUFFER_STENCIL))))
++       (ctx->batch->num_draws > 0 || (buffers & (FD_BUFFER_DEPTH | FD_BUFFER_STENCIL)))) {
++      /* Task 24 stage 2: how often CoreAnimation reaches this (SWEETCA_DRAWPROF). */
++      SWEET_EVENT(ctx->batch->num_draws > 0 ? SPE_CLEAR_BLIT_AFTER_DRAW : SPE_CLEAR_BLIT_ZS, 1);
 +      return false;
++   }
++   if (FD_DBG(SYSMEM))
++      SWEET_EVENT(SPE_CLEAR_FAST, 1);
 +
     fd5_emit_render_cntl(ctx, true, false);
  

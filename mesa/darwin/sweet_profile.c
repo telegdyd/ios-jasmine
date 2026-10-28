@@ -29,7 +29,11 @@ static const char *const event_names[SPE_COUNT] = {
    "batch-0", "batch-1", "batch-2-4", "batch-5+",
    "flush-barrier", "flush-kick", "flush-frame", "flush-resource-dependency",
    "flush-capacity", "flush-context", "flush-other",
-   "barrier-needed", "barrier-skipped"
+   "barrier-needed", "barrier-skipped",
+   "clear-fast", "clear-blit-after-draw", "clear-blit-zs",
+   "sysbarrier-retained", "sysbarrier-reject-draws", "sysbarrier-reject-cleared",
+   "sysbarrier-reject-deps", "sysbarrier-reject-fence", "sysbarrier-reject-fb",
+   "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split"
 };
 
 __attribute__((constructor)) static void

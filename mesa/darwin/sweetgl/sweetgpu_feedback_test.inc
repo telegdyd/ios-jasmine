@@ -221,6 +221,21 @@ feedback(struct sgl_context *ctx, bool diagnostic)
    feedback_draws(sample, textures[0], 3);
    ok &= feedback_check("feedback clear and partial scissor", 32, 64, 96, 3, true);
 
+   /* Stage 2: a batch that starts with a (fast) clear and a draw that leaves
+    * the target unchanged (blend ZERO, ONE), then more feedback draws than
+    * patch 0008's narrow limit of five, so the widened path retains barriers
+    * in a cleared batch past that limit (the first barrier needs a draw).
+    */
+   glDisable(GL_SCISSOR_TEST);
+   glClearColor(40 / 255.0f, 24 / 255.0f, 8 / 255.0f, 1);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glEnable(GL_BLEND);
+   glBlendFunc(GL_ZERO, GL_ONE);
+   feedback_solid(solid, 200, 200, 200);
+   glDisable(GL_BLEND);
+   feedback_draws(sample, textures[0], 7);
+   ok &= feedback_check("feedback after first-in-batch clear, seven draws", 40, 24, 8, 7, false);
+
    /* Keep another target pending, then revisit both; use a distinct texture
     * name aliasing the first IOSurface as the sampled input on the first one.
     */
