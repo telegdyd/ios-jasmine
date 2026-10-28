@@ -87,6 +87,14 @@ contains an overrun but does not prove correct output. This must be re-checked b
    **PAUSED again 2026-10-28 16:25:** extent check fixed to upstream's pitch rule (rows a multiple of
    64 px; CA frames have 4608-byte rows) and the full 128 KiB pad (d7db729, not yet built: macOS runner
    outage); baseline GPUPROF s3gp-base measured (Home 27.4 ms GPU/frame, CC 33.0, Settings scroll 9.8).
+   **MEASURED 2026-10-28:** [stage 3 report](PERF-GMEM-STAGE3-20261028.md), Mesa CI 40717125371
+   (macos-15): 16/16 pixel-gate cases PASS, actual CA targets reach GMEM. Corrected mode-2
+   profile Home GPU 27.46 -> 27.94 ms, CC 34.61 -> 36.75. Two alternating framebench pairs:
+   Home mean 33.09 -> 32.92/s, CC B 23.87 -> 23.50, sampled CC A 24.43 -> 22.68;
+   no global uplift. Recommendation: keep the current rule disabled, no production install.
+   Original g1 profiling image lost sweetgpu_tickets=1 through cmdline truncation; its results
+   are invalid for comparison. Fixed image and payload-builder guard documented in the report.
+   Further feedback-path tuning and user agreement on whether to continue remain open.
 
 Each stage is its own milestone with its own measurement; stop if a stage's premise fails.
 

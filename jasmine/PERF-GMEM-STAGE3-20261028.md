@@ -1,6 +1,9 @@
 # GMEM plan stage 3: per-batch selection (2026-10-28)
 
-Work in progress. The pixel gate passes; corrected GPUPROF shows no gain. Framebench is pending.
+**Result: 16/16 pixel-gate cases pass, but the current timed per-batch rule does not provide a
+global frame-rate gain. Keep it disabled; do not install this candidate as-is.** Two complete
+alternating baseline/GMEM framebench pairs confirm essentially unchanged Home/CC B rates,
+with a regression in sampled CC A. Production remains unchanged.
 Nothing installed in production or flashed. This report covers stage 3 of
 [the GMEM plan](PERF-GMEM-PLAN-20261028.md).
 
@@ -16,7 +19,7 @@ passed on macOS 15, head `26ad0b2` (driver change `d7db729`). Artifacts:
 The test library was copied as `/usr/local/bin/libsweetca-s3.dylib`, with exact readback.
 The **16-case pixel gate passed**: sysbarrier off/on/wide, force-GMEM off/wide, timed rule,
 forced feedback diagnostics, and the informational pitch override, each with TC on/off.
-Fourteen cases had 84 individual PASS checks; two diagnostic cases had 44. No FAIL lines.
+Fourteen cases had 84 individual PASS checks; two diagnostic cases had 44: 1264 checks total. No FAIL lines.
 The required GMEM decisions were observed on 1127x2438 (200), 1131x2442 (100), and
 1125x2436 (200). These totals include the informational override cases.
 Production library `4780fbaa...` matched before and after; the test executable was removed.
@@ -89,15 +92,65 @@ Notification Center is not visually signed off: baseline and GMEM surface dumps 
 banded/stale regions, and the date/header differs between individual surfaces. This may involve
 capture timing or rendering; the cause is not established here and it is not evidence of a
 GMEM-specific regression. These captures cannot substitute for the user's motion check.
-Alternating uninstrumented framebench runs are pending; both framebench images were checked
-to retain the full mode-2, queue, and ticket arguments.
+## Framebench
+
+Order: `s3fb-base1`, excluded partial `s3fb-g1a`, `s3fb-g1a2`, `s3fb-base2`, `s3fb-g1b`.
+The four valid runs captured and exported successfully, with zero event/sample drops and no
+SMMU fault, panic, or ticket/submit error. Both images retain the full mode-2, queue and ticket
+arguments. Baseline uses stage-2 lib `1772b043`; GMEM uses the pixel-gated `d39a3243`.
+Each boot waits 150 seconds after unlock before the standard framebench workload.
+GPUPROF/DRAWPROF are disabled. Framebench itself samples CPU during A phases; Home B, CC B
+and Spotlight repeat do not use those CPU sampling windows. No clock changes.
+
+Each cell is **swap arrivals/s (median/p95 interval in ms)**. These are update observations,
+not independently validated physical displayed FPS.
+
+| Phase | Baseline 1 | GMEM 1 | Baseline 2 | GMEM 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Home B | 33.90 (28.17/45.66) | 32.88 (28.18/46.23) | 32.28 (28.30/50.86) | 32.95 (29.00/46.90) |
+| CC A | 25.30 (37.33/56.81) | 22.51 (40.17/65.17) | 23.56 (38.56/62.16) | 22.85 (41.47/70.25) |
+| CC B | 24.16 (37.22/63.55) | 23.58 (39.85/60.80) | 23.58 (39.10/67.41) | 23.42 (39.76/63.98) |
+| Spotlight repeat | 26.26 (34.44/66.04) | 27.81 (35.00/56.16) | 25.74 (34.02/67.44) | 25.32 (34.51/77.81) |
+
+Descriptive means of the two run rates: Home 33.09 -> 32.92 (-0.52%), CC A 24.43 -> 22.68
+(-7.18%), CC B 23.87 -> 23.50 (-1.56%), Spotlight 26.00 -> 26.57 (+2.18%). These are not
+pooled rates or confidence intervals. The apparent Spotlight gain is not repeatable across
+the two pairs, and the Home/CC B changes are smaller than observed baseline variation.
+There is no basis for claiming the intended global uplift. No consistent p95 improvement.
+Evidence: ignored `research/ab/<run>/` manifests, summaries and reports; `logs/netlog-<run>.txt`.
 
 `s3fb-g1a` is excluded: command-port timeout during Home A after 23.3 seconds, and metadata
 export also timed out. Spotlight repeat was 25.35/s and warmup 31.00/s, but Home A had no swap
 arrivals during commanded motion; Home B and CC were not captured. GPU completed 4271/4271
 afterward, no SMMU fault/panic/ticket error, and reboot/park succeeded. The cause is unresolved;
 neither a GPU hang nor a clean acceptance run is established. A fresh bounded attempt is
-`s3fb-g1a2`. Framebench now records the exact command/snapshot that fails, without changing
+`s3fb-g1a2`, which completed, as did `s3fb-g1b`. Framebench now records the exact command/snapshot that fails, without changing
 timeouts or retrying commands.
-No installation recommendation yet; the user's motion check and explicit installation approval
-remain outstanding.
+
+## Recommendation and remaining work
+
+**Keep SWEETCA_GMEM off. Do not promote the current selector.** It passes the bounded pixel
+tests and reaches real CA targets, but neither the valid GPU profile nor two framebench pairs
+show the intended benefit. There is also an unresolved partial capture and no user motion
+sign-off. Stage 1's correctness fixes and stage 2's barrier work remain valuable separate work;
+this result does not install them in production.
+
+Further tuning has not been attempted in this run: no per-barrier split, mid-pass resolve,
+or margin/sample/retry sweep. If continuing GMEM, start with the ~14.4 ms/frame left in Home's
+full-screen retained-feedback passes and measure a separately pixel-gated redesign. Do not
+repeat the rejected image or treat the original truncated profiling result as valid. Otherwise,
+the user can accept leaving this rule off and choose the next optimization. No kernel change
+or production installation is proposed on the present evidence.
+
+## Final device state
+
+Production `/usr/local/bin/libsweetca.dylib` was read back after the final framebench:
+SHA256 `4780fbaaafcf680cbf709f4c40512499576ba09e3442f62ace41e7031ee214b8`, unchanged.
+Both temporary `libsweetca-s2.dylib` and `libsweetca-s3.dylib` were removed; the pixel-gate
+executable had already been removed. CI libraries remain in ignored local artifact directories.
+Future temporary boots using those paths must copy the test libraries first.
+
+Phone parked in r109 charging shell at 18:01: battery 71%, positive charging current,
+backlight 0, charge voltage 4050000. Both private session/framebench locks released.
+No production-library replacement, flash, kernel change, or clock change during this evaluation.
+The payload truncation guard is commit `649993e`; framebench failure logging is `ac758d5`.

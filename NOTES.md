@@ -1,3 +1,37 @@
+### 2026-10-28 18:02: GMEM stage 3 EVALUATED; no global gain, no promotion, phone parked
+
+Report: jasmine/PERF-GMEM-STAGE3-20261028.md (plan and task24 row updated).
+Mesa macos-15 CI40717125371 PASS, head26ad0b2 (driverd7db729); libd39a3243...,
+gltest27a1dcb0... under ignored research/t24/stage3/ci-40717125371/.
+Pixel gate PASS16/16, 1264 checks, actual GMEM on all required big target sizes.
+Same-lib valid GPUPROF g0 vs g1-fixed: Home27.46->27.94 GPUms/frame, CC34.61->36.75;
+Home sysfb full still14.37ms/frame. Actual1131x2442 CA target reaches GMEM.
+Original s3gp-g1 INVALID for mode2 comparison: cmdline truncated, lost sweetgpu_tickets=1.
+Fixed image shim/out/shim-boot-j0110-s3gp-g1-fixed.img (604bytes, d87902c8...).
+Guard against oversized/NUL cmdline committed649993e; WSL driver diff matches0010 exactly.
+
+Four complete framebench exports (150s settle, GPU588 DDR1804 CPUauto): baseline1,
+g1a2, baseline2, g1b. Rates Home B33.90/32.88/32.28/32.95; CC A25.30/22.51/23.56/22.85;
+CC B24.16/23.58/23.58/23.42; Spotlight26.26/27.81/25.74/25.32. Mean changes Home-0.52%,
+CC A-7.18%, CC B-1.56%, Spotlight+2.18%; no consistent gain/p95 improvement.
+Evidence research/ab/s3fb-*/; all four complete exports zero dropped events/samples.
+Partial s3fb-g1a EXCLUDED: timed out during Home A, no swaps there, metadata export incomplete;
+cause unresolved. Fresh two GMEM captures completed. Request-failure logging committedac758d5.
+Six valid measurement boots: zero SMMU fault/panic/ticket-submit errors. Static Home/CC/
+Settings/Safari look intact; NC bands/stale regions in BOTH baseline and GMEM dumps: not visually
+signed off, cause unproven. User motion check has NOT happened.
+
+Final production lib readback4780fbaaafcf680cbf709f4c40512499576ba09e3442f62ace41e7031ee214b8.
+Test libs s2/s3 REMOVED, gate executable removed. Future test images need library copied first.
+No install, flash, kernel or clock change. Phone r109 charging shell:71%, +0.56A at18:01,
+backlight0, float4050000; own phone-gmem-active/framebench-private locks released.
+
+Recommendation: keep current timed GMEM rule OFF, do not install as-is. User agreement on
+keeping it off vs continuing feedback-path redesign is outstanding; task24 is not installed/done.
+Not attempted: per-barrier split, mid-pass resolve, or margin/sample/retry tuning. If continuing,
+start with measured Home feedback cost, separately pixel-gate/measure any redesign. Stage1/2 fixes
+also remain uninstalled in production. Unrelated tracked tools/build-local.sh edit left untouched.
+
 ### 2026-10-28 17:52: second baseline captured, final GMEM run next
 
 s3fb-base2 complete/exported: Home32.28/s (median28.304 p9550.857),
