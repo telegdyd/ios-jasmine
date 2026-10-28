@@ -1,3 +1,16 @@
+### 2026-10-28: corrected GMEM GPUPROF has no gain so far
+
+s3gp-g1-fixed confirms full sweetgpu_tickets=1 and live BEGIN/SEAL, no errors.
+Home (1000 trimmed frames): 101.8 draws, 19.4 batches, GPU 27.94 vs g0 27.46 ms;
+2.67 GMEM batches/frame (1.7 full, 5.86 ms); retained sysfb full 14.37 ms.
+CC (400 trimmed frames): 194.4 draws, 62.6 batches, GPU 36.75 vs g0 34.61 ms;
+13.22 GMEM batches/frame (3.2 full, 6.47 ms), splits 5.67/frame. Settings scroll
+9.73 vs g0 8.80 ms. No SMMU fault/panic/ticket error as of workload.
+Initial g1 numbers above remain invalid because its image lost ticket boot arg.
+Next: finish screenshots/park; alternating uninstrumented s3fb-base1, s3fb-g1a,
+s3fb-base2, s3fb-g1b (images verified full mode2/ticket/queue args). No install/flash.
+WSL driver source restored: its diff matches committed 0010 exactly (no flush diagnostics).
+
 ### 2026-10-28: GPUPROF g1 image bug found; original g1 result INVALID for mode2 comparison
 
 Observed: shim-boot-j0110-s3gp-g1.img has 607-byte truncated cmdline ending swee,
