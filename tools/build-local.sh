@@ -7,6 +7,10 @@
 # Work tree (build.sh clone, xnu clone, KDK, ccache): $XNU_BUILD_DIR, default ~/topaz-xnu-build.
 # Output: $XNU_BUILD_DIR/out/kernel.development.sweet and out/SHA256SUMS.
 # Defaults to the validated 4K/AMP build; TOPAZ_4K=0 selects legacy Gold-only diagnostics.
+# Without Xcode 15.4 (the Intel build VM has the Xcode 16 exported from macos-15-intel, see
+# xcode-export.yml), iig output is replayed from $XNU_BUILD_DIR/legacy-iig like xnu.yml does:
+#   gh run download RUN -n xnu8796-iig-xcode15 -D legacy-iig   (any recent xnu.yml run)
+# Tools without Homebrew (Intel): ccache, ninja, jq, cmake in $XNU_BUILD_DIR/bin.
 set -euo pipefail
 TREE=$(cd "$(dirname "$0")/.." && pwd)
 ROOT=${XNU_BUILD_DIR:-$HOME/topaz-xnu-build}
@@ -14,7 +18,13 @@ mkdir -p "$ROOT"
 cd "$ROOT"
 DXB_SHA=663906528d1cd5ea8fde7de6f16de73db9511549
 
-export DEVELOPER_DIR=/Applications/Xcode_15.4.app/Contents/Developer
+XCODE_APP=${XCODE_APP:-$(ls -d /Applications/Xcode_15.4.app 2>/dev/null || ls -d /Applications/Xcode_*.app | sort -V | head -1)}
+export DEVELOPER_DIR=$XCODE_APP/Contents/Developer
+if [ "$(basename "$XCODE_APP")" != Xcode_15.4.app ]; then
+	export LEGACY_IIG_CACHE=$ROOT/legacy-iig
+	test -f "$LEGACY_IIG_CACHE/manifest.json" || { echo "no $LEGACY_IIG_CACHE (see the header)" >&2; exit 1; }
+	export IIG=$ROOT/bin/legacy-iig-wrapper
+fi
 export MACOS_VERSION=13.5 KERNEL_CONFIG=DEVELOPMENT MACHINE_CONFIG=SWEET
 export TOPAZ_4K=${TOPAZ_4K:-1}
 case "$TOPAZ_4K" in 0|1) ;; *) echo 'TOPAZ_4K must be 0 or 1' >&2; exit 1;; esac
@@ -46,11 +56,21 @@ sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="arm64" VAL
 grep -q 'OTHER_CFLAGS="-mkernel -nostdinc -Wno-packed -mcpu=cortex-a53"' dxb/build.sh
 sed -i '' 's|export CC="$(xcrun -find clang)"|export CC="$CCACHE_WRAP/clang"|; s|export CXX="$(xcrun -find clang++)"|export CXX="$CCACHE_WRAP/clang++"|' dxb/build.sh
 grep -q 'export CC="$CCACHE_WRAP/clang"' dxb/build.sh
+# build.sh rebuilds PATH from Xcode, the system and Homebrew only; keep our tools on it
+export TOPAZ_BIN=$ROOT/bin
+sed -i '' 's|export PATH="${XCODE_TOOLCHAIN}:${XCODE_USR_BIN}:${SYSTEM_PATHS}${HOMEBREW_PATHS}"|export PATH="${XCODE_TOOLCHAIN}:${XCODE_USR_BIN}:${SYSTEM_PATHS}${HOMEBREW_PATHS}:${TOPAZ_BIN}"|' dxb/build.sh
+grep -q ':${TOPAZ_BIN}"' dxb/build.sh
 
-# build.sh only checks that xcodes exists; Xcode 15.4 is already in /Applications
+# build.sh only checks that xcodes exists (Xcode is already in /Applications), and gum is
+# only its interactive version menu (MACOS_VERSION is set)
 mkdir -p bin "$CCACHE_WRAP"
-printf '#!/bin/sh\nexit 0\n' > bin/xcodes
-chmod +x bin/xcodes
+for t in xcodes gum; do
+	command -v $t >/dev/null || { printf '#!/bin/sh\nexit 0\n' > bin/$t; chmod +x bin/$t; }
+done
+if [ -n "${IIG:-}" ]; then
+	printf '#!/bin/sh\nexec python3 "%s/tools/xnu-legacy-iig.py" replay --cache "$LEGACY_IIG_CACHE" -- "$@"\n' "$TREE" > "$IIG"
+	chmod +x "$IIG"
+fi
 for t in clang clang++; do
 	# Assembly (.s) includes the generated assym.s, which ccache does not hash for
 	# assembler input: a cached object kept stale structure offsets (TOPAZ_4K + AMP
@@ -61,7 +81,7 @@ done
 xcodebuild -version 2>/dev/null | head -1 || true
 
 ccache -z >/dev/null
-(cd dxb && /opt/homebrew/bin/bash build.sh 2>&1 | tee ../build.log | grep -E "error:|\[ERROR\]|Building|DONE" || true)
+(cd dxb && bash build.sh 2>&1 | tee ../build.log | grep -E "error:|\[ERROR\]|Building|DONE" || true)
 ccache -s | grep -E "Hits|Misses" || true
 
 rm -rf out && mkdir -p out
