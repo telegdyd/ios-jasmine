@@ -1,3 +1,12 @@
+### 2026-10-28: GMEM macOS 15 CI PASS; pixel gate started
+
+CI 40717125371 PASS (head 26ad0b2, includes d7db729). Downloaded to ignored
+research/t24/stage3/ci-40717125371/mesa-ios/. SHA256 lib d39a3243e297816f799dbee5ed564cfcc32151c47fa35122a8d85208174b203d;
+gltest 27a1dcb006c50d647caf35679dfc5a49a2ea7ac59fb2f8ba46711950f6fc186f.
+Battery observed 75% in r109. User requested continuation; booting installed iOS for
+16-case pixel gate (gate-ci40717125371), then temporary GPUPROF/framebench boots if PASS.
+Private ownership lock research/t24/stage3/phone-gmem-active.lock while gate runs. No flash.
+
 ### 2026-10-28 16:34: GMEM Mesa build re-dispatched on macOS 15 (user request)
 
 User asked to try macOS 15 again. Dispatched xnu.yml on jasmine with build=mesa,
