@@ -1,3 +1,55 @@
+### 2026-10-28 16:25: GMEM stage 3 PAUSED again (user request): extent question answered, baseline GPUPROF done
+
+Resumed from the 06:55 handoff (below). Nothing installed or flashed, no clock change, production lib 4780fbaa
+unchanged (gate checks). No backboardd boot with GMEM yet.
+
+**Observed:**
+- Gate run with CI 40703479133 (308348e, decision + unsafe log, lib d5d99bf9, gltest 9239a552), force mode, installed
+  iOS: PASS 76/76 checks, but **every imported IOSurface target was `sysmem:unsafe`**, GL allocations went GMEM.
+  Log: `pitch 4544 < 1152 px` for 1125/1127/1131 wide, `384 < 128 px` for 67x45: on a512 `gmem_align_w` is **64 px**,
+  and the test IOSurfaces got the kernel's 64-byte rows (4544 = 1136 px). Upstream also requires GMEM-capable imports
+  to have rows aligned to gmem_align_w px (fd_layout_resource_for_handle), our darwin override relaxes it to 64 bytes
+  for sysmem. The one padded case (4800-byte rows) failed the extent check by 2 KiB with my 124 KiB margin
+  (need 11827200, have 11825152; bo size = IOSurface alloc 11698176, shared=1). So the kernel's reported size is
+  right; the rule was too strict on the pad and needed upstream's pitch rule.
+- CoreAnimation's display surfaces have **4608-byte rows** (sweet_shot: pitch 4608 = 1152 px), so they satisfy the
+  pitch rule. Whether CA's 1127x2438 / 1131x2442 intermediates do is not known yet (`gmem-sys-unsafe` drawevent
+  will show it in the g1 GPUPROF boot).
+- appwork.py coordinates checked with dumps: Settings icon (163,523) and Safari (541,2008) open; Settings restores its
+  last page, so it is now entered with one edge swipe back; sub-page row = General, y 1601; taps 80 ms; edge swipe
+  back works. Safari opens a cached page (colosseumrecords.hu).
+- **Baseline GPUPROF boot s3gp-base** (stage-2 lib s2 1772b043, SYS_BARRIER=2, image shim-boot-j0110-s3gp-base.img,
+  logs/netlog-s3gp-base.txt, `bash research/t24/stage3/summ3.sh s3gp-base`), per frame:
+  Home 101.7 draws, 18.6 batches, GPU 27.40 ms (full-screen sysmem 12.8 batches 26.83 ms);
+  CC 193.6 draws, 55.8 batches, GPU 32.99 ms; Settings scroll 127.5 draws, 26.7 batches, GPU 9.82 ms;
+  Settings sub-page 64.4 draws, 12.1 batches, GPU 5.13 ms; app open/close 67.9 draws, 14.6 batches, GPU 16.98 ms
+  (full-screen 6.6 batches 15.80 ms). App phases' wall ms/frame include idle and are not frame rates.
+  0 SMMU faults/panics/ticket errors. Dumps research/t24/stage3/s3gp-base-{home,cc,nc,settings}.*.
+
+**Code since 06:55 (pushed):** 308348e (unsafe log), d7db729 (0010: pitch must be a multiple of gmem_align_w px and
+hold align(w,64); `SWEETCA_GMEM_PITCH_ANY=1` test override; pad = full 128 KiB; gltest big targets now 4608/4864-byte
+rows plus one kernel-default 4544 case and GL alloc; appwork fixes). gate.py has a `force-pitchany` case
+(informational: GMEM on 1136-px rows).
+
+**Half-done:** d7db729 is NOT built: GitHub macOS runner capacity problems; runs 40699351392 (macos-15, attempts 1-2),
+40705035918 and 40707645611 (macos-14) were cancelled with "job was not acquired"; **run 40710191541 (macos-13)** was
+still queued at 16:24 and may finish on its own (check it; if it failed, re-dispatch one run at a time: the workflow's
+concurrency group cancels an in-progress run of the same group).
+
+**Exact next step:** get a build of d7db729 (or later), push its lib as `/usr/local/bin/libsweetca-s3.dylib`
+(readback), run `python research/t24/stage3/gate.py <ci>/mesa-ios/sweetgpu_gltest research/t24/stage3/gate2 1`
+(16 cases; needs GMEM decisions on 1127x2438, 1131x2442, 1125x2436). Then GPUPROF `s3gp-g1` (and `s3gp-g0` if a
+same-lib control is wanted), framebench `s3fb-base` and `s3fb-g1` twice each
+(`MSYS_NO_PATHCONV=1 python research/t24/stage3/s3run.py IMG NAME gp|fb --lib LOCALLIB [--lock <private>]`),
+then the report jasmine/PERF-GMEM-STAGE3-20261028.md. Park (`bash research/t24/stage3/park.sh`) between boots.
+
+**Phone:** r109 charging shell, backlight 0, charge voltage 4050000, **75%** at 16:24 (+0.67 A). Test libs on the phone:
+`/usr/local/bin/libsweetca-s3.dylib` = dab30309 (CI 40638109900, rule v2 before the pitch fix; inert),
+`/usr/local/bin/libsweetca-s2.dylib` = 1772b043 (stage 2). No gltest binary, no lock held. Temporary files: screen
+dumps `research/t24/stage3/coords-*`, scripts in research/t24/stage3/ (park.sh, s3run.py, gate.py, one.py, summ3.sh)
+and research/t24/stage3/scripts/ (0010 source sg_block.c + sg_apply_v2.py + edit_pitch.py, mkmesa-s3.sh), WSL tree
+~/ios-work/mesa-t24s3.
+
 ### 2026-10-28 06:55: GMEM stage 3 PAUSED (user request): rule v2 built, not yet gated or measured
 
 Task: per-batch GMEM in the driver (jasmine/PERF-GMEM-PLAN-20261028.md stage 3). Nothing installed, nothing flashed,

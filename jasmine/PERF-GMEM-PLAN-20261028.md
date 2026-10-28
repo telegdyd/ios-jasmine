@@ -84,6 +84,9 @@ contains an overrun but does not prove correct output. This must be re-checked b
    **PAUSED 2026-10-28 06:55** (NOTES.md handoff): patch 0010 (SWEETCA_GMEM, default off) built; v1
    sample-count rule broke large-target rendering (counting itself), v2 times each batch kind in both
    modes (CI 40638109900, 77f9316) and is not yet gated; no GMEM boot of backboardd, no measurements.
+   **PAUSED again 2026-10-28 16:25:** extent check fixed to upstream's pitch rule (rows a multiple of
+   64 px; CA frames have 4608-byte rows) and the full 128 KiB pad (d7db729, not yet built: macOS runner
+   outage); baseline GPUPROF s3gp-base measured (Home 27.4 ms GPU/frame, CC 33.0, Settings scroll 9.8).
 
 Each stage is its own milestone with its own measurement; stop if a stage's premise fails.
 
