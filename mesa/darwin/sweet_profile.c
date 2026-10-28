@@ -36,7 +36,7 @@ static const char *const event_names[SPE_COUNT] = {
    "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split",
    "gmem-select", "gmem-split", "gmem-sys-barrier", "gmem-sys-ineligible",
    "gmem-sys-unsafe", "gmem-sys-nohist", "gmem-sys-cost", "gmem-measured",
-   "gmem-pred-sys-kb", "gmem-pred-gmem-kb"
+   "gmem-pred-sys-kb", "gmem-pred-gmem-kb", "gmem-sys-probe"
 };
 
 __attribute__((constructor)) static void

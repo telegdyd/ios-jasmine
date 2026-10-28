@@ -1,6 +1,6 @@
-From a8ac019d12064a0b3bf87b94a6c246b6ccc431ff Mon Sep 17 00:00:00 2001
+From b920fce103649b639250bdb9a8bc83988f1e85a9 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 28 Oct 2026 06:02:56 +0100
+Date: Wed, 28 Oct 2026 06:10:42 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -1255,7 +1255,7 @@ index 0000000..419e3cc
 +}
 diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
 new file mode 100644
-index 0000000..938c6f4
+index 0000000..79db85a
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/sweet_profile.c
 @@ -0,0 +1,154 @@
@@ -1297,7 +1297,7 @@ index 0000000..938c6f4
 +   "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split",
 +   "gmem-select", "gmem-split", "gmem-sys-barrier", "gmem-sys-ineligible",
 +   "gmem-sys-unsafe", "gmem-sys-nohist", "gmem-sys-cost", "gmem-measured",
-+   "gmem-pred-sys-kb", "gmem-pred-gmem-kb"
++   "gmem-pred-sys-kb", "gmem-pred-gmem-kb", "gmem-sys-probe"
 +};
 +
 +__attribute__((constructor)) static void
@@ -9365,7 +9365,7 @@ index 67011f5..05a144b 100644
 +endif
 diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
 new file mode 100644
-index 0000000..8b9e8f9
+index 0000000..9c1e966
 --- /dev/null
 +++ b/src/util/sweet_profile.h
 @@ -0,0 +1,89 @@
@@ -9407,7 +9407,7 @@ index 0000000..8b9e8f9
 +   /* Task 24 stage 3: per-batch GMEM selection (SWEETCA_GMEM, fd5_gmem.c) */
 +   SPE_GMEM_SELECT, SPE_GMEM_SPLIT, SPE_GMEM_SYS_BARRIER, SPE_GMEM_SYS_INELIGIBLE,
 +   SPE_GMEM_SYS_UNSAFE, SPE_GMEM_SYS_NOHIST, SPE_GMEM_SYS_COST, SPE_GMEM_MEASURED,
-+   SPE_GMEM_PRED_SYS_KB, SPE_GMEM_PRED_GMEM_KB,
++   SPE_GMEM_PRED_SYS_KB, SPE_GMEM_PRED_GMEM_KB, SPE_GMEM_SYS_PROBE,
 +   SPE_COUNT
 +};
 +
