@@ -19,12 +19,12 @@ kernel is unchanged.
  	int32_t       fOffX, fOffY;             /* logical origin of the panel */
  	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
  	IOMemoryMap  *fMap;
-@@ -543,6 +544,20 @@
+@@ -543,6 +544,23 @@
  		fLogicalW = SWEET_FB_LOGICAL_W;
  		fLogicalH = SWEET_FB_LOGICAL_H;
  	}
 +	/*
-+	 * j0111: sweetfb_lw=750 sweetfb_lh=1624 presents a smaller canvas (same 375x812 pt at @2x, see
++	 * j0111: sweetfb_lw=750 [sweetfb_lh=1624, default lw x 2436 / 1125] presents a smaller canvas (same 375x812 pt at @2x, see
 +	 * mkadt.py --canvas): CoreAnimation renders fewer pixels and the MDP scaler fills the same panel
 +	 * window. Unset: unchanged. Touch maps panel pixels through sweet_fit_x/w and the panel height,
 +	 * so it does not depend on the canvas size.
@@ -32,6 +32,9 @@ kernel is unchanged.
 +	uint32_t lw = 0, lh = 0;
 +	(void)PE_parse_boot_argn("sweetfb_lw", &lw, sizeof(lw));
 +	(void)PE_parse_boot_argn("sweetfb_lh", &lh, sizeof(lh));
++	if (lw != 0 && lh == 0) {
++		lh = (uint32_t)((uint64_t)lw * SWEET_FB_LOGICAL_H / SWEET_FB_LOGICAL_W);   /* the iPhone X aspect */
++	}
 +	fSmallCanvas = !native && lw >= 320 && lh >= 640 && lw <= fLogicalW && lh <= fLogicalH && (lw & 1) == 0;
 +	if (fSmallCanvas) {
 +		fLogicalW = lw;
