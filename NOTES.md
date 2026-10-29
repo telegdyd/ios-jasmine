@@ -1,3 +1,14 @@
+### 2026-10-29 19:50: boot_b = j0116 (GPU idle power on by default + USB diagnostics) INSTALLED (user: "install the kernel")
+
+boot_b = shim/out/shim-boot-j0116-slotb.img (sha256 9d1fcc75...; kernel xnu/out-jasmine-j0116 = j0110..j0116; args
+byte-identical to the j0114d boot_b). Flashed at 36 % from the charging shell with tools/g2/flash-slotb.sh. First
+boot logs/netlog-j0116-slotb.txt: self-test PASS, GPUPC mode 1 + HWCG on from boot (collapses/resumes, 0 failures),
+USB device events logged (suspend/reset/connect done), DHCP ack, boot_b marked successful, no panic. Rollback:
+`fastboot flash boot_b shim/out/shim-boot-j0114d-slotb.img` (f867f6b1...). USB dead-link bug: the user reports the
+next occurrence; then read the j0116 USB lines (Power+VolDown -> fastboot -> charge-shell -> log ring via
+pmos-shell.py --raw, not an iOS boot, which restarts the ring). Battery note: on the PC port AICL limits input to
+~875 mA, below iOS's screen-on draw; the phone fell to 2 % today.
+
 ### 2026-10-29 19:30: j0115 defaults ON (j0115c) + j0116 USB diagnostics built, not booted yet; phone at 3 %, charging in the Linux shell
 
 User: GPU idle power on by default. xnu/patches/j0115-jasmine-gpu-idle-power.patch now defaults `sweetgpucg=1`,
