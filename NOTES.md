@@ -1,3 +1,11 @@
+### 2026-10-29 20:02: charger app reads the battery under iOS too
+
+tools/jasmine-charger.pyw: in the iOS state it now sends `batt` (j0114+ command port 5141) every poll and shows
+voltage, current, the iOS fuel-gauge SOC, charging/full, temperature and screen state (no charger type or input
+limit: those are only in the live log's `SWEET CHG:` lines). Skipped while anyone holds the phone lock; kernels
+before j0114 fall back to "no battery readout". Checked against the running j0116 boot_b: 3.942 V, +0.42 A, 45 %,
+display off. No phone state change.
+
 ### 2026-10-29 19:50: boot_b = j0116 (GPU idle power on by default + USB diagnostics) INSTALLED (user: "install the kernel")
 
 boot_b = shim/out/shim-boot-j0116-slotb.img (sha256 9d1fcc75...; kernel xnu/out-jasmine-j0116 = j0110..j0116; args

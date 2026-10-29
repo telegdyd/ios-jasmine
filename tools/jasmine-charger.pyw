@@ -3,7 +3,8 @@
 
 Finds the phone in iOS (USB Ethernet command port), fastboot or the Linux charging
 shell, moves it into the fast charging shell (shim/out/charge-shell.img, see
-tools/charge-shell/) and shows the charge state; "Boot iOS" sends it back.
+tools/charge-shell/) and shows the charge state; "Boot iOS" sends it back. Under iOS
+(j0114+ kernels) the battery comes from the command port's `batt` line.
 
 Run with pythonw (no console): the desktop shortcut "Mi A2 Charger" does that.
 Every phone action takes the shared phone lock first (PHONE_LOCK, same file as
@@ -15,6 +16,7 @@ import hashlib
 import os
 import pathlib
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -146,10 +148,34 @@ def ios_command(line):
             with socket.create_connection((host, IOS_CMD_PORT), timeout=3) as s:
                 s.sendall(line.encode() + b'\n')
                 s.settimeout(5)
-                return s.recv(256).decode(errors='replace').strip() or '(no answer)'
+                out = b''
+                try:  # the kernel closes the connection after its reply
+                    while len(out) < 4096:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                        out += chunk
+                except socket.timeout:
+                    pass
+                return out.decode(errors='replace').strip() or '(no answer)'
         except OSError:
             continue
     return None
+
+
+# j0114 sweet_ddrgov.c: "batt: %d mV %d mA, %d.%d C, soc %d%%, online %d charging %d full %d; display %s, ..."
+BATT_RE = re.compile(r'batt: (-?\d+) mV (-?\d+) mA, (-?\d+\.\d) C, soc (\d+)%, '
+                     r'online (\d) charging (\d) full (\d); display (\w+)')
+
+
+def ios_batt():
+    """The kernel's fuel-gauge line, or None (no answer, or a kernel before j0114)."""
+    m = BATT_RE.search(ios_command('batt') or '')
+    if not m:
+        return None
+    mv, ma, temp, soc, online, charging, full, display = m.groups()
+    return {'mv': int(mv), 'ma': int(ma), 'temp': temp, 'soc': soc, 'online': online == '1',
+            'charging': charging == '1', 'full': full == '1', 'display': display}
 
 
 STATS_CMD = (
@@ -311,6 +337,19 @@ class App:
                 lines.append('Old pmOS shell: "Charging shell" swaps in the fast one.')
             self.state_var.set('Charging shell' + (' (fast)' if s.get('fast') == '1' else ''))
             self.detail.set('\n'.join(lines) + lock_txt)
+        elif state == 'ios' and info.get('batt'):
+            b = info['batt']
+            self.volt.set(f"{b['mv'] / 1000:.3f} V")
+            self.amps.set(f"{b['ma'] / 1000:+.2f} A")
+            self.pct.set(f"{b['soc']} %")
+            chg = ('Full' if b['full'] else 'Charging' if b['charging'] else
+                   'Not charging' if b['online'] else 'Unplugged')
+            lines = [f'Charger: {chg}' + (' (net discharge)' if b['online'] and b['ma'] < 0 else ''),
+                     f"Battery temp: {b['temp']} °C",
+                     f"Screen: {b['display']}",
+                     "Gauge = iOS fuel-gauge SOC (the Linux shell's capacity can differ)."]
+            self.state_var.set('iOS running')
+            self.detail.set('\n'.join(lines) + lock_txt)
         else:
             self.volt.set(info.get('volt', '-') if isinstance(info, dict) else '-')
             self.amps.set('-')
@@ -318,7 +357,9 @@ class App:
             label = {'ios': 'iOS running', 'fastboot': 'Fastboot',
                      'none': 'No phone on USB'}.get(state, state)
             self.state_var.set(label)
-            extra = {'ios': 'No battery readout under iOS.',
+            ios_txt = ('Phone in use: battery not read.' if info.get('skipped') else
+                       'No battery readout (kernel before j0114, or no answer).')
+            extra = {'ios': ios_txt,
                      'fastboot': f"Slot {info.get('slot', '?')}" if isinstance(info, dict) else '',
                      'none': 'Off or hung: hold Power + Volume Down for fastboot.'}.get(state, '')
             self.detail.set(extra + lock_txt)
@@ -350,7 +391,10 @@ class App:
                 info['slot'] = fastboot_var('current-slot') or '?'
             return 'fastboot', info
         if ios_up():
-            return 'ios', {}
+            # the command port is shared with other sessions' tests: only read it when free
+            if self.busy or lock_holder() is not None:
+                return 'ios', {'skipped': True}
+            return 'ios', {'batt': ios_batt()}
         return 'none', {}
 
     def poller(self):
