@@ -1,3 +1,13 @@
+### 2026-10-29: GPU idle power (power plan item 2): design written, waiting for the user's OK before building
+
+Design: jasmine/GPU-IDLE-POWER.md. Step 1 HWCG (kgsl's a512_hwcg_regs, live `gpu cg 0|1`); step 2 GX collapse
+after an 80 ms idle hold (kgsl's sdm660 idle-timeout) and right after display off, sync resume in the submit path
+(GX on, PLL, a5xx_hw_init + HWCG, CP_ME_INIT, CP_SET_SECURE_MODE 0; a512 has CPZ retention, so no TZ call), pre-wake
+from the ddrgov touch/key/display hooks; CX GDSC, SMMU (qcom,retention) and the CX vote stay; optional step 2b lowers
+the CX vote with the display off. Boot-args `sweetgpupc=0|1|2` (default 0), `sweetgpucg`. Planned patch
+j0115-jasmine-gpu-idle-power.patch. Reference source: WSL Debian ~/lin660/drivers/gpu/msm (downstream kgsl).
+Nothing built, booted or flashed. Phone unchanged (boot_b j0114d).
+
 ### 2026-10-29 15:45: boot_b = j0114d (DDR governor on by default) INSTALLED (user: "obviously flash it")
 
 boot_b = shim/out/shim-boot-j0114d-slotb.img (sha256 f867f6b1...; kernel xnu/out-jasmine-j0114d = j0113 + j0114; args
