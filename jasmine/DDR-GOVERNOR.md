@@ -166,3 +166,8 @@ raise from idle; a timer-driven animation from IDLE_ON was not measured.
 Recommendation: `sweetddrgov=2` (only with the display off, DDR floor only): ~11 mA with the screen off and no
 change at all while the screen is on. Mode 1 adds no measurable saving for a small, unmeasured risk on
 non-input animations.
+
+j0114c (`sweetddrgov=2` as a boot-arg, `logs/netlog-j0114c-gt.txt`): mode 2 and bus mask 0 from the defaults,
+screen on stays FULL, display off -> IDLE_OFF in 0.3-0.9 ms with no raises while dark (UFS no longer counts),
+DDR reads 398-400 MHz there; key and display-on raise back (0.16-1.0 ms). A readback right after a down-vote can
+still show 1804: the RPM acks before the switch has finished (harmless for down-votes).

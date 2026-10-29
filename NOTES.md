@@ -8,9 +8,11 @@ readback 768 / 398 MHz in the low states; paired fuel-gauge A/B (tools/g2/fgab.p
 ABBA (research/framebench/ddrgov-*): no measurable regression (-1.0..+1.3 %, within run spread). Defaults now
 bus=0, UFS raise only with buses low, cpu=60, bw=2000. Recommendation to the user: `sweetddrgov=2` (display off only).
 Side findings for other items in the shared notes (lock screen renders ~50 fps forever; ~1 Hz UFS I/O).
-**Phone state:** a clean `reboot` from j0114b (governor off) hung at `hfs: unmount initiated on iOSRoot` (the known
-root-unmount hang); no USB device; needs Power+Volume Down. A `fastboot boot shim/out/shim-boot-j0114c-gt.img`
-(sweetddrgov=2 boot-arg test, not yet verified) was waiting for the device. boot_b unchanged (j0113). Nothing flashed.
+A clean `reboot` from j0114b (governor off) hit the known root-unmount hang (`hfs: unmount initiated on iOSRoot`),
+recovered via fastboot. **j0114c with `sweetddrgov=2` verified** (shim/out/shim-boot-j0114c-gt.img, logs/netlog-j0114c-gt.txt):
+mode 2 from the boot-arg, screen on stays FULL, display off -> idle-off (DDR reads 398-400 MHz, no raises while dark),
+key/display raise back, no panic/SMMU fault. **Phone state:** running the temporary j0114c boot, display on;
+boot_b unchanged (j0113). Nothing flashed. Next: user decision on sweetddrgov=2 in boot_b; power items 2-7 for the real floor.
 
 ### 2026-10-29: DDR/bus governor (power plan item 1): design written, waiting for the user's OK before building
 
