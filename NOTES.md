@@ -1,3 +1,11 @@
+### 2026-10-29 15:45: boot_b = j0114d (DDR governor on by default) INSTALLED (user: "obviously flash it")
+
+boot_b = shim/out/shim-boot-j0114d-slotb.img (sha256 f867f6b1...; kernel xnu/out-jasmine-j0114d = j0113 + j0114; args
+byte-identical to the j0113 boot_b). `fastboot flash boot_b` OKAY; first boot logs/netlog-j0114d-slotb.txt: governor
+mode 1 from boot, 0 failed votes, idle-off with the display off, boot_b marked successful in both GPTs, no panic.
+Rollback: `fastboot flash boot_b shim/out/shim-boot-j0113-slotb.img` (0ff5c7a6...). Before the flash the clean
+reboot again stalled at `hfs: unmount initiated on iOSRoot` but reached fastboot on its own after ~2 min.
+
 ### 2026-10-29 15:30: DDR governor ON by default (j0114d); temporary boot verified; boot_b not flashed yet
 
 User: scaling is the proper configuration, turn it on. j0114 now defaults to `sweetddrgov=1` (0 = old fixed

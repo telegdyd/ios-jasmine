@@ -1,6 +1,6 @@
 # DDR and RPM bus-clock governor (power plan item 1): design
 
-Status 2026-10-29: **built (j0114), on by default (mode 1) since j0114d; temporary boots only so far.** Owner: the item-1 session. Plan:
+Status 2026-10-29: **built (j0114), on by default (mode 1) since j0114d; installed in boot_b 2026-10-29 15:45.** Owner: the item-1 session. Plan:
 [POWER-PLAN-20261029.md](POWER-PLAN-20261029.md). Results: "Bring-up results" at the end.
 
 ## Rule and the facts it rests on
@@ -180,3 +180,7 @@ governor boot-arg; `logs/netlog-j0114d-test.txt`): mode 1 from boot, 0 failed vo
 control-b 31.03, spotlight 29.43 / 30.22, at or above the earlier governor-off runs; home-a had no motion
 (the same framebench artifact as run 1-off). Slot-b image ready, not flashed: `shim/out/shim-boot-j0114d-slotb.img`
 (f867f6b1...; args identical to the installed j0113 slot-b image).
+
+Installed 2026-10-29 15:45 (user's OK): boot_b = `shim/out/shim-boot-j0114d-slotb.img`; first boot
+`logs/netlog-j0114d-slotb.txt`, mode 1, 0 failed votes, boot_b marked successful. Rollback
+`fastboot flash boot_b shim/out/shim-boot-j0113-slotb.img`.
