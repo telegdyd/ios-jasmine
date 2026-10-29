@@ -1,3 +1,9 @@
+### 2026-10-29: DDR/bus governor (power plan item 1): design written, waiting for the user's OK before building
+
+Design: jasmine/DDR-GOVERNOR.md (states FULL / IDLE_ON bimc 768 / IDLE_OFF bimc 200 + NoCs low; sync raise on GPU
+submit, touch, keys, display on; bwmon trigger; `sweetddrgov=0|1|2` default 0; `ddrgov`, `batt`, `sweetpwrlog=S`).
+Planned patch j0114-jasmine-ddr-governor.patch. Nothing built, booted or flashed. Phone unchanged (boot_b j0113).
+
 ### 2026-10-29: battery drain plan written: jasmine/POWER-PLAN-20261029.md; DDR scaling started in its own session
 
 Observed: screen off, unplugged -437 mA at 3.88 V (single FG sample, logs/netlog-j0113d-wall.txt). User rule: no
