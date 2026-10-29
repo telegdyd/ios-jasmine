@@ -71,7 +71,7 @@ fails while GX is off at the start or end instant. Fix: hold GX on for the `ddr 
 
 ## Ideas, ranked by expected frame-time benefit
 
-1. **Check Gold clock during motion (cheap, no build).** The serial render thread is now the limit; the 2026-10-28
+1. **(Ruled out by the Gold A/B below.) Check Gold clock during motion.** The serial render thread is now the limit; the 2026-10-28
    "CPU clock has no effect" result was measured while GPU-bound at 1125x2436 and does not apply here. The auto
    governor sees four Gold cores ~50 % busy; if it drops below max mid-animation, the render thread grows. One
    A/B: `dvfs auto 0; dvfs set 0 2208000` vs auto. If it helps, have the governor keep Gold high while frames are
@@ -99,3 +99,27 @@ Spotlight, which already land partly on 1 period.
 Bugs worth separate work: home-a's 10 s without rendering; `ddr bw` + GPU collapse; a burst of GPU
 pre-wake/collapse pairs every ~12 ms with the display off seen in `gpu pc` before the run (443 pre-wakes in total,
 so a burst, not a constant drain).
+
+## Gold A/B (same boot, 22:00-22:05): Gold clock is not a lever
+
+Same framebench schedule, phone untouched in between. `goldab-pin2`: `dvfs auto 0; dvfs set 0 2150400` (auto's own
+top clock, so only the governor changes), then `goldab-auto`: `dvfs auto 1` (restored, read back auto=1). The first
+pinned attempt (`goldab-pin`) stopped in warmup on one 1 s command-port connect timeout (no USB event in the log);
+repeated once unchanged. TSENS 49-56 C in all runs.
+
+| Run | Home A | Home B | CC A | CC B | Render CPU per CC frame | per Home frame |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| auto (perfnow, 21:42) | (no frames) | 40.8/s | 29.2/s | 29.0/s | 25.4 ms | - |
+| Gold pinned 2150 | 40.5/s | 40.1/s | 29.1/s | 28.5/s | 24.2 ms | 15.9 ms |
+| auto (22:03) | 39.9/s | 40.0/s | 28.7/s | 29.7/s | 25.5 ms | 15.8 ms |
+
+Differences are within run-to-run spread (CC B auto 29.0/29.7 vs pinned 28.5). The governor already holds Gold at
+max during motion; idea 1 is ruled out (the only higher OPP, 2208, is +2.7 %).
+
+Home, now sampled in both runs (about 150 frames each): 24.8-25.0 ms mean, half the frames on 1 period
+(82/69 and 75/72), render thread CPU 15.8-15.9 ms (CA 7.5-7.8, Mesa 5.6-5.7), GPU occupancy 16.0-16.2 ms,
+SpringBoard main thread 14.5-14.7 ms mean (median 18-19), gdrv0 10.4-10.5 ms. **Home sits right at the
+16.7 ms boundary on three resources at once** (render CPU, GPU, SpringBoard's main thread), so all three need to
+drop for a steady 60; a cut in only one moves few frames.
+
+The home-a stall of the 21:42 run did not repeat (home-a rendered normally in both runs).

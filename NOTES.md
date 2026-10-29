@@ -1,3 +1,11 @@
+### 2026-10-29 22:05: Gold A/B: pinning Gold at 2150 changes nothing (governor already at max in motion)
+
+framebench goldab-pin2 (Gold pinned 2150.4, auto's top) vs goldab-auto, same boot: Home 40.5/40.1 vs 39.9/40.0 /s,
+CC 29.1/28.5 vs 28.7/29.7 /s, render CPU per CC frame 24.2 vs 25.5 ms: within spread. Details and the Home per-frame
+split (render CPU ~16, GPU ~16, SpringBoard main ~15 ms, all at the 16.7 ms boundary) in
+jasmine/PERF-BOTTLENECK-20261029.md. First pinned attempt stopped on one command-port connect timeout (no USB
+event). The 21:42 home-a stall did not repeat. dvfs restored to auto=1 (read back). Phone: boot_b j0118, running.
+
 ### 2026-10-29 21:50: fresh frame-time bottleneck measurement on boot_b j0118: CC limited by the render thread's CPU, GPU close behind
 
 Report: jasmine/PERF-BOTTLENECK-20261029.md. One framebench (research/framebench/perfnow-20261029) on the installed
