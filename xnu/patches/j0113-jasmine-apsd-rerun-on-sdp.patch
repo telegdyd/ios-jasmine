@@ -1,0 +1,222 @@
+From 58407796cbbf9aef00f5af95f5f193136969c251 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 29 Oct 2026 12:27:02 +0100
+Subject: [PATCH] jasmine-j0113: PM660 charger re-runs APSD once per plug-in
+ when it reports SDP
+
+BC1.2 detection (APSD) runs as soon as VBUS appears. When the USB data pins
+touch a moment later the PMIC falls back to SDP, and pmic_charger_thread only
+re-ran detection while it was unfinished, so a wall charger stayed at the
+500 mA SDP limit until the next replug (seen 2026-10-29 with the charger app).
+Like downstream smblib_rerun_apsd_if_required() and our Linux
+kernel/0006-qcom_smbx-rerun-apsd-on-sdp.patch: on an SDP result, keep 500 mA,
+set CMD_APSD bit 0 once per plug-in (reset when POWER_PATH shows unplugged) and
+take the result of the next finished detection. A real SDP port reports SDP
+again. The SWEET CHG lines log the re-run and the final type, e.g.
+"plugged in, DCP (after APSD re-run)".
+
+APSD shares D+/D- with the USB controller, and the real cause of most SDP
+results was ours: sweet_usb forced the controller's VBUS session override on
+for good, so D+ was pulled up whenever VBUS was present, including the moment
+a charger is plugged in, when the PMIC runs BC1.2. A re-run on a CDP PC port
+with the gadget connected (and one before the QUSB2 PHY was set up) also gave
+SDP. Like Linux dwc3-qcom, which sets the override only once the charger
+reports a USB host (dwc3_qcom_vbus_override_enable on extcon), the charger
+thread now calls sweet_usb_vbus(): on for SDP/CDP, off on unplug and while an
+SDP result is re-checked. The re-run also waits for sweet_usb_probe() to set
+up the PHY (sweet_usb_phy_done; downstream turns on the PHY's dpdm supply
+first), at most a minute. Without a charger thread (sweetchg=0) the session
+stays on as before.
+---
+ bsd/dev/sweet_pmic.c | 49 ++++++++++++++++++++++++++++--
+ bsd/dev/sweet_usb.c  | 71 +++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 114 insertions(+), 6 deletions(-)
+
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index 96f3db7..398e89e 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -438,12 +438,16 @@ chg_log(const char *why, uint32_t type_ua)
+ 	    chg_states[st1 & 7], icl * 25, (3487500 + fv * 7500) / 1000, st2, f.mv, f.ma, fgok ? "" : " (no gauge)");
+ }
+ 
++extern volatile bool sweet_usb_phy_done;     /* bsd/dev/sweet_usb.c */
++extern void sweet_usb_vbus(bool on);
++
+ static void
+ pmic_charger_thread(void *arg, wait_result_t result)
+ {
+ 	uint32_t icl_wall = 1500, fcc = 1000, last_type = ~0u;
+ 	unsigned ticks = 0;
+-	bool online = false;
++	bool online = false, reran = false;
++	const char *tname = "SDP";
+ 	(void)arg;
+ 	(void)result;
+ 	(void)PE_parse_boot_argn("chgicl", &icl_wall, sizeof(icl_wall));
+@@ -455,21 +459,62 @@ pmic_charger_thread(void *arg, wait_result_t result)
+ 		uint32_t pp = 0;
+ 		bool now = chg_rd8(CHG_POWER_PATH_STATUS, &pp) == 0 && (pp & 0x11) == 0x11;
+ 		uint32_t type_ua = 0;
++		bool data = false;
+ 		if (now) {
+ 			/* APSD: CDP 1.5 A, DCP/OCP/float = the wall limit, SDP 500 mA (qcom_smbx.c) */
+ 			uint32_t st = 0, res = 0;
+ 			if (chg_rd8(CHG_APSD_STATUS, &st) == 0 && (st & 0x01) &&
+ 			    chg_rd8(CHG_APSD_RESULT, &res) == 0) {
+ 				type_ua = (res & 0x04) ? 1500000 : (res & (0x08 | 0x02 | 0x10)) ? icl_wall * 1000 : 500000;
++				tname = (res & 0x04) ? "CDP" : (res & 0x08) ? "DCP" : (res & 0x02) ? "OCP" : (res & 0x10) ? "float" : "SDP";
++				data = (res & 0x04) || type_ua == 500000;      /* CDP or SDP: a USB host */
+ 			} else {
+ 				(void)chg_update(CHG_CMD_APSD, 0x01, 0x01);     /* rerun detection */
+ 			}
++			/*
++			 * BC1.2 detection runs as soon as VBUS appears; when the data pins
++			 * touch late it falls back to SDP and a wall charger stays at 500 mA
++			 * until the next plug-in. Like downstream smblib_rerun_apsd_if_required()
++			 * (and our Linux kernel/0006), re-run APSD once per plug-in on SDP,
++			 * keeping 500 mA meanwhile; a real SDP port just reports SDP again.
++			 * APSD shares D+/D- with the USB controller: it needs the QUSB2 PHY set
++			 * up (downstream turns on the PHY's dpdm supply first) and no D+ pull-up
++			 * (the VBUS session is off meanwhile, below), so a re-run waits for
++			 * sweet_usb's PHY setup, at most a minute (no USB driver).
++			 */
++			if (type_ua == 500000 && !reran) {
++				if (last_type != type_ua) {
++					(void)chg_set_icl(type_ua);
++					last_type = type_ua;
++				}
++				sweet_usb_vbus(false);
++				if (sweet_usb_phy_done || ticks >= 30) {
++					reran = true;
++					printf("SWEET CHG: APSD says SDP (status %#x, result %#x), re-running detection\n", st, res);
++					(void)chg_update(CHG_CMD_APSD, 0x01, 0x01);
++				}
++				online = false;
++				ticks++;
++				pmic_sleep_ms(2000);
++				continue;
++			}
++		} else {
++			/*
++			 * Unplugged: the next plug-in may re-run APSD once, and the controller
++			 * drops its VBUS session so no D+ pull-up meets the next BC1.2 detection.
++			 */
++			reran = false;
++			last_type = ~0u;
++			sweet_usb_vbus(false);
+ 		}
+ 		if (type_ua != 0 && (type_ua != last_type || !online)) {
++			char why[64];
+ 			int r = chg_set_icl(type_ua);
+ 			last_type = type_ua;
++			sweet_usb_vbus(data);   /* USB session only towards a host, as dwc3-qcom on extcon */
+ 			delay(500000);
+-			chg_log(r ? "input limit write failed" : "plugged in", type_ua);
++			snprintf(why, sizeof(why), "plugged in, %s%s", tname, reran ? " (after APSD re-run)" : "");
++			chg_log(r ? "input limit write failed" : why, type_ua);
+ 		} else if (!now && online) {
+ 			last_type = ~0u;
+ 			chg_log("unplugged", 0);
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 91661cf..6fc11d0 100755
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -236,8 +236,24 @@ usb_phy_bringup(vm_offset_t gcc, vm_offset_t dwc)
+ 	    usb_rd(dwc, GUSB2PHYCFG));
+ }
+ 
++/*
++ * Set once sweet_usb_probe() has configured the QUSB2 PHY (or left it alone). The PM660
++ * charger's BC1.2 detection (APSD) shares D+/D- with the PHY and reports SDP while the PHY
++ * is unconfigured, so sweet_pmic.c re-runs APSD only after this (j0113).
++ */
++volatile bool sweet_usb_phy_done;
++
++static void usb_probe(void);
++
+ void
+ sweet_usb_probe(void)
++{
++	usb_probe();
++	sweet_usb_phy_done = true;
++}
++
++static void
++usb_probe(void)
+ {
+ 	int enabled = 1;
+ 	uint32_t gdscr, cbcr[sizeof(usb_cbcr) / sizeof(usb_cbcr[0])];
+@@ -1550,6 +1566,51 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ }
+ 
++/*
++ * VBUS session of the controller (j0113). With the override set the controller pulls D+ up
++ * whenever it runs, and that spoils the PM660's BC1.2 detection (APSD) at plug-in: a wall
++ * charger or a CDP port reads as SDP (500 mA). Like Linux dwc3-qcom, which sets it when the
++ * charger reports a USB host (dwc3_qcom_vbus_override_enable), sweet_pmic.c turns it on for
++ * SDP/CDP and off on unplug and for an APSD re-run. On until the charger says otherwise.
++ */
++static LCK_GRP_DECLARE(usb_vbus_grp, "sweet_usb_vbus");
++static LCK_MTX_DECLARE(usb_vbus_lock, &usb_vbus_grp);
++static vm_offset_t usb_vbus_qs;
++static int usb_vbus_want = -1;
++
++static void
++usb_vbus_apply_locked(void)
++{
++	if (usb_vbus_qs == 0) {
++		return;
++	}
++	uint32_t hs = usb_rd(usb_vbus_qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(usb_vbus_qs, QSCRATCH_SS_PHY_CTRL);
++	if (usb_vbus_want != 0) {
++		hs |= UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
++		ss |= LANE0_PWR_PRESENT;
++	} else {
++		hs &= ~(UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL);
++		ss &= ~LANE0_PWR_PRESENT;
++	}
++	*(volatile uint32_t *)(usb_vbus_qs + QSCRATCH_HS_PHY_CTRL) = hs;
++	*(volatile uint32_t *)(usb_vbus_qs + QSCRATCH_SS_PHY_CTRL) = ss;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++void sweet_usb_vbus(bool on);
++
++void
++sweet_usb_vbus(bool on)
++{
++	lck_mtx_lock(&usb_vbus_lock);
++	if (usb_vbus_want != (int)on) {
++		usb_vbus_want = on;
++		usb_vbus_apply_locked();
++		printf("SWEET USB: VBUS session %s (charger)\n", on ? "on" : "off");
++	}
++	lck_mtx_unlock(&usb_vbus_lock);
++}
++
+ static void
+ sweet_usb_gadget_start(vm_offset_t dwc)
+ {
+@@ -1609,11 +1670,13 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
+ 		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
+ 		    hs, ss, usb_rd(qs, 0x08));
+-		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
+-		*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
+-		__asm__ volatile ("dsb sy" ::: "memory");
+-		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
++		lck_mtx_lock(&usb_vbus_lock);
++		usb_vbus_qs = qs;
++		usb_vbus_apply_locked();
++		printf("SWEET USB: VBUS override %s: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
++		    usb_vbus_want != 0 ? "on" : "off (charger: no USB host yet)",
+ 		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
++		lck_mtx_unlock(&usb_vbus_lock);
+ 	}
+ 
+ 	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
+-- 
+2.47.3
+
