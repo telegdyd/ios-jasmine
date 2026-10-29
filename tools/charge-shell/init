@@ -1,0 +1,80 @@
+#!/bin/busybox ash
+# Fast charging shell for jasmine: replaces the pmOS /init in the r109 Nura initramfs
+# (tools/charge-shell/build.sh). No root/boot partition search, screen off, full-charge
+# limit, telnet on 172.16.42.1 as before (tools/pmos-shell.py, reboot-bootloader).
+# Reuses the pmOS helpers from /init_functions.sh; the original init is kept as /init.pmos.
+
+set -a
+LOG_PREFIX="[charge-shell]"
+CHG_MV_UV=4300000
+
+[ -e /etc/unudhcpd.conf ] && . /etc/unudhcpd.conf
+. ./init_functions.sh
+. /usr/share/misc/source_deviceinfo
+[ -e /etc/os-release ] && . /etc/os-release
+
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+/bin/busybox --install -s
+/bin/busybox-extras --install -s
+
+mount_proc_sys_dev
+parse_cmdline < /proc/cmdline
+setup_log
+echo "  charge shell (r109 kernel)"
+setup_firmware_path
+setup_mdev
+
+# Charger, gauge, ADC, display (display only so it can be blanked properly); no touch.
+load_modules "" "qcom_smbx qcom-spmi-rradc pmi8998_fg msm panel-novatek-nt36672a"
+
+# Wait for a sysfs node (up to 60 s), then write a value to it.
+put() {
+	for _ in $(seq 1 300); do
+		[ -e "$1" ] && break
+		sleep 0.2
+	done
+	echo "$2" > "$1" && echo "  $1 = $2" || echo "  $LOG_PREFIX could not write $2 to $1"
+}
+
+{
+	put /sys/class/power_supply/pm660-charger/constant_charge_voltage "$CHG_MV_UV"
+} &
+{
+	# fb0 is the bootloader's simpledrm framebuffer first; msm replaces it ~0.7 s after binding
+	# and turns the panel and backlight back on, so blank only once fb0 is msm's.
+	for _ in $(seq 1 300); do
+		grep -q msm /sys/class/graphics/fb0/name 2>/dev/null && break
+		sleep 0.2
+	done
+	echo "  fb0 is $(cat /sys/class/graphics/fb0/name 2>/dev/null)"
+	# qcom-wled starts believing the module is off, but the bootloader left it on (PM660L
+	# 0xd846 = 0x80), so a plain 0 is a no-op. A non-zero level first syncs the driver;
+	# then 0 really clears MODULE_EN.
+	put /sys/class/backlight/backlight/bl_power 0
+	put /sys/class/backlight/backlight/brightness 1
+	sleep 0.2
+	put /sys/class/backlight/backlight/brightness 0
+	put /sys/class/backlight/backlight/bl_power 4
+	put /sys/class/graphics/fb0/blank 1
+} &
+
+setup_usb_network
+start_unudhcpd
+
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null || true
+mount -t debugfs none /sys/kernel/debug 2>/dev/null || true
+ln -s /sys/kernel/debug /d
+
+cat <<-EOF > /etc/profile
+. /init_functions.sh
+EOF
+cat <<-EOF > /sbin/pmos_getty
+#!/bin/sh
+/bin/sh -l
+EOF
+chmod +x /sbin/pmos_getty
+
+telnetd -b "${HOST_IP}:23" -l /sbin/pmos_getty &
+echo "  telnet on ${HOST_IP}:23"
+
+while sleep 3600; do :; done
