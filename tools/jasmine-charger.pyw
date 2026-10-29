@@ -159,14 +159,19 @@ STATS_CMD = (
     'qcom-battery/voltage_now qcom-battery/current_now qcom-battery/capacity qcom-battery/temp; '
     'do echo "$k=$(cat $k 2>/dev/null)"; done; '
     '[ -e /init.pmos ] && echo fast=1; '
-    'echo wled=$(grep ^d846: /sys/kernel/debug/regmap/0-03/registers 2>/dev/null | cut -d" " -f2)'
+    'echo wled=$(grep ^d846: /sys/kernel/debug/regmap/0-03/registers 2>/dev/null | cut -d" " -f2); '
+    # kernel/0006 logs every detection; keep the last two (an SDP re-run and its result)
+    'dmesg | grep -E "qcom-smbx.*(charger type|APSD:)" | tail -2 | '
+    'sed -e "s/^\\[ *\\([0-9]*\\)\\.[0-9]*\\] .*charger@1000: /detect=\\1 s: /"'
 )
 
 
 def read_stats():
-    out = {}
+    out = {'detect': []}
     for line in shell(STATS_CMD).splitlines():
-        if '=' in line:
+        if line.startswith('detect='):
+            out['detect'].append(line[7:].strip())
+        elif '=' in line:
             k, v = line.split('=', 1)
             out[k.removeprefix('qcom-battery/')] = v.strip()
     return out
@@ -295,6 +300,8 @@ class App:
             if vin.isdigit() and iin.isdigit():
                 inp += f', {int(vin) / 1e6:.2f} V / {int(iin) / 1e6:.2f} A'
             lines.append(inp)
+            for d in s.get('detect', []):
+                lines.append(f'Detect at {d}')
             t = s.get('temp', '')
             if t.lstrip('-').isdigit():
                 lines.append(f'Battery temp: {int(t) / 10:.1f} °C')
