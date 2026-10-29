@@ -1,3 +1,12 @@
+### 2026-10-29 21:30: boot_b = j0118 INSTALLED (user: "Flash j0118")
+
+boot_b = shim/out/shim-boot-j0118-slotb.img (sha256 09377837...; kernel xnu/out-jasmine-j0118 = j0110..j0118: GPU idle
+power on by default, USB diagnostics, previous-boot log, ue0 IPv4 repair + DHCP fallback). The command-port reboot hung
+(no fastboot in 3 min, known root-unmount stall); user forced fastboot, flash OKAY. First boot logs/netlog-j0118-slotb.txt:
+self-test PASS, PC got 192.168.7.1 by DHCP, the 169.254/16 route went missing again and was repaired, boot_b marked
+successful in both GPTs, no panic. Rollback: `fastboot flash boot_b shim/out/shim-boot-j0116-slotb.img` (9d1fcc75...).
+Open: who removes ue0's 169.254/16 route (guess configd); the j0117 previous-log header area read back invalid.
+
 ### 2026-10-29 20:30: USB dead link diagnosed (IPv4 state, not USB); j0117 (previous log) + j0118 (repair) built, j0118 temp boot verified; not flashed
 
 The dead link of the j0116 boot_b (user report 20:00): previous log via j0117 (`sweet-fs.py get /.sweetlog-prev`,
