@@ -1,6 +1,6 @@
 # DDR and RPM bus-clock governor (power plan item 1): design
 
-Status 2026-10-29: **built (j0114), temporary boots only, default off.** Owner: the item-1 session. Plan:
+Status 2026-10-29: **built (j0114), on by default (mode 1) since j0114d; temporary boots only so far.** Owner: the item-1 session. Plan:
 [POWER-PLAN-20261029.md](POWER-PLAN-20261029.md). Results: "Bring-up results" at the end.
 
 ## Rule and the facts it rests on
@@ -171,3 +171,12 @@ j0114c (`sweetddrgov=2` as a boot-arg, `logs/netlog-j0114c-gt.txt`): mode 2 and 
 screen on stays FULL, display off -> IDLE_OFF in 0.3-0.9 ms with no raises while dark (UFS no longer counts),
 DDR reads 398-400 MHz there; key and display-on raise back (0.16-1.0 ms). A readback right after a down-vote can
 still show 1804: the RPM acks before the switch has finished (harmless for down-votes).
+
+**On by default (j0114d, user's decision 2026-10-29: scaling is the proper configuration, not only a power
+item).** `sweetddrgov=1` is the kernel default; `sweetddrgov=0` restores the fixed `sweetddr` rate. Temporary boot
+`shim/out/shim-boot-j0114d-test.img` (args byte-identical to the installed boot_b's j0113 test variant, no
+governor boot-arg; `logs/netlog-j0114d-test.txt`): mode 1 from boot, 0 failed votes. Framebench
+`research/framebench/ddrgov-5-default-on` (different boot, sanity only): home-b 41.53/s, control-a 30.44,
+control-b 31.03, spotlight 29.43 / 30.22, at or above the earlier governor-off runs; home-a had no motion
+(the same framebench artifact as run 1-off). Slot-b image ready, not flashed: `shim/out/shim-boot-j0114d-slotb.img`
+(f867f6b1...; args identical to the installed j0113 slot-b image).

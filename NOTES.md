@@ -1,3 +1,12 @@
+### 2026-10-29 15:30: DDR governor ON by default (j0114d); temporary boot verified; boot_b not flashed yet
+
+User: scaling is the proper configuration, turn it on. j0114 now defaults to `sweetddrgov=1` (0 = old fixed
+sweetddr). Kernel xnu/out-jasmine-j0114d. Temporary boot shim/out/shim-boot-j0114d-test.img (installed boot_b args,
+byte-identical): mode 1 from boot, 0 failed votes, framebench research/framebench/ddrgov-5-default-on at or above the
+governor-off runs. Slot-b image shim/out/shim-boot-j0114d-slotb.img (sha256 f867f6b1...) ready; flash only with the
+user's OK; rollback `fastboot flash boot_b shim/out/shim-boot-j0113-slotb.img`. Phone: running the temporary j0114d
+boot; boot_b = j0113. Details: jasmine/DDR-GOVERNOR.md.
+
 ### 2026-10-29 15:10: DDR governor j0114 built and measured (temporary boots); saves ~11 mA screen off only; phone hung in reboot
 
 Patch xnu/patches/j0114-jasmine-ddr-governor.patch (kernel xnu/out-jasmine-j0114c, VM build), default off

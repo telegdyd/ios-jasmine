@@ -1,12 +1,12 @@
-From e96359ff9aa0c932661ca796936e58efdfec158b Mon Sep 17 00:00:00 2001
+From 54a4af38252578effce03c3886b7a819750eef10 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Thu, 29 Oct 2026 14:58:20 +0100
-Subject: [PATCH] jasmine-j0114: DDR and RPM bus-clock governor (power plan
- item 1): full rate on any work (sync raise on GPU submit, touch, keys,
- display on, UFS with the display off; bwmon, GPU busy and CPU load from the
- thread), bimc floor when idle with the display on, bimc + bus clocks low with
- the display off; sweetddrgov=, command port ddrgov and batt, sweetpwrlog=
- fuel-gauge log; RPM answers polled every 20 us
+Date: Thu, 29 Oct 2026 15:14:32 +0100
+Subject: [PATCH] jasmine-j0114: DDR and RPM bus-clock governor, on by default
+ (sweetddrgov=0 restores the fixed sweetddr rate): full rate on any work (sync
+ raise on GPU submit, touch, keys, display on; bwmon, GPU busy and CPU load
+ from the thread), bimc 768 MHz when idle with the display on, 200 MHz with it
+ off; bus clocks optional (sweetddrgov_bus=); command port ddrgov and batt,
+ sweetpwrlog= fuel-gauge log; RPM answers polled every 20 us
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -114,7 +114,7 @@ index f549d7049..5370de1b2
  	}
 diff --git a/bsd/dev/sweet_ddrgov.c b/bsd/dev/sweet_ddrgov.c
 new file mode 100644
-index 000000000..2bd7ea6ca
+index 000000000..99c2643f0
 --- /dev/null
 +++ b/bsd/dev/sweet_ddrgov.c
 @@ -0,0 +1,607 @@
@@ -135,8 +135,8 @@ index 000000000..2bd7ea6ca
 + * MB/s, GPU busy cycles, or (display on) a core busier than cpu percent.
 + * Only the active set is voted; the sleep set keeps the handoff values until
 + * the AP power-collapses (power plan item 4).
-+ * Boot-args: sweetddrgov=0|1|2 (off, on, only with the display off; needs
-+ * sweetddr=), sweetddrgov_on= / _off= (MHz), _hold= (ms, display on), _bw=
++ * Boot-args: sweetddrgov=0|1|2 (off: fixed sweetddr; on, the default; only
++ * with the display off; needs sweetddr=), sweetddrgov_on= / _off= (MHz), _hold= (ms, display on), _bw=
 + * (MB/s, default 2000), _cpu= (busiest core's load in percent that raises
 + * with the display on, default 60, 0 off; the j0104 DVFS sampler's 20 ms
 + * load), _bus= (mask: 1 snoc, 2 cnoc, 4 cnoc_periph, 8 aggre2_noc,
@@ -490,8 +490,8 @@ index 000000000..2bd7ea6ca
 +	}
 +	g.full = full_mhz;
 +	g.bimc = full_mhz;
-+	g.mode = (int)arg_u32("sweetddrgov", 0);
-+	g.mode = g.mode > 2 ? 0 : g.mode;
++	g.mode = (int)arg_u32("sweetddrgov", 1);
++	g.mode = g.mode > 2 ? 1 : g.mode;
 +	g.floor_on = MIN(arg_u32("sweetddrgov_on", 768), full_mhz);
 +	g.floor_off = MIN(arg_u32("sweetddrgov_off", 200), full_mhz);
 +	g.hold_on = arg_u32("sweetddrgov_hold", 1000);
