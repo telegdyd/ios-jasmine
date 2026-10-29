@@ -1,0 +1,125 @@
+From af16d187490d210f2570653e386ca944bf88ed53 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 29 Oct 2026 18:58:16 +0100
+Subject: [PATCH] jasmine-j0116: USB device events logged and counted (link
+ state, wakeup, suspend, erratic error enabled), controller and NCM state in
+ the 30 s ue0 line, command usb vbusoff SECS (diagnostics for the USB link
+ that stays dead after a long time away from the PC)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/sweet_usb.c | 53 ++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 47 insertions(+), 6 deletions(-)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 962895f..4131023 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -429,6 +429,8 @@ static struct {
+ 	bool        tx_busy;
+ 	uint64_t    rx_frames, tx_frames;
+ 	uint32_t    tx_seq;
++	uint32_t    dev_events[16];     /* j0116: device events by type */
++	uint32_t    dev_logged;
+ } ud;
+ 
+ static inline void
+@@ -1105,11 +1107,29 @@ ud_function_reset(void)
+ 	}
+ }
+ 
++/*
++ * j0116: every device event is counted, and logged (all of the first 400, then all but
++ * link-state changes): the USB link sometimes stays dead after the phone was away from the
++ * PC for a long time, and the log has to show what the controller saw.
++ */
++static const char *const ud_dev_event_name[16] = {
++	"disconnect", "reset", "connect done", "link state", "wakeup", "hibernation", "suspend", "sof",
++	"8", "erratic error", "command done", "overflow", "vendor", "13", "14", "15",
++};
++
+ static void
+ ud_event(uint32_t ev)
+ {
+ 	if (ev & 1) {                   /* device event */
+ 		uint32_t type = (ev >> 8) & 0xf;
++		ud.dev_events[type]++;
++		if (ud.dev_logged < 400 || type != 3) {
++			uint32_t dsts = dwc_rd(DSTS);
++			ud.dev_logged++;
++			printf("SWEET USB: device event %s (info %#x), link state %u, DSTS %#x, configured %d, tx busy %d, txq %u\n",
++			    ud_dev_event_name[type], (ev >> 16) & 0xf, (dsts >> 18) & 0xf, dsts, ud.configured, ud.tx_busy,
++			    ud.txq_count);
++		}
+ 		if (type == 1) {        /* USB reset */
+ 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
+ 			printf("SWEET USB: bus reset\n");
+@@ -1204,7 +1224,13 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
+ 		if ((++ticks % 30000) == 0) {
+-			printf("SWEET USB: ue0 rx %llu tx %llu frames\n", ud.rx_frames, ud.tx_frames);
++			uint32_t dsts = dwc_rd(DSTS);
++			printf("SWEET USB: ue0 rx %llu tx %llu frames; link state %u, DSTS %#x, DCTL %#x, DALEPENA %#x, configured %d "
++			    "alt %u, tx busy %d, txq %u, ep0 state %d; events: disconnect %u reset %u connect %u link %u wakeup %u "
++			    "suspend %u erratic %u overflow %u\n", ud.rx_frames, ud.tx_frames, (dsts >> 18) & 0xf, dsts, dwc_rd(DCTL),
++			    dwc_rd(DALEPENA), ud.configured, ud.data_alt, ud.tx_busy, ud.txq_count, (int)ud.state, ud.dev_events[0],
++			    ud.dev_events[1], ud.dev_events[2], ud.dev_events[3], ud.dev_events[4], ud.dev_events[6], ud.dev_events[9],
++			    ud.dev_events[11]);
+ 		}
+ 		ud_sleep_ms(1);
+ 	}
+@@ -1717,13 +1743,18 @@ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ extern const char *sweet_bench_blob(const char *, const void **, size_t *);
+ void sweet_usb_vbus(bool on);
+ 
+-/* "usb vbuscycle": the VBUS session off for 3 s and on again, as an unplug/replug does (j0113 test). */
++/*
++ * "usb vbuscycle": the VBUS session off for 3 s and on again, as an unplug/replug does (j0113 test);
++ * "usb vbusoff SECS" (j0116): off for SECS seconds, as a long time away from the PC.
++ */
++static uint32_t ud_vbus_off_ms = 3000;
++
+ static void
+ ud_vbus_cycle_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+ 	ud_sleep_ms(1000);
+ 	sweet_usb_vbus(false);
+-	ud_sleep_ms(3000);
++	ud_sleep_ms(ud_vbus_off_ms);
+ 	sweet_usb_vbus(true);
+ }
+ 
+@@ -1791,7 +1822,17 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		const char *binary_header = sweet_bench_blob(line, &binary, &binary_len);
+ 		bool reboot = strcmp(line, "reboot") == 0;
+ 		bool vcycle = strcmp(line, "usb vbuscycle") == 0;
+-		const char *reply = reboot ? "rebooting\n" : vcycle ? "VBUS session off for 3 s in 1 s\n" : "?\n";
++		if (vcycle) {
++			ud_vbus_off_ms = 3000;
++		} else if (strncmp(line, "usb vbusoff ", 12) == 0) {
++			uint32_t secs = 0;
++			for (const char *p = line + 12; *p >= '0' && *p <= '9'; p++) {
++				secs = secs * 10 + (uint32_t)(*p - '0');
++			}
++			ud_vbus_off_ms = (secs == 0 ? 3 : MIN(secs, 86400u)) * 1000;
++			vcycle = true;
++		}
++		const char *reply = reboot ? "rebooting\n" : vcycle ? "VBUS session off in 1 s for the time asked\n" : "?\n";
+ 		const char *prof = binary_header != NULL ? binary_header : reboot ? NULL : sweet_prof_cmd(line);
+ 		if (prof == NULL && !reboot) {
+ 			prof = sweet_gpu_cmd(line);
+@@ -1923,8 +1964,8 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	/* High speed, address 0 */
+ 	uint32_t dcfg = dwc_rd(DCFG) & ~(7u | (0x7fu << 3));
+ 	dwc_wr(DCFG, dcfg | 0);
+-	/* Events: disconnect, USB reset, connect done */
+-	dwc_wr(DEVTEN, 0x7);
++	/* Events: disconnect, USB reset, connect done; j0116: + link state, wakeup, suspend, erratic error (logged) */
++	dwc_wr(DEVTEN, 0x7 | (1u << 3) | (1u << 4) | (1u << 6) | (1u << 9));
+ 
+ 	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
+ 	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
+-- 
+2.55.0.windows.3
+

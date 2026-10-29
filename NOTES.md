@@ -1,3 +1,19 @@
+### 2026-10-29 19:30: j0115 defaults ON (j0115c) + j0116 USB diagnostics built, not booted yet; phone at 3 %, charging in the Linux shell
+
+User: GPU idle power on by default. xnu/patches/j0115-jasmine-gpu-idle-power.patch now defaults `sweetgpucg=1`,
+`sweetgpupc=1` (0 disables either). New xnu/patches/j0116-jasmine-usb-diag.patch (sweet_usb.c only): every DWC3
+device event logged/counted (link state, wakeup, suspend, erratic error now enabled in DEVTEN), controller/NCM state
+in the 30 s `ue0` line, command `usb vbusoff SECS` (session off that long). Reason: the USB link stays dead (PC adapter
+169.254.x, DHCP and ping unanswered, Windows re-enumerates) after the phone was away from the PC for a long time
+(user: overnight on the wall charger, and the drive home today); quick replugs and `usb vbuscycle` recover; an iOS
+reboot fixes it. The failing boot's log was lost (the user rebooted into iOS; a fresh boot restarts the disk ring).
+Kernel xnu/out-jasmine-j0116 (= j0110..j0116), image shim/out/shim-boot-j0116-test.img (061dbe1b..., installed
+boot_b args). **Not booted:** the phone was at 2 % (3522 mV, -500 mA on boot_b: the PC port's AICL limit 875 mA is
+below what iOS draws with the screen on), so it went to `shim/out/charge-shell.img` (+0.63 A at 3.69 V). Next: at
+>= 30 % boot j0116-test, check GPU defaults (`gpu pc`), reproduce the dead link with `usb vbusoff 1800` etc.; if it
+dies, Power+VolDown -> fastboot -> charge-shell -> read the log ring with `pmos-shell.py --raw` (do NOT boot iOS
+first: it restarts the ring). boot_b unchanged (j0114d).
+
 ### 2026-10-29 17:15: GPU idle power (item 2) j0115 built and measured (temporary boots): ~60 mA saved screen off, ~70 mA screen-on idle; default off
 
 Patch xnu/patches/j0115-jasmine-gpu-idle-power.patch (kernels xnu/out-jasmine-j0115, -j0115b = + `batt icl` aid),

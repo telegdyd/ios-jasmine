@@ -1,18 +1,19 @@
-From 6b67ccc8226013ea3dc58bb22934a2ab4bdbef85 Mon Sep 17 00:00:00 2001
+From a6920ac91343d8c847e509c1ced175ef0d080340 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 29 Oct 2026 16:35:56 +0100
-Subject: [PATCH] jasmine-j0115: Adreno 512 idle power: hardware clock gating
- (sweetgpucg=1, kgsl's a512 table) and GX collapse after an idle hold and with
- the display off, resume in the submit path or on touch/keys/display on
- (sweetgpupc=0|1|2, default 0; _hold=, _cx=); command port gpu pc, gpu cg;
- batt icl MA SECS (temporary low USB input limit for fuel-gauge A/B)
+Subject: [PATCH] jasmine-j0115: Adreno 512 idle power, on by default: hardware
+ clock gating (kgsl's a512 table; sweetgpucg=0 off) and GX collapse after an
+ 80 ms idle hold and with the display off, resume in the submit path or on
+ touch/keys/display on (sweetgpupc=0|1|2, default 1; _hold=, _cx=); command
+ port gpu pc, gpu cg; batt icl MA SECS (temporary low USB input limit for
+ fuel-gauge A/B)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  bsd/dev/sweet_ddrgov.c |  22 ++
- bsd/dev/sweet_gpu.c    | 744 +++++++++++++++++++++++++++++++++++++----
+ bsd/dev/sweet_gpu.c    | 745 +++++++++++++++++++++++++++++++++++++----
  bsd/dev/sweet_pmic.c   |  33 ++
- 3 files changed, 727 insertions(+), 72 deletions(-)
+ 3 files changed, 728 insertions(+), 72 deletions(-)
 
 diff --git a/bsd/dev/sweet_ddrgov.c b/bsd/dev/sweet_ddrgov.c
 index 99c2643..06aebd5 100644
@@ -76,22 +77,23 @@ index 99c2643..06aebd5 100644
  		struct sweet_fg f;
  		if (sweet_fg_read(&f) != 0) {
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
-index 484b057..288317c 100644
+index 484b057..d67127d 100644
 --- a/bsd/dev/sweet_gpu.c
 +++ b/bsd/dev/sweet_gpu.c
-@@ -19,6 +19,11 @@
+@@ -19,6 +19,12 @@
   *               with a fence, the SweetGPU IOKit service
   *               (iokit/Kernel/arm/SweetGPU.cpp), and a kernel self-test of
   *               that path
-+ *   sweetgpucg=1  hardware clock gating (kgsl's a512 table; j0115)
-+ *   sweetgpupc=1  GX collapse after sweetgpupc_hold= ms (80) without a
-+ *               submit and with the display off, resume at the next submit
-+ *               or on touch / keys / display on (2: display off only; j0115,
-+ *               jasmine/GPU-IDLE-POWER.md); command port "gpu pc", "gpu cg"
++ *   sweetgpucg=0  no hardware clock gating (default on: kgsl's a512 table; j0115)
++ *   sweetgpupc=0  no GX collapse (default 1: collapse after sweetgpupc_hold=
++ *               ms (80) without a submit and with the display off, resume at
++ *               the next submit or on touch / keys / display on; 2: display
++ *               off only; j0115, jasmine/GPU-IDLE-POWER.md); command port
++ *               "gpu pc", "gpu cg"
   *
   * Power (sequences of mainline gpucc-sdm660.c / gdsc.c and downstream
   * msm_gfx_ldo.c, which mainline lacks): the GPU rail on SDM660 is VDD_CX
-@@ -220,8 +225,48 @@ static struct {
+@@ -220,8 +226,48 @@ static struct {
  
  static int sweet_gpu_chan;
  
@@ -103,7 +105,7 @@ index 484b057..288317c 100644
 + */
 +#define PC_HIST                 16
 +static struct {
-+	int mode;                       /* sweetgpupc: 0 off, 1 on, 2 only with the display off */
++	int mode;                       /* sweetgpupc: 0 off, 1 on (default), 2 only with the display off */
 +	bool cg;                        /* sweetgpucg: HWCG */
 +	bool on;                        /* GX powered; GPU registers may be touched */
 +	bool zap;                       /* the zap shader ran: resume sends CP_SET_SECURE_MODE 0 */
@@ -122,7 +124,7 @@ index 484b057..288317c 100644
 +		uint8_t on, why;
 +	} hist[PC_HIST];
 +	unsigned nhist;
-+} pc = { .on = true, .display_on = true, .hold_ms = 80, .res_us_min = ~0u };
++} pc = { .mode = 1, .on = true, .display_on = true, .hold_ms = 80, .res_us_min = ~0u };
 +static bool ctr_setup;                  /* sweet_gpu_bus_counters' selections (lost with GX) */
 +static int gpu_resume(int why);
 +static void gpu_hold_on(void);
@@ -140,7 +142,7 @@ index 484b057..288317c 100644
  
  /*
   * The pauses between bring-up stages (35 s in all) let a hang or panic show
-@@ -391,7 +436,22 @@ gpu_power_on(void)
+@@ -391,7 +437,22 @@ gpu_power_on(void)
  	gpu_state("CX on, clock roots from XO");
  
  	gpu_pause(4, "GX GDSC power-up next");
@@ -164,7 +166,7 @@ index 484b057..288317c 100644
  	cc_wr(GPUCC_GX_BCR, 1);
  	delay(1);
  	cc_wr(GPUCC_GX_BCR, 0);
-@@ -415,11 +475,10 @@ gpu_power_on(void)
+@@ -415,11 +476,10 @@ gpu_power_on(void)
  		gpu_state("a GPU clock did not start with GX on");
  		return err;
  	}
@@ -177,7 +179,7 @@ index 484b057..288317c 100644
  
  /*
   * GPU levels (j0060), from the stock DT: kgsl's qcom,gpu-pwrlevels, the gfx
-@@ -634,6 +693,29 @@ gpu_pll_start(uint32_t off, uint32_t mhz)
+@@ -634,6 +694,29 @@ gpu_pll_start(uint32_t off, uint32_t mhz)
  	return 0;
  }
  
@@ -207,7 +209,7 @@ index 484b057..288317c 100644
  /*
   * gpumhz= and "gpu clk": gfx3d at one of gpu_levels (up to the speed bin's
   * top). Ping-pong between GPU PLL0 (RCG source 1) and PLL1 (source 3) like
-@@ -674,17 +756,9 @@ gpu_set_clock(uint32_t mhz)
+@@ -674,17 +757,9 @@ gpu_set_clock(uint32_t mhz)
  		return err;
  	}
  
@@ -228,7 +230,7 @@ index 484b057..288317c 100644
  	}
  	if (err == 0) {
  		gclk.mhz = mhz;
-@@ -804,6 +878,7 @@ gpu_power_off(void)
+@@ -804,6 +879,7 @@ gpu_power_off(void)
  	cc_wr(GPUCC_GX_GDSCR, cc_rd(GPUCC_GX_GDSCR) | GDSC_SW_COLLAPSE);
  	int err = poll32(&sg.gpucc[GPUCC_GX_GDSCR / 4], GDSC_PWR_ON, 0, 2000);
  	cc_wr(GPUCC_CLAMP_IO, cc_rd(GPUCC_CLAMP_IO) | 1u);
@@ -236,7 +238,7 @@ index 484b057..288317c 100644
  	gpu_state(err ? "GX did NOT power off" : "GPU reset, GX off");
  }
  
-@@ -853,7 +928,31 @@ smmu_identity(uint64_t hi)
+@@ -853,7 +929,31 @@ smmu_identity(uint64_t hi)
  	uint64_t a = hi & ~0x1fffffull;
  	pt[(gib_hi != gib_lo ? 1024 : 512) + ((a >> 21) & 511)] = a | blk;
  	__builtin_arm_dsb(0xf);
@@ -268,7 +270,7 @@ index 484b057..288317c 100644
  	smmu_wr(cb, 0x000, 0);                              /* SCTLR off while it is set up */
  	smmu_wr(cb, 0x010, (7u << 15) | 1);                 /* TCR2: SEP upstream, PASize 36 bits */
  	smmu_wr(cb, 0x020, (uint32_t)pt_pa);                /* TTBR0, ASID 0 */
-@@ -881,16 +980,6 @@ smmu_identity(uint64_t hi)
+@@ -881,16 +981,6 @@ smmu_identity(uint64_t hi)
  	 */
  	smmu_wr(cb, 0x000, (1u << 12) | (1u << 6) | (1u << 2) | (1u << 1) | 1);
  	__builtin_arm_dsb(0xf);
@@ -285,7 +287,7 @@ index 484b057..288317c 100644
  }
  
  static int
-@@ -911,6 +1000,20 @@ gpu_load_fw(const char *prop, uint32_t off)
+@@ -911,6 +1001,20 @@ gpu_load_fw(const char *prop, uint32_t off)
  	return 0;
  }
  
@@ -306,7 +308,7 @@ index 484b057..288317c 100644
  static void
  cp_mem_write(uint64_t pa, uint32_t v)
  {
-@@ -1209,6 +1312,11 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+@@ -1209,6 +1313,11 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
  	uint32_t need = 4 * n + 5;
  	sweet_ddrgov_activity(0, 1);            /* DDR at the full rate before the GPU sees the job (j0114) */
  	lck_mtx_lock(gpu_lock);
@@ -318,7 +320,7 @@ index 484b057..288317c 100644
  	for (int i = 0; i < 200000 && ring_space() < need; i++) {
  		delay(10);
  	}
-@@ -1378,30 +1486,46 @@ sweet_gpu_cmd(const char *line)
+@@ -1378,30 +1487,46 @@ sweet_gpu_cmd(const char *line)
  		}
  		uint64_t t0 = mach_absolute_time(), ns = 0;
  		lck_mtx_lock(gpu_lock);
@@ -367,7 +369,7 @@ index 484b057..288317c 100644
  }
  
  /*
-@@ -1443,11 +1567,14 @@ bool sweet_gpu_bus_counters(uint64_t c[4]);
+@@ -1443,11 +1568,14 @@ bool sweet_gpu_bus_counters(uint64_t c[4]);
  bool
  sweet_gpu_bus_counters(uint64_t c[4])
  {
@@ -386,7 +388,7 @@ index 484b057..288317c 100644
  		io_wr(&sg.gpu[RBBM_PERFCTR_CNTL], 1);
  		io_wr(&sg.gpu[RBBM_PERFCTR_GPU_BUSY_MASKED], 0xffffffffu);
  		io_wr(&sg.gpu[RBBM_PERFCTR_RBBM_SEL_0], 6);
-@@ -1458,7 +1585,7 @@ sweet_gpu_bus_counters(uint64_t c[4])
+@@ -1458,7 +1586,7 @@ sweet_gpu_bus_counters(uint64_t c[4])
  		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_CLR0], 1);
  		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_CLR0], 0);
  		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_EN0], 1);
@@ -395,7 +397,7 @@ index 484b057..288317c 100644
  	}
  	static const uint32_t lo[4] = {RBBM_PERFCTR_RBBM_0_LO, VBIF_PERF_CNT_LOW0, VBIF_PERF_PWR_CNT_LOW0,
  		                       RBBM_ALWAYSON_COUNTER_LO};
-@@ -1472,6 +1599,7 @@ sweet_gpu_bus_counters(uint64_t c[4])
+@@ -1472,6 +1600,7 @@ sweet_gpu_bus_counters(uint64_t c[4])
  		}
  		c[i] = ((uint64_t)h << 32) | l;
  	}
@@ -403,7 +405,7 @@ index 484b057..288317c 100644
  	return true;
  }
  
-@@ -1497,7 +1625,7 @@ gpu_heartbeat(void)
+@@ -1497,7 +1626,7 @@ gpu_heartbeat(void)
  	for (unsigned int n = 1; gpu_ready; n++) {
  		(void)tsleep(&sweet_gpu_chan, PZERO, "sweetgpuhb", hz * 10);
  		lck_mtx_lock(gpu_lock);
@@ -412,7 +414,7 @@ index 484b057..288317c 100644
  			char what[48];
  			snprintf(what, sizeof(what), "heartbeat %u, GPU core read next", n);
  			gpu_state(what);
-@@ -1525,7 +1653,12 @@ sweet_gpu_param(uint32_t which)
+@@ -1525,7 +1654,12 @@ sweet_gpu_param(uint32_t which)
  	case 6: return GPU_VA_END - GPU_VA_BASE;        /* client VA size */
  	case 7: return 1;                               /* number of rings */
  	case 9: return sweet_fb_present_capability();   /* bit 0 sleep, bit 1 queue, bit 2 descriptor input */
@@ -426,7 +428,7 @@ index 484b057..288317c 100644
  	default: return 0;
  	}
  }
-@@ -1537,27 +1670,37 @@ sweet_gpu_param(uint32_t which)
+@@ -1537,27 +1671,37 @@ sweet_gpu_param(uint32_t which)
   * with a fence. Proves the 4K tables, the IB fetch and the fence.
   */
  static int
@@ -483,7 +485,7 @@ index 484b057..288317c 100644
  	/* the IB: CP_MEM_WRITE of two values into the destination's second 4K page */
  	uint32_t *w = (uint32_t *)ib;
  	uint64_t target = dst_iova + 0x1004;
-@@ -1577,21 +1720,62 @@ gpu_vm_selftest(void)
+@@ -1577,21 +1721,62 @@ gpu_vm_selftest(void)
  	}
  	flush_dcache64((addr64_t)dst_pa, PAGE_SIZE, TRUE);
  	volatile uint32_t *d = (volatile uint32_t *)(dst + 0x1004);
@@ -556,7 +558,7 @@ index 484b057..288317c 100644
  	gpu_wr(VBIF_ROUND_ROBIN_QOS_ARB, 3);
  	gpu_wr(VBIF_GATE_OFF_WRREQ_EN, 9);
  	gpu_wr(RBBM_AHB_CNTL0, 1);
-@@ -1648,6 +1832,19 @@ gpu_cp_test(void)
+@@ -1648,6 +1833,19 @@ gpu_cp_test(void)
  	gpu_wr(CP_RB_CNTL, 12 | (2u << 8) | (1u << 27));
  	gpu_wr(RBBM_INT_0_MASK, A5XX_INT_MASK);
  	sg.wptr = 0;
@@ -576,7 +578,7 @@ index 484b057..288317c 100644
  
  	/* above 4 GiB: a kernel page (all of XNU's RAM is there on jasmine) */
  	vm_offset_t page = 0;
-@@ -1664,15 +1861,7 @@ gpu_cp_test(void)
+@@ -1664,15 +1862,7 @@ gpu_cp_test(void)
  
  	gpu_pause(4, "starting the CP (PFP/ME out of halt) next");
  	gpu_wr(CP_PFP_ME_CNTL, 0);
@@ -593,7 +595,7 @@ index 484b057..288317c 100644
  	if (ring_kick("CP_ME_INIT")) {
  		gpu_power_off();
  		return ETIMEDOUT;
-@@ -1891,6 +2080,412 @@ gpu_zap_test(void)
+@@ -1891,6 +2081,412 @@ gpu_zap_test(void)
  	return err;
  }
  
@@ -1006,11 +1008,11 @@ index 484b057..288317c 100644
  static void
  sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
  {
-@@ -1928,13 +2523,18 @@ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
+@@ -1928,13 +2524,18 @@ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
  		(void)gpu_set_clock(mhz);
  	}
  	sweet_ddr_boot();                       /* sweetddr= (j0064), once the debug mux is mapped */
-+	int cg = 0;
++	int cg = 1;                             /* on by default (j0115c, user 2026-10-29) */
 +	PE_parse_boot_argn("sweetgpucg", &cg, sizeof(cg));
 +	pc.cg = cg != 0;
  	if (sg.level >= 2 && gpu_cp_test() == 0 && sg.level >= 3 && gpu_zap_test() == 0 && sg.level >= 4) {
