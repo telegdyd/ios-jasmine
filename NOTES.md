@@ -1,3 +1,23 @@
+### 2026-10-30 00:30: task 5 render-thread Mesa: flat profile; patch 0012 (3 small cuts) -0.3 ms Mesa, -0.4 ms frame, rates unchanged; not installed
+
+Report jasmine/PERF-TASK5-RENDER-CPU-20261030.md. Render-thread Mesa per CC frame is spread over many 1-3 µs per-call
+costs (DrawElements 33 µs each, 165/frame; st_prepare_draw 2.7 ms in ~13 µs pieces; u_vbuf 0.6 is mostly the vertex
+memcpy; darwin_bo_new 0.2 comes from TexImage2D, not the uploader). 0011's open question answered: no threaded-context
+back-pressure (render-thread waits ~0.2 ms/frame total). Found: the 100-flush stats report (~40 lines to stderr = kernel
+console) stalled the render thread 10-16 ms in one frame of ~100. Patch mesa/patches/0012-sweetgl-render-thread-report-
+ticket-fast-path.patch: report written from a utility dispatch queue, `sgl_ticket_write` open-batch lookup before the
+lock/inflight scan, `w_Clear` getenv cached. gltest of B: 6 cases PASS, feedback 45/45. ABBA of temporary j0118 boots
+(t5lib1 = bf5328c0, t5lib2 = d2d94a70, research/t5r12/abba.sh): Home B 43.9 -> 44.1/s, CC A 32.4 -> 33.3, CC B 31.0 -> 30.2,
+Spotlight 36.2 -> 34.9 (all within spread); per CC frame render Mesa 8.88/8.50 -> 8.56/8.22 ms, render CPU 24.0/24.2 ->
+23.8/23.2, frame 30.8/30.5 -> 30.2/30.2, report stall gone. B boots clean (tickets balanced, 0 errors/faults). The measured
+build wrote the report as one write, which split the live log's `|backboardd|` tags; current patch writes per line
+(xnu/out-mesa-t5r12b, 52b9cf97..., **not run on the phone**). First ABBA attempt hung in the command-port reboot (user forced
+fastboot); b1 stopped on a command-port timeout, repeated once. home-a: no frames in all 4 again. Note: 0012 is in
+mesa/patches, so new builds include it; production stays bf5328c0 (0001-0011). **Phone:** installed boot_b j0118, prod lib
+bf5328c0 read back; side files libsweetca1 (bf5328c0), libsweetca2 (d2d94a70), sweetgpu_gltest-t5r12, t5r-shot.raw.*.
+**Next (bigger lever):** moving Mesa's GL frontend off the render thread (glthread-like); needs the wrapper's per-draw
+direct state reads made marshal-safe first (see report). Install of 0012 only for the hitch removal, user's call.
+
 ### 2026-10-29 23:05: libsweetca with 0011 (async glFlush in mode 2) INSTALLED (user: "Install it")
 
 Production /usr/local/bin/libsweetca.dylib = xnu/out-mesa-t5async/libsweetca.dylib (patches 0001-0011, SHA256 bf5328c0...,

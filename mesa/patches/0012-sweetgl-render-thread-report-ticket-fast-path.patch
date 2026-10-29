@@ -1,0 +1,179 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 30 Oct 2026 00:30:00 +0100
+Subject: [PATCH] sweetgl: render-thread cuts: async 100-flush report, ticket repeat fast path
+
+The 100-flush statistics (~40 lines) went to stderr, the kernel console,
+which prints synchronously: 8-16 ms on CoreAnimation's render thread in
+one frame of every ~100. The lines are now collected in a buffer and
+written from a utility dispatch queue.
+
+sgl_ticket_write ran for every draw into a shared surface: mutex, scan of
+the inflight batches, then the open batch. A surface already in the open
+batch had its hazard resolved when it was added (inflight batches all
+predate the open one), so that lookup now comes first and repeats return
+without the lock. w_Clear read SWEETCA_REGION with getenv on every call.
+---
+diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
+index 138d75f..fd7d546 100644
+--- a/src/gallium/frontends/sweetgl/sweetca.c
++++ b/src/gallium/frontends/sweetgl/sweetca.c
+@@ -48,6 +48,7 @@
+ #include <mach/mach_time.h>
+ #include <mach/vm_page_size.h>
+ #include <CoreFoundation/CoreFoundation.h>
++#include <dispatch/dispatch.h>
+ #include <IOSurface/IOSurfaceRef.h>
+ 
+ #include <GLES3/gl31.h>
+@@ -90,6 +91,76 @@ sca_log(const char *fmt, ...)
+    fflush(stderr);
+ }
+ 
++/*
++ * The 100-flush report is ~40 lines, and stderr is the kernel console, which
++ * prints synchronously: 8-16 ms on CA's render thread in one frame of ~100.
++ * Its lines are collected here and written from a utility queue instead.
++ */
++struct sca_report {
++   size_t len, cap;
++   char bytes[];
++};
++static struct sca_report *report;
++
++static void
++report_line(const char *fmt, ...)
++{
++   char line[1024];
++   va_list ap;
++   va_start(ap, fmt);
++   int n = vsnprintf(line, sizeof(line) - 2, fmt, ap);
++   va_end(ap);
++   if (n < 0)
++      return;
++   if (n > (int)sizeof(line) - 2)
++      n = sizeof(line) - 2;
++   line[n++] = '\n';
++   if (!report || report->len + n > report->cap) {
++      size_t cap = report ? report->cap * 2 : 8192;
++      while (cap < (report ? report->len : 0) + n)
++         cap *= 2;
++      struct sca_report *r = realloc(report, sizeof(*r) + cap);
++      if (!r) {
++         (void)!fwrite(line, 1, n, stderr);
++         return;
++      }
++      if (!report)
++         r->len = 0;
++      r->cap = cap;
++      report = r;
++   }
++   memcpy(report->bytes + report->len, line, n);
++   report->len += n;
++}
++
++static void
++report_write(void *data)
++{
++   struct sca_report *r = data;
++   /* one write per line: the live log tags each write with the process name */
++   for (size_t at = 0; at < r->len;) {
++      const char *nl = memchr(r->bytes + at, '\n', r->len - at);
++      size_t n = nl ? (size_t)(nl - (r->bytes + at)) + 1 : r->len - at;
++      (void)!fwrite(r->bytes + at, 1, n, stderr);
++      fflush(stderr);
++      at += n;
++   }
++   free(r);
++}
++
++static void
++report_send(void)
++{
++   static dispatch_queue_t queue;
++   if (!report)
++      return;
++   if (!queue)
++      queue = dispatch_queue_create_with_target("sweetca.report", DISPATCH_QUEUE_SERIAL,
++                                                dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
++   dispatch_async_f(queue, report, report_write);
++   report = NULL;
++}
++
+ /* ---- contexts ---- */
+ 
+ #define OBJ_RECT 1   /* fragment shader with a sampler2DRect */
+@@ -449,15 +520,15 @@ prof_report(double wall_ms)
+       ms_per_tick = (double)tb.numer / tb.denom / 1e6;
+    }
+    uint64_t sub = darwin_submits, subt = darwin_submit_ticks, waitt = darwin_wait_ticks, waits = darwin_waits;
+-   sca_log("sweetca: prof: GL %.0f of %.0f ms; %llu submits (%.0f ms in the call), %llu waits (%.0f ms)",
++   report_line("sweetca: prof: GL %.0f of %.0f ms; %llu submits (%.0f ms in the call), %llu waits (%.0f ms)",
+            prof_gl_ticks * ms_per_tick, wall_ms, (unsigned long long)(sub - sub0), (subt - subt0) * ms_per_tick,
+            (unsigned long long)(waits - waits0), (waitt - waitt0) * ms_per_tick);
+    sub0 = sub;
+    subt0 = subt;
+    waitt0 = waitt;
+    waits0 = waits;
+-   darwin_prof_report(sca_log);
+-   sweet_profile_report(sca_log);
++   darwin_prof_report(report_line);
++   sweet_profile_report(report_line);
+    prof_gl_ticks = 0;
+    /* the 8 slowest wrappers, then every wrapper that submitted */
+    uint8_t shown[PROF_SLOTS] = {0};
+@@ -472,7 +543,7 @@ prof_report(double wall_ms)
+    }
+    for (int i = 0; i < PROF_SLOTS; i++) {
+       if (prof[i].fn && (shown[i] || prof[i].submits))
+-         sca_log("sweetca: prof:   %-28s %7llu calls %7.1f ms %5llu submits", prof[i].fn,
++         report_line("sweetca: prof:   %-28s %7llu calls %7.1f ms %5llu submits", prof[i].fn,
+                  (unsigned long long)prof[i].calls, prof[i].ticks * ms_per_tick, (unsigned long long)prof[i].submits);
+       prof[i].calls = prof[i].ticks = prof[i].submits = 0;
+    }
+@@ -489,9 +560,10 @@ flush_stats(double wait_ms)
+       t0 = t;
+    waited += wait_ms;
+    if (++n == 101) {
+-      sca_log("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in finish/submit), %u draws", t - t0,
+-              (t - t0) / 100, waited / 100, n_draws - draws0);
++      report_line("sweetca: 100 flushes in %.0f ms (%.1f ms each, %.1f in finish/submit), %u draws", t - t0,
++                  (t - t0) / 100, waited / 100, n_draws - draws0);
+       prof_report(t - t0);
++      report_send();
+       n = 1;
+       t0 = t;
+       waited = 0;
+@@ -2126,8 +2198,11 @@ w_Clear(void *rctx, GLbitfield mask)
+    (void)c;
+    n_clears++;
+    static unsigned told;
++   static int region = -1;
++   if (region < 0)
++      region = getenv("SWEETCA_REGION") != NULL;
+    GLuint fbt = c->fbo < FBOMAX ? c->fbo_tex[c->fbo] : 0;
+-   if (told < 40 && getenv("SWEETCA_REGION") && c->fbo && fbt && fbt < TEXMAX && c->tex_w[fbt] &&
++   if (told < 40 && region && c->fbo && fbt && fbt < TEXMAX && c->tex_w[fbt] &&
+        c->tex_w[fbt] <= 64 && c->tex_h[fbt] <= 64) {
+       GLfloat cc[4] = {0};
+       glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
+diff --git a/src/gallium/frontends/sweetgl/sweetgl_tickets.inc b/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
+index 1ed5ee6..ab1cba8 100644
+--- a/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
++++ b/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
+@@ -72,6 +72,15 @@ sgl_ticket_write(struct sgl_context *ctx, uint32_t surface)
+       ctx->tickets->refs = 1;
+    }
+    struct sgl_render_set *set = ctx->tickets;
++   /* CA draws many times into one target per frame. A surface already in the
++    * open batch had its write hazard resolved when it was added (inflight
++    * batches all predate the open one), so repeats skip the lock and scan. */
++   if (set->open) {
++      for (unsigned i = 0; i < set->open->count; i++) {
++         if (set->open->tickets[i].surface == surface)
++            return 0;
++      }
++   }
+    bool pending = false;
+    pthread_mutex_lock(&set->lock);
+    for (struct sgl_render_batch *b = set->inflight; b; b = b->next) {
