@@ -1,3 +1,14 @@
+### 2026-10-29 05:40: 828x1792@2 (j0112) INSTALLED to boot_b for the user's own test (user: "install it")
+
+boot_b = shim/out/shim-boot-j0112-xr-slotb.img (sha256 3e5e7614375f0fb6...; kernel xnu/out-jasmine-j0112; args = previous boot_b
+minus keepsyms=1 (608-byte cmdline room) + sweetenv SpringBoard:DYLD_INSERT_LIBRARIES=/s.dylib + sweetfb_lw=828; ADT --canvas
+828x1792 --scale 2). Flashed from fastboot (OKAY; no charging-shell readback, battery low). Root: /s.dylib (sweet_sbshape,
+3fa51848...), /usr/local/bin/sbs.conf "227,32,414", MG cache = research/render-size/regen-xr.plist (e898a694...). Normal boot:
+"828x1792 fitted into 998x2160", hook log setExclusionArea 227x32, SWEET AB boot_b marked successful both GPTs.
+ROLLBACK (both parts needed): fastboot flash boot_b research/t16port/j0110-mode2-slotb.img (9096026c...); then in iOS put
+research/render-size/backup/com.apple.MobileGestalt.plist (c70accbb...) to the MG cache path, rm /s.dylib /usr/local/bin/sbs.conf.
+Note: the PC's USB adapter sometimes stays at 169.254.x (phone DHCP missed); then nothing is reachable; reboot/replug fixes it.
+
 ### 2026-10-29 00:30: task 25 slowdown FIXED by j0112: 828x1792@2 Home 41.1/s vs base 29.5 (+39%); not installed
 
 Report: jasmine/PERF-RENDER-SIZE-20261028.md ("CAUSE" section). Cause: SweetSurface's screen-sized bounds 1000x2000 excluded
