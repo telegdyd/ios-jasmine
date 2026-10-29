@@ -1,0 +1,1082 @@
+From 6b67ccc8226013ea3dc58bb22934a2ab4bdbef85 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 29 Oct 2026 16:35:56 +0100
+Subject: [PATCH] jasmine-j0115: Adreno 512 idle power: hardware clock gating
+ (sweetgpucg=1, kgsl's a512 table) and GX collapse after an idle hold and with
+ the display off, resume in the submit path or on touch/keys/display on
+ (sweetgpupc=0|1|2, default 0; _hold=, _cx=); command port gpu pc, gpu cg;
+ batt icl MA SECS (temporary low USB input limit for fuel-gauge A/B)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/sweet_ddrgov.c |  22 ++
+ bsd/dev/sweet_gpu.c    | 744 +++++++++++++++++++++++++++++++++++++----
+ bsd/dev/sweet_pmic.c   |  33 ++
+ 3 files changed, 727 insertions(+), 72 deletions(-)
+
+diff --git a/bsd/dev/sweet_ddrgov.c b/bsd/dev/sweet_ddrgov.c
+index 99c2643..06aebd5 100644
+--- a/bsd/dev/sweet_ddrgov.c
++++ b/bsd/dev/sweet_ddrgov.c
+@@ -44,6 +44,8 @@ extern bool sweet_rpm_clk_active(uint32_t type, uint32_t id, uint32_t khz);
+ extern uint32_t sweet_ddr_mhz(void);
+ extern void sweet_ddr_note_vote(uint32_t mhz);
+ extern bool sweet_gpu_bus_counters(uint64_t c[4]);
++extern void sweet_gpu_prewake(void);       /* bsd/dev/sweet_gpu.c (j0115): GX on before the frame */
++extern void sweet_gpu_display(int on);
+ extern unsigned sweet_dvfs_busy(void);    /* osfmk/arm64/sweet_dvfs.h: busiest core, last 20 ms */
+ /* PM660 fuel gauge (bsd/dev/sweet_pmic.c, same layout) */
+ struct sweet_fg {
+@@ -53,6 +55,7 @@ struct sweet_fg {
+ 	int online, charging, full;
+ };
+ extern int sweet_fg_read(struct sweet_fg *out);
++extern int sweet_chg_icl_test(uint32_t ma, uint32_t secs);      /* bsd/dev/sweet_pmic.c (j0115) */
+ 
+ void sweet_ddrgov_start(uint32_t full_mhz);
+ bool sweet_ddrgov_manual(void);
+@@ -213,6 +216,9 @@ gov_go(int to, int src)
+ void
+ sweet_ddrgov_activity(int src, int sync)
+ {
++	if (src == S_TOUCH || src == S_KEY || src == S_DISPLAY) {
++		sweet_gpu_prewake();
++	}
+ 	if (src == S_UFS && (g.display_on || g.bus_mask == 0)) {
+ 		return;
+ 	}
+@@ -237,6 +243,7 @@ void
+ sweet_ddrgov_display(int on)
+ {
+ 	g.display_on = on != 0;
++	sweet_gpu_display(on);
+ 	if (on) {
+ 		sweet_ddrgov_activity(S_DISPLAY, 1);
+ 	} else {
+@@ -525,6 +532,21 @@ const char *
+ sweet_ddrgov_cmd(const char *line)
+ {
+ 	static char reply[2048];
++	if (strncmp(line, "batt icl ", 9) == 0) {
++		uint32_t ma = 0, secs = 0;
++		const char *p = line + 9;
++		for (; *p >= '0' && *p <= '9'; p++) {
++			ma = ma * 10 + (uint32_t)(*p - '0');
++		}
++		for (; *p == ' '; p++) {
++		}
++		for (; *p >= '0' && *p <= '9'; p++) {
++			secs = secs * 10 + (uint32_t)(*p - '0');
++		}
++		int r = sweet_chg_icl_test(ma, secs);
++		snprintf(reply, sizeof(reply), "batt icl: %s (%d)\n", ma && secs ? "test limit set" : "restore next tick", r);
++		return reply;
++	}
+ 	if (strcmp(line, "batt") == 0) {
+ 		struct sweet_fg f;
+ 		if (sweet_fg_read(&f) != 0) {
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 484b057..288317c 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -19,6 +19,11 @@
+  *               with a fence, the SweetGPU IOKit service
+  *               (iokit/Kernel/arm/SweetGPU.cpp), and a kernel self-test of
+  *               that path
++ *   sweetgpucg=1  hardware clock gating (kgsl's a512 table; j0115)
++ *   sweetgpupc=1  GX collapse after sweetgpupc_hold= ms (80) without a
++ *               submit and with the display off, resume at the next submit
++ *               or on touch / keys / display on (2: display off only; j0115,
++ *               jasmine/GPU-IDLE-POWER.md); command port "gpu pc", "gpu cg"
+  *
+  * Power (sequences of mainline gpucc-sdm660.c / gdsc.c and downstream
+  * msm_gfx_ldo.c, which mainline lacks): the GPU rail on SDM660 is VDD_CX
+@@ -220,8 +225,48 @@ static struct {
+ 
+ static int sweet_gpu_chan;
+ 
++/*
++ * Idle power (j0115, jasmine/GPU-IDLE-POWER.md): hardware clock gating while
++ * the GPU is on, GX collapse after hold ms without a submit and right after
++ * display off, resume in the submit path (or earlier, on touch, keys and
++ * display on). on, cx_low and the counters change under gpu_lock.
++ */
++#define PC_HIST                 16
++static struct {
++	int mode;                       /* sweetgpupc: 0 off, 1 on, 2 only with the display off */
++	bool cg;                        /* sweetgpucg: HWCG */
++	bool on;                        /* GX powered; GPU registers may be touched */
++	bool zap;                       /* the zap shader ran: resume sends CP_SET_SECURE_MODE 0 */
++	bool started, log;
++	volatile bool display_on, kick, want_on;
++	volatile uint64_t last;         /* mach time of the last submit or pre-wake */
++	uint32_t hold_ms, cx_off;       /* sweetgpupc_hold=, sweetgpupc_cx= (0: the CX vote stays) */
++	bool cx_low;                    /* CX voted down to cx_off while collapsed */
++	uint32_t keep;                  /* command holders that need GX on */
++	uint64_t entered, resid_on, resid_off;
++	uint32_t collapses, resumes, res_ok, prewakes, failures, smmu_fixes, scm_resumes;
++	uint32_t res_us_last, res_us_min, res_us_max, off_us_last, off_us_max;
++	uint64_t res_us_sum;
++	struct {
++		uint32_t ms, us;
++		uint8_t on, why;
++	} hist[PC_HIST];
++	unsigned nhist;
++} pc = { .on = true, .display_on = true, .hold_ms = 80, .res_us_min = ~0u };
++static bool ctr_setup;                  /* sweet_gpu_bus_counters' selections (lost with GX) */
++static int gpu_resume(int why);
++static void gpu_hold_on(void);
++static void gpu_hold_off(void);
++static const char *gpu_pc_cmd(const char *a);
++static void gpu_pc_start(void);
++enum { PCW_IDLE, PCW_DISPLAY, PCW_SUBMIT, PCW_PREWAKE, PCW_CMD, PCW_N };
++static const char *const pc_why[PCW_N] = { "idle", "display off", "submit", "pre-wake", "command" };
++
+ static void gpu_power_off(void);
+ static int smmu_identity(uint64_t hi);
++static int gpu_gx_on(void);
++static void smmu_regs(uint64_t pt_pa);
++static bool smmu_regs_ok(void);
+ 
+ /*
+  * The pauses between bring-up stages (35 s in all) let a hang or panic show
+@@ -391,7 +436,22 @@ gpu_power_on(void)
+ 	gpu_state("CX on, clock roots from XO");
+ 
+ 	gpu_pause(4, "GX GDSC power-up next");
+-	/* GX GDSC: block reset, AON (GMEM) reset, unclamp, power on (gdsc.c, CLAMP_IO | SW_RESET | AON_RESET) */
++	if ((err = gpu_gx_on()) == 0) {
++		gpu_state("GX on");
++	}
++	return err;
++}
++
++/*
++ * GX GDSC on with gfx3d's root on XO (boot and every resume, j0115): block
++ * reset, AON (GMEM) reset, unclamp, power on (gdsc.c, CLAMP_IO | SW_RESET |
++ * AON_RESET), then the GX-side branches.
++ */
++static int
++gpu_gx_on(void)
++{
++	int err;
++	uint32_t g;
+ 	cc_wr(GPUCC_GX_BCR, 1);
+ 	delay(1);
+ 	cc_wr(GPUCC_GX_BCR, 0);
+@@ -415,11 +475,10 @@ gpu_power_on(void)
+ 		gpu_state("a GPU clock did not start with GX on");
+ 		return err;
+ 	}
+-	gpu_state("GX on");
+ 	return 0;
+ }
+ 
+-static int gpu_vm_selftest(void);
++static int gpu_vm_selftest(bool quiet);
+ 
+ /*
+  * GPU levels (j0060), from the stock DT: kgsl's qcom,gpu-pwrlevels, the gfx
+@@ -634,6 +693,29 @@ gpu_pll_start(uint32_t off, uint32_t mhz)
+ 	return 0;
+ }
+ 
++/*
++ * gfx3d to mhz through the GPU PLL it is not running on (from XO: PLL0); the
++ * old PLL stops. *to is the PLL now used. ENXIO: the PLL did not lock and
++ * nothing changed; another error: the RCG switch timed out.
++ */
++static int
++gpu_pll_switch(uint32_t mhz, uint32_t *to)
++{
++	uint32_t src = (cc_rd(GPUCC_GFX3D_RCG + 4) >> 8) & 7;
++	uint32_t from = src == 1 ? GPU_PLL0 : src == 3 ? GPU_PLL1 : ~0u;
++	*to = from == GPU_PLL0 ? GPU_PLL1 : GPU_PLL0;
++	if (gpu_pll_start(*to, mhz) != 0) {
++		return ENXIO;
++	}
++	cc_wr(GPUCC_GFX3D_RCG + 4, ((*to == GPU_PLL0 ? 1u : 3u) << 8) | 3);     /* CFG: source, divide by 2 (SRC_DIV 3) */
++	cc_wr(GPUCC_GFX3D_RCG, cc_rd(GPUCC_GFX3D_RCG) | RCG_UPDATE);
++	int err = poll32(&sg.gpucc[GPUCC_GFX3D_RCG / 4], RCG_UPDATE, 0, 500);
++	if (err == 0 && from != ~0u) {
++		io_wr(&sg.gpucc[from / 4], 0);          /* the old PLL off */
++	}
++	return err;
++}
++
+ /*
+  * gpumhz= and "gpu clk": gfx3d at one of gpu_levels (up to the speed bin's
+  * top). Ping-pong between GPU PLL0 (RCG source 1) and PLL1 (source 3) like
+@@ -674,17 +756,9 @@ gpu_set_clock(uint32_t mhz)
+ 		return err;
+ 	}
+ 
+-	uint32_t src = (cc_rd(GPUCC_GFX3D_RCG + 4) >> 8) & 7;
+-	uint32_t from = src == 1 ? GPU_PLL0 : src == 3 ? GPU_PLL1 : ~0u;
+-	uint32_t to = from == GPU_PLL0 ? GPU_PLL1 : GPU_PLL0;
+-	if ((err = gpu_pll_start(to, mhz)) != 0) {
+-		return err;
+-	}
+-	cc_wr(GPUCC_GFX3D_RCG + 4, ((to == GPU_PLL0 ? 1u : 3u) << 8) | 3);      /* CFG: source, divide by 2 (SRC_DIV 3) */
+-	cc_wr(GPUCC_GFX3D_RCG, cc_rd(GPUCC_GFX3D_RCG) | RCG_UPDATE);
+-	err = poll32(&sg.gpucc[GPUCC_GFX3D_RCG / 4], RCG_UPDATE, 0, 500);
+-	if (err == 0 && from != ~0u) {
+-		io_wr(&sg.gpucc[from / 4], 0);          /* the old PLL off */
++	uint32_t to;
++	if ((err = gpu_pll_switch(mhz, &to)) == ENXIO) {
++		return EIO;
+ 	}
+ 	if (err == 0) {
+ 		gclk.mhz = mhz;
+@@ -804,6 +878,7 @@ gpu_power_off(void)
+ 	cc_wr(GPUCC_GX_GDSCR, cc_rd(GPUCC_GX_GDSCR) | GDSC_SW_COLLAPSE);
+ 	int err = poll32(&sg.gpucc[GPUCC_GX_GDSCR / 4], GDSC_PWR_ON, 0, 2000);
+ 	cc_wr(GPUCC_CLAMP_IO, cc_rd(GPUCC_CLAMP_IO) | 1u);
++	pc.on = false;
+ 	gpu_state(err ? "GX did NOT power off" : "GPU reset, GX off");
+ }
+ 
+@@ -853,7 +928,31 @@ smmu_identity(uint64_t hi)
+ 	uint64_t a = hi & ~0x1fffffull;
+ 	pt[(gib_hi != gib_lo ? 1024 : 512) + ((a >> 21) & 511)] = a | blk;
+ 	__builtin_arm_dsb(0xf);
++	smmu_regs(pt_pa);
++	printf("SWEET GPU: SMMU CB0 table at %llx: SMR0 %08x S2CR0 %08x CBAR0 %08x CBA2R0 %08x SCTLR %08x "
++	    "TCR %08x TCR2 %08x TTBR0 %08x%08x MAIR0 %08x; hi page %llx\n", pt_pa,
++	    s[0x800 / 4], s[0xc00 / 4], s[SMMU_GR1 / 4], s[(SMMU_GR1 + 0x800) / 4], cb[0], cb[0x30 / 4],
++	    cb[0x10 / 4], cb[0x24 / 4], cb[0x20 / 4], cb[0x38 / 4], hi);
++	if (!smmu_regs_ok()) {
++		printf("SWEET GPU: SMMU writes did not stick, CP not started\n");
++		gpu_power_off();
++		return EPERM;
++	}
++	return 0;
++}
++
++/* CB0, SMR0 and S2CR0 as smmu_identity sets them (tables untouched), and whether they read back so */
++static bool
++smmu_regs_ok(void)
++{
++	volatile uint32_t *s = sg.smmu, *cb = sg.smmu + SMMU_CB0 / 4;
++	return s[0x800 / 4] == (1u << 31) && (s[0xc00 / 4] & (3u << 16)) == 0 && (cb[0] & 1) != 0;
++}
+ 
++static void
++smmu_regs(uint64_t pt_pa)
++{
++	volatile uint32_t *s = sg.smmu, *cb = sg.smmu + SMMU_CB0 / 4;
+ 	smmu_wr(cb, 0x000, 0);                              /* SCTLR off while it is set up */
+ 	smmu_wr(cb, 0x010, (7u << 15) | 1);                 /* TCR2: SEP upstream, PASize 36 bits */
+ 	smmu_wr(cb, 0x020, (uint32_t)pt_pa);                /* TTBR0, ASID 0 */
+@@ -881,16 +980,6 @@ smmu_identity(uint64_t hi)
+ 	 */
+ 	smmu_wr(cb, 0x000, (1u << 12) | (1u << 6) | (1u << 2) | (1u << 1) | 1);
+ 	__builtin_arm_dsb(0xf);
+-	printf("SWEET GPU: SMMU CB0 table at %llx: SMR0 %08x S2CR0 %08x CBAR0 %08x CBA2R0 %08x SCTLR %08x "
+-	    "TCR %08x TCR2 %08x TTBR0 %08x%08x MAIR0 %08x; hi page %llx\n", pt_pa,
+-	    s[0x800 / 4], s[0xc00 / 4], s[SMMU_GR1 / 4], s[(SMMU_GR1 + 0x800) / 4], cb[0], cb[0x30 / 4],
+-	    cb[0x10 / 4], cb[0x24 / 4], cb[0x20 / 4], cb[0x38 / 4], hi);
+-	if (s[0x800 / 4] != (1u << 31) || (s[0xc00 / 4] & (3u << 16)) != 0 || (cb[0] & 1) == 0) {
+-		printf("SWEET GPU: SMMU writes did not stick, CP not started\n");
+-		gpu_power_off();
+-		return EPERM;
+-	}
+-	return 0;
+ }
+ 
+ static int
+@@ -911,6 +1000,20 @@ gpu_load_fw(const char *prop, uint32_t off)
+ 	return 0;
+ }
+ 
++static void
++ring_me_init(void)
++{
++	ring_pkt7(CP_ME_INIT, 8);
++	ring_out(0x0000002f);
++	ring_out(0x00000003);           /* multiple hardware contexts */
++	ring_out(0x20000000);           /* error detection */
++	ring_out(0);
++	ring_out(0);
++	ring_out(0);                    /* a512: no microcode workarounds */
++	ring_out(0);
++	ring_out(0);
++}
++
+ static void
+ cp_mem_write(uint64_t pa, uint32_t v)
+ {
+@@ -1209,6 +1312,11 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+ 	uint32_t need = 4 * n + 5;
+ 	sweet_ddrgov_activity(0, 1);            /* DDR at the full rate before the GPU sees the job (j0114) */
+ 	lck_mtx_lock(gpu_lock);
++	pc.last = mach_absolute_time();
++	if (__improbable(!pc.on) && gpu_resume(PCW_SUBMIT) != 0) {      /* GX collapsed while idle (j0115) */
++		lck_mtx_unlock(gpu_lock);
++		return EIO;
++	}
+ 	for (int i = 0; i < 200000 && ring_space() < need; i++) {
+ 		delay(10);
+ 	}
+@@ -1378,30 +1486,46 @@ sweet_gpu_cmd(const char *line)
+ 		}
+ 		uint64_t t0 = mach_absolute_time(), ns = 0;
+ 		lck_mtx_lock(gpu_lock);
++		gpu_hold_on();
+ 		int err = sweet_gpu_wait(gpu_seqno, 1000);
+ 		if (err == 0) {
+ 			err = gpu_set_clock(mhz);
+ 		}
++		gpu_hold_off();
+ 		lck_mtx_unlock(gpu_lock);
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+-		int st = err ? -1 : gpu_vm_selftest();
++		int st = err ? -1 : gpu_vm_selftest(false);
+ 		gpu_rails(r, sizeof(r));
++		lck_mtx_lock(gpu_lock);
++		gpu_hold_on();
+ 		snprintf(reply, sizeof(reply), "gpu clk %u: %s (%d) in %llu us, now %u MHz, measured %u MHz, CX vote %#x, "
+ 		    "mem-acc %s, ipeak %d, %s, self-test %s\n", mhz, err ? "FAILED" : "ok", err, ns / 1000, gclk.mhz,
+ 		    gpu_measure_mhz(), gclk.cx, gclk.acc_hi ? "high" : "low", gclk.ipeak, r,
+ 		    st == 0 ? "PASS" : st < 0 ? "skipped" : "FAIL");
++		gpu_hold_off();
++		lck_mtx_unlock(gpu_lock);
+ 		printf("SWEET GPU: %s", reply);
+ 		return reply;
+ 	}
++	if (strncmp(line + 4, "pc", 2) == 0 && (line[6] == 0 || line[6] == ' ')) {
++		return gpu_pc_cmd(line + 4);
++	}
++	if (strncmp(line + 4, "cg ", 3) == 0) {
++		return gpu_pc_cmd(line + 4);
++	}
+ 	if (strcmp(line + 4, "state") == 0) {
+ 		gpu_rails(r, sizeof(r));
++		lck_mtx_lock(gpu_lock);
++		gpu_hold_on();
+ 		snprintf(reply, sizeof(reply), "gpu: %u MHz (measured %u, top %u, bin %#x), CX vote %#x floor %#x, mem-acc %s, "
+ 		    "ipeak %d, %s, DDR (bimc) %u MHz, completed %u of %u\n", gclk.mhz, gpu_measure_mhz(), gclk.max_mhz,
+ 		    gclk.bin, gclk.cx, gclk.floor, gclk.acc_hi ? "high" : "low", gclk.ipeak, r,
+ 		    gcc_measure_mhz(GCC_DEBUG_BIMC), sweet_gpu_completed(), gpu_seqno);
++		gpu_hold_off();
++		lck_mtx_unlock(gpu_lock);
+ 		return reply;
+ 	}
+-	return "gpu: ? (clk MHZ, state)\n";
++	return "gpu: ? (clk MHZ, state, pc ..., cg 0|1)\n";
+ }
+ 
+ /*
+@@ -1443,11 +1567,14 @@ bool sweet_gpu_bus_counters(uint64_t c[4]);
+ bool
+ sweet_gpu_bus_counters(uint64_t c[4])
+ {
+-	static bool set_up;
+-	if (!gpu_ready) {
+-		return false;
++	if (!gpu_ready || !lck_mtx_try_lock(gpu_lock)) {
++		return false;                   /* a submit or resume holds it: the GPU is busy anyway */
+ 	}
+-	if (!set_up) {
++	if (!pc.on) {
++		lck_mtx_unlock(gpu_lock);
++		return false;                   /* GX collapsed: no work, and no register to read (j0115) */
++	}
++	if (!ctr_setup) {
+ 		io_wr(&sg.gpu[RBBM_PERFCTR_CNTL], 1);
+ 		io_wr(&sg.gpu[RBBM_PERFCTR_GPU_BUSY_MASKED], 0xffffffffu);
+ 		io_wr(&sg.gpu[RBBM_PERFCTR_RBBM_SEL_0], 6);
+@@ -1458,7 +1585,7 @@ sweet_gpu_bus_counters(uint64_t c[4])
+ 		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_CLR0], 1);
+ 		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_CLR0], 0);
+ 		io_wr(&sg.gpu[VBIF_PERF_PWR_CNT_EN0], 1);
+-		set_up = true;
++		ctr_setup = true;
+ 	}
+ 	static const uint32_t lo[4] = {RBBM_PERFCTR_RBBM_0_LO, VBIF_PERF_CNT_LOW0, VBIF_PERF_PWR_CNT_LOW0,
+ 		                       RBBM_ALWAYSON_COUNTER_LO};
+@@ -1472,6 +1599,7 @@ sweet_gpu_bus_counters(uint64_t c[4])
+ 		}
+ 		c[i] = ((uint64_t)h << 32) | l;
+ 	}
++	lck_mtx_unlock(gpu_lock);
+ 	return true;
+ }
+ 
+@@ -1497,7 +1625,7 @@ gpu_heartbeat(void)
+ 	for (unsigned int n = 1; gpu_ready; n++) {
+ 		(void)tsleep(&sweet_gpu_chan, PZERO, "sweetgpuhb", hz * 10);
+ 		lck_mtx_lock(gpu_lock);
+-		if (gpu_ready) {
++		if (gpu_ready && pc.on) {
+ 			char what[48];
+ 			snprintf(what, sizeof(what), "heartbeat %u, GPU core read next", n);
+ 			gpu_state(what);
+@@ -1525,7 +1653,12 @@ sweet_gpu_param(uint32_t which)
+ 	case 6: return GPU_VA_END - GPU_VA_BASE;        /* client VA size */
+ 	case 7: return 1;                               /* number of rings */
+ 	case 9: return sweet_fb_present_capability();   /* bit 0 sleep, bit 1 queue, bit 2 descriptor input */
+-	case 8: return (uint64_t)gpu_rd(RBBM_ALWAYSON_COUNTER_LO);   /* timestamp (19.2 MHz) */
++	case 8: {                                       /* timestamp (19.2 MHz); GX off: the arch counter, same rate */
++		lck_mtx_lock(gpu_lock);
++		uint64_t t = pc.on ? (uint64_t)gpu_rd(RBBM_ALWAYSON_COUNTER_LO) : mach_absolute_time();
++		lck_mtx_unlock(gpu_lock);
++		return t;
++	}
+ 	default: return 0;
+ 	}
+ }
+@@ -1537,27 +1670,37 @@ sweet_gpu_param(uint32_t which)
+  * with a fence. Proves the 4K tables, the IB fetch and the fence.
+  */
+ static int
+-gpu_vm_selftest(void)
+-{
+-	vm_offset_t ib = 0, dst = 0;
+-	uint64_t ib_iova, dst_iova, pa[PAGE_MAX_SIZE / 0x1000];
+-	if (kmem_alloc(kernel_map, &ib, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
+-	    kmem_alloc(kernel_map, &dst, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
+-	    sweet_gpu_vm_alloc(PAGE_SIZE, &ib_iova) || sweet_gpu_vm_alloc(PAGE_SIZE, &dst_iova)) {
+-		printf("SWEET GPU: self-test: no memory\n");
+-		return ENOMEM;
++gpu_vm_selftest(bool quiet)
++{
++	/* one pair of buffers for every run ("gpu clk" and "gpu pc stress" repeat it) */
++	static vm_offset_t ib, dst;
++	static uint64_t ib_iova, dst_iova;
++	static int map_err;
++	uint64_t pa[PAGE_MAX_SIZE / 0x1000];
++	if (ib == 0) {
++		if (kmem_alloc(kernel_map, &ib, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
++		    kmem_alloc(kernel_map, &dst, PAGE_SIZE, KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) ||
++		    sweet_gpu_vm_alloc(PAGE_SIZE, &ib_iova) || sweet_gpu_vm_alloc(PAGE_SIZE, &dst_iova)) {
++			printf("SWEET GPU: self-test: no memory\n");
++			ib = 0;
++			return ENOMEM;
++		}
++		uint64_t ib_pa0 = kva_to_pa(ib), dst_pa0 = kva_to_pa(dst);
++		for (unsigned i = 0; i < PAGE_SIZE / 0x1000; i++) {
++			pa[i] = ib_pa0 + 0x1000ull * i;
++		}
++		map_err = sweet_gpu_vm_map(ib_iova, pa, PAGE_SIZE / 0x1000, true);
++		for (unsigned i = 0; i < PAGE_SIZE / 0x1000; i++) {
++			pa[i] = dst_pa0 + 0x1000ull * i;
++		}
++		if (!map_err) {
++			map_err = sweet_gpu_vm_map(dst_iova, pa, PAGE_SIZE / 0x1000, false);
++		}
+ 	}
++	int err = map_err;
+ 	uint64_t ib_pa = kva_to_pa(ib), dst_pa = kva_to_pa(dst);
+-	for (unsigned i = 0; i < PAGE_SIZE / 0x1000; i++) {
+-		pa[i] = ib_pa + 0x1000ull * i;
+-	}
+-	int err = sweet_gpu_vm_map(ib_iova, pa, PAGE_SIZE / 0x1000, true);
+-	for (unsigned i = 0; i < PAGE_SIZE / 0x1000; i++) {
+-		pa[i] = dst_pa + 0x1000ull * i;
+-	}
+-	if (!err) {
+-		err = sweet_gpu_vm_map(dst_iova, pa, PAGE_SIZE / 0x1000, false);
+-	}
++	((volatile uint32_t *)(dst + 0x1004))[0] = 0;
++	((volatile uint32_t *)(dst + 0x1004))[1] = 0;
+ 	/* the IB: CP_MEM_WRITE of two values into the destination's second 4K page */
+ 	uint32_t *w = (uint32_t *)ib;
+ 	uint64_t target = dst_iova + 0x1004;
+@@ -1577,21 +1720,62 @@ gpu_vm_selftest(void)
+ 	}
+ 	flush_dcache64((addr64_t)dst_pa, PAGE_SIZE, TRUE);
+ 	volatile uint32_t *d = (volatile uint32_t *)(dst + 0x1004);
+-	printf("SWEET GPU: self-test: IB at %llx -> %llx, seqno %u completed %u (%d), reads %08x %08x (want 600d0001 600d0002), "
+-	    "CB0 FSR %08x\n", ib_iova, target, seqno, sweet_gpu_completed(), err, d[0], d[1], sg.smmu[(SMMU_CB0 + 0x58) / 4]);
+-	return err || d[0] != 0x600d0001 || d[1] != 0x600d0002 ? EIO : 0;
++	bool bad = err || d[0] != 0x600d0001 || d[1] != 0x600d0002;
++	if (!quiet || bad) {
++		printf("SWEET GPU: self-test: IB at %llx -> %llx, seqno %u completed %u (%d), reads %08x %08x (want 600d0001 "
++		    "600d0002), CB0 FSR %08x\n", ib_iova, target, seqno, sweet_gpu_completed(), err, d[0], d[1],
++		    sg.smmu[(SMMU_CB0 + 0x58) / 4]);
++	}
++	return bad ? EIO : 0;
+ }
+ 
+-static int
+-gpu_cp_test(void)
++/*
++ * Hardware clock gating (j0115): kgsl's a512_hwcg_regs (adreno_a5xx.c of the
++ * sdm660 downstream kernel; offsets from a5xx_reg.h), then the top-level
++ * enable, bracketed as a5xx_regulator_enable does for the cores without a
++ * GPMU (sp_input_clk halted at the HM level while the table is written).
++ */
++#define RBBM_CLOCK_CNTL         0x0067
++#define RBBM_ISDB_CNT           0x0533
++static const uint32_t a512_hwcg[][2] = {
++	{ 0x068, 0x02222222 }, { 0x069, 0x02222222 }, { 0x06c, 0x02222220 }, { 0x06d, 0x02222220 },
++	{ 0x070, 0x0000f3cf }, { 0x071, 0x0000f3cf }, { 0x074, 0x00000080 }, { 0x075, 0x00000080 },
++	{ 0x04a, 0x22222222 }, { 0x04b, 0x22222222 }, { 0x04e, 0x22222222 }, { 0x04f, 0x22222222 },
++	{ 0x052, 0x00002222 }, { 0x053, 0x00002222 }, { 0x0b0, 0x77777777 }, { 0x0b1, 0x77777777 },
++	{ 0x0b4, 0x77777777 }, { 0x0b5, 0x77777777 }, { 0x0b8, 0x00007777 }, { 0x0b9, 0x00007777 },
++	{ 0x0a4, 0x11111111 }, { 0x0a5, 0x11111111 }, { 0x0a8, 0x11111111 }, { 0x0a9, 0x11111111 },
++	{ 0x0ac, 0x00001111 }, { 0x0ad, 0x00001111 }, { 0x05a, 0x22222222 }, { 0x05b, 0x22222222 },
++	{ 0x05c, 0x22222222 }, { 0x05d, 0x00222222 }, { 0x05e, 0x00444444 }, { 0x05f, 0x00000002 },
++	{ 0x078, 0x22222222 }, { 0x079, 0x22222222 }, { 0x07c, 0x00222222 }, { 0x07d, 0x00222222 },
++	{ 0x082, 0x00022220 }, { 0x083, 0x00022220 }, { 0x08a, 0x05522222 }, { 0x08b, 0x00505555 },
++	{ 0x086, 0x04040404 }, { 0x087, 0x04040404 }, { 0x080, 0x07444044 }, { 0x08c, 0x00000002 },
++	{ 0x08d, 0x00000002 }, { 0x081, 0x00010011 }, { 0x063, 0x04222222 }, { 0x060, 0x02222222 },
++	{ 0x091, 0x00002222 }, { 0x064, 0x00000000 }, { 0x062, 0x04104004 }, { 0x090, 0x00000000 },
++	{ 0x066, 0x00000000 }, { 0x065, 0x00004000 }, { 0x061, 0x00000200 }, { 0x092, 0x00002222 },
++};
++
++static void
++gpu_hwcg(bool on)
+ {
+-	if (gpu_load_fw("pm4", PM4_OFF) || gpu_load_fw("pfp", PFP_OFF)) {
+-		return ENOENT;
++	if (on) {
++		gpu_wr(RBBM_CLOCK_CNTL, 0x00000055);
+ 	}
+-	bzero((void *)(uintptr_t)(sg.mem + RING_OFF / 4), RING_SIZE);
+-	bzero((void *)(uintptr_t)(sg.mem + SCRATCH_OFF / 4), 0x1000);
++	for (size_t i = 0; i < sizeof(a512_hwcg) / sizeof(a512_hwcg[0]); i++) {
++		gpu_wr(a512_hwcg[i][0], on ? a512_hwcg[i][1] : 0);
++	}
++	gpu_wr(RBBM_CLOCK_CNTL, on ? 0xaaa8aa00u : 0);
++	gpu_wr(RBBM_ISDB_CNT, on ? 0x182u : 0x180u);
++	__builtin_arm_dsb(0xf);
++}
+ 
+-	/* a5xx_hw_init, a512 branches; no HWCG, perf counters or preemption */
++/*
++ * a5xx_hw_init's register setup up to the CP start, at boot and at every
++ * resume (j0115): GX power-up resets all of it. HWCG last (sweetgpucg=).
++ */
++static void
++gpu_hw_init(void)
++{
++	/* a5xx_hw_init, a512 branches; no perf counters or preemption */
+ 	gpu_wr(VBIF_ROUND_ROBIN_QOS_ARB, 3);
+ 	gpu_wr(VBIF_GATE_OFF_WRREQ_EN, 9);
+ 	gpu_wr(RBBM_AHB_CNTL0, 1);
+@@ -1648,6 +1832,19 @@ gpu_cp_test(void)
+ 	gpu_wr(CP_RB_CNTL, 12 | (2u << 8) | (1u << 27));
+ 	gpu_wr(RBBM_INT_0_MASK, A5XX_INT_MASK);
+ 	sg.wptr = 0;
++	gpu_hwcg(pc.cg);
++}
++
++static int
++gpu_cp_test(void)
++{
++	if (gpu_load_fw("pm4", PM4_OFF) || gpu_load_fw("pfp", PFP_OFF)) {
++		return ENOENT;
++	}
++	bzero((void *)(uintptr_t)(sg.mem + RING_OFF / 4), RING_SIZE);
++	bzero((void *)(uintptr_t)(sg.mem + SCRATCH_OFF / 4), 0x1000);
++
++	gpu_hw_init();
+ 
+ 	/* above 4 GiB: a kernel page (all of XNU's RAM is there on jasmine) */
+ 	vm_offset_t page = 0;
+@@ -1664,15 +1861,7 @@ gpu_cp_test(void)
+ 
+ 	gpu_pause(4, "starting the CP (PFP/ME out of halt) next");
+ 	gpu_wr(CP_PFP_ME_CNTL, 0);
+-	ring_pkt7(CP_ME_INIT, 8);
+-	ring_out(0x0000002f);
+-	ring_out(0x00000003);           /* multiple hardware contexts */
+-	ring_out(0x20000000);           /* error detection */
+-	ring_out(0);
+-	ring_out(0);
+-	ring_out(0);                    /* a512: no microcode workarounds */
+-	ring_out(0);
+-	ring_out(0);
++	ring_me_init();
+ 	if (ring_kick("CP_ME_INIT")) {
+ 		gpu_power_off();
+ 		return ETIMEDOUT;
+@@ -1891,6 +2080,412 @@ gpu_zap_test(void)
+ 	return err;
+ }
+ 
++/*
++ * GX collapse and resume (j0115). Both run under gpu_lock with the GPU idle
++ * (every submitted job completed). Off: as msm's a5xx_pm_suspend for a512
++ * (VBIF XIN halt; no VBIF block reset, which "tends to lock up" the cores
++ * other than a510/a530), the GX branches off, gfx3d's RCG back to XO and its
++ * PLL off, then the GX GDSC, which opens the head switch. CX GDSC, the GCC
++ * clocks and so the SMMU (qcom,retention) stay. On: the GX power-up of boot,
++ * the PLL at gclk.mhz, a5xx_hw_init's registers and HWCG, then CP_ME_INIT and
++ * (a512 has CPZ retention: no TrustZone call, as kgsl) CP_SET_SECURE_MODE 0
++ * and a marker write proving the CP runs non-secure.
++ */
++#define VBIF_XIN_HALT_CTRL0     0x3080
++#define VBIF_XIN_HALT_CTRL1     0x3081
++#define SCM_SVC_BOOT            0x01
++#define BOOT_SET_REMOTE_STATE   0x0a
++#define PC_MARK_OFF             (SCRATCH_OFF + 8)
++#define PC_EVENT                ((event_t)(uintptr_t)&pc.kick)
++
++static uint64_t
++pc_abs(uint32_t ms)
++{
++	uint64_t a;
++	nanoseconds_to_absolutetime((uint64_t)ms * NSEC_PER_MSEC, &a);
++	return a;
++}
++
++static uint32_t
++pc_us(uint64_t abs)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(abs, &ns);
++	return (uint32_t)(ns / 1000);
++}
++
++static void
++pc_note(bool on, int why, uint32_t us, int err)
++{
++	uint64_t now = mach_absolute_time();
++	if (pc.entered != 0) {
++		if (on) {
++			pc.resid_off += now - pc.entered;
++		} else {
++			pc.resid_on += now - pc.entered;
++		}
++	}
++	pc.entered = now;
++	unsigned h = pc.nhist++ % PC_HIST;
++	uint64_t ns;
++	absolutetime_to_nanoseconds(now, &ns);
++	pc.hist[h].ms = (uint32_t)(ns / NSEC_PER_MSEC);
++	pc.hist[h].us = us;
++	pc.hist[h].on = on;
++	pc.hist[h].why = (uint8_t)why;
++	if (pc.log || err || pc.collapses + pc.resumes <= 6) {
++		printf("SWEET GPUPC: %s (%s) in %u us%s\n", on ? "resume" : "collapse", pc_why[why], us,
++		    err ? ", FAILED" : "");
++	}
++}
++
++/* Every job done and the CP and the GPU idle. Called with GX on. */
++static bool
++gpu_idle_now(void)
++{
++	return sg.mem[FENCE_OFF / 4] == gpu_seqno && gpu_rd(CP_RB_RPTR) == sg.wptr && (gpu_rd(RBBM_STATUS) & ~1u) == 0;
++}
++
++static void
++gpu_collapse(int why)
++{
++	uint64_t t0 = mach_absolute_time();
++	gpu_wr(VBIF_XIN_HALT_CTRL0, 0xf);
++	int err = poll32(&sg.gpu[VBIF_XIN_HALT_CTRL1], 0xf, 0xf, 1000);
++	gpu_wr(VBIF_XIN_HALT_CTRL0, 0);
++	uint32_t src = (cc_rd(GPUCC_GFX3D_RCG + 4) >> 8) & 7;
++	cc_wr(GPUCC_GFX3D_CBCR, cc_rd(GPUCC_GFX3D_CBCR) & ~CBCR_ENABLE);
++	cc_wr(GPUCC_RBBMTIMER_CBCR, cc_rd(GPUCC_RBBMTIMER_CBCR) & ~CBCR_ENABLE);
++	cc_wr(GPUCC_RBCPR_CBCR, cc_rd(GPUCC_RBCPR_CBCR) & ~CBCR_ENABLE);
++	if (cc_rcg_xo(GPUCC_GFX3D_RCG) == 0 && (src == 1 || src == 3)) {
++		io_wr(&sg.gpucc[(src == 1 ? GPU_PLL0 : GPU_PLL1) / 4], 0);
++	}
++	pc.on = false;
++	cc_wr(GPUCC_GX_GDSCR, cc_rd(GPUCC_GX_GDSCR) | GDSC_SW_COLLAPSE);
++	int gerr = poll32(&sg.gpucc[GPUCC_GX_GDSCR / 4], GDSC_PWR_ON, 0, 2000);
++	cc_wr(GPUCC_CLAMP_IO, cc_rd(GPUCC_CLAMP_IO) | 1u);
++	if (pc.cx_off != 0 && !pc.display_on && pc.cx_off < gclk.cx && sweet_rpm_level(RPM_RWCX, pc.cx_off)) {
++		pc.cx_low = true;
++	}
++	uint32_t us = pc_us(mach_absolute_time() - t0);
++	pc.collapses++;
++	pc.off_us_last = us;
++	pc.off_us_max = MAX(pc.off_us_max, us);
++	if (err || gerr) {
++		pc.failures++;
++		gpu_state(err ? "collapse: VBIF did not halt" : "collapse: GX did NOT power off");
++	}
++	pc_note(false, why, us, err || gerr);
++}
++
++/* CP from halt to running non-secure on an empty ring; quiet (ring_kick logs). */
++static int
++gpu_cp_restart(void)
++{
++	static uint32_t mark;
++	gpu_wr(CP_PFP_ME_CNTL, 0);
++	ring_me_init();
++	if (pc.zap) {
++		ring_pkt7(CP_SET_SECURE_MODE, 1);
++		ring_out(0);
++	}
++	cp_mem_write(sg.mem_pa + PC_MARK_OFF, ++mark);
++	__builtin_arm_dsb(0xf);
++	gpu_wr(CP_RB_WPTR, sg.wptr);
++	int err = poll32(&sg.gpu[CP_RB_RPTR], 0xffffffffu, sg.wptr, 200000);
++	if (!err) {
++		err = poll32(&sg.gpu[RBBM_STATUS], ~1u, 0, 200000);
++	}
++	if (!err && sg.mem[PC_MARK_OFF / 4] != mark) {
++		err = EIO;
++	}
++	return err;
++}
++
++static void
++gpu_cp_reset(void)
++{
++	gpu_wr(CP_PFP_ME_CNTL, (1u << 26) | (1u << 28));
++	gpu_wr(RBBM_SW_RESET_CMD, 1);
++	(void)gpu_rd(RBBM_SW_RESET_CMD);
++	delay(100);
++	gpu_wr(RBBM_SW_RESET_CMD, 0);
++}
++
++static int
++gpu_resume(int why)
++{
++	uint64_t t0 = mach_absolute_time();
++	int err = 0;
++	if (pc.cx_low) {
++		if (!sweet_rpm_level(RPM_RWCX, gclk.cx)) {
++			pc.failures++;
++			printf("SWEET GPUPC: CX vote %#x back FAILED, GPU stays off\n", gclk.cx);
++			return EIO;
++		}
++		pc.cx_low = false;
++	}
++	bool gx = (err = gpu_gx_on()) == 0;
++	uint32_t to;
++	if (!err && gclk.mhz != 0) {
++		err = gpu_pll_switch(gclk.mhz, &to);
++	}
++	if (!err) {
++		pc.on = true;
++		if (!smmu_regs_ok()) {
++			smmu_regs(sg.mem_pa + PT_OFF);
++			pc.smmu_fixes++;
++			printf("SWEET GPUPC: SMMU registers lost over GX off, rewritten (%s)\n", smmu_regs_ok() ? "ok" : "STILL WRONG");
++		}
++		gpu_hw_init();
++		ctr_setup = false;
++		err = gpu_cp_restart();
++		if (err && pc.zap) {
++			/* no CPZ retention after all: TrustZone's zap resume (kgsl without ADRENO_CPZ_RETENTION) */
++			uint64_t res = 0, st = scm(SCM_FN(SCM_SVC_BOOT, BOOT_SET_REMOTE_STATE), 2, 0, PAS_ID_GPU, 0, &res);
++			pc.scm_resumes++;
++			printf("SWEET GPUPC: CP restart failed (%d, mark %08x), zap resume: ret %llx res %llx\n", err,
++			    sg.mem[PC_MARK_OFF / 4], st, res);
++			gpu_cp_reset();
++			gpu_hw_init();
++			err = gpu_cp_restart();
++		}
++	}
++	uint32_t us = pc_us(mach_absolute_time() - t0);
++	pc.resumes++;
++	if (err) {
++		pc.failures++;
++		gpu_state("resume FAILED");
++		gpu_ready = false;
++		if (gx) {
++			gpu_power_off();
++		}
++	} else {
++		pc.res_ok++;
++		pc.res_us_last = us;
++		pc.res_us_sum += us;
++		pc.res_us_min = MIN(pc.res_us_min, us);
++		pc.res_us_max = MAX(pc.res_us_max, us);
++	}
++	pc_note(true, why, us, err);
++	pc.kick = true;                         /* the power thread re-arms its idle deadline */
++	thread_wakeup(PC_EVENT);
++	return err;
++}
++
++/* Command paths that read GPU registers: GX on for the duration (gpu_lock held). */
++static void
++gpu_hold_on(void)
++{
++	pc.keep++;
++	if (!pc.on && gpu_ready) {
++		(void)gpu_resume(PCW_CMD);
++	}
++}
++
++static void
++gpu_hold_off(void)
++{
++	pc.keep--;
++	pc.last = mach_absolute_time();
++}
++
++static void
++gpu_pc_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	for (;;) {
++		uint64_t deadline = 0;
++		lck_mtx_lock(gpu_lock);
++		pc.kick = false;
++		if (gpu_ready && !pc.on && (pc.want_on || pc.mode == 0)) {
++			(void)gpu_resume(pc.want_on ? PCW_PREWAKE : PCW_CMD);
++			pc.kick = false;
++		}
++		pc.want_on = false;
++		uint64_t now = mach_absolute_time();
++		if (gpu_ready && pc.on && (pc.mode == 1 || (pc.mode == 2 && !pc.display_on))) {
++			uint64_t due = pc.last + (pc.display_on ? pc_abs(pc.hold_ms) : 0);
++			if (now >= due && pc.keep == 0 && gpu_idle_now()) {
++				gpu_collapse(pc.display_on ? PCW_IDLE : PCW_DISPLAY);
++			} else {
++				deadline = now >= due ? now + pc_abs(5) : due;
++			}
++		}
++		lck_mtx_unlock(gpu_lock);
++		if (deadline != 0) {
++			(void)assert_wait_deadline(PC_EVENT, THREAD_UNINT, deadline);
++		} else {
++			(void)assert_wait(PC_EVENT, THREAD_UNINT);
++		}
++		if (pc.kick) {
++			thread_wakeup(PC_EVENT);        /* came before the wait */
++		}
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
++/*
++ * Hooks from bsd/dev/sweet_ddrgov.c: touch, keys and display on (a frame is
++ * coming: keep GX on for hold, or power it up now, while the CPU records the
++ * frame), display on/off (off: collapse once idle, no hold).
++ */
++void sweet_gpu_prewake(void);
++void
++sweet_gpu_prewake(void)
++{
++	pc.last = mach_absolute_time();
++	if (__improbable(!pc.on) && pc.started) {
++		pc.prewakes++;
++		pc.want_on = true;
++		pc.kick = true;
++		thread_wakeup(PC_EVENT);
++	}
++}
++
++void sweet_gpu_display(int on);
++void
++sweet_gpu_display(int on)
++{
++	pc.display_on = on != 0;
++	if (!on && pc.started) {
++		pc.kick = true;
++		thread_wakeup(PC_EVENT);
++	}
++}
++
++static void
++gpu_pc_start(void)
++{
++	PE_parse_boot_argn("sweetgpupc", &pc.mode, sizeof(pc.mode));
++	PE_parse_boot_argn("sweetgpupc_hold", &pc.hold_ms, sizeof(pc.hold_ms));
++	PE_parse_boot_argn("sweetgpupc_cx", &pc.cx_off, sizeof(pc.cx_off));
++	pc.last = pc.entered = mach_absolute_time();
++	thread_t thread;
++	if (kernel_thread_start(gpu_pc_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++		pc.started = true;
++	}
++	printf("SWEET GPUPC: mode %d, hold %u ms, CX while off %#x, HWCG %s\n", pc.mode, pc.hold_ms, pc.cx_off,
++	    pc.cg ? "on" : "off");
++}
++
++static int
++gpu_pc_status(char *out, size_t len)
++{
++	uint64_t now = mach_absolute_time(), on = pc.resid_on, off = pc.resid_off;
++	if (pc.on) {
++		on += now - pc.entered;
++	} else {
++		off += now - pc.entered;
++	}
++	uint64_t all = on + off ? on + off : 1;
++	uint32_t ok = pc.res_ok;
++	int k = snprintf(out, len, "gpu pc: mode %d (%s), GX %s, hold %u ms, display %s, HWCG %s, CX while off %#x%s; "
++	    "collapses %u, resumes %u, pre-wakes %u, failures %u, SMMU rewrites %u, zap resumes %u; on %llu%% off %llu%%; "
++	    "resume us last %u avg %u min %u max %u; collapse us last %u max %u\n",
++	    pc.mode, pc.mode == 0 ? "off" : pc.mode == 1 ? "on" : "display off only", pc.on ? "on" : "off", pc.hold_ms,
++	    pc.display_on ? "on" : "off", pc.cg ? "on" : "off", pc.cx_off, pc.cx_low ? " (low now)" : "",
++	    pc.collapses, pc.resumes, pc.prewakes, pc.failures, pc.smmu_fixes, pc.scm_resumes, on * 100 / all,
++	    off * 100 / all, pc.res_us_last, ok ? (uint32_t)(pc.res_us_sum / ok) : 0,
++	    pc.res_us_min == ~0u ? 0 : pc.res_us_min, pc.res_us_max, pc.off_us_last, pc.off_us_max);
++	unsigned n = MIN(pc.nhist, PC_HIST);
++	for (unsigned i = 0; i < n && k > 0 && (size_t)k < len; i++) {
++		unsigned h = (pc.nhist - n + i) % PC_HIST;
++		k += snprintf(out + k, len - (size_t)k, "  %u ms: %s (%s) %u us\n", pc.hist[h].ms,
++		    pc.hist[h].on ? "resume" : "collapse", pc_why[pc.hist[h].why], pc.hist[h].us);
++	}
++	return k;
++}
++
++static uint32_t
++pc_num(const char *p)
++{
++	uint32_t v = 0;
++	if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
++		for (p += 2;; p++) {
++			uint32_t d = *p >= '0' && *p <= '9' ? (uint32_t)(*p - '0') : *p >= 'a' && *p <= 'f' ?
++			    (uint32_t)(*p - 'a' + 10) : *p >= 'A' && *p <= 'F' ? (uint32_t)(*p - 'A' + 10) : 16;
++			if (d == 16) {
++				return v;
++			}
++			v = v * 16 + d;
++		}
++	}
++	for (; *p >= '0' && *p <= '9'; p++) {
++		v = v * 10 + (uint32_t)(*p - '0');
++	}
++	return v;
++}
++
++/* "gpu pc ..." and "gpu cg 0|1" (sweet_gpu_cmd) */
++static const char *
++gpu_pc_cmd(const char *a)
++{
++	static char reply[2048];
++	if (strncmp(a, "cg ", 3) == 0) {
++		bool on = a[3] == '1';
++		lck_mtx_lock(gpu_lock);
++		gpu_hold_on();
++		int err = ETIMEDOUT;
++		for (int i = 0; i < 100000 && pc.on && (err = gpu_idle_now() ? 0 : ETIMEDOUT); i++) {
++			delay(10);
++		}
++		if (err == 0) {
++			pc.cg = on;
++			gpu_hwcg(on);
++		}
++		gpu_hold_off();
++		lck_mtx_unlock(gpu_lock);
++		snprintf(reply, sizeof(reply), "gpu cg: %s%s\n", pc.cg ? "on" : "off", err ? " (GPU busy, unchanged)" : "");
++		return reply;
++	}
++	a += 2;                                 /* after "pc" */
++	if (*a == ' ') {
++		a++;
++		lck_mtx_lock(gpu_lock);
++		if (strcmp(a, "on") == 0 || strcmp(a, "off") == 0 || strcmp(a, "offonly") == 0) {
++			pc.mode = a[1] == 'n' ? 1 : a[3] == 'o' ? 2 : 0;
++			pc.last = mach_absolute_time();
++		} else if (strncmp(a, "hold ", 5) == 0) {
++			pc.hold_ms = pc_num(a + 5);
++		} else if (strncmp(a, "cx ", 3) == 0) {
++			pc.cx_off = pc_num(a + 3);
++		} else if (strncmp(a, "log ", 4) == 0) {
++			pc.log = a[4] == '1';
++		} else if (strncmp(a, "stress ", 7) == 0) {
++			uint32_t n = pc_num(a + 7), bad = 0, done = 0;
++			lck_mtx_unlock(gpu_lock);
++			for (; done < n && gpu_ready; done++) {
++				(void)sweet_gpu_wait(gpu_seqno, 1000);
++				lck_mtx_lock(gpu_lock);
++				if (pc.on && pc.keep == 0 && gpu_idle_now()) {
++					gpu_collapse(PCW_CMD);
++				}
++				lck_mtx_unlock(gpu_lock);
++				if (gpu_vm_selftest(true) != 0) {
++					bad++;
++				}
++			}
++			lck_mtx_lock(gpu_lock);
++			int k = snprintf(reply, sizeof(reply), "gpu pc stress: %u cycles, %u self-test failures, ready %d\n",
++			    done, bad, gpu_ready);
++			gpu_pc_status(reply + k, sizeof(reply) - (size_t)k);
++			lck_mtx_unlock(gpu_lock);
++			return reply;
++		} else {
++			lck_mtx_unlock(gpu_lock);
++			return "gpu pc: ? (on, off, offonly, hold MS, cx LEVEL, log 0|1, stress N)\n";
++		}
++		pc.kick = true;
++		thread_wakeup(PC_EVENT);
++		lck_mtx_unlock(gpu_lock);
++	}
++	lck_mtx_lock(gpu_lock);
++	gpu_pc_status(reply, sizeof(reply));
++	lck_mtx_unlock(gpu_lock);
++	return reply;
++}
++
+ static void
+ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+@@ -1928,13 +2523,18 @@ sweet_gpu_thread(__unused void *arg, __unused wait_result_t wr)
+ 		(void)gpu_set_clock(mhz);
+ 	}
+ 	sweet_ddr_boot();                       /* sweetddr= (j0064), once the debug mux is mapped */
++	int cg = 0;
++	PE_parse_boot_argn("sweetgpucg", &cg, sizeof(cg));
++	pc.cg = cg != 0;
+ 	if (sg.level >= 2 && gpu_cp_test() == 0 && sg.level >= 3 && gpu_zap_test() == 0 && sg.level >= 4) {
++		pc.zap = true;
+ 		sg.mem[FENCE_OFF / 4] = 0;
+ 		gpu_ready = true;
+-		if (gpu_vm_selftest() == 0) {
++		if (gpu_vm_selftest(false) == 0) {
+ 			uint32_t debug = 0;
+ 			sweet_gpu_publish();
+ 			gpu_state("published");
++			gpu_pc_start();
+ 			if (PE_parse_boot_argn("sweetgpu_debug", &debug, sizeof(debug)) && debug >= 2) {
+ 				printf("SWEET GPU: heartbeat every 10 s\n");
+ 				gpu_heartbeat();
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index f8fe86e..26d9f20 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -418,6 +418,32 @@ chg_set_icl(uint32_t ua)
+ 	return r;
+ }
+ 
++/*
++ * Measurement aid (j0115, "batt icl MA SECS"): a low USBIN limit for SECS
++ * seconds, so the battery carries the load above it while USB data stays up
++ * and load changes show 1:1 in the battery current (tools/g2/fgab.py). The
++ * charger thread restores the plug-in limit when the time is up.
++ */
++static volatile uint32_t icl_test_ua;
++static volatile uint64_t icl_test_until;
++
++int sweet_chg_icl_test(uint32_t ma, uint32_t secs);
++int
++sweet_chg_icl_test(uint32_t ma, uint32_t secs)
++{
++	uint64_t until = 0;
++	if (ma == 0 || secs == 0) {
++		icl_test_until = 0;             /* the thread restores within 2 s */
++		return 0;
++	}
++	ma = ma < 100 ? 100 : (ma > 500 ? 500 : ma);
++	secs = secs > 3600 ? 3600 : secs;
++	clock_interval_to_deadline(secs, NSEC_PER_SEC, &until);
++	icl_test_until = until;
++	icl_test_ua = ma * 1000;
++	return chg_set_icl(ma * 1000);
++}
++
+ static const char *const chg_states[8] = {
+ 	"trickle", "pre", "fast", "fullon", "taper", "terminated", "inhibit", "disabled",
+ };
+@@ -457,6 +483,13 @@ pmic_charger_thread(void *arg, wait_result_t result)
+ 	fcc = fcc < 100 ? 100 : (fcc > 1500 ? 1500 : fcc);
+ 	(void)chg_update(CHG_FAST_CURRENT, 0xff, (uint8_t)(fcc * 1000 / 25000));
+ 	for (;;) {
++		if (icl_test_ua != 0 && mach_absolute_time() >= icl_test_until) {
++			icl_test_ua = 0;
++			if (last_type != ~0u && last_type != 0) {
++				(void)chg_set_icl(last_type);
++			}
++			chg_log("test input limit over", last_type == ~0u ? 0 : last_type);
++		}
+ 		uint32_t pp = 0;
+ 		bool now = chg_rd8(CHG_POWER_PATH_STATUS, &pp) == 0 && (pp & 0x11) == 0x11;
+ 		uint32_t type_ua = 0;
+-- 
+2.55.0.windows.3
+

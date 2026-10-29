@@ -1,3 +1,16 @@
+### 2026-10-29 17:15: GPU idle power (item 2) j0115 built and measured (temporary boots): ~60 mA saved screen off, ~70 mA screen-on idle; default off
+
+Patch xnu/patches/j0115-jasmine-gpu-idle-power.patch (kernels xnu/out-jasmine-j0115, -j0115b = + `batt icl` aid),
+report jasmine/GPU-IDLE-POWER.md "Bring-up results". Live switches `gpu cg 0|1` (HWCG, kgsl's a512 table), `gpu pc
+on|off|offonly` (GX collapse, 80 ms hold, immediate with display off, resume in submit or pre-wake on touch/keys/
+display on); boot-args `sweetgpucg=`, `sweetgpupc=` default 0. Observed: 800+ stress cycles + UI + 10 display
+cycles, 0 failures / SMMU rewrites / zap resumes; resume ~0.35 ms (stress) to ~0.65-0.95 ms (UI), max 2.7 ms.
+Framebench 11 runs (research/framebench/gpupc-*): no regression within noise (home-a on -1.5 % mean, overlapping).
+fgab (USB input limited by `batt icl 100 3600`): screen off +58.5 mA (HWCG +52, collapse +12 on top), screen-on idle
++70 mA. Step 2b useless: VDD_CX stays 860 mV with our SVS vote. Command line has only 16 bytes left (591/607).
+**Phone state:** running the temporary j0115b boot, both features ON live, charger limit restored; boot_b unchanged
+(j0114d). Nothing flashed. Next: user decision on defaults on + a slot-b image.
+
 ### 2026-10-29: GPU idle power (power plan item 2): design written, waiting for the user's OK before building
 
 Design: jasmine/GPU-IDLE-POWER.md. Step 1 HWCG (kgsl's a512_hwcg_regs, live `gpu cg 0|1`); step 2 GX collapse

@@ -1,6 +1,6 @@
 # Adreno 512 idle power management (power plan item 2): design
 
-Status 2026-10-29: **design only, nothing built.** Owner: the item-2 session. Plan:
+Status 2026-10-29: **built (j0115, j0115b) and measured on temporary boots; default off; nothing flashed.** Owner: the item-2 session. Results: "Bring-up results" at the end. Plan:
 [POWER-PLAN-20261029.md](POWER-PLAN-20261029.md). Previous item and measurement method:
 [DDR-GOVERNOR.md](DDR-GOVERNOR.md). GPU bring-up facts: [GPU.md](GPU.md) (G1 findings, j0060).
 
@@ -15,7 +15,7 @@ Status 2026-10-29: **design only, nothing built.** Owner: the item-2 session. Pl
   PLL running, no HWCG (`gpu_cp_test` follows a5xx_hw_init "without clock gating"). `gpu_power_off` (GX off) runs
   only after a failed step or a hang.
 - Reference: downstream kgsl for sdm660 (`~/lin660` in WSL: drivers/gpu/msm/adreno_a5xx.c, sdm660-gpu.dtsi):
-  - a512 HWCG table `a512_hwcg_regs` (57 registers), then `RBBM_CLOCK_CNTL = 0xAAA8AA00`, `RBBM_ISDB_CNT = 0x182`;
+  - a512 HWCG table `a512_hwcg_regs` (56 registers), then `RBBM_CLOCK_CNTL = 0xAAA8AA00`, `RBBM_ISDB_CNT = 0x182`;
     for a512 (not a530/a540) this is done at every power-up in `a5xx_regulator_enable`, bracketed by
     `RBBM_CLOCK_CNTL = 0x55` (halt sp_input_clk) and clearing its low byte afterwards.
   - `a5xx_regulator_disable` returns early for a512: no GPMU / SPTP / RAC sequencing (a512 has no GPMU).
@@ -158,3 +158,65 @@ without the user's OK. Built on the VM (`tools/vm-build.sh j0115`).
 
 Known limits: the lock screen after boot renders at ~50 flushes/s (ddrgov findings), so the GPU never idles there;
 that is a separate item (what animates), not this one.
+
+## Bring-up results (2026-10-29, temporary `fastboot boot` only, nothing flashed)
+
+Patch `xnu/patches/j0115-jasmine-gpu-idle-power.patch` (sweet_gpu.c, sweet_ddrgov.c, sweet_pmic.c), VM builds
+`xnu/out-jasmine-j0115` and `-j0115b` (b = + `batt icl`, the measurement aid below). Images
+`shim/out/shim-boot-j0115-test.img` (a8b92df5...) and `-j0115b-test.img` (28e237af...): kernel + the j0114d ADT +
+the installed boot_b args byte-identical (the 607-byte command line has only 16 bytes left, so both features were
+switched live over the command port; defaults off). Logs `logs/netlog-j0115-test.txt`, `logs/netlog-j0115b-test.txt`.
+
+Behaviour (observed):
+- `gpu pc stress 200` twice (HWCG off, then on) + the UI: **800+ collapse/resume cycles, 0 failures, 0 SMMU
+  rewrites, 0 zap resumes**: the SMMU keeps its state over GX off (qcom,retention) and CP_SET_SECURE_MODE 0 alone
+  works after every resume (a512 CPZ retention confirmed). Stress resume 283-554 us (avg 348), collapse 16-162 us.
+- Real use (mode 1, hold 80 ms): the idle home screen collapses within 80 ms of the last frame; resume in the submit
+  path avg ~650-950 us (max 2.7 ms once; 3.4 ms when the step-2b CX vote had to be restored). Touch pre-wake works
+  (`pre-wakes` counter; e.g. a swipe from idle resumed in 466 us before its first submit).
+- 10 display off/on cycles with unlock (power key = `key 0`; `key 3` is Home): GX off while dark, back on unlock,
+  0 failures. Framebench runs below: no job timeout, no SMMU fault, no panic in either log.
+
+Performance, framebench on j0115, one boot, swap arrivals/s, mean (min-max) of the runs per setting; order
+off, on, on, off, cg, pc, pc, cg, off, on, on (`research/framebench/gpupc-1..11-*`); "on" = HWCG + collapse,
+"cg" = HWCG only, "pc" = collapse only; run 1's home-a excluded (no motion, the same artifact as ddrgov run 1):
+
+| Phase | off (3) | on (4) | cg (2) | pc (2) | on / cg / pc vs off |
+| --- | ---: | ---: | ---: | ---: | --- |
+| spotlight first | 25.32 (23.4-27.0) | 25.18 (23.9-27.3) | 25.38 (25.1-25.7) | 25.23 (24.2-26.2) | -0.6 / +0.2 / -0.4 % |
+| spotlight repeat | 29.12 (26.7-33.1) | 28.50 (26.2-32.5) | 26.55 (26.2-26.9) | 27.19 (27.0-27.4) | -2.1 / -8.8 / -6.6 % |
+| warmup | 37.97 (37.4-38.9) | 37.42 (37.0-37.8) | 37.73 (37.5-38.0) | 38.38 (38.3-38.5) | -1.5 / -0.6 / +1.1 % |
+| home-a | 41.03 (41.0-41.1) | 40.40 (39.9-41.0) | 41.00 (40.6-41.4) | 40.89 (40.8-41.0) | -1.5 / -0.1 / -0.4 % |
+| control-a | 28.76 (28.4-29.0) | 28.83 (28.3-29.4) | 29.09 (28.8-29.4) | 29.12 (28.8-29.4) | +0.2 / +1.1 / +1.2 % |
+| home-b | 40.94 (40.4-41.4) | 40.95 (40.5-41.2) | 40.74 (40.6-40.9) | 40.66 (40.6-40.7) | 0.0 / -0.5 / -0.7 % |
+| control-b | 28.75 (28.3-29.1) | 29.60 (29.1-30.7) | 28.95 (28.6-29.3) | 29.60 (28.6-30.6) | +3.0 / +0.7 / +3.0 % |
+
+Spotlight repeat drifts with time over the series (33 in run 1, 26-28 from run 4 on), so its cg/pc values (mid-
+series) are not a feature effect. home-a "on" is 1.5 % lower on average, but its later runs (41.00, 40.32) sit in
+the off range and off has only two valid samples; no phase is lower in every run. Median and p95 frame times are
+unchanged. Conclusion: no regression measurable within run-to-run noise; not proven equal to better than ~1.5 %.
+A gesture runs while the GPU is already on (pre-wake, frames < 80 ms apart): ~15 collapses per framebench run.
+
+Power, paired A/B on one boot (`tools/g2/fgab.py 8 20`, alternating 20 s windows, order flipped each cycle, first
+4 s dropped). The battery was made to carry the load with USB data up by `batt icl 100 3600` (j0115b: USB input
+limited to 100 mA for up to an hour, restored by the charger thread or `batt icl 0 0`), so load changes show 1:1
+in the battery current; absolute values are not the unplugged ones, the differences are.
+
+| Display | A | B | B-A (positive = saves) | n |
+| --- | --- | --- | ---: | ---: |
+| on, idle home | both off | HWCG + collapse | **+70.3 mA** (sd 58; median cycle +76; first/last cycle outliers) | 8 |
+| off | both off | HWCG + collapse | **+58.5 mA** (sd 23, all cycles positive) | 8 |
+| off | both off | HWCG only | **+52.4 mA** (sd 14.5) | 8 |
+| off | HWCG only | HWCG + collapse | **+12.1 mA** (sd 9.3) | 8 |
+
+So clock gating is most of the saving with the screen off (an idle 588 MHz GPU with every clock running), GX
+collapse adds ~12 mA (leakage behind the head switch, PLL); together ~60 mA screen off and ~70 mA screen-on idle,
+against the plan's 40-100 mA estimate and the ~437 mA screen-off total.
+
+Step 2b (CX vote while off): `gpu pc cx 0x80` sent the SVS vote (RPM acked), but PM660L S3 (VDD_CX) stayed at
+860 mV (`spmi 3 0x1a40 2` = 0x035c before and while low): the RPM holds CX up for other voters (likely the DDR/bus
+clocks), so lowering our vote saves nothing here. Not pursued; `sweetgpupc_cx` stays 0. Step 3 (idle frequency
+drop) not needed: with HWCG and an 80 ms collapse the idle-but-powered window is short.
+
+Next: the user decides the defaults (`sweetgpucg=1 sweetgpupc=1` as the kernel default, as the DDR governor went,
+then a slot-b image).
