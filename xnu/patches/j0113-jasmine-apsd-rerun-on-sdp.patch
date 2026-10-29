@@ -1,4 +1,4 @@
-From 58407796cbbf9aef00f5af95f5f193136969c251 Mon Sep 17 00:00:00 2001
+From 25a6dc6834e8d37e9d4c992de345b03b34d57a86 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Thu, 29 Oct 2026 12:27:02 +0100
 Subject: [PATCH] jasmine-j0113: PM660 charger re-runs APSD once per plug-in
@@ -28,10 +28,6 @@ up the PHY (sweet_usb_phy_done; downstream turns on the PHY's dpdm supply
 first), at most a minute. Without a charger thread (sweetchg=0) the session
 stays on as before.
 ---
- bsd/dev/sweet_pmic.c | 49 ++++++++++++++++++++++++++++--
- bsd/dev/sweet_usb.c  | 71 +++++++++++++++++++++++++++++++++++++++++---
- 2 files changed, 114 insertions(+), 6 deletions(-)
-
 diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
 index 96f3db7..398e89e 100644
 --- a/bsd/dev/sweet_pmic.c
@@ -119,10 +115,9 @@ index 96f3db7..398e89e 100644
  			last_type = ~0u;
  			chg_log("unplugged", 0);
 diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
-index 91661cf..6fc11d0 100755
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -236,8 +236,24 @@ usb_phy_bringup(vm_offset_t gcc, vm_offset_t dwc)
+@@ -237,9 +237,25 @@
  	    usb_rd(dwc, GUSB2PHYCFG));
  }
  
@@ -137,17 +132,148 @@ index 91661cf..6fc11d0 100755
 +
  void
  sweet_usb_probe(void)
-+{
+ {
 +	usb_probe();
 +	sweet_usb_phy_done = true;
 +}
 +
 +static void
 +usb_probe(void)
- {
++{
  	int enabled = 1;
  	uint32_t gdscr, cbcr[sizeof(usb_cbcr) / sizeof(usb_cbcr[0])];
-@@ -1550,6 +1566,51 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 	bool clocks_on = true;
+@@ -357,6 +373,8 @@
+ #define DEPCMD_SETSTALL         4
+ #define DEPCMD_STARTTRANSFER    6
+ #define DEPCMD_DEPSTARTCFG      9
++#define DEPCMD_ENDTRANSFER      8
++#define DEPCMD_HIPRI_FORCERM    (1u << 11)
+ #define DEPCMD_CMDACT           (1u << 10)
+ 
+ #define TRB_HWO         (1u << 0)
+@@ -1040,6 +1058,53 @@
+ 	}
+ }
+ 
++/*
++ * End the transfer on ep, if one is active (resource index from its last Start Transfer).
++ * Quiet: "no transfer active" is fine here.
++ */
++static void
++ud_end_transfer(unsigned ep)
++{
++	uint32_t rsc = (dwc_rd(DEPCMD(ep)) >> 16) & 0x7f;
++	dwc_wr(DEPCMDPAR0(ep), 0);
++	dwc_wr(DEPCMDPAR1(ep), 0);
++	dwc_wr(DEPCMDPAR2(ep), 0);
++	dwc_wr(DEPCMD(ep), DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM | (rsc << 16) | DEPCMD_CMDACT);
++	for (int i = 0; i < 1000 && (dwc_rd(DEPCMD(ep)) & DEPCMD_CMDACT); i++) {
++		delay(1);
++	}
++}
++
++/*
++ * Disconnect or USB reset: the host starts over, so the NCM function does too, as Linux
++ * dwc3 (stop active transfers) plus the gadget's disable of its endpoints. Before j0113 the
++ * VBUS session never ended and a replug only gave a bus reset that kept the old endpoints;
++ * now unplug ends the session (sweet_usb_vbus) and the next SET_CONFIGURATION must set
++ * the data endpoints up again or the link stays down.
++ */
++static void
++ud_function_reset(void)
++{
++	lck_mtx_lock(ud.lock);
++	if (ud.configured) {
++		ud_end_transfer(EP_RX);
++		ud_end_transfer(EP_TX);
++		ud_end_transfer(EP_INT);
++		dwc_wr(DALEPENA, dwc_rd(DALEPENA) & ~((1u << EP_RX) | (1u << EP_TX) | (1u << EP_INT)));
++		ud.configured = false;
++		printf("SWEET USB: NCM endpoints reset\n");
++	}
++	ud.tx_busy = false;
++	ud.data_alt = 0;
++	ud_notify_pending = false;
++	lck_mtx_unlock(ud.lock);
++	if (ud.state != EP0_SETUP) {
++		ud_end_transfer(0);
++		ud_end_transfer(1);
++		ud_start_setup();
++	}
++}
++
+ static void
+ ud_event(uint32_t ev)
+ {
+@@ -1048,6 +1113,7 @@
+ 		if (type == 1) {        /* USB reset */
+ 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
+ 			printf("SWEET USB: bus reset\n");
++			ud_function_reset();
+ 		} else if (type == 2) { /* connect done */
+ 			uint32_t speed = dwc_rd(DSTS) & 7;
+ 			/* ep0 max packet: 64 at high/full speed (modify action) */
+@@ -1058,6 +1124,7 @@
+ 			printf("SWEET USB: connected, speed %u\n", speed);
+ 		} else if (type == 0) {
+ 			printf("SWEET USB: disconnect\n");
++			ud_function_reset();
+ 		}
+ 		return;
+ 	}
+@@ -1647,6 +1714,18 @@
+ extern void topaz_modem_stop(bool panic);                /* iokit/Kernel/arm/TopazModem.cpp (j0080x) */
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ extern const char *sweet_bench_blob(const char *, const void **, size_t *);
++void sweet_usb_vbus(bool on);
++
++/* "usb vbuscycle": the VBUS session off for 3 s and on again, as an unplug/replug does (j0113 test). */
++static void
++ud_vbus_cycle_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	ud_sleep_ms(1000);
++	sweet_usb_vbus(false);
++	ud_sleep_ms(3000);
++	sweet_usb_vbus(true);
++}
++
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+@@ -1710,7 +1789,8 @@
+ 		size_t binary_len = 0;
+ 		const char *binary_header = sweet_bench_blob(line, &binary, &binary_len);
+ 		bool reboot = strcmp(line, "reboot") == 0;
+-		const char *reply = reboot ? "rebooting\n" : "?\n";
++		bool vcycle = strcmp(line, "usb vbuscycle") == 0;
++		const char *reply = reboot ? "rebooting\n" : vcycle ? "VBUS session off for 3 s in 1 s\n" : "?\n";
+ 		const char *prof = binary_header != NULL ? binary_header : reboot ? NULL : sweet_prof_cmd(line);
+ 		if (prof == NULL && !reboot) {
+ 			prof = sweet_gpu_cmd(line);
+@@ -1720,7 +1800,7 @@
+ 		}
+ 		if (prof != NULL) {
+ 			reply = prof;
+-		} else if (!reboot && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
++		} else if (!reboot && !vcycle && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
+ 			reply = ud_cmd_reply;
+ 		}
+ 		for (size_t off = 0, rl = strlen(reply); off < rl;) {
+@@ -1742,6 +1822,12 @@
+ 			off += sent;
+ 		}
+ 		sock_close(cs);
++		if (vcycle) {
++			thread_t vt;
++			if (kernel_thread_start(ud_vbus_cycle_thread, NULL, &vt) == KERN_SUCCESS) {
++				thread_deallocate(vt);
++			}
++		}
+ 		if (reboot) {
+ 			printf("SWEET USB: reboot requested over the command port\n");
+ 			topaz_modem_stop(false);        /* here, while the log still goes out; once */
+@@ -1751,6 +1837,49 @@
  	}
  }
  
@@ -182,8 +308,6 @@ index 91661cf..6fc11d0 100755
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +}
 +
-+void sweet_usb_vbus(bool on);
-+
 +void
 +sweet_usb_vbus(bool on)
 +{
@@ -199,7 +323,7 @@ index 91661cf..6fc11d0 100755
  static void
  sweet_usb_gadget_start(vm_offset_t dwc)
  {
-@@ -1609,11 +1670,13 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+@@ -1810,11 +1939,13 @@
  		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
  		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
  		    hs, ss, usb_rd(qs, 0x08));
@@ -218,5 +342,5 @@ index 91661cf..6fc11d0 100755
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
 -- 
-2.47.3
+2.43.0
 

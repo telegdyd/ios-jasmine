@@ -1,8 +1,8 @@
 ### 2026-10-29 12:55: boot_b = j0113 (charger: APSD re-run on SDP, USB session only towards a host)
 
-boot_b = shim/out/shim-boot-j0113-slotb.img (sha256 c3087dd5...; kernel xnu/out-jasmine-j0113 = j0112 + j0113; boot-args and ADT as the j0112-xr
+boot_b = shim/out/shim-boot-j0113-slotb.img (sha256 0ff5c7a6..., 13:16, with the USB replug fix; kernel xnu/out-jasmine-j0113 = j0112 + j0113; boot-args and ADT as the j0112-xr
 boot_b). Details: jasmine/NOTES.md "iOS side of the SDP fix". First boot logs/netlog-j0113c-slotb.txt: PC port SDP -> re-run -> CDP 1500 mA, USB
-enumerated, boot_b marked successful. Open: user wall-charger replugs on iOS. Rollback: fastboot flash boot_b shim/out/shim-boot-j0112-xr-slotb.img.
+enumerated, boot_b marked successful. 13:00 regression (no USB after a replug) fixed: NCM endpoints reset on disconnect/bus reset. Open: user wall-charger replugs on iOS. Rollback: fastboot flash boot_b shim/out/shim-boot-j0112-xr-slotb.img.
 
 ### 2026-10-29 05:40: 828x1792@2 (j0112) INSTALLED to boot_b for the user's own test (user: "install it")
 
