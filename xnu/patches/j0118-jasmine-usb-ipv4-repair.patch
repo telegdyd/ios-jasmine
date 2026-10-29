@@ -1,0 +1,216 @@
+From a6dc182d84098388f442c126ace6f8f5f26d5c87 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 29 Oct 2026 20:20:57 +0100
+Subject: [PATCH] jasmine-j0118: ue0's IPv4 state (both addresses, up/running,
+ scoped routes into both subnets) checked at every SET_CONFIGURATION and every
+ 30 s, logged on change and put back when something is missing; DHCP answers
+ fall back to the subnet broadcast 192.168.7.255 when 255.255.255.255 fails
+ (ENETUNREACH after the first answer)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/sweet_usb.c | 142 +++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 126 insertions(+), 16 deletions(-)
+
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 4131023..7f41e92 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -640,6 +640,8 @@ ud_notify_speed(void)
+ 	ud_start_trb(EP_INT, UD_TRB_INT, UD_NOTIFY, 16, TRBCTL_NORMAL);
+ }
+ 
++static volatile bool ud_net_check_now;
++
+ /* SET_CONFIGURATION(1): bulk IN/OUT and the interrupt endpoint. */
+ static void
+ ud_configure(void)
+@@ -661,6 +663,7 @@ ud_configure(void)
+ 	dwc_wr(DALEPENA, dwc_rd(DALEPENA) | (1u << EP_RX) | (1u << EP_TX) | (1u << EP_INT));
+ 	ud.configured = true;
+ 	ud_rx_arm();
++	ud_net_check_now = true;        /* j0118: ue0's IPv4 state checked by ud_thread */
+ 	printf("SWEET USB: NCM endpoints configured\n");
+ }
+ 
+@@ -965,6 +968,9 @@ sweet_usb_bind_listener(socket_t ls)
+ 	return idx != 0 && sock_setsockopt(ls, IPPROTO_IP, IP_BOUND_IF, &idx, sizeof(idx)) == 0;
+ }
+ 
++static errno_t ud_if_addresses(void);
++static void ud_if_routes(void);
++
+ /* ue0, 192.168.7.2/24 (the host side is 192.168.7.1). */
+ static void
+ ud_if_create(void)
+@@ -1013,10 +1019,22 @@ ud_if_create(void)
+ 	ifnet_set_lladdr(ud.ifp, ud_phone_mac, ETHER_ADDR_LEN);
+ 
+ 	errno_t err = proto_plumb(PF_INET, ud.ifp);
+-	socket_t so = NULL;
+ 	if (err == 0) {
+-		err = sock_socket(PF_INET, SOCK_DGRAM, 0, NULL, NULL, &so);
++		err = ud_if_addresses();
+ 	}
++	ifnet_set_flags(ud.ifp, IFF_UP | IFF_RUNNING, IFF_UP | IFF_RUNNING);
++	printf("SWEET USB: ue0 192.168.7.2/24 + 169.254.7.2/16 %s (err %d)\n", err ? "NOT configured" : "up", err);
++	if (err == 0) {
++		ud_if_routes();
++	}
++}
++
++/* ue0's two addresses (SIOCAIFADDR of an address it has already just updates it). */
++static errno_t
++ud_if_addresses(void)
++{
++	socket_t so = NULL;
++	errno_t err = sock_socket(PF_INET, SOCK_DGRAM, 0, NULL, NULL, &so);
+ 	if (err == 0) {
+ 		struct ifaliasreq ifra;
+ 		bzero(&ifra, sizeof(ifra));
+@@ -1047,17 +1065,86 @@ ud_if_create(void)
+ 		(void)sock_ioctl(so, SIOCAIFADDR, &ifra);
+ 		sock_close(so);
+ 	}
+-	ifnet_set_flags(ud.ifp, IFF_UP | IFF_RUNNING, IFF_UP | IFF_RUNNING);
+-	printf("SWEET USB: ue0 192.168.7.2/24 + 169.254.7.2/16 %s (err %d)\n", err ? "NOT configured" : "up", err);
+-	if (err == 0) {
+-		ud_scoped_route(0xc0a80700, 0xffffff00, 0xc0a80702);
+-		ud_scoped_route(0xa9fe0000, 0xffff0000, 0xa9fe0702);
+-		/*
+-		 * j0089: the limited broadcast out of ue0, for the DHCP server's answers (j88: sock_send
+-		 * ENETUNREACH; ue0 has no default route for 255.255.255.255 to fall under)
+-		 */
+-		ud_scoped_route(0xffffffffu, 0xffffffffu, 0xc0a80702);
++	return err;
++}
++
++static void
++ud_if_routes(void)
++{
++	ud_scoped_route(0xc0a80700, 0xffffff00, 0xc0a80702);
++	ud_scoped_route(0xa9fe0000, 0xffff0000, 0xa9fe0702);
++	/*
++	 * j0089: the limited broadcast out of ue0, for the DHCP server's answers (j88: sock_send
++	 * ENETUNREACH; ue0 has no default route for 255.255.255.255 to fall under)
++	 */
++	ud_scoped_route(0xffffffffu, 0xffffffffu, 0xc0a80702);
++}
++
++/*
++ * j0118: the USB link died after long times away from the PC with the USB side healthy
++ * (reset, SET_CONFIGURATION, frames received) but almost nothing sent and every DHCP answer
++ * failing with ENETUNREACH (logs/prevlog-j0116-deadlink.txt): ue0's IPv4 state was gone.
++ * Checked every 30 s and at each SET_CONFIGURATION: both addresses, IFF_UP|IFF_RUNNING, and a
++ * scoped route lookup into each subnet resolving to ue0. Whatever is missing is logged
++ * (once per change) and put back.
++ */
++static bool
++ud_route_ok(uint32_t dst)
++{
++	struct sockaddr_in sin;
++	bzero(&sin, sizeof(sin));
++	sin.sin_len = sizeof(sin);
++	sin.sin_family = AF_INET;
++	sin.sin_addr.s_addr = htonl(dst);
++	struct rtentry *rt = rtalloc1_scoped((struct sockaddr *)&sin, 0, 0, ifnet_index(ud.ifp));
++	bool ok = rt != NULL && rt->rt_ifp == ud.ifp && (rt->rt_flags & RTF_UP);
++	if (rt != NULL) {
++		rtfree(rt);
++	}
++	return ok;
++}
++
++static uint32_t ud_net_state = ~0u;     /* last logged result */
++static uint32_t ud_net_repairs;
++
++static uint32_t
++ud_net_check(bool repair)
++{
++	if (ud.ifp == NULL) {
++		return 0;
++	}
++	bool a7 = false, a169 = false;
++	ifaddr_t *list = NULL;
++	if (ifnet_get_address_list_family(ud.ifp, &list, AF_INET) == 0 && list != NULL) {
++		for (int i = 0; list[i] != NULL; i++) {
++			struct sockaddr_in sin;
++			if (ifaddr_address(list[i], (struct sockaddr *)&sin, sizeof(sin)) == 0) {
++				a7 |= sin.sin_addr.s_addr == htonl(0xc0a80702);
++				a169 |= sin.sin_addr.s_addr == htonl(0xa9fe0702);
++			}
++		}
++		ifnet_free_address_list(list);
++	}
++	bool up = (ifnet_flags(ud.ifp) & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING);
++	bool r7 = ud_route_ok(0xc0a80701), r169 = ud_route_ok(0xa9fe0101);
++	uint32_t st = (uint32_t)a7 | (uint32_t)a169 << 1 | (uint32_t)up << 2 | (uint32_t)r7 << 3 | (uint32_t)r169 << 4;
++	if (st != ud_net_state) {
++		printf("SWEET USB: ue0 IPv4 state: 192.168.7.2 %s, 169.254.7.2 %s, %s, route 192.168.7/24 %s, "
++		    "169.254/16 %s\n", a7 ? "ok" : "MISSING", a169 ? "ok" : "MISSING", up ? "up" : "NOT UP",
++		    r7 ? "ok" : "MISSING", r169 ? "ok" : "MISSING");
++		ud_net_state = st;
++	}
++	if (repair && st != 0x1f) {
++		ud_net_repairs++;
++		if (!up) {
++			ifnet_set_flags(ud.ifp, IFF_UP | IFF_RUNNING, IFF_UP | IFF_RUNNING);
++		}
++		errno_t err = !a7 || !a169 ? ud_if_addresses() : 0;
++		ud_if_routes();
++		printf("SWEET USB: ue0 IPv4 state repaired (%u; addresses %d)\n", ud_net_repairs, err);
++		st = ud_net_check(false);
+ 	}
++	return st;
+ }
+ 
+ /*
+@@ -1223,7 +1310,15 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ 			}
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
++		if (ud_net_check_now) {         /* j0118: right after SET_CONFIGURATION */
++			ud_net_check_now = false;
++			(void)ud_net_check(true);
++		}
+ 		if ((++ticks % 30000) == 0) {
++			uint32_t net = ud_net_check(true);
++			if (net != 0x1f || (ticks % 300000) == 0) {
++				printf("SWEET USB: ue0 IPv4 state %#x (0x1f all ok), %u repairs\n", net, ud_net_repairs);
++			}
+ 			uint32_t dsts = dwc_rd(DSTS);
+ 			printf("SWEET USB: ue0 rx %llu tx %llu frames; link state %u, DSTS %#x, DCTL %#x, DALEPENA %#x, configured %d "
+ 			    "alt %u, tx busy %d, txq %u, ep0 state %d; events: disconnect %u reset %u connect %u link %u wakeup %u "
+@@ -1366,10 +1461,25 @@ ud_dhcp_thread(void *arg __unused, wait_result_t wr __unused)
+ 		struct iovec oiov = { .iov_base = r, .iov_len = sizeof(r) };
+ 		struct msghdr om = { .msg_name = &to, .msg_namelen = sizeof(to), .msg_iov = &oiov, .msg_iovlen = 1 };
+ 		size_t sent = 0;
+-		int e = sock_send(so, &om, 0, &sent);
+-		if (answers++ < 8) {
+-			printf("SWEET USB: dhcp %s: %s 192.168.7.1 (send %d)\n", type == 1 ? "discover" : "request",
+-			    reply == 2 ? "offer" : reply == 5 ? "ack" : "nak", e);
++		int e = sock_send(so, &om, 0, &sent), e2 = -1;
++		if (e != 0) {
++			/*
++			 * j0118: the 255.255.255.255 host route (j0089) is rejected by ARP at boot ("bad
++			 * gateway address") and every answer after the first failed ENETUNREACH (51), so
++			 * the PC never got 192.168.7.1. ue0's own subnet broadcast takes the interface route.
++			 */
++			to.sin_addr.s_addr = htonl(0xc0a807ff);
++			sent = 0;
++			e2 = sock_send(so, &om, 0, &sent);
++		}
++		if (answers++ < 8 || e2 > 0) {
++			const char *what = reply == 2 ? "offer" : reply == 5 ? "ack" : "nak";
++			if (e2 >= 0) {
++				printf("SWEET USB: dhcp %s: %s 192.168.7.1 (send %d, to 192.168.7.255: %d)\n",
++				    type == 1 ? "discover" : "request", what, e, e2);
++			} else {
++				printf("SWEET USB: dhcp %s: %s 192.168.7.1 (send %d)\n", type == 1 ? "discover" : "request", what, e);
++			}
+ 		}
+ 	}
+ }
+-- 
+2.55.0.windows.3
+

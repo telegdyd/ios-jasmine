@@ -1,3 +1,22 @@
+### 2026-10-29 20:30: USB dead link diagnosed (IPv4 state, not USB); j0117 (previous log) + j0118 (repair) built, j0118 temp boot verified; not flashed
+
+The dead link of the j0116 boot_b (user report 20:00): previous log via j0117 (`sweet-fs.py get /.sweetlog-prev`,
+saved logs/prevlog-j0116-deadlink.bin/.txt; its first 4 KiB header area was not a valid header, the ring starts at 4096).
+Observed: after unplug/replug the USB side was healthy (disconnect, reset, connect done, SET_CONFIGURATION, NCM
+configured, rx 1448 -> 1620 frames) but tx 1470 -> 1471 and every DHCP answer failed `send 51` (ENETUNREACH); only
+the first DHCP answer of each boot ever went out (the j0089 255.255.255.255 host route is rejected by ARP at boot,
+"bad gateway address"), so the PC always ran on 169.254 and depended on ue0's scoped 169.254/16 route. j0118 temp boot
+(logs/netlog-j0118-test.txt) caught it live: ~1 min after boot (after configd/en0 came up) **ue0's 169.254/16 route went
+MISSING** with both addresses still there (who removes it is not proven; guess configd). Fix j0118
+(xnu/patches/j0118-jasmine-usb-ipv4-repair.patch, sweet_usb.c): (1) DHCP answers fall back to 192.168.7.255 -> the PC
+now gets **192.168.7.1 by DHCP** (verified); (2) ue0's addresses, up/running and scoped routes are checked at every
+SET_CONFIGURATION and every 30 s, logged on change and put back (verified: route repaired, state ok after).
+j0117 (xnu/patches/j0117-jasmine-previous-log.patch): previous boot's log area kept in memory before the log thread
+overwrites it, served as /.sweetlog-prev (neither Linux shell has a UFS driver). Linux shell gotcha: the old
+nura-r109 shell has no reboot-bootloader (push shim/out/reboot-bootloader with pmos-push.py).
+Images: shim/out/shim-boot-j0118-test.img (c5142aea...), slot b shim/out/shim-boot-j0118-slotb.img (09377837...).
+**Not flashed** (flash needs the user's explicit OK). Phone: temporary j0118 boot; boot_b = j0116.
+
 ### 2026-10-29 20:02: charger app reads the battery under iOS too
 
 tools/jasmine-charger.pyw: in the iOS state it now sends `batt` (j0114+ command port 5141) every poll and shows

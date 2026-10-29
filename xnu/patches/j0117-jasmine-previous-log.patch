@@ -1,0 +1,124 @@
+From fd34aa5786a341297b1136ed75be4d3b3a7222ea Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 29 Oct 2026 20:09:54 +0100
+Subject: [PATCH] jasmine-j0117: the previous boot's console log area is read
+ before this boot's log overwrites it and served as /.sweetlog-prev on the
+ file port (sweet-fs.py get), so a boot that lost its USB link can be read
+ after the reboot
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/dev/sweet_netfs.c | 16 +++++++++++++
+ bsd/dev/sweet_ufs.c   | 52 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 68 insertions(+)
+
+diff --git a/bsd/dev/sweet_netfs.c b/bsd/dev/sweet_netfs.c
+index ec06733..e5624fc 100644
+--- a/bsd/dev/sweet_netfs.c
++++ b/bsd/dev/sweet_netfs.c
+@@ -251,11 +251,27 @@ netfs_put(socket_t so, char *args, vfs_context_t ctx, char *buf)
+ 	printf("SWEET NETFS: put %s (%llu bytes, %o %u:%u)\n", path, size, mode, uid, gid);
+ }
+ 
++extern const void *sweet_log_previous(size_t *len);    /* sweet_ufs.c (j0117) */
++
+ static void
+ netfs_get(socket_t so, const char *path, vfs_context_t ctx, char *buf)
+ {
+ 	vnode_t vp = NULLVP;
+ 	off_t size = 0;
++	if (strcmp(path, "/.sweetlog-prev") == 0) {     /* the previous boot's log area, not a file */
++		size_t len = 0;
++		const void *prev = sweet_log_previous(&len);
++		if (prev == NULL) {
++			netfs_reply(so, ENOENT, "no previous log");
++			return;
++		}
++		char line[64];
++		snprintf(line, sizeof(line), "OK %llu\n", (unsigned long long)len);
++		if (netfs_send(so, line, strlen(line)) == 0) {
++			(void)netfs_send(so, prev, len);
++		}
++		return;
++	}
+ 	int err = vnode_open(path, FREAD, 0, 0, &vp, ctx);
+ 	if (!err) {
+ 		err = vnode_isreg(vp) ? vnode_size(vp, &size, ctx) : EISDIR;
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index c9a5405..de940ed 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1483,6 +1483,47 @@ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ 	}
+ }
+ 
++/*
++ * j0117: before this boot's log thread overwrites it, the previous boot's log area (header +
++ * ring, the same 1025 blocks tools/sweet-log-pull.sh reads) is copied to memory and served as
++ * the file /.sweetlog-prev on the file port (sweet_netfs.c; tools/sweet-fs.py get, then
++ * tools/sweet-log.py). Neither Linux shell has a UFS driver, so this is how the log of a boot
++ * that lost its USB link is read after the reboot.
++ */
++static uint8_t *sweet_log_prev;
++
++static void
++sweet_log_keep_previous(void)
++{
++	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	vm_offset_t va = 0;
++	if (kmem_alloc(kernel_map, &va, (vm_size_t)SWEET_LOG_BLOCKS * UFS_BLOCK, KMA_DATA | KMA_ZERO | KMA_PERMANENT,
++	    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEET LOG: no memory for the previous log\n");
++		return;
++	}
++	uint8_t *buf = (uint8_t *)va;
++	int error = 0;
++	lck_mtx_lock(&sweet_ufs_lock);
++	for (uint32_t done = 0; done < SWEET_LOG_BLOCKS && !error;) {
++		uint32_t n = MIN(SWEET_LOG_BLOCKS - done, BOUNCE_SIZE / UFS_BLOCK);
++		error = ufs_read_blocks(base + done, n);
++		if (!error) {
++			memcpy(buf + (size_t)done * UFS_BLOCK, (const void *)(su.dma + DMA_BOUNCE), (size_t)n * UFS_BLOCK);
++		}
++		done += n;
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++	if (error) {
++		printf("SWEET LOG: previous log not read (%d)\n", error);
++		return;
++	}
++	sweet_log_prev = buf;
++	const struct sweet_log_header *h = (const struct sweet_log_header *)buf;
++	printf("SWEET LOG: previous boot's log kept (%s, %llu bytes written, flush %llu): /.sweetlog-prev\n",
++	    memcmp(h->magic, "SWEETLOG", 8) == 0 ? "header ok" : "no header", h->total, h->seq);
++}
++
+ static void
+ sweet_log_start(void)
+ {
+@@ -1497,11 +1538,22 @@ sweet_log_start(void)
+ 	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
+ 		sweet_log_secs = SWEET_LOG_SECS;
+ 	}
++	sweet_log_keep_previous();
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+ }
+ 
++/* The previous boot's log area as read before this boot's first flush (j0117), or NULL. */
++const void *sweet_log_previous(size_t *len);
++
++const void *
++sweet_log_previous(size_t *len)
++{
++	*len = sweet_log_prev != NULL ? (size_t)SWEET_LOG_BLOCKS * UFS_BLOCK : 0;
++	return sweet_log_prev;
++}
++
+ /* Root device for rd=ufsroot0 (IOFindBSDRoot). */
+ int sweet_ufs_rootdev(dev_t *dev);
+ 
+-- 
+2.55.0.windows.3
+
