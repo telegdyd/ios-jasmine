@@ -9,10 +9,8 @@ Framebench 11 runs (research/framebench/gpupc-*): no regression within noise (ho
 fgab (USB input limited by `batt icl 100 3600`): screen off +58.5 mA (HWCG +52, collapse +12 on top), screen-on idle
 +70 mA. Step 2b useless: VDD_CX stays 860 mV with our SVS vote. Command line has only 16 bytes left (591/607).
 **Phone state:** temporary j0115b boot, both features ON live, charger limit restored; boot_b unchanged (j0114d).
-Nothing flashed. **Open:** the live log stopped at 17:15:36 mid-output (no panic, no GPUPC failure, charger normal) and at
-18:45 the phone answered neither the command port nor fastboot, and no USB network adapter showed on the PC: either
-the USB link dropped or the phone hung (no watchdog reset into fastboot seen). Unexplained; needs a look at the
-phone screen before defaults go on. Next: that check, then the user's decision on defaults + a slot-b image.
+Nothing flashed. The live log stops at 17:15:36 because the host laptop was closed (user), not a phone fault.
+Next: the user's decision on defaults on + a slot-b image.
 
 ### 2026-10-29: GPU idle power (power plan item 2): design written, waiting for the user's OK before building
 
