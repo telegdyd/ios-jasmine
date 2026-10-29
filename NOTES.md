@@ -1,3 +1,15 @@
+### 2026-10-29 21:50: fresh frame-time bottleneck measurement on boot_b j0118: CC limited by the render thread's CPU, GPU close behind
+
+Report: jasmine/PERF-BOTTLENECK-20261029.md. One framebench (research/framebench/perfnow-20261029) on the installed
+boot, per-frame analysis with the new tools/g2/framecrit.py (WSL), then `ddr bw` GPU counters over the same gestures.
+Observed: Home 40.8/s (median 24.5 ms), CC 29/s with 98 of 104 frames exactly 2 periods; per CC frame render
+thread CPU 25.4 ms (CA 12.6, Mesa 10.4), GPU ~15 ms (counter) to 22.6 ms (occupancy bound), 64 % RAM-starved,
+gdrv0 17.6 ms in parallel, SwapWait 2.8 ms, glFlush drain 1.5 ms; render path only on Gold cpu0-3.
+Problems seen: home-a (sampled Home phase) had no frames for ~10 s (SpringBoard committed, render thread never ran;
+cause unknown); `ddr bw` GPU counters fail with GPU collapse on (counters were re-taken with `gpu pc off` for 25 s,
+then `gpu pc on` again, read back mode 1). Gold clock during motion was not recorded: the cheapest next test is a
+Gold-pinned A/B (report idea 1). Phone: boot_b j0118 unchanged, running, display on, charging. Nothing flashed.
+
 ### 2026-10-29 21:30: boot_b = j0118 INSTALLED (user: "Flash j0118")
 
 boot_b = shim/out/shim-boot-j0118-slotb.img (sha256 09377837...; kernel xnu/out-jasmine-j0118 = j0110..j0118: GPU idle

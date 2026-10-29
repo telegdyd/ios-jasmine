@@ -15,6 +15,10 @@ approved by the user on 2026-10-24; implementation has not started.
 
 ## Current state and priorities
 
+- **2026-10-29 fresh measurement on boot_b j0118 (828x1792@2, DDR governor, GPU collapse): Control Center is
+  now limited by the CoreAnimation render thread's CPU (25 ms/frame: CA 12.6, Mesa 10.4), GPU close behind
+  (~15-23 ms, 64 % RAM-starved); frames sit at 2 periods. The 10-28 "CPU clock has no effect" result no longer
+  applies. [Report](PERF-BOTTLENECK-20261029.md).
 - **2026-10-28 fresh measurement on the installed config (8 cores, CPU auto, GPU 588, DDR 1804):
   the GPU's DRAM traffic is the bottleneck.** Same-boot clock sweep: CPU pinned at 1401 MHz or
   2208 MHz = no change; GPU -27% = -4..-10%; DDR -28% = -15..-24%. 56-66% of GPU busy cycles
