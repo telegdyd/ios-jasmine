@@ -1,3 +1,17 @@
+### 2026-10-29 15:10: DDR governor j0114 built and measured (temporary boots); saves ~11 mA screen off only; phone hung in reboot
+
+Patch xnu/patches/j0114-jasmine-ddr-governor.patch (kernel xnu/out-jasmine-j0114c, VM build), default off
+(`sweetddrgov=0`: old fixed sweetddr). Report: jasmine/DDR-GOVERNOR.md "Bring-up results". Observed on
+temporary boots (j0114/j0114b, installed boot_b args + sweetpwrlog=30): raises 0.06-4.4 ms, 0 failed votes,
+readback 768 / 398 MHz in the low states; paired fuel-gauge A/B (tools/g2/fgab.py): screen off DDR floor alone
+**+11 mA saved**, NoC buses low 0 mA, both together -21 mA (costs); screen-on idle floor not measurable. Framebench
+ABBA (research/framebench/ddrgov-*): no measurable regression (-1.0..+1.3 %, within run spread). Defaults now
+bus=0, UFS raise only with buses low, cpu=60, bw=2000. Recommendation to the user: `sweetddrgov=2` (display off only).
+Side findings for other items in the shared notes (lock screen renders ~50 fps forever; ~1 Hz UFS I/O).
+**Phone state:** a clean `reboot` from j0114b (governor off) hung at `hfs: unmount initiated on iOSRoot` (the known
+root-unmount hang); no USB device; needs Power+Volume Down. A `fastboot boot shim/out/shim-boot-j0114c-gt.img`
+(sweetddrgov=2 boot-arg test, not yet verified) was waiting for the device. boot_b unchanged (j0113). Nothing flashed.
+
 ### 2026-10-29: DDR/bus governor (power plan item 1): design written, waiting for the user's OK before building
 
 Design: jasmine/DDR-GOVERNOR.md (states FULL / IDLE_ON bimc 768 / IDLE_OFF bimc 200 + NoCs low; sync raise on GPU

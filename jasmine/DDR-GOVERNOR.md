@@ -1,6 +1,7 @@
 # DDR and RPM bus-clock governor (power plan item 1): design
 
-Status 2026-10-29: **design, not built.** Owner: the item-1 session. Plan: [POWER-PLAN-20261029.md](POWER-PLAN-20261029.md).
+Status 2026-10-29: **built (j0114), temporary boots only, default off.** Owner: the item-1 session. Plan:
+[POWER-PLAN-20261029.md](POWER-PLAN-20261029.md). Results: "Bring-up results" at the end.
 
 ## Rule and the facts it rests on
 
@@ -102,3 +103,66 @@ Temporary `fastboot boot` images only, battery >= 30 %, nothing flashed without 
 3. Power: unplugged, `SWEET PWR` 5 min screen off and 5 min screen on idle on Home, governor on vs off (the user
    unplugs/replugs). Pass: lower current with it on.
 4. Then propose `sweetddrgov=1` in the installed boot_b (user's OK) or as the default.
+
+## Bring-up results (2026-10-29, temporary `fastboot boot` only, nothing flashed)
+
+Kernels j0114 (first), j0114b (+ CPU-load trigger, UFS only with the display off), j0114c (defaults below).
+Images `shim/out/shim-boot-j0114{,b}-gt.img` = the installed boot_b's args (j0113 `-test` variant, no `abmark`)
++ `sweetpwrlog=30`; `-j0114c-gt.img` has `sweetddrgov=2` instead. Logs `logs/netlog-j0114-gt.txt`,
+`logs/netlog-j0114b-gt.txt`. Framebench `research/framebench/ddrgov-{1-off,2-on,3-on,4-off}/`.
+
+Design changes made from the measurements:
+- UFS requests raise only while the display is off **and** bus clocks are lowered: background I/O comes about
+  once a second (screen on and off) and kept FULL alive for good; UFS DMA is not DDR-limited at either floor.
+- CPU-load trigger (display on): the busiest core over the j0104 DVFS sampler's 20 ms window >= `cpu` % (60)
+  raises, for CPU work without memory traffic (latency-bound, as Mesa's).
+- `bw` default 2000 MB/s (10 ms bwmon spikes over 1000 MB/s are routine on the idle home screen; idle average
+  ~175-900 MiB/s).
+- **Bus clocks default off** (`bus=0`): see the power table.
+
+Behaviour (observed):
+- Raise latency (RPM ack, 20 us polling): bimc alone 0.06-2.0 ms, bimc + 5 buses 2.2-4.4 ms. 0 failed votes in
+  ~600 transitions. Readback after a down-vote: 766-768 MHz (idle-on), 398 MHz for the 200 MHz request (the RPM
+  rounds up; snoc 20, cnoc 33, cnoc_periph 33 MHz). Raises read back 1804 every time.
+- Display off/on (power key over the command port) twice: key raises to FULL ~3 ms before `display on`, no panic,
+  no SMMU fault. Not checked by eye.
+- Idle home screen, display on, cpu=60: IDLE_ON residency ~15-25 % (CPU bursts every 1-2 s); cpu=90 ~50 %, cpu=0
+  ~75 %.
+- The lock screen after boot renders continuously (~50 flushes/s, GPU ~60 % busy): no idle there at all.
+
+Power, paired A/B on one boot (`tools/g2/fgab.py`: alternating 20 s windows, order flipped every cycle, fuel-gauge `batt`
+every 1 s, first 4 s dropped). USB connected and the battery discharging the whole time (charger input
+saturated, so load changes show 1:1 in the battery current); absolute values are not comparable with the
+unplugged -437 mA, the differences are.
+
+| Display | Governor setting vs off | Difference (positive = saves) | n |
+| --- | --- | ---: | ---: |
+| off | DDR floor 200 + all 5 buses low | **-20.8 mA** (sd 7.4, costs more) | 8 |
+| off | buses low only (DDR 1804) | -0.6 mA (sd 1.5) | 6 |
+| off | DDR floor 200 only | **+11.0 mA** (sd 5.1) | 6 |
+| on, idle home | floor 768, cpu=60 / cpu=0 | not measurable (drift -215 -> -157 mA over 6 min swamps it; < ~10 mA) | 2+2 windows |
+
+So lowering the NoC clocks buys nothing (the RPM probably keeps the CX corner for other votes, e.g. ipa/ce1/
+qdss at max) and, together with the DDR floor, costs ~21 mA (guess: slower MMIO and memory keep the polling
+drivers' CPU work out of WFI longer). The DDR floor alone saves ~11 mA with the screen off. This is far below the
+plan's 50-120 mA estimate: the screen-off floor is elsewhere (CPU WFI only, GPU never off, display pipeline,
+polling drivers; power plan items 2-7).
+
+Performance, framebench on j0114b, one boot, ABBA (off, on, on, off), swap arrivals/s, mean of two runs:
+
+| Phase | off | on (mode 1, cpu=60) | Change |
+| --- | ---: | ---: | ---: |
+| spotlight first / repeat | 26.18 / 28.60 | 25.93 / 28.58 | -1.0 / -0.1 % |
+| home-a | 41.16 (run 1 invalid: 0.31/s, no motion) | 40.96 | -0.5 % |
+| home-b | 41.15 | 40.89 | -0.6 % |
+| control-a | 28.65 | 28.40 | -0.9 % |
+| control-b | 28.62 | 29.00 | +1.3 % |
+
+All within the spread between the two runs of the same setting (spotlight +-4-5 %, control-b +-2.7 %, home-b
++-0.5 %): no regression measurable; 4 of 6 phases are slightly lower with it on, so not proven equal either.
+The gestures arrive while the governor is already FULL (hold, CPU trigger), so this run does not exercise a
+raise from idle; a timer-driven animation from IDLE_ON was not measured.
+
+Recommendation: `sweetddrgov=2` (only with the display off, DDR floor only): ~11 mA with the screen off and no
+change at all while the screen is on. Mode 1 adds no measurable saving for a small, unmeasured risk on
+non-input animations.

@@ -1,0 +1,966 @@
+From e96359ff9aa0c932661ca796936e58efdfec158b Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Thu, 29 Oct 2026 14:58:20 +0100
+Subject: [PATCH] jasmine-j0114: DDR and RPM bus-clock governor (power plan
+ item 1): full rate on any work (sync raise on GPU submit, touch, keys,
+ display on, UFS with the display off; bwmon, GPU busy and CPU load from the
+ thread), bimc floor when idle with the display on, bimc + bus clocks low with
+ the display off; sweetddrgov=, command port ddrgov and batt, sweetpwrlog=
+ fuel-gauge log; RPM answers polled every 20 us
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ bsd/conf/files                        |   1 +
+ bsd/dev/sweet_ddr.c                   |  30 +-
+ bsd/dev/sweet_ddrgov.c                | 607 ++++++++++++++++++++++++++
+ bsd/dev/sweet_gpu.c                   |   2 +
+ bsd/dev/sweet_pmic.c                  |   2 +
+ bsd/dev/sweet_rpm.c                   |  34 +-
+ bsd/dev/sweet_ufs.c                   |   2 +
+ bsd/dev/sweet_usb.c                   |   4 +
+ iokit/Kernel/arm/SweetFramebuffer.cpp |   5 +
+ iokit/Kernel/arm/hid/SweetHID.cpp     |   5 +
+ osfmk/arm64/sweet_dvfs.h              |   9 +
+ 11 files changed, 697 insertions(+), 4 deletions(-)
+ mode change 100755 => 100644 bsd/dev/sweet_ddr.c
+ create mode 100644 bsd/dev/sweet_ddrgov.c
+ mode change 100755 => 100644 bsd/dev/sweet_gpu.c
+ mode change 100755 => 100644 bsd/dev/sweet_usb.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index bff32b861..c7da9a91c 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -116,6 +116,7 @@ bsd/dev/sweet_pmic.c			standard
+ bsd/dev/sweet_gpu.c			standard
+ bsd/dev/sweet_rpm.c			standard
+ bsd/dev/sweet_ddr.c			standard
++bsd/dev/sweet_ddrgov.c			standard
+ bsd/dev/sweet_netfs.c			standard
+ bsd/dev/sweet_wdt.c			standard
+ bsd/dev/sweet_nvt.c			standard
+diff --git a/bsd/dev/sweet_ddr.c b/bsd/dev/sweet_ddr.c
+old mode 100755
+new mode 100644
+index f549d7049..5370de1b2
+--- a/bsd/dev/sweet_ddr.c
++++ b/bsd/dev/sweet_ddr.c
+@@ -24,7 +24,9 @@
+  *   rpm SETS TYPE ID KEY VALUE
+  *                        one raw RPM request: SETS a, s or as; TYPE and KEY
+  *                        4 characters, '_' for a space ("clk2 0 KHz_ 1804000")
+- * Boot-arg sweetddr=MHZ: the same vote at GPU bring-up (sweet_gpu.c).
++ * Boot-arg sweetddr=MHZ: the same vote at GPU bring-up (sweet_gpu.c); with
++ * sweetddrgov= the DDR/bus governor (sweet_ddrgov.c, j0114) takes over from
++ * there, and a manual "ddr MHZ" stops it.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -46,6 +48,10 @@ extern uint32_t sweet_gcc_measure_mhz(uint32_t sel);
+ extern bool sweet_gpu_bus_counters(uint64_t c[4]);
+ void sweet_ddr_boot(void);
+ const char *sweet_ddr_cmd(const char *line);
++uint32_t sweet_ddr_mhz(void);
++void sweet_ddr_note_vote(uint32_t mhz);
++extern void sweet_ddrgov_start(uint32_t full_mhz);
++extern bool sweet_ddrgov_manual(void);
+ 
+ #define TYPE_CLK2       0x326b6c63u     /* "clk2": memory clocks, id 0 bimc */
+ 
+@@ -70,6 +76,19 @@ ddr_mhz(void)
+ 	return 2 * sweet_gcc_measure_mhz(GCC_DEBUG_BIMC);
+ }
+ 
++/* For the governor (j0114): the measured rate, and its bimc vote for "ddr state" */
++uint32_t
++sweet_ddr_mhz(void)
++{
++	return ddr_mhz();
++}
++
++void
++sweet_ddr_note_vote(uint32_t mhz)
++{
++	ddr.vote = mhz;
++}
++
+ static bool
+ ddr_set(uint32_t mhz)
+ {
+@@ -97,6 +116,9 @@ sweet_ddr_boot(void)
+ 	uint32_t before = ddr_mhz();
+ 	bool ok = ddr_set(mhz);
+ 	printf("SWEET DDR: sweetddr=%u: %s, %u -> %u MHz\n", mhz, ok ? "ok" : "FAILED", before, ddr_mhz());
++	if (ok) {
++		sweet_ddrgov_start(mhz);
++	}
+ }
+ 
+ /* Stores from a real register (no "str wzr"). */
+@@ -479,10 +501,12 @@ sweet_ddr_cmd(const char *line)
+ 		const char *p = a;
+ 		uint32_t mhz = num(&p), before = ddr_mhz();
+ 		uint64_t t0 = mach_absolute_time();
++		bool stopped = mhz >= 100 && mhz <= 2000 && sweet_ddrgov_manual();
+ 		bool ok = mhz >= 100 && mhz <= 2000 && ddr_set(mhz);
+-		snprintf(reply, sizeof(reply), "ddr %u: %s in %llu us, %u -> %u MHz, scaling %s (%d)\n", mhz,
++		snprintf(reply, sizeof(reply), "ddr %u: %s in %llu us, %u -> %u MHz, scaling %s (%d)%s\n", mhz,
+ 		    ok ? "ok" : "FAILED", ns_since(t0) / 1000, before, ddr_mhz(),
+-		    ddr.scaling == 0 ? "on" : ddr.scaling < 0 ? "off" : "FAILED", ddr.scaling);
++		    ddr.scaling == 0 ? "on" : ddr.scaling < 0 ? "off" : "FAILED", ddr.scaling,
++		    stopped ? "; governor stopped (ddrgov on)" : "");
+ 		printf("SWEET DDR: %s", reply);
+ 		return reply;
+ 	}
+diff --git a/bsd/dev/sweet_ddrgov.c b/bsd/dev/sweet_ddrgov.c
+new file mode 100644
+index 000000000..2bd7ea6ca
+--- /dev/null
++++ b/bsd/dev/sweet_ddrgov.c
+@@ -0,0 +1,607 @@
++/*
++ * jasmine (SDM660) DDR and RPM bus-clock governor (j0114, power plan item 1,
++ * jasmine/DDR-GOVERNOR.md). The phone is DDR-bound, so the rule is: the full
++ * rate (sweetddr=, 1804 MHz) whenever there is work, and work never starts on
++ * a low rate; only idle gaps and a dark display save power.
++ *   FULL      bimc at sweetddr, the bus clocks at the j0064 handoff maximum
++ *   IDLE_ON   display on, nothing for hold_on ms: bimc at floor_on only
++ *   IDLE_OFF  display off, nothing for hold_off ms: bimc at floor_off and the
++ *             bus clocks in bus_mask at 19.2 MHz (the RPM rounds up)
++ * Raises come from the hooks (sweet_ddrgov_activity): GPU submit, touch,
++ * keys, display on and (buses low) UFS requests vote synchronously, so the
++ * work goes on only after the RPM has acked the full rate; a present only
++ * keeps FULL alive. Work that comes without a hook is caught by the thread:
++ * CPU-side DDR traffic (bimc bwmon4 MON2, as "ddr bw"; unit 1 MiB) over bw
++ * MB/s, GPU busy cycles, or (display on) a core busier than cpu percent.
++ * Only the active set is voted; the sleep set keeps the handoff values until
++ * the AP power-collapses (power plan item 4).
++ * Boot-args: sweetddrgov=0|1|2 (off, on, only with the display off; needs
++ * sweetddr=), sweetddrgov_on= / _off= (MHz), _hold= (ms, display on), _bw=
++ * (MB/s, default 2000), _cpu= (busiest core's load in percent that raises
++ * with the display on, default 60, 0 off; the j0104 DVFS sampler's 20 ms
++ * load), _bus= (mask: 1 snoc, 2 cnoc, 4 cnoc_periph, 8 aggre2_noc,
++ * 0x10 mmssnoc_axi; default 0: lowering them saved nothing and cost 21 mA
++ * together with the DDR floor, jasmine/DDR-GOVERNOR.md). sweetpwrlog=S: a "SWEET PWR:" fuel-gauge line every S s.
++ * Command port: ddrgov [on|off|offonly|log 0|1|set k=v ...], batt.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <kern/locks.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <libkern/libkern.h>
++#include <os/atomic_private.h>
++#include <stdbool.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern int get_preemption_level(void);
++extern bool sweet_rpm_clk_active(uint32_t type, uint32_t id, uint32_t khz);
++extern uint32_t sweet_ddr_mhz(void);
++extern void sweet_ddr_note_vote(uint32_t mhz);
++extern bool sweet_gpu_bus_counters(uint64_t c[4]);
++extern unsigned sweet_dvfs_busy(void);    /* osfmk/arm64/sweet_dvfs.h: busiest core, last 20 ms */
++/* PM660 fuel gauge (bsd/dev/sweet_pmic.c, same layout) */
++struct sweet_fg {
++	int mv, ma;             /* ma > 0: charging */
++	int temp_dc;
++	int fg_soc;
++	int online, charging, full;
++};
++extern int sweet_fg_read(struct sweet_fg *out);
++
++void sweet_ddrgov_start(uint32_t full_mhz);
++bool sweet_ddrgov_manual(void);
++void sweet_ddrgov_activity(int src, int sync);
++void sweet_ddrgov_display(int on);
++const char *sweet_ddrgov_cmd(const char *line);
++void sweet_pwrlog_start(void);
++
++#define TYPE_CLK1       0x316b6c63u     /* bus clocks */
++#define TYPE_CLK2       0x326b6c63u     /* bimc */
++#define RPM_KHZ_MAX     2147484u        /* the handoff vote (sweet_rpm.c) */
++#define BUS_LOW_KHZ     19200u
++
++static const struct {
++	const char *name;
++	uint32_t type, id;
++} gov_bus[] = {
++	{"snoc", TYPE_CLK1, 1}, {"cnoc", TYPE_CLK1, 2}, {"cnoc_periph", TYPE_CLK1, 0},
++	{"aggre2_noc", 0x72676761u, 2}, {"mmssnoc_axi", 0x69786d6du, 0},
++};
++#define GOV_NBUS        (sizeof(gov_bus) / sizeof(gov_bus[0]))
++
++enum { G_FULL, G_IDLE_ON, G_IDLE_OFF, G_NSTATE };
++static const char *const gov_state_name[G_NSTATE] = {"full", "idle-on", "idle-off"};
++/* activity sources; the first ones match sweet_ddrgov_activity's callers */
++enum { S_GPU, S_TOUCH, S_KEY, S_DISPLAY, S_PRESENT, S_UFS, S_BW, S_GPUBUSY, S_IDLE, S_CMD, S_CPU, S_NSRC };
++static const char *const gov_src_name[S_NSRC] = {
++	"gpu", "touch", "key", "display", "present", "ufs", "bwmon", "gpubusy", "idle", "cmd", "cpu",
++};
++
++#define GOV_HIST        16
++#define GOV_EVENT       ((event_t)(uintptr_t)&g.kick)
++static struct {
++	int state;                      /* read without the lock (fast path, os_atomic) */
++	volatile uint64_t last;         /* mach time of the last activity */
++	volatile bool kick;             /* async raise wanted */
++	volatile int kick_src;
++	int mode;                       /* 0 off, 1 on, 2 only with the display off */
++	bool started, display_on, log;
++	uint32_t full, floor_on, floor_off, hold_on, hold_off, bw, cpu, bus_mask;
++	uint32_t bimc;                  /* our current bimc vote, MHz */
++	uint32_t buses_low;             /* mask of buses voted low */
++	uint64_t t0, entered, resid[G_NSTATE];
++	uint64_t trans, raises[S_NSRC], failures;
++	uint32_t vote_us_last, vote_us_max, bw_last, bw_max, cpu_last, cpu_max;
++	struct {
++		uint32_t ms;
++		uint8_t from, to, src;
++		uint32_t us;
++	} hist[GOV_HIST];
++	unsigned nhist;
++} g = { .display_on = true };
++
++static LCK_GRP_DECLARE(gov_grp, "sweet_ddrgov");
++static LCK_MTX_DECLARE(gov_lock, &gov_grp);
++
++static uint64_t
++abs_us(uint64_t abs)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(abs, &ns);
++	return ns / 1000;
++}
++
++static bool
++vote_bimc(uint32_t mhz)
++{
++	if (g.bimc == mhz) {
++		return true;
++	}
++	if (!sweet_rpm_clk_active(TYPE_CLK2, 0, mhz * 1000u)) {
++		return false;
++	}
++	g.bimc = mhz;
++	sweet_ddr_note_vote(mhz);
++	return true;
++}
++
++static bool
++vote_buses(uint32_t low)
++{
++	bool ok = true;
++	for (unsigned i = 0; i < GOV_NBUS; i++) {
++		uint32_t bit = 1u << i;
++		if ((g.buses_low & bit) == (low & bit)) {
++			continue;
++		}
++		if (sweet_rpm_clk_active(gov_bus[i].type, gov_bus[i].id, (low & bit) ? BUS_LOW_KHZ : RPM_KHZ_MAX)) {
++			g.buses_low = (g.buses_low & ~bit) | (low & bit);
++		} else {
++			ok = false;
++		}
++	}
++	return ok;
++}
++
++/* Lock held. Up: bimc first, then the buses; down: the other way round. */
++static void
++gov_go(int to, int src)
++{
++	uint64_t t0 = mach_absolute_time();
++	int from = g.state;
++	uint32_t mhz = to == G_FULL ? g.full : to == G_IDLE_ON ? g.floor_on : g.floor_off;
++	uint32_t low = to == G_IDLE_OFF ? g.bus_mask : 0;
++	bool ok;
++	if (to == G_FULL) {
++		ok = vote_bimc(mhz);
++		ok = vote_buses(low) && ok;
++	} else {
++		ok = vote_buses(low);
++		ok = vote_bimc(mhz) && ok;
++	}
++	uint64_t now = mach_absolute_time();
++	if (!ok) {
++		g.failures++;
++		printf("SWEET DDRGOV: %s -> %s: RPM vote FAILED (bimc %u, buses low %#x)\n", gov_state_name[from],
++		    gov_state_name[to], g.bimc, g.buses_low);
++		if (to != G_FULL) {
++			/* never sit half-lowered: back to the full rate, retry on the next idle check */
++			(void)vote_buses(0);
++			(void)vote_bimc(g.full);
++			to = G_FULL;
++		}
++	}
++	g.resid[from] += now - g.entered;
++	g.entered = now;
++	if (to == G_FULL) {
++		g.last = now;
++	}
++	os_atomic_store(&g.state, to, release);
++	uint32_t us = (uint32_t)abs_us(now - t0);
++	g.trans++;
++	if (to == G_FULL && src < S_NSRC) {
++		g.raises[src]++;
++	}
++	g.vote_us_last = us;
++	g.vote_us_max = MAX(g.vote_us_max, us);
++	unsigned h = g.nhist++ % GOV_HIST;
++	g.hist[h].ms = (uint32_t)(abs_us(now - g.t0) / 1000);
++	g.hist[h].from = (uint8_t)from;
++	g.hist[h].to = (uint8_t)to;
++	g.hist[h].src = (uint8_t)src;
++	g.hist[h].us = us;
++	if (g.log) {
++		printf("SWEET DDRGOV: %s -> %s (%s) in %u us, DDR %u MHz\n", gov_state_name[from], gov_state_name[to],
++		    gov_src_name[src], us, sweet_ddr_mhz());
++	}
++}
++
++/*
++ * The hooks. Fast path while working: FULL, one store. Otherwise a sync
++ * caller (preemptible thread context) votes itself before its work goes on;
++ * everyone else wakes the governor thread. UFS requests count only with the
++ * display off and bus clocks to lower: UFS DMA (<= 0.5 GB/s) is far below what
++ * even idle-off's DDR rate moves, while background I/O about once a second
++ * would hold FULL for good.
++ */
++void
++sweet_ddrgov_activity(int src, int sync)
++{
++	if (src == S_UFS && (g.display_on || g.bus_mask == 0)) {
++		return;
++	}
++	g.last = mach_absolute_time();
++	if (__probable(os_atomic_load(&g.state, acquire) == G_FULL)) {
++		return;
++	}
++	if (sync && src != S_PRESENT && !ml_at_interrupt_context() && get_preemption_level() == 0) {
++		lck_mtx_lock(&gov_lock);
++		if (g.state != G_FULL && g.mode != 0) {
++			gov_go(G_FULL, src);
++		}
++		lck_mtx_unlock(&gov_lock);
++		return;
++	}
++	g.kick_src = src;
++	g.kick = true;
++	thread_wakeup(GOV_EVENT);
++}
++
++void
++sweet_ddrgov_display(int on)
++{
++	g.display_on = on != 0;
++	if (on) {
++		sweet_ddrgov_activity(S_DISPLAY, 1);
++	} else {
++		g.last = mach_absolute_time();  /* hold_off from now */
++		thread_wakeup(GOV_EVENT);
++	}
++}
++
++/* bimc bwmon4 MON2, CPU port, configured as "ddr bw" does (sweet_ddr.c); MB/s since the last call */
++#define BWMON_PA        0x01008000u
++#define MON2_EN         0x2a0
++#define MON2_CLEAR      0x2a4
++#define MON2_SW         0x2a8
++#define MON2_THRES_HI   0x2ac
++#define MON2_THRES_MED  0x2b0
++#define MON2_THRES_LO   0x2b4
++#define MON2_ZONE_ACTIONS 0x2b8
++#define MON2_BYTE_CNT   0x2d0
++
++static inline void
++io_wr(volatile uint32_t *p, uint32_t v)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"(p) : "memory");
++	__builtin_arm_dsb(0xf);
++}
++
++static uint32_t
++gov_bw_sample(uint64_t now)
++{
++	static volatile uint32_t *mon;
++	static uint32_t prev;
++	static uint64_t tprev;
++	if (mon == NULL) {
++		mon = (volatile uint32_t *)ml_io_map(BWMON_PA, 0x1000);
++		if (mon == NULL) {
++			return 0;
++		}
++#define M(off) (&mon[(off) / 4])
++		io_wr(M(MON2_EN), *M(MON2_EN) & ~1u);
++		io_wr(M(MON2_CLEAR), 2);
++		io_wr(M(MON2_SW), 0xfffff);     /* 54.6 ms windows */
++		io_wr(M(MON2_THRES_LO), 0x7fd);
++		io_wr(M(MON2_THRES_MED), 0x7fe);
++		io_wr(M(MON2_THRES_HI), 0x7ff);
++		io_wr(M(MON2_ZONE_ACTIONS), 0x01);
++		io_wr(M(MON2_EN), *M(MON2_EN) | 1u);
++		tprev = now;
++		prev = 0;
++		return 0;
++	}
++	/* the count restarts at each window: a drop is a new window (its tail before is lost) */
++	uint32_t cur = *M(MON2_BYTE_CNT);
++#undef M
++	uint32_t d = cur >= prev ? cur - prev : cur;
++	uint64_t us = abs_us(now - tprev);
++	prev = cur;
++	tprev = now;
++	return us ? (uint32_t)(((uint64_t)d << 20) / us) : 0;
++}
++
++static void
++gov_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint64_t gpu_prev = 0;
++	for (;;) {
++		lck_mtx_lock(&gov_lock);
++		uint64_t now = mach_absolute_time();
++		if (g.mode != 0) {
++			/* off: nothing sampled or voted, as without the governor */
++			uint32_t mbps = gov_bw_sample(now);
++			uint64_t c[4];
++			bool gpu_busy = false;
++			if (sweet_gpu_bus_counters(c)) {
++				gpu_busy = gpu_prev != 0 && c[0] != gpu_prev;
++				gpu_prev = c[0];
++			}
++			g.bw_last = mbps;
++			g.bw_max = MAX(g.bw_max, mbps);
++			/* CPU work without memory traffic (latency-bound, as Mesa's) counts with the display on */
++			uint32_t cpu = sweet_dvfs_busy();
++			g.cpu_last = cpu;
++			g.cpu_max = MAX(g.cpu_max, cpu);
++			bool cpu_busy = g.display_on && g.cpu != 0 && cpu >= g.cpu;
++			bool kicked = g.kick;
++			g.kick = false;
++			bool busy = mbps > g.bw || gpu_busy || cpu_busy;
++			if (g.state != G_FULL && (kicked || busy || (g.display_on && g.mode == 2))) {
++				gov_go(G_FULL, kicked ? g.kick_src : mbps > g.bw ? S_BW : gpu_busy ? S_GPUBUSY :
++				    cpu_busy ? S_CPU : S_DISPLAY);
++			} else if (busy) {
++				g.last = now;
++			} else {
++				uint64_t idle_ms = abs_us(now - g.last) / 1000;
++				if (!g.display_on && g.state != G_IDLE_OFF && idle_ms >= g.hold_off) {
++					gov_go(G_IDLE_OFF, S_IDLE);
++				} else if (g.display_on && g.mode == 1 && g.state == G_FULL && idle_ms >= g.hold_on) {
++					gov_go(G_IDLE_ON, S_IDLE);
++				} else if (g.display_on && g.state == G_IDLE_OFF) {
++					gov_go(G_FULL, S_DISPLAY);      /* missed display-on hook: never stay dark-low */
++				}
++			}
++		}
++		uint32_t period = g.state == G_IDLE_ON ? 10 : 50;
++		lck_mtx_unlock(&gov_lock);
++		uint64_t deadline;
++		clock_interval_to_deadline(period, NSEC_PER_MSEC, &deadline);
++		(void)assert_wait_deadline(GOV_EVENT, THREAD_UNINT, deadline);
++		if (g.kick) {
++			thread_wakeup(GOV_EVENT);        /* came before the wait */
++		}
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
++static uint32_t
++arg_u32(const char *name, uint32_t def)
++{
++	uint32_t v = def;
++	(void)PE_parse_boot_argn(name, &v, sizeof(v));
++	return v;
++}
++
++/* From sweet_ddr_boot once sweetddr= has voted (handoff and scaling are on). */
++void
++sweet_ddrgov_start(uint32_t full_mhz)
++{
++	lck_mtx_lock(&gov_lock);
++	if (g.started) {
++		lck_mtx_unlock(&gov_lock);
++		return;
++	}
++	g.full = full_mhz;
++	g.bimc = full_mhz;
++	g.mode = (int)arg_u32("sweetddrgov", 0);
++	g.mode = g.mode > 2 ? 0 : g.mode;
++	g.floor_on = MIN(arg_u32("sweetddrgov_on", 768), full_mhz);
++	g.floor_off = MIN(arg_u32("sweetddrgov_off", 200), full_mhz);
++	g.hold_on = arg_u32("sweetddrgov_hold", 1000);
++	g.hold_off = 200;
++	g.bw = arg_u32("sweetddrgov_bw", 2000);
++	g.cpu = arg_u32("sweetddrgov_cpu", 60);
++	g.bus_mask = arg_u32("sweetddrgov_bus", 0) & ((1u << GOV_NBUS) - 1);
++	g.t0 = g.entered = g.last = mach_absolute_time();
++	thread_t th;
++	g.started = kernel_thread_start(gov_thread, NULL, &th) == KERN_SUCCESS;
++	if (g.started) {
++		thread_deallocate(th);
++	} else {
++		g.mode = 0;
++	}
++	lck_mtx_unlock(&gov_lock);
++	printf("SWEET DDRGOV: %s, mode %d: full %u, idle-on %u, idle-off %u MHz, hold %u ms, bw %u MB/s, buses %#x\n",
++	    g.started ? "started" : "no thread", g.mode, g.full, g.floor_on, g.floor_off, g.hold_on, g.bw, g.bus_mask);
++}
++
++/* A manual "ddr MHZ": the governor lets go (back at the full rate first). True if it was on. */
++bool
++sweet_ddrgov_manual(void)
++{
++	lck_mtx_lock(&gov_lock);
++	bool was = g.mode != 0;
++	if (g.state != G_FULL) {
++		gov_go(G_FULL, S_CMD);
++	}
++	g.mode = 0;
++	lck_mtx_unlock(&gov_lock);
++	return was;
++}
++
++static int pwr_event;
++
++/* "SWEET PWR:" (power plan step 0): 1 s fuel-gauge samples, a line every sweetpwrlog= seconds */
++static void
++pwr_thread(void *arg, __unused wait_result_t wr)
++{
++	uint32_t secs = (uint32_t)(uintptr_t)arg;
++	int64_t sum = 0;
++	int n = 0, lo = 0, hi = 0, mv = 0;
++	uint64_t r0[G_NSTATE] = {0};
++	for (;;) {
++		uint64_t deadline;
++		clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
++		(void)assert_wait_deadline((event_t)(uintptr_t)&pwr_event, THREAD_UNINT, deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++		struct sweet_fg f;
++		if (sweet_fg_read(&f) == 0) {
++			sum += f.ma;
++			lo = n ? MIN(lo, f.ma) : f.ma;
++			hi = n ? MAX(hi, f.ma) : f.ma;
++			mv = f.mv;
++			n++;
++		}
++		if ((uint32_t)n < secs) {
++			continue;
++		}
++		/* governor residency over the window, percent */
++		uint64_t r[G_NSTATE], now = mach_absolute_time(), tot = 0;
++		lck_mtx_lock(&gov_lock);
++		for (int i = 0; i < G_NSTATE; i++) {
++			r[i] = g.resid[i] + (i == g.state ? now - g.entered : 0);
++		}
++		lck_mtx_unlock(&gov_lock);
++		for (int i = 0; i < G_NSTATE; i++) {
++			tot += r[i] - r0[i];
++		}
++		printf("SWEET PWR: %u s: battery avg %lld mA (min %d max %d), %d mV, display %s, ddrgov mode %d full %llu%% "
++		    "idle-on %llu%% idle-off %llu%%\n", n, sum / n, lo, hi, mv, g.display_on ? "on" : "off", g.mode,
++		    tot ? (r[0] - r0[0]) * 100 / tot : 0, tot ? (r[1] - r0[1]) * 100 / tot : 0,
++		    tot ? (r[2] - r0[2]) * 100 / tot : 0);
++		memcpy(r0, r, sizeof(r0));
++		sum = 0;
++		n = 0;
++	}
++}
++
++/* From the fuel gauge's init (sweet_pmic.c) */
++void
++sweet_pwrlog_start(void)
++{
++	uint32_t secs = arg_u32("sweetpwrlog", 0);
++	thread_t th;
++	if (secs != 0 && kernel_thread_start(pwr_thread, (void *)(uintptr_t)MIN(secs, 3600u), &th) == KERN_SUCCESS) {
++		thread_deallocate(th);
++	}
++}
++
++static uint32_t
++num(const char **pp)
++{
++	const char *p = *pp;
++	uint32_t v = 0;
++	if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
++		for (p += 2;; p++) {
++			int d = *p >= '0' && *p <= '9' ? *p - '0' : *p >= 'a' && *p <= 'f' ? *p - 'a' + 10 : -1;
++			if (d < 0) {
++				break;
++			}
++			v = v * 16 + (uint32_t)d;
++		}
++	} else {
++		for (; *p >= '0' && *p <= '9'; p++) {
++			v = v * 10 + (uint32_t)(*p - '0');
++		}
++	}
++	*pp = p;
++	return v;
++}
++
++static int
++gov_report(char *out, size_t len)
++{
++	uint64_t now = mach_absolute_time(), r[G_NSTATE], tot = 0;
++	for (int i = 0; i < G_NSTATE; i++) {
++		r[i] = g.resid[i] + (i == g.state ? now - g.entered : 0);
++		tot += r[i];
++	}
++	int k = snprintf(out, len, "ddrgov: %s, mode %d (%s), state %s, display %s; bimc vote %u MHz, DDR %u MHz, buses low %#x; "
++	    "full %u idle-on %u idle-off %u MHz, hold %u/%u ms, bw %u MB/s (now %u, max %u), cpu %u%% (now %u, max %u), bus mask %#x; "
++	    "residency full %llu%% idle-on %llu%% idle-off %llu%% of %llu s; %llu transitions, %llu failed, vote %u us (max %u); raises:",
++	    g.started ? "started" : "not started (needs sweetddr=)", g.mode,
++	    g.mode == 0 ? "off" : g.mode == 1 ? "on" : "display off only", gov_state_name[g.state], g.display_on ? "on" : "off",
++	    g.bimc, sweet_ddr_mhz(), g.buses_low, g.full, g.floor_on, g.floor_off, g.hold_on, g.hold_off, g.bw, g.bw_last,
++	    g.bw_max, g.cpu, g.cpu_last, g.cpu_max, g.bus_mask, tot ? r[0] * 100 / tot : 0, tot ? r[1] * 100 / tot : 0, tot ? r[2] * 100 / tot : 0,
++	    abs_us(tot) / 1000000, g.trans, g.failures, g.vote_us_last, g.vote_us_max);
++	for (int i = 0; i < S_NSRC && k > 0 && (size_t)k < len; i++) {
++		if (g.raises[i]) {
++			k += snprintf(out + k, len - k, " %s %llu", gov_src_name[i], g.raises[i]);
++		}
++	}
++	if (k > 0 && (size_t)k < len) {
++		k += snprintf(out + k, len - k, "\nlast transitions (ms since start: from>to src us):");
++	}
++	unsigned n = MIN(g.nhist, (unsigned)GOV_HIST);
++	for (unsigned i = g.nhist - n; i < g.nhist && k > 0 && (size_t)k < len; i++) {
++		unsigned h = i % GOV_HIST;
++		k += snprintf(out + k, len - k, " %u:%s>%s %s %u;", g.hist[h].ms, gov_state_name[g.hist[h].from],
++		    gov_state_name[g.hist[h].to], gov_src_name[g.hist[h].src], g.hist[h].us);
++	}
++	if (k > 0 && (size_t)k < len) {
++		k += snprintf(out + k, len - k, "\n");
++	}
++	return k;
++}
++
++const char *
++sweet_ddrgov_cmd(const char *line)
++{
++	static char reply[2048];
++	if (strcmp(line, "batt") == 0) {
++		struct sweet_fg f;
++		if (sweet_fg_read(&f) != 0) {
++			return "batt: no fuel gauge\n";
++		}
++		snprintf(reply, sizeof(reply), "batt: %d mV %d mA, %d.%d C, soc %d%%, online %d charging %d full %d; display %s, ddrgov %s\n",
++		    f.mv, f.ma, f.temp_dc / 10, (f.temp_dc < 0 ? -f.temp_dc : f.temp_dc) % 10, f.fg_soc, f.online, f.charging,
++		    f.full, g.display_on ? "on" : "off", gov_state_name[g.state]);
++		return reply;
++	}
++	if (strncmp(line, "ddrgov", 6) != 0 || (line[6] != 0 && line[6] != ' ')) {
++		return NULL;
++	}
++	const char *a = line + 6;
++	while (*a == ' ') {
++		a++;
++	}
++	lck_mtx_lock(&gov_lock);
++	const char *err = NULL;
++	if (*a != 0 && !g.started) {
++		err = "ddrgov: not started (boot with sweetddr=)\n";
++	} else if (strcmp(a, "on") == 0 || strcmp(a, "offonly") == 0) {
++		g.mode = a[1] == 'n' ? 1 : 2;
++		g.last = mach_absolute_time();
++		thread_wakeup(GOV_EVENT);
++	} else if (strcmp(a, "off") == 0) {
++		if (g.state != G_FULL) {
++			gov_go(G_FULL, S_CMD);
++		}
++		g.mode = 0;
++	} else if (strncmp(a, "log ", 4) == 0) {
++		g.log = a[4] == '1';
++	} else if (strncmp(a, "set", 3) == 0) {
++		const char *p = a + 3;
++		while (*p == ' ' && err == NULL) {
++			while (*p == ' ') {
++				p++;
++			}
++			const char *eq = strchr(p, '=');
++			if (*p == 0) {
++				break;
++			}
++			if (eq == NULL) {
++				err = "ddrgov set: k=v (on off hold bw bus)\n";
++				break;
++			}
++			const char *v = eq + 1;
++			uint32_t x = num(&v);
++			size_t kl = (size_t)(eq - p);
++			if (kl == 2 && strncmp(p, "on", 2) == 0 && x >= 100) {
++				g.floor_on = MIN(x, g.full);
++			} else if (kl == 3 && strncmp(p, "off", 3) == 0 && x >= 100) {
++				g.floor_off = MIN(x, g.full);
++			} else if (kl == 4 && strncmp(p, "hold", 4) == 0) {
++				g.hold_on = x;
++			} else if (kl == 2 && strncmp(p, "bw", 2) == 0) {
++				g.bw = x;
++			} else if (kl == 3 && strncmp(p, "cpu", 3) == 0) {
++				g.cpu = x;
++			} else if (kl == 3 && strncmp(p, "bus", 3) == 0) {
++				g.bus_mask = x & ((1u << GOV_NBUS) - 1);
++			} else {
++				err = "ddrgov set: k=v (on=MHZ off=MHZ hold=MS bw=MBPS cpu=PERCENT bus=MASK)\n";
++			}
++			p = v;
++		}
++		/* new floors apply from the next step-down; leave a low state now */
++		if (err == NULL && g.state != G_FULL) {
++			gov_go(G_FULL, S_CMD);
++		}
++	} else if (*a != 0) {
++		err = "ddrgov: ? (on, off, offonly, log 0|1, set on=MHZ off=MHZ hold=MS bw=MBPS cpu=PERCENT bus=MASK)\n";
++	}
++	if (err == NULL) {
++		gov_report(reply, sizeof(reply));
++	}
++	lck_mtx_unlock(&gov_lock);
++	return err != NULL ? err : reply;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+old mode 100755
+new mode 100644
+index 0ed8ebf45..484b057d2
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -1199,6 +1199,7 @@ extern bool sweet_bench_enabled(void);
+ extern void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+ extern bool sweet_fb_queue_boot(void);
+ int sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno);
++extern void sweet_ddrgov_activity(int src, int sync);
+ int
+ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint32_t *seqno)
+ {
+@@ -1206,6 +1207,7 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+ 		return gpu_ready ? EINVAL : ENODEV;
+ 	}
+ 	uint32_t need = 4 * n + 5;
++	sweet_ddrgov_activity(0, 1);            /* DDR at the full rate before the GPU sees the job (j0114) */
+ 	lck_mtx_lock(gpu_lock);
+ 	for (int i = 0; i < 200000 && ring_space() < need; i++) {
+ 		delay(10);
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+index 398e89ea5..f8fe86e14 100644
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -50,6 +50,7 @@ struct sweet_fg {
+ 	int online, charging, full;
+ };
+ int sweet_fg_read(struct sweet_fg *out);
++extern void sweet_pwrlog_start(void);
+ int sweet_wled_get(void);
+ int sweet_wled_set(uint32_t level);
+ 
+@@ -645,6 +646,7 @@ pmic_fg_init(DTEntry node)
+ 		printf("SWEET FG: %d mV %d mA %d.%d C, gauge SOC %d%%, usb %d charging %d full %d\n",
+ 		    f.mv, f.ma, f.temp_dc / 10, (f.temp_dc < 0 ? -f.temp_dc : f.temp_dc) % 10, f.fg_soc,
+ 		    f.online, f.charging, f.full);
++		sweet_pwrlog_start();           /* sweetpwrlog= (sweet_ddrgov.c, j0114) */
+ 	} else {
+ 		printf("SWEET FG: not readable\n");
+ 		fg_soc_ch = fg_info_ch = NULL;
+diff --git a/bsd/dev/sweet_rpm.c b/bsd/dev/sweet_rpm.c
+index 40564d1cd..05103b44f 100644
+--- a/bsd/dev/sweet_rpm.c
++++ b/bsd/dev/sweet_rpm.c
+@@ -33,6 +33,7 @@ bool sweet_rpm_kvp(unsigned sets, uint32_t type, uint32_t id, uint32_t key, uint
+ bool sweet_rpm_cpu_probe(uint32_t id);
+ extern int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
+ bool sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz);
++bool sweet_rpm_clk_active(uint32_t type, uint32_t id, uint32_t khz);
+ int sweet_rpm_clk_scaling(void);
+ 
+ static LCK_GRP_DECLARE(sweet_rpm_grp, "sweet_rpm");
+@@ -255,6 +256,22 @@ rpm_rx_one(void)
+ 	return true;
+ }
+ 
++/*
++ * Poll up to us for cond in 20 us steps (j0114: a request's answer; the DDR
++ * governor raises the bimc vote in the GPU submit path, so 1 ms steps cost).
++ */
++#define RPM_POLL_US(us, cond) ({                                \
++	unsigned _u;                                            \
++	for (_u = 0; _u < (us) && !(cond); _u += 20) {          \
++	        while (rpm_rx_one()) {                          \
++	        }                                               \
++	        if (!(cond)) {                                  \
++	                delay(20);                              \
++	        }                                               \
++	}                                                       \
++	(cond);                                                 \
++})
++
+ /* Poll up to ms for cond. */
+ #define RPM_POLL(ms, cond) ({                                   \
+ 	unsigned _i;                                            \
+@@ -348,7 +365,7 @@ rpm_request(const char *what, uint32_t set, uint32_t type, uint32_t id, const ui
+ 	if (!rpm_send(w, bytes)) {
+ 		return false;
+ 	}
+-	if (!RPM_POLL(1000u, rpm.resp_ready)) {
++	if (!RPM_POLL_US(1000000u, rpm.resp_ready)) {
+ 		printf("SWEET RPM: %s: no answer\n", what);
+ 		return false;
+ 	}
+@@ -508,6 +525,21 @@ sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz)
+ 	return ok;
+ }
+ 
++/*
++ * The same in the active set only and without a log line (j0114, the DDR
++ * governor's transitions). The sleep set keeps what it had: it only applies
++ * once the AP power-collapses.
++ */
++bool
++sweet_rpm_clk_active(uint32_t type, uint32_t id, uint32_t khz)
++{
++	uint32_t kv[2] = {KEY_KHZ, khz};
++	lck_mtx_lock(&sweet_rpm_lock);
++	bool ok = rpm_request("clk active", 0, type, id, kv, 1);
++	lck_mtx_unlock(&sweet_rpm_lock);
++	return ok;
++}
++
+ /*
+  * RPM clock scaling on, as msm-4.4 clk-smd-rpm.c rpm_smd_clk_probe does for
+  * qcom,rpmcc-sdm660 (sailfish 0147 did the same for MSM8996). Until then the
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index cd20fa619..c9a5405f4 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -52,6 +52,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern int get_preemption_level(void);
+ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+ extern void thread_deallocate(thread_t);
++extern void sweet_ddrgov_activity(int src, int sync);
+ extern int hz;
+ static void sweet_log_start(void);
+ extern void sweet_sample_start(void);
+@@ -852,6 +853,7 @@ sweet_ufs_strategy(buf_t bp)
+ 		goto done;
+ 	}
+ 
++	sweet_ddrgov_activity(5, 1);    /* DDR and buses at the full rate first (j0114) */
+ 	lck_mtx_lock(&sweet_ufs_lock);
+ 	for (uint32_t done = 0; done < count;) {
+ 		uint64_t pos = off + done;
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+old mode 100755
+new mode 100644
+index f37bd3700..962895f68
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1711,6 +1711,7 @@ extern int sweet_osm_cmd(char *line, char *out, size_t len);
+ extern const char *sweet_prof_cmd(const char *line);     /* osfmk/arm64/sweet_prof.c (j0057) */
+ extern const char *sweet_gpu_cmd(const char *line);      /* bsd/dev/sweet_gpu.c (j0060) */
+ extern const char *sweet_ddr_cmd(const char *line);      /* bsd/dev/sweet_ddr.c (j0064) */
++extern const char *sweet_ddrgov_cmd(const char *line);   /* bsd/dev/sweet_ddrgov.c (j0114) */
+ extern void topaz_modem_stop(bool panic);                /* iokit/Kernel/arm/TopazModem.cpp (j0080x) */
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ extern const char *sweet_bench_blob(const char *, const void **, size_t *);
+@@ -1798,6 +1799,9 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		if (prof == NULL && !reboot) {
+ 			prof = sweet_ddr_cmd(line);
+ 		}
++		if (prof == NULL && !reboot) {
++			prof = sweet_ddrgov_cmd(line);
++		}
+ 		if (prof != NULL) {
+ 			reply = prof;
+ 		} else if (!reboot && !vcycle && sweet_osm_cmd(line, ud_cmd_reply, sizeof(ud_cmd_reply))) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 4a92d867d..ea727df4f 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -39,6 +39,8 @@ extern "C" void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32
+ extern "C" void sweet_bench_alloc(uint32_t, int64_t);
+ extern "C" bool sweet_bench_enabled(void);
+ extern "C" uint32_t sweet_gpu_completed(void);
++extern "C" void sweet_ddrgov_activity(int src, int sync);       /* bsd/dev/sweet_ddrgov.c (j0114) */
++extern "C" void sweet_ddrgov_display(int on);
+ extern "C" void sweet_fb_submit_fault(uint32_t reason);
+ 
+ #include <pexpert/pexpert.h>
+@@ -1350,6 +1352,7 @@ IOReturn
+ AppleCLCD::swap(const uint8_t *rec)
+ {
+ 	sweet_fps_count();
++	sweet_ddrgov_activity(4, 0);            /* a present keeps the DDR governor at the full rate */
+ 	sweet_bench_event(11, get32(rec, 0x50), get32(rec, 0x54), get32(rec, 0x104), 0);
+ 	SweetSurface *held[4] = {};
+ 	uint32_t mask = get32(rec, 0x104);
+@@ -2964,6 +2967,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				break;
+ 			}
+ 			SweetPresentScope scope = { fFB, false };
++			if (!off) { sweet_ddrgov_display(1); }  /* full DDR and buses before the redraw (j0114) */
+ 			if (off) { sweet_ticket_cancel(NULL); }
+ 			if (fFB->fProtocol) {
+ 				scope.owned = fFB->drainPresent();
+@@ -2989,6 +2993,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 					fFB->setPanelLevel(level);
+ 				}
+ 			}
++			if (off) { sweet_ddrgov_display(0); }
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
+ 		}
+ 		break;
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index ef1e334e7..00e57d47e 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -553,10 +553,14 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	collection->release();
+ }
+ 
++/* bsd/dev/sweet_ddrgov.c (j0114): input raises the DDR before the UI's first frame */
++extern "C" void sweet_ddrgov_activity(int src, int sync);
++
+ /* key: 0 power (side button), 1 volume up, 2 volume down, 3 home */
+ extern "C" void
+ sweet_hid_key(int key, int down)
+ {
++	sweet_ddrgov_activity(2, 1);
+ 	static const UInt32 usages[] = {
+ 		kHIDUsage_Csmr_Power, kHIDUsage_Csmr_VolumeIncrement,
+ 		kHIDUsage_Csmr_VolumeDecrement, kHIDUsage_Csmr_Menu,
+@@ -570,6 +574,7 @@ sweet_hid_key(int key, int down)
+ extern "C" void
+ sweet_hid_touch(int finger, int down, int x, int y)
+ {
++	sweet_ddrgov_activity(1, 1);
+ 	if (gSweetTouch) {
+ 		gSweetTouch->touch(finger, down != 0, x, y);
+ 	}
+diff --git a/osfmk/arm64/sweet_dvfs.h b/osfmk/arm64/sweet_dvfs.h
+index f20bae179..24b83e3a6 100644
+--- a/osfmk/arm64/sweet_dvfs.h
++++ b/osfmk/arm64/sweet_dvfs.h
+@@ -347,6 +347,15 @@ dvfs_worker(void *arg, wait_result_t result)
+ 	}
+ }
+ 
++/* For the DDR governor (bsd/dev/sweet_ddrgov.c, j0114): the busiest core's load in the last 20 ms sample, percent. */
++unsigned sweet_dvfs_busy(void);
++unsigned
++sweet_dvfs_busy(void)
++{
++	unsigned a=dvfs_state[0].busy, b=dvfs_state[1].busy;
++	return dvfs_ready ? (a>b ? a : b) : 0;
++}
++
+ static void
+ sweet_dvfs_start(void)
+ {
+-- 
+2.39.5 (Apple Git-154)
+
