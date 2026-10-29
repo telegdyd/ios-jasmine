@@ -1,3 +1,14 @@
+### 2026-10-29 23:05: libsweetca with 0011 (async glFlush in mode 2) INSTALLED (user: "Install it")
+
+Production /usr/local/bin/libsweetca.dylib = xnu/out-mesa-t5async/libsweetca.dylib (patches 0001-0011, SHA256 bf5328c0...,
+read back). Previous 4780fbaa kept on the phone as /usr/local/bin/libsweetca-pre-t5async.dylib and locally as
+research/t5async/libsweetca-before.dylib. Rollback: `sweet-fs.py put research/t5async/libsweetca-before.dylib
+/usr/local/bin/libsweetca.dylib --mode 0755` + reboot. Plain reboot (command port -> fastboot -> `fastboot reboot`, slot b):
+logs/netlog-t5af-installed.txt: abmark=b, backboardd loads the production path, tickets 2676/2676/0, stale/error/timeout 0,
+no panic, no SMMU fault, no ticket/submit fallback; Home screen dump correct (research/t5async/installed/). Not done: the
+user's look at motion. Phone: installed boot_b j0118 + new lib, 63 %, charging. Side files libsweetca1/2.dylib,
+sweetgpu_gltest-t5async, t5af-shot.raw.* still in /usr/local/bin.
+
 ### 2026-10-29 23:00: task 5: CA's per-frame glFlush made async in mode 2 (patch 0011): +10 % Home, +6-12 % CC (ABBA); not installed
 
 Report jasmine/PERF-TASK5-ASYNC-FLUSH-20261029.md. Cause: Mesa's `_mesa_flush` is synchronous once an IOSurface is bound

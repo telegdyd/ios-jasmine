@@ -339,7 +339,7 @@ steps pass; the CA tree retains its pre-existing image-orientation mismatch.
 
 **2026-10-29: async glFlush in mode 2** (patch 0011, [report](PERF-TASK5-ASYNC-FLUSH-20261029.md)): removes the
 per-frame `tc_sync` (inline TC batch + 1.3-2 ms wait) from CA's render thread; ABBA +10 % Home, +6-12 % CC swap
-arrivals; render-thread Mesa CPU only -0.4 ms/frame. Built and gated, not installed (needs the user's OK).
+arrivals; render-thread Mesa CPU only -0.4 ms/frame. Installed 2026-10-29 23:05 (bf5328c0), plain reboot verified.
 
 **Remaining work:** use CPU sampling and opt-in draw diagnostics to split
 `st_prepare_draw` / `st_validate_state` atoms, `fd5_emit_state` / `fd5_program_emit`,

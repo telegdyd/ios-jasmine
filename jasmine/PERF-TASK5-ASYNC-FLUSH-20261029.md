@@ -1,5 +1,9 @@
 # Task 5: CoreAnimation's per-frame glFlush without the threaded-context drain (2026-10-29)
 
+**Installed 2026-10-29 23:05 (user OK):** production libsweetca = bf5328c0 (0001-0011), plain reboot verified
+(`logs/netlog-t5af-installed.txt`, tickets balanced, 0 errors, Home dump correct); previous 4780fbaa kept as
+`/usr/local/bin/libsweetca-pre-t5async.dylib`.
+
 **Result: +10 % Home, +6-12 % Control Center, +9 % Spotlight swap arrivals in an ABBA of temporary
 boots, same kernel, same args, only the library differs.** The render thread no longer runs or waits for
 the driver thread at `glFlush`. Not installed (production stays 4780fbaa); installing needs the user's OK.
