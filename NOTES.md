@@ -1,3 +1,21 @@
+### 2026-10-29 23:00: task 5: CA's per-frame glFlush made async in mode 2 (patch 0011): +10 % Home, +6-12 % CC (ABBA); not installed
+
+Report jasmine/PERF-TASK5-ASYNC-FLUSH-20261029.md. Cause: Mesa's `_mesa_flush` is synchronous once an IOSurface is bound
+(HasExternallySharedImages), so CA's `glFlush` in `w_Flush` ran `tc_sync`: the pending TC batch executed on the render
+thread (~1 ms) plus a 1.3-2 ms wait for gdrv0, every frame. Mode 2 tickets already cover the display, so
+mesa/patches/0011-sweetgl-mode2-async-flush.patch (commit d4b9718) flushes with PIPE_FLUSH_ASYNC (`SWEETCA_SYNC_FLUSH=1` =
+old path). VM builds: B xnu/out-mesa-t5async (bf5328c0...), A xnu/out-mesa-t5base (= HEAD without 0011, fba37b89...).
+gltest of B on the phone: all PASS (9 steps, four barrier cases, feedback diagnostics 45/45). ABBA temporary j0118 boots
+(shim/out/shim-boot-j0118-t5lib{1,2}.img: test args, backboardd lib -> /usr/local/bin/libsweetca{1,2}.dylib side copies):
+Home B 40.5 -> 44.7/s, CC A 30.3 -> 32.0, CC B 28.4 -> 31.8, Spotlight 33.2 -> 36.1; both B beat both A everywhere. Per CC
+frame (framecrit): frame 33.6 -> 31.4 ms, flush wait 1.3-2.0 -> 0, render Mesa CPU only 10.0 -> 9.6 ms (render CPU total ~25 ms
+unchanged; why not the full 1.3 ms is open), gdrv0 +1-1.5 ms. B boots: tickets balanced, 0 errors/faults/panics; Home dumps
+identical. Home A had no frames in all 5 captures (A and B: home-a stall reproduces on temp boots, library-independent).
+First A round stopped on a command-port timeout (no fault), repeated once. Gotcha: tools/vm-mesa.sh exits 0 with the previous
+outputs when ninja fails. **Phone:** installed boot_b j0118, production lib 4780fbaa (read back), side files libsweetca1/2.dylib,
+sweetgpu_gltest-t5async, t5af-shot.raw.* in /usr/local/bin. **Next:** user's OK to install out-mesa-t5async as production
+(userland only, no flash), plain reboot check, user's look at motion.
+
 ### 2026-10-29 22:05: Gold A/B: pinning Gold at 2150 changes nothing (governor already at max in motion)
 
 framebench goldab-pin2 (Gold pinned 2150.4, auto's top) vs goldab-auto, same boot: Home 40.5/40.1 vs 39.9/40.0 /s,

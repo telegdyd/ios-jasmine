@@ -337,6 +337,10 @@ production comparisons: swap arrivals 31.11 -> 32.05/s home and 18.51 -> 19.51/s
 Control Center (+3.0%/+5.4%); these are not confirmed displayed FPS. All seven GL
 steps pass; the CA tree retains its pre-existing image-orientation mismatch.
 
+**2026-10-29: async glFlush in mode 2** (patch 0011, [report](PERF-TASK5-ASYNC-FLUSH-20261029.md)): removes the
+per-frame `tc_sync` (inline TC batch + 1.3-2 ms wait) from CA's render thread; ABBA +10 % Home, +6-12 % CC swap
+arrivals; render-thread Mesa CPU only -0.4 ms/frame. Built and gated, not installed (needs the user's OK).
+
 **Remaining work:** use CPU sampling and opt-in draw diagnostics to split
 `st_prepare_draw` / `st_validate_state` atoms, `fd5_emit_state` / `fd5_program_emit`,
 and remaining batch creation/finalization. Confirm redundant state or avoidable
