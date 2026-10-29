@@ -1,3 +1,9 @@
+### 2026-10-29: battery drain plan written: jasmine/POWER-PLAN-20261029.md; DDR scaling started in its own session
+
+Observed: screen off, unplugged -437 mA at 3.88 V (single FG sample, logs/netlog-j0113d-wall.txt). User rule: no
+performance trade-offs (DDR stays 1804 under load; scaling, idle power-down, IRQ-driven drivers only), each item
+gated by framebench. Item 1 (DDR/bus scaling governor) handed to a separate session. Phone unchanged (boot_b j0113).
+
 ### 2026-10-29 12:55: boot_b = j0113 (charger: APSD re-run on SDP, USB session only towards a host)
 
 boot_b = shim/out/shim-boot-j0113-slotb.img (sha256 0ff5c7a6..., 13:16, with the USB replug fix; kernel xnu/out-jasmine-j0113 = j0112 + j0113; boot-args and ADT as the j0112-xr
