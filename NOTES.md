@@ -1,3 +1,18 @@
+### 2026-10-30 23:40: GMEM framebuffer read works on the Adreno 512 (probe); every CA feedback barrier is a fetch; patch 0013 default off
+
+Report jasmine/PERF-GMEM-FBREAD-20261030.md. Question from the ios-apollo comparison: stage 3 lost because every feedback
+batch had to stay sysmem. (1) Counts (temporary j0118 boot, lib /usr/local/bin/fbr.dylib with SWEETCA_DRAWPROF=1,
+logs/netlog-fbr1.txt, tools/g2/fbreadsum.py): needed barriers Home 33.4 / CC 44.6 per frame, 100 % framebuffer fetch,
+0 other self-reads. (2) Probe (gltest --fbread-only, GMEM forced): a texture descriptor at gmem_base (0x100000, the UCHE
+GMEM window j0018 already sets) + cbuf_base, bin pitch, TILE5_2 reads the tile: 0 pixels wrong on 64x64, 256x256, 192x128
+(swap, chain, restore), TC and no-TC; tile modes 0/3 scramble it (so the read is really GMEM). BGRA targets: a5xx views do
+BGRA by swizzle, GMEM is unswapped -> X<->Z swizzle in the GMEM descriptor (the SWAP field did nothing, fbr2). Final
+gltest --fbread 97/97 PASS (TC and no-TC), --sysbarrier-wide 85/85. mesa/patches/0013-freedreno-a5xx-gmem-fbread-probe.patch
+(SWEETCA_GMEM_FBREAD=1, one bin at the origin only; multi-bin fbread batches stay sysmem). VM builds xnu/out-mesa-fbr1/2/3.
+No CA frame used it yet (828x1792 is ~24 bins). Next: bin-relative addressing for multi-bin (indirect descriptor + per-bin
+base write, or a per-bin shader constant), then measure per-bin barrier cost with SWEETCA_GMEM=1 timing. **Phone:** charging
+shell, 83 %; production lib bf5328c0 unchanged, nothing flashed; test files /usr/local/bin/fbr.dylib and sweetgpu_gltest-fbr3.
+
 ### 2026-10-30 00:30: task 5 render-thread Mesa: flat profile; patch 0012 (3 small cuts) -0.3 ms Mesa, -0.4 ms frame, rates unchanged; not installed
 
 Report jasmine/PERF-TASK5-RENDER-CPU-20261030.md. Render-thread Mesa per CC frame is spread over many 1-3 µs per-call

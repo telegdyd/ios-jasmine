@@ -1161,3 +1161,5 @@ Task 23 initial audit: see [shared blur findings](PERF-TASK23-AUDIT.md) and [bou
 Task 23 device result: [Gaussian downsampling observed](PERF-TASK23-DEVICE-AUDIT.md), Mesa diagnostic e4ece21 / CI 40240384093 PASS. Separate 74x156 and 72x42 intermediates observed; no universal missing-mip defect. Variable-blur compatibility gap remains, runtime impact unmeasured. Production boot restored, own test files removed and phone lock released. No speedup claimed.
 
 Task 23 closed at user request on 2026-10-26: Gaussian downsampling observed; no optimization delivered or speedup measured. Variable-blur approximation remains documented without a new work item. See [device audit](PERF-TASK23-DEVICE-AUDIT.md).
+
+GMEM framebuffer read (2026-10-30): [report](PERF-GMEM-FBREAD-20261030.md). Every CA feedback barrier is a framebuffer fetch (Home 33.4, CC 44.6 per frame); a fetch reads the GMEM tile through the UCHE GMEM window (TILE5_2, BGRA swizzle undone), pixel-exact in gltest (97/97). Patch 0013 default off, single-bin only; multi-bin addressing and per-bin barrier cost are next.
