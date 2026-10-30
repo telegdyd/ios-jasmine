@@ -1,45 +1,56 @@
-From d817f701d2fb31dcb83202166888b8bd70bddf10 Mon Sep 17 00:00:00 2001
+From c9484bddb58371fe89dad57f9e4bf18f664ce6ad Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Fri, 30 Oct 2026 23:18:50 +0100
 Subject: [PATCH] freedreno/a5xx: feedback reads from the GMEM tile (probe),
  barrier classification
 
 ---
- src/freedreno/drm/darwin/sweet_profile.c      |   4 +-
- .../drivers/freedreno/a5xx/fd5_context.c      |   2 +
- .../drivers/freedreno/a5xx/fd5_context.h      |   5 +
+ src/freedreno/drm/darwin/sweet_profile.c      |   5 +-
+ .../drivers/freedreno/a5xx/fd5_context.c      |   6 +
+ .../drivers/freedreno/a5xx/fd5_context.h      |   6 +
  src/gallium/drivers/freedreno/a5xx/fd5_draw.c |   5 +-
- src/gallium/drivers/freedreno/a5xx/fd5_emit.c |  10 +
- src/gallium/drivers/freedreno/a5xx/fd5_gmem.c |  63 +++++-
- .../drivers/freedreno/freedreno_batch.h       |   1 +
- .../drivers/freedreno/freedreno_gmem.c        |  16 +-
- src/gallium/frontends/sweetgl/sweetca.c       |  26 ++-
- .../sweetgl/sweetgpu_fbread_test.inc          | 192 ++++++++++++++++++
+ src/gallium/drivers/freedreno/a5xx/fd5_emit.c |  60 +++++
+ src/gallium/drivers/freedreno/a5xx/fd5_gmem.c |  87 ++++++-
+ .../drivers/freedreno/freedreno_batch.c       |   2 +
+ .../drivers/freedreno/freedreno_batch.h       |  13 ++
+ .../drivers/freedreno/freedreno_gmem.c        |  31 ++-
+ src/gallium/frontends/sweetgl/sweetca.c       |  66 +++++-
+ .../sweetgl/sweetgpu_fbread_test.inc          | 219 ++++++++++++++++++
  .../frontends/sweetgl/sweetgpu_gltest.c       |  30 ++-
- src/util/sweet_profile.h                      |   4 +
- 12 files changed, 349 insertions(+), 9 deletions(-)
+ src/util/sweet_profile.h                      |   6 +
+ 13 files changed, 527 insertions(+), 9 deletions(-)
  create mode 100644 src/gallium/frontends/sweetgl/sweetgpu_fbread_test.inc
 
 diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
-index ba1e038..4b8fc62 100644
+index ba1e038..6a26e01 100644
 --- a/src/freedreno/drm/darwin/sweet_profile.c
 +++ b/src/freedreno/drm/darwin/sweet_profile.c
-@@ -36,7 +36,9 @@ static const char *const event_names[SPE_COUNT] = {
+@@ -36,7 +36,10 @@ static const char *const event_names[SPE_COUNT] = {
     "sysbarrier-reject-other-batch", "sysbarrier-reject-state", "sysbarrier-clear-split",
     "gmem-select", "gmem-split", "gmem-sys-barrier", "gmem-sys-ineligible",
     "gmem-sys-unsafe", "gmem-sys-nohist", "gmem-sys-cost", "gmem-measured",
 -   "gmem-time-sys-us", "gmem-time-gmem-us", "gmem-sys-one-draw"
 +   "gmem-time-sys-us", "gmem-time-gmem-us", "gmem-sys-one-draw",
 +   "feedback-fetch", "feedback-selfread", "feedback-both",
-+   "fbread-gmem", "fbread-sys-bins"
++   "fbread-gmem", "fbread-sys-bins",
++   "gmem-time-min-us", "gmem-fb-decisions", "gmem-fb-time-sys-us", "gmem-fb-time-min-us"
  };
  
  __attribute__((constructor)) static void
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_context.c b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
-index 5f7954a..7a0ea12 100644
+index 5f7954a..5f8e4a3 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_context.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
-@@ -57,6 +57,8 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv,
+@@ -27,6 +27,8 @@ fd5_context_destroy(struct pipe_context *pctx) in_dt
+    struct fd5_context *fd5_ctx = fd5_context(fd_context(pctx));
+ 
+    u_upload_destroy(fd5_ctx->border_color_uploader);
++   if (fd5_ctx->fbread_uploader)
++      u_upload_destroy(fd5_ctx->fbread_uploader);
+    pipe_resource_reference(&fd5_ctx->border_color_buf, NULL);
+ 
+    fd_context_destroy(pctx);
+@@ -57,6 +59,8 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv,
  
     /* 0 off, 1 narrow (1-5 draws, no clear, nothing else pending), 2 widened */
     fd5_ctx->sysmem_barrier_level = debug_get_num_option("SWEETCA_SYS_BARRIER", 0);
@@ -48,11 +59,20 @@ index 5f7954a..7a0ea12 100644
     fd5_ctx->base.sysmem_barrier_keeps_clears = fd5_ctx->sysmem_barrier_level >= 2;
     pctx = &fd5_ctx->base.base;
     pctx->screen = pscreen;
+@@ -99,6 +103,8 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv,
+ 
+    fd5_ctx->border_color_uploader =
+       u_upload_create(pctx, 4096, 0, PIPE_USAGE_STREAM, 0);
++   if (fd5_ctx->gmem_fbread > 0)
++      fd5_ctx->fbread_uploader = u_upload_create(pctx, 64 * 1024, 0, PIPE_USAGE_STREAM, 0);
+ 
+    /* As on a6xx: the frontend's validation and the driver's draw emission,
+     * batch and submit work then run on separate threads.  GALLIUM_THREAD=0
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_context.h b/src/gallium/drivers/freedreno/a5xx/fd5_context.h
-index 78c1bd7..1fbe097 100644
+index 78c1bd7..0fe0d47 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_context.h
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_context.h
-@@ -19,6 +19,11 @@ struct fd5_context {
+@@ -19,6 +19,12 @@ struct fd5_context {
     struct fd_context base;
  
     int sysmem_barrier_level;
@@ -61,6 +81,7 @@ index 78c1bd7..1fbe097 100644
 +    * only for now); SWEETCA_GMEM_FBREAD_TILE: the descriptor's tile mode */
 +   int gmem_fbread;
 +   unsigned fbread_tile, fbread_told;
++   struct u_upload_mgr *fbread_uploader;
     unsigned sysmem_barriers;
     /* task 24 stage 3: per-batch GMEM rule (SWEETCA_GMEM), fd5_gmem.c */
     struct fd5_sweet_gmem *sweet_gmem;
@@ -88,31 +109,109 @@ index 1377580..39b8dda 100644
     fd_batch_needs_flush(batch);
     fd_bt_batch(batch, "sysbarrier-retained", NULL, NULL, flags);
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
-index b6decab..040a48a 100644
+index b6decab..8e55b06 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
-@@ -368,6 +368,16 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
+@@ -11,6 +11,7 @@
+ #include "util/format/u_format.h"
+ #include "util/u_helpers.h"
+ #include "util/u_memory.h"
++#include "util/u_upload_mgr.h"
+ #include "util/u_string.h"
+ #include "util/u_viewport.h"
+ 
+@@ -311,6 +312,54 @@ emit_border_color(struct fd_context *ctx, struct fd_ringbuffer *ring) assert_dt
+    u_upload_unmap(fd5_ctx->border_color_uploader);
+ }
+ 
++/* 0013 (SWEETCA_GMEM_FBREAD): the views of the batch's own target are loaded
++ * a second time, indirectly, from a descriptor in memory (a slot). Sysmem
++ * batches leave it as written here (the same as the direct one); GMEM batches
++ * point it at the tile, rebased for every bin by the bin prologue
++ * (fd5_gmem.c fbread_*), since the shader reads absolute pixel positions.
++ */
++static void
++emit_fbread_slots(struct fd_context *ctx, struct fd_ringbuffer *ring, enum a4xx_state_block sb,
++                  struct fd_texture_stateobj *tex, uint32_t mask) assert_dt
++{
++   struct fd5_context *fd5_ctx = fd5_context(ctx);
++   struct fd_batch *batch = ctx->batch;
++   u_foreach_bit (i, mask) {
++      const struct fd5_pipe_sampler_view *view = fd5_pipe_sampler_view(tex->textures[i]);
++      struct fd_resource *rsc = fd_resource(view->base.texture);
++      uint64_t iova = fd_bo_get_iova(rsc->bo) + view->offset;
++      uint32_t d[12] = {
++         view->texconst0 | A5XX_TEX_CONST_0_TILE_MODE(rsc->layout.tile_mode), view->texconst1,
++         view->texconst2, view->texconst3, (uint32_t)iova, (uint32_t)(iova >> 32) | view->texconst5,
++         view->texconst6, view->texconst7, view->texconst8, view->texconst9, view->texconst10,
++         view->texconst11,
++      };
++      struct fd_fbread_slot *slot = NULL;
++      util_dynarray_foreach (&batch->fbread_slots, struct fd_fbread_slot, s) {
++         if (!memcmp(s->map, d, sizeof(d))) {
++            slot = s;
++            break;
++         }
++      }
++      if (!slot) {
++         struct pipe_resource *prsc = NULL;
++         unsigned off = 0;
++         void *map = NULL;
++         u_upload_alloc_ref(fd5_ctx->fbread_uploader, 0, 64, 64, &off, &prsc, &map);
++         if (!prsc)
++            continue;
++         memcpy(map, d, sizeof(d));
++         slot = util_dynarray_grow(&batch->fbread_slots, struct fd_fbread_slot, 1);
++         *slot = (struct fd_fbread_slot){ .bo = fd_resource(prsc)->bo, .offset = off, .map = map };
++         pipe_resource_reference(&prsc, NULL);
++      }
++      OUT_PKT7(ring, CP_LOAD_STATE4, 3);
++      OUT_RING(ring, CP_LOAD_STATE4_0_DST_OFF(i) | CP_LOAD_STATE4_0_STATE_SRC(SS4_INDIRECT) |
++                        CP_LOAD_STATE4_0_STATE_BLOCK(sb) | CP_LOAD_STATE4_0_NUM_UNIT(1));
++      OUT_RELOC(ring, slot->bo, slot->offset, CP_LOAD_STATE4_1_STATE_TYPE(ST4_CONSTANTS), 0);
++   }
++}
++
+ static bool
+ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
+               enum a4xx_state_block sb,
+@@ -349,6 +398,8 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
+    if (tex->num_textures > 0) {
+       unsigned num_textures = tex->num_textures;
+ 
++      uint32_t fbread_mask = 0;
++
+       /* emit texture state: */
+       OUT_PKT7(ring, CP_LOAD_STATE4, 3 + (12 * num_textures));
+       OUT_RING(ring, CP_LOAD_STATE4_0_DST_OFF(0) |
+@@ -368,6 +419,13 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
           if (view->base.texture)
              tile_mode = fd_resource(view->base.texture)->layout.tile_mode;
  
-+         /* 0013: a view of the target this batch draws into; if the batch
-+          * renders through GMEM, fd5_emit_tile_init() points it at the tile
-+          */
++         /* 0013: a view of the target this batch draws into */
 +         struct fd_batch *batch = ctx->batch;
 +         if (fd5_context(ctx)->gmem_fbread > 0 && batch && ring == batch->draw &&
 +             view->base.texture && batch->framebuffer.nr_cbufs &&
-+             view->base.texture == batch->framebuffer.cbufs[0].texture)
-+            util_dynarray_append(&batch->fb_read_patches,
-+                                 ((struct fd_cs_patch){ .cs = ring->cur, .val = i }));
++             view->base.texture == batch->framebuffer.cbufs[0].texture && i < 32)
++            fbread_mask |= 1u << i;
 +
           OUT_RING(ring,
                    view->texconst0 | A5XX_TEX_CONST_0_TILE_MODE(tile_mode));
           OUT_RING(ring, view->texconst1);
+@@ -390,6 +448,8 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
+          OUT_RING(ring, view->texconst10);
+          OUT_RING(ring, view->texconst11);
+       }
++      if (fbread_mask)
++         emit_fbread_slots(ctx, ring, sb, tex, fbread_mask);
+    }
+ 
+    return needs_border;
 diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
-index eb074c6..151812d 100644
+index eb074c6..4ad37dd 100644
 --- a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
 +++ b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
-@@ -24,8 +24,67 @@
+@@ -24,8 +24,81 @@
  #include "fd5_program.h"
  #include "fd5_zsa.h"
  
@@ -124,35 +223,31 @@ index eb074c6..151812d 100644
 + *
 + * a5xx's texture cache reads GMEM through the UCHE_GMEM_RANGE window (the
 + * kernel sets it to 0x100000, SweetGPU param 4 = screen->gmem_base), as a6xx's
-+ * framebuffer fetch does. A view of the batch's own target, emitted after a
-+ * retained barrier (0008), is rewritten here to the tile: base gmem_base +
-+ * cbuf_base[0], the bin's pitch, tile mode SWEETCA_GMEM_FBREAD_TILE (default
-+ * TILE5_2, what emit_mrt() renders GMEM in), unswapped. The shader's coordinates are
-+ * absolute, the tile's are the bin's, so this is right for a batch of one bin
-+ * at the origin only; fd_gmem_render_tiles() keeps other fbread batches in
-+ * sysmem. Sysmem batches leave the views as they are.
++ * framebuffer fetch does. The views of a batch's own target are loaded from
++ * memory slots (fd5_emit.c emit_fbread_slots()). For a GMEM batch,
++ * fbread_gmem_init() turns each slot into a view of the tile: the bin's
++ * pitch, tile mode SWEETCA_GMEM_FBREAD_TILE (default TILE5_2, what emit_mrt()
++ * renders GMEM in) and the swizzle without the target's swap (GMEM holds the
++ * colour unswapped; an a5xx view does BGRA by swizzle over memory order).
++ * The shader reads absolute pixel positions, the tile holds the bin's: fbread
++ * batches get bins of full width (one column, freedreno_gmem.c), so a bin is
++ * its rows yoff.. and fbread_gmem_bin() writes every slot's base as
++ * gmem_base + cbuf_base[0] - yoff * pitch before the bin's draws (49-bit
++ * address, wrapping below zero).
 + */
 +static void
-+fd5_fbread_gmem(struct fd_batch *batch)
++fbread_gmem_init(struct fd_batch *batch)
 +{
 +   struct fd5_context *fd5_ctx = fd5_context(batch->ctx);
 +   const struct fd_gmem_stateobj *gmem = batch->gmem_state;
-+   unsigned n = fd_patch_num_elements(&batch->fb_read_patches);
-+   if (!n || !batch->a5xx_fbread) {
-+      util_dynarray_clear(&batch->fb_read_patches);
++   unsigned n = util_dynarray_num_elements(&batch->fbread_slots, struct fd_fbread_slot);
++   if (!n)
 +      return;
-+   }
-+   uint64_t base = batch->ctx->screen->gmem_base + gmem->cbuf_base[0];
 +   uint32_t pitch = gmem->bin_w * gmem->cbuf_cpp[0];
 +   enum a3xx_color_swap swap = fd5_pipe2swap(batch->framebuffer.cbufs[0].format);
-+   for (unsigned i = 0; i < n; i++) {
-+      uint32_t *d = fd_patch_element(&batch->fb_read_patches, i)->cs;
++   util_dynarray_foreach (&batch->fbread_slots, struct fd_fbread_slot, slot) {
++      uint32_t *d = slot->map;
 +      d[0] = (d[0] & ~A5XX_TEX_CONST_0_TILE_MODE__MASK) | A5XX_TEX_CONST_0_TILE_MODE(fd5_ctx->fbread_tile);
-+      /* GMEM holds the colour in the target's unswapped order (the resolve swaps,
-+       * like a6xx's "TILE6_2 ... means no swap"), but an a5xx view does BGRA by
-+       * swizzle over memory order (fd5_tex_swiz): undo the swap in the swizzle,
-+       * or BGRA targets read red and blue exchanged (gltest feedback steps)
-+       */
 +      if (swap != WZYX) {
 +         uint32_t sw = d[0];
 +         d[0] &= ~(A5XX_TEX_CONST_0_SWIZ_X__MASK | A5XX_TEX_CONST_0_SWIZ_Y__MASK |
@@ -166,37 +261,72 @@ index eb074c6..151812d 100644
 +         }
 +      }
 +      d[2] = (d[2] & ~A5XX_TEX_CONST_2_PITCH__MASK) | A5XX_TEX_CONST_2_PITCH(pitch);
-+      d[4] = (uint32_t)base;
-+      d[5] = (d[5] & ~A5XX_TEX_CONST_5_BASE_HI__MASK) | A5XX_TEX_CONST_5_BASE_HI((uint32_t)(base >> 32));
 +   }
 +   SWEET_EVENT(SPE_FBREAD_GMEM, 1);
 +   if (fd5_ctx->fbread_told++ < 4)
-+      fprintf(stderr, "sweetca: gmem fbread batch %ux%u, %u draws, bins %ux%u of %ux%u, base 0x%llx pitch %u tile %u, %u views\n",
++      fprintf(stderr, "sweetca: gmem fbread batch %ux%u, %u draws, bins %ux%u of %ux%u, pitch %u tile %u, %u slots\n",
 +              batch->framebuffer.width, batch->framebuffer.height, batch->num_draws, gmem->nbins_x, gmem->nbins_y,
-+              gmem->bin_w, gmem->bin_h, (unsigned long long)base, pitch, fd5_ctx->fbread_tile, n);
-+   util_dynarray_clear(&batch->fb_read_patches);
++              gmem->bin_w, gmem->bin_h, pitch, fd5_ctx->fbread_tile, n);
++}
++
++static void
++fbread_gmem_bin(struct fd_batch *batch, struct fd_ringbuffer *ring, const struct fd_tile *tile) assert_dt
++{
++   const struct fd_gmem_stateobj *gmem = batch->gmem_state;
++   if (!util_dynarray_num_elements(&batch->fbread_slots, struct fd_fbread_slot))
++      return;
++   uint64_t pitch = gmem->bin_w * gmem->cbuf_cpp[0];
++   uint64_t base = (batch->ctx->screen->gmem_base + gmem->cbuf_base[0] - tile->yoff * pitch -
++                    tile->xoff * (uint64_t)gmem->cbuf_cpp[0]) & ((1ull << 49) - 1);
++   util_dynarray_foreach (&batch->fbread_slots, struct fd_fbread_slot, slot) {
++      OUT_PKT7(ring, CP_MEM_WRITE, 4);
++      OUT_RELOC(ring, slot->bo, slot->offset + 16, 0, 0);
++      OUT_RING(ring, (uint32_t)base);
++      OUT_RING(ring, (slot->map[5] & ~A5XX_TEX_CONST_5_BASE_HI__MASK) |
++                        A5XX_TEX_CONST_5_BASE_HI((uint32_t)(base >> 32)));
++   }
++   OUT_PKT7(ring, CP_WAIT_MEM_WRITES, 0);
++   OUT_PKT7(ring, CP_WAIT_FOR_ME, 0);
++   fd5_cache_flush(batch, ring);      /* nothing may hold the last bin's descriptor */
 +}
 +
  static void
  emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
           struct pipe_surface *bufs, const struct fd_gmem_stateobj *gmem)
-@@ -383,6 +442,7 @@ fd5_emit_tile_init(struct fd_batch *batch) assert_dt
+@@ -383,6 +456,7 @@ fd5_emit_tile_init(struct fd_batch *batch) assert_dt
     struct pipe_framebuffer_state *pfb = &batch->framebuffer;
  
     sg_emit(batch, ring, 0);   /* task 24 stage 3: GPU time of the whole pass */
-+   fd5_fbread_gmem(batch);
++   fbread_gmem_init(batch);
     fd5_emit_restore(batch, ring);
  
     if (batch->prologue)
-@@ -708,6 +768,7 @@ fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
+@@ -482,6 +556,8 @@ fd5_emit_tile_prep(struct fd_batch *batch, const struct fd_tile *tile) assert_dt
+ 
+    OUT_PKT4(ring, REG_A5XX_RB_WINDOW_OFFSET, 1);
+    OUT_RING(ring, A5XX_RB_WINDOW_OFFSET_X(x1) | A5XX_RB_WINDOW_OFFSET_Y(y1));
++
++   fbread_gmem_bin(batch, ring, tile);
+ }
+ 
+ /*
+@@ -699,6 +775,7 @@ fd5_emit_tile_fini(struct fd_batch *batch) assert_dt
+    fd5_cache_flush(batch, ring);
+    fd5_set_render_mode(batch->ctx, ring, BYPASS);
+    sg_emit(batch, ring, 4);
++   util_dynarray_clear(&batch->fbread_slots);
+ }
+ 
+ static void
+@@ -708,6 +785,7 @@ fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
     struct fd_ringbuffer *ring = batch->gmem;
  
     sg_emit(batch, ring, 0);
-+   util_dynarray_clear(&batch->fb_read_patches);   /* 0013: views stay in memory */
++   util_dynarray_clear(&batch->fbread_slots);   /* 0013: the slots stay views of memory */
     fd5_emit_restore(batch, ring);
  
     fd5_emit_lrz_flush(batch, ring);
-@@ -1030,7 +1091,7 @@ sg_decide(struct fd5_sweet_gmem *s, struct fd_batch *b, const struct sg_key *k,
+@@ -1030,7 +1108,7 @@ sg_decide(struct fd5_sweet_gmem *s, struct fd_batch *b, const struct sg_key *k,
            bool *measure) assert_dt
  {
     *measure = false;
@@ -205,11 +335,59 @@ index eb074c6..151812d 100644
        return SG_BARRIER;
     if (!sg_eligible(b))
        return SG_INELIGIBLE;
+@@ -1063,6 +1141,13 @@ sg_decide(struct fd5_sweet_gmem *s, struct fd_batch *b, const struct sg_key *k,
+    if (commit) {
+       SWEET_EVENT(SPE_GMEM_T_SYS_US, e->t[0] * 1000 / 19200);   /* microseconds */
+       SWEET_EVENT(SPE_GMEM_T_GMEM_US, e->t[1] * 1000 / 19200);
++      uint64_t lo = MIN2(e->t[0], e->t[1]) * 1000 / 19200;
++      SWEET_EVENT(SPE_GMEM_T_MIN_US, lo);
++      if (b->a5xx_fbread) {
++         SWEET_EVENT(SPE_GMEM_FB_DECISIONS, 1);
++         SWEET_EVENT(SPE_GMEM_FB_T_SYS_US, e->t[0] * 1000 / 19200);
++         SWEET_EVENT(SPE_GMEM_FB_T_MIN_US, lo);
++      }
+    }
+    return gmem ? SG_GMEM : SG_COST;
+ }
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch.c b/src/gallium/drivers/freedreno/freedreno_batch.c
+index e2dbec0..bf2f192 100644
+--- a/src/gallium/drivers/freedreno/freedreno_batch.c
++++ b/src/gallium/drivers/freedreno/freedreno_batch.c
+@@ -124,6 +124,7 @@ fd_batch_create(struct fd_context *ctx, bool nondraw)
+ 
+    batch->draw_patches = UTIL_DYNARRAY_INIT;
+    batch->fb_read_patches = UTIL_DYNARRAY_INIT;
++   batch->fbread_slots = UTIL_DYNARRAY_INIT;
+ 
+    if (is_a2xx(ctx->screen)) {
+       batch->shader_patches = UTIL_DYNARRAY_INIT;
+@@ -295,6 +296,7 @@ __fd_batch_destroy_locked(struct fd_batch *batch)
+ 
+    util_dynarray_fini(&batch->draw_patches);
+    util_dynarray_fini(&(batch->fb_read_patches));
++   util_dynarray_fini(&batch->fbread_slots);
+ 
+    if (is_a2xx(batch->ctx->screen)) {
+       util_dynarray_fini(&batch->shader_patches);
 diff --git a/src/gallium/drivers/freedreno/freedreno_batch.h b/src/gallium/drivers/freedreno/freedreno_batch.h
-index 4f99c05..dc65b6a 100644
+index 4f99c05..4f73c5a 100644
 --- a/src/gallium/drivers/freedreno/freedreno_batch.h
 +++ b/src/gallium/drivers/freedreno/freedreno_batch.h
-@@ -115,6 +115,7 @@ struct fd_batch {
+@@ -77,6 +77,13 @@ struct fd_batch_subpass {
+  * ringbuffers used for binning, draw, and gmem cmds, list of associated
+  * fd_resource-s, etc.
+  */
++/* 0013: one indirectly loaded texture descriptor (12 dwords at map) */
++struct fd_fbread_slot {
++   struct fd_bo *bo;          /* held by the batch's submit through its relocs */
++   uint32_t offset;
++   uint32_t *map;
++};
++
+ struct fd_batch {
+    struct pipe_reference reference;
+    unsigned seqno;
+@@ -115,6 +122,7 @@ struct fd_batch {
     bool flushed : 1;
     bool tessellation : 1; /* tessellation used in batch */
     bool a5xx_sysmem_barrier : 1; /* draw IB contains a bypass-only barrier */
@@ -217,24 +395,72 @@ index 4f99c05..dc65b6a 100644
     /* task 24 stage 3: retained feedback barriers, draws before the first, sample slot + 1 */
     uint16_t sweet_fb_barriers, sweet_fb_pre;
     uint32_t sweet_meas;
+@@ -201,6 +209,11 @@ struct fd_batch {
+    /* texture state that needs patching for fb_read: */
+    struct util_dynarray fb_read_patches;
+ 
++   /* a5xx GMEM framebuffer read (0013): struct fd_fbread_slot, descriptors
++    * the draw IB loads indirectly and the bin prologue rebases per bin
++    */
++   struct util_dynarray fbread_slots;
++
+    /* Keep track of writes to RB_RENDER_CONTROL which need to be patched
+     * once we know whether or not to use GMEM, and GMEM tile pitch.
+     *
 diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
-index 9d603cc..a54fc90 100644
+index 9d603cc..6c3beee 100644
 --- a/src/gallium/drivers/freedreno/freedreno_gmem.c
 +++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
-@@ -935,9 +935,21 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+@@ -81,6 +81,7 @@ struct gmem_key {
+    uint8_t nr_cbufs;
+    uint8_t cbuf_cpp[MAX_RENDER_TARGETS];
+    uint8_t zsbuf_cpp[2];
++   uint8_t strips; /* 0013: one column of full-width bins starting at x 0 */
+ };
+ 
+ static uint32_t
+@@ -217,6 +218,15 @@ calc_nbins(struct gmem_key *key, struct fd_gmem_stateobj *gmem)
+                    key->height);
+    }
+ 
++   /* 0013: a5xx GMEM framebuffer read rebases its view per bin row only */
++   if (key->strips && util_align_npot(key->width, screen->info->tile_align_w) <= max_width) {
++      while (div_align(key->height, nbins_y, screen->info->tile_align_h) > max_height)
++         nbins_y++;
++      while (!layout_gmem(key, 1, nbins_y, gmem))
++         nbins_y++;
++      return;
++   }
++
+    /* first, find a bin size that satisfies the maximum width/
+     * height restrictions:
+     */
+@@ -525,6 +535,11 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
+       key->width = scissor->maxx + 1 - key->minx;
+       key->height = scissor->maxy + 1 - key->miny;
+    }
++   if (batch->a5xx_fbread) {
++      key->strips = 1;
++      key->width += key->minx;
++      key->minx = 0;
++   }
+ 
+    if (is_a20x(screen) && batch->cleared) {
+       /* under normal circumstances the requirement would be 4K
+@@ -935,9 +950,21 @@ fd_gmem_render_tiles(struct fd_batch *batch)
        sysmem = true;
     }
  
 -   /* A retained a5xx feedback barrier reads system memory, never GMEM. */
 -   if (batch->a5xx_sysmem_barrier)
 +   /* A retained a5xx feedback barrier reads system memory, never GMEM, unless
-+    * its reads can be pointed at the tile (0013: one bin at the origin).
++    * its reads can be pointed at the tile (0013: one column of bins).
 +    */
 +   if (batch->a5xx_sysmem_barrier && !batch->a5xx_fbread)
        sysmem = true;
 +   if (!sysmem && !batch->nondraw && batch->a5xx_fbread) {
 +      struct fd_gmem_stateobj *g = lookup_gmem_state(batch, false, false);
-+      if (g->nbins_x * g->nbins_y != 1 || g->minx || g->miny) {
++      if (g->nbins_x != 1 || g->minx) {
 +         sysmem = true;
 +         SWEET_EVENT(SPE_FBREAD_SYS_BINS, 1);
 +      }
@@ -246,10 +472,18 @@ index 9d603cc..a54fc90 100644
     fd_bt_batch(batch, batch->nondraw ? "select-nondraw" : sysmem ? "select-sysmem" : "select-gmem", NULL, NULL, FD_DBG(SYSMEM));
     fd_reset_wfi(batch);
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
-index fd7d546..85fdb5e 100644
+index fd7d546..62683be 100644
 --- a/src/gallium/frontends/sweetgl/sweetca.c
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -1779,8 +1779,32 @@ draw_prep(struct sca_ctx *c)
+@@ -49,6 +49,7 @@
+ #include <mach/vm_page_size.h>
+ #include <CoreFoundation/CoreFoundation.h>
+ #include <dispatch/dispatch.h>
++#include <dlfcn.h>
+ #include <IOSurface/IOSurfaceRef.h>
+ 
+ #include <GLES3/gl31.h>
+@@ -1779,8 +1780,32 @@ draw_prep(struct sca_ctx *c)
            * across program switches, relinks, arrays and uniform-unit changes.
            * Keep the barrier for any active feedback, including non-fetch reads.
            */
@@ -283,12 +517,67 @@ index fd7d546..85fdb5e 100644
           if (needed || !active_barriers) {
              SWEET_SCOPE(sp_barrier, SP_PREP_BARRIER);
              sgl_texture_barrier();
+@@ -2738,15 +2763,54 @@ wait_for_gpu(void)
+    sca_log("sweetca: no SweetGPU service after 90 s");
+ }
+ 
++/* Test settings without boot-arg room (the boot command line holds 607 bytes):
++ * NAME=VALUE lines in "<this library's path>.env", e.g. /usr/local/bin/fbr.dylib.env,
++ * become environment variables before anything reads them (constructor 101 runs
++ * before the profile's); variables already set (sweetenv) win. A library under
++ * the production path never has such a file unless someone puts one there.
++ */
++static char envfile_path[1024];
++static unsigned envfile_vars;
++
++__attribute__((constructor(101))) static void
++envfile_load(void)
++{
++   Dl_info info;
++   if (!dladdr((void *)envfile_load, &info) || !info.dli_fname)
++      return;
++   snprintf(envfile_path, sizeof(envfile_path), "%s.env", info.dli_fname);
++   FILE *f = fopen(envfile_path, "r");
++   if (!f)
++      return;
++   char line[256];
++   while (fgets(line, sizeof(line), f)) {
++      line[strcspn(line, "\r\n")] = 0;
++      char *eq = strchr(line, '=');
++      if (line[0] == '#' || !eq || eq == line)
++         continue;
++      *eq = 0;
++      setenv(line, eq + 1, 0);
++      envfile_vars++;
++   }
++   fclose(f);
++}
++
+ static struct sgl_display *
+ display(void)
+ {
+    pthread_mutex_lock(&dpy_lock);
+    if (!dpy) {
+       wait_for_gpu();
++      if (envfile_vars)
++         sca_log("sweetca: %u settings from %s", envfile_vars, envfile_path);
+       /* before the screen: render straight to memory, no GMEM tiles (their restore and
+        * resolve overran unpadded IOSurfaces on the Pixel), and no fp16 lowering of mediump */
+       setenv("FD_MESA_DEBUG", "sysmem,nofp16", 0);
++      /* 0013: GMEM framebuffer read needs the per-batch GMEM rule and retained barriers */
++      if (getenv("SWEETCA_GMEM_FBREAD") && atoi(getenv("SWEETCA_GMEM_FBREAD")) > 0) {
++         setenv("SWEETCA_GMEM", "1", 0);
++         setenv("SWEETCA_SYS_BARRIER", "2", 0);
++      }
+       setenv("IR3_SHADER_DEBUG", "nofp16", 0);
+       dpy = sgl_display_create();
+    }
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_fbread_test.inc b/src/gallium/frontends/sweetgl/sweetgpu_fbread_test.inc
 new file mode 100644
-index 0000000..3d0e741
+index 0000000..424d2c1
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_fbread_test.inc
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,219 @@
 +/* SPDX-License-Identifier: MIT
 + * Patch 0013 probe: framebuffer feedback read from the GMEM tile.
 + *
@@ -305,8 +594,10 @@ index 0000000..3d0e741
 + *   restore: pattern in one batch, then (no clear) a batch of a second
 + *            pattern draw and the swap fetch: GMEM restored from memory first.
 + *
-+ * Targets are GL allocations whose rows are a multiple of 64 pixels (the GMEM
-+ * pitch rule); the 512x512 one needs several bins and must stay in sysmem.
++ * Targets: GL allocations whose rows are a multiple of 64 pixels (the GMEM
++ * pitch rule), one bin and several (fbread batches get one column of
++ * full-width bins), and BGRA IOSurfaces like CoreAnimation's 828x1792 frame
++ * (3328-byte rows). Wider than 1024 pixels cannot be one column: sysmem.
 + * Which mode a batch took is in stderr ("gmem fbread batch", gmem decisions).
 + */
 +static const char fbr_vs[] = "attribute vec2 pos; void main() {gl_Position=vec4(pos,0.,1.);}";
@@ -389,14 +680,33 @@ index 0000000..3d0e741
 +}
 +
 +static bool
-+fbread_target(GLuint pattern, GLuint swap, GLuint rot, unsigned w, unsigned h)
++fbread_target(struct sgl_context *ctx, GLuint pattern, GLuint swap, GLuint rot, unsigned w, unsigned h, int bpr)
 +{
 +   GLuint tex, fbo;
 +   char name[96];
 +   bool ok = true;
++   IOSurfaceRef surface = NULL;
 +   glGenTextures(1, &tex);
 +   glBindTexture(GL_TEXTURE_2D, tex);
-+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++   if (bpr > 0) {
++      CFMutableDictionaryRef props = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
++                                                               &kCFTypeDictionaryValueCallBacks);
++      dict_set_u32(props, kIOSurfaceWidth, w);
++      dict_set_u32(props, kIOSurfaceHeight, h);
++      dict_set_u32(props, kIOSurfaceBytesPerElement, 4);
++      dict_set_u32(props, kIOSurfacePixelFormat, SGL_IOSURFACE_BGRA);
++      dict_set_u32(props, kIOSurfaceBytesPerRow, bpr);
++      surface = IOSurfaceCreate(props);
++      CFRelease(props);
++      if (!surface || !sgl_tex_image_iosurface(ctx, GL_TEXTURE_2D, IOSurfaceGetID(surface), w, h,
++                                               IOSurfaceGetBytesPerRow(surface), SGL_IOSURFACE_BGRA)) {
++         printf("FAIL: fbread %ux%u BGRA IOSurface\n", w, h);
++         ok = false;
++         goto out;
++      }
++   } else {
++      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++   }
 +   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 +   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 +   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -417,7 +727,7 @@ index 0000000..3d0e741
 +   glClear(GL_COLOR_BUFFER_BIT);
 +   fbr_draw(pattern);
 +   fbr_fetch(swap, tex, w, h);
-+   snprintf(name, sizeof(name), "fbread %ux%u swap", w, h);
++   snprintf(name, sizeof(name), "fbread %ux%u%s swap", w, h, bpr > 0 ? " BGRA" : "");
 +   ok &= fbr_check(name, w, h, 0);
 +
 +   fprintf(stderr, "sweetgl-test: fbread %ux%u chain\n", w, h);
@@ -429,7 +739,7 @@ index 0000000..3d0e741
 +   glScissor(w / 4, h / 4, w / 2, h / 2);
 +   fbr_fetch(rot, tex, w, h);
 +   glDisable(GL_SCISSOR_TEST);
-+   snprintf(name, sizeof(name), "fbread %ux%u chain", w, h);
++   snprintf(name, sizeof(name), "fbread %ux%u%s chain", w, h, bpr > 0 ? " BGRA" : "");
 +   ok &= fbr_check(name, w, h, 1);
 +
 +   fprintf(stderr, "sweetgl-test: fbread %ux%u restore\n", w, h);
@@ -438,18 +748,21 @@ index 0000000..3d0e741
 +   glFinish();                       /* the next batch has no clear: GMEM is restored */
 +   fbr_draw(pattern);
 +   fbr_fetch(swap, tex, w, h);
-+   snprintf(name, sizeof(name), "fbread %ux%u restore", w, h);
++   snprintf(name, sizeof(name), "fbread %ux%u%s restore", w, h, bpr > 0 ? " BGRA" : "");
 +   ok &= fbr_check(name, w, h, 0);
 +
 +out:
 +   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 +   glDeleteFramebuffers(1, &fbo);
 +   glDeleteTextures(1, &tex);
++   glFinish();
++   if (surface)
++      CFRelease(surface);
 +   return ok;
 +}
 +
 +static bool
-+fbread(void)
++fbread(struct sgl_context *ctx)
 +{
 +   GLuint pattern = program(fbr_vs, fbr_pattern_fs);
 +   GLuint swap = program(fbr_vs, fbr_swap_fs);
@@ -468,10 +781,13 @@ index 0000000..3d0e741
 +   glDisable(GL_STENCIL_TEST);
 +   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 +
-+   static const unsigned sizes[][2] = { { 64, 64 }, { 256, 256 }, { 192, 128 }, { 512, 512 } };
++   /* one bin; one column of several bins; CoreAnimation's frame as GL and as BGRA IOSurface; too wide */
++   static const int sizes[][3] = { { 64, 64, -1 }, { 256, 256, -1 }, { 192, 128, -1 }, { 512, 512, -1 },
++                                   { 832, 512, -1 }, { 832, 1792, -1 }, { 828, 1792, 3328 },
++                                   { 64, 64, 256 }, { 1125, 600, 4608 } };
 +   bool ok = true;
 +   for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++)
-+      ok &= fbread_target(pattern, swap, rot, sizes[i][0], sizes[i][1]);
++      ok &= fbread_target(ctx, pattern, swap, rot, sizes[i][0], sizes[i][1], sizes[i][2]);
 +
 +   glDisableVertexAttribArray(0);
 +   glUseProgram(0);
@@ -482,7 +798,7 @@ index 0000000..3d0e741
 +   return ok;
 +}
 diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
-index 172acc7..268a17c 100644
+index 172acc7..387a0eb 100644
 --- a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 +++ b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
 @@ -539,6 +539,7 @@ iosurface_texture(struct sgl_context *ctx)
@@ -532,7 +848,7 @@ index 172acc7..268a17c 100644
 +#ifdef __APPLE__
 +   if (fbread_only) {
 +      printf("step: fbread (feedback reads from the GMEM tile)\n");
-+      ok &= fbread();
++      ok &= fbread(ctx);
 +      steps++;
 +      goto done;
 +   }
@@ -555,7 +871,7 @@ index 172acc7..268a17c 100644
     }
 +   if (fbread_on) {
 +      printf("step: fbread (feedback reads from the GMEM tile)\n");
-+      ok &= fbread();
++      ok &= fbread(ctx);
 +      steps++;
 +   }
 +done:
@@ -563,10 +879,10 @@ index 172acc7..268a17c 100644
     printf("%u steps in %.1f ms\n", steps, (os_time_get_nano() - t0) / 1e6);
  
 diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
-index 148980b..17431c4 100644
+index 148980b..f20d657 100644
 --- a/src/util/sweet_profile.h
 +++ b/src/util/sweet_profile.h
-@@ -37,6 +37,10 @@ enum sweet_profile_event {
+@@ -37,6 +37,12 @@ enum sweet_profile_event {
     SPE_GMEM_SELECT, SPE_GMEM_SPLIT, SPE_GMEM_SYS_BARRIER, SPE_GMEM_SYS_INELIGIBLE,
     SPE_GMEM_SYS_UNSAFE, SPE_GMEM_SYS_NOHIST, SPE_GMEM_SYS_COST, SPE_GMEM_MEASURED,
     SPE_GMEM_T_SYS_US, SPE_GMEM_T_GMEM_US, SPE_GMEM_SYS_ONE_DRAW,
@@ -574,6 +890,8 @@ index 148980b..17431c4 100644
 +    * and batches whose feedback reads were pointed at GMEM (fd5) */
 +   SPE_FEEDBACK_FETCH, SPE_FEEDBACK_SELFREAD, SPE_FEEDBACK_BOTH,
 +   SPE_FBREAD_GMEM, SPE_FBREAD_SYS_BINS,
++   /* per committed GMEM decision with history: the faster mode's time, and both for fbread batches */
++   SPE_GMEM_T_MIN_US, SPE_GMEM_FB_DECISIONS, SPE_GMEM_FB_T_SYS_US, SPE_GMEM_FB_T_MIN_US,
     SPE_COUNT
  };
  

@@ -1,3 +1,16 @@
+### 2026-10-31 00:25: GMEM framebuffer read multi-tile works on real CA frames, but GMEM does not pay; stopped, 0013 off
+
+Report jasmine/PERF-GMEM-FBREAD-20261030.md ("Multi-tile and real frames"). 0013 now: fbread batches get one column of
+full-width bins (28 x 832x64 at 828x1792); the target's views load indirectly from a slot whose base each bin prologue
+rewrites (gmem_base + cbuf_base - yoff * pitch, 49-bit wrap: works). gltest fbr4: 28/28 exact incl. 828x1792 BGRA
+IOSurface, --fbread 112/112; tile-mode-0 control breaks every multi-tile target (real GMEM reads). CA boots (temporary
+j0118, lib /usr/local/bin/fbr5.dylib + settings file <lib>.env, new in 0013): screens identical A vs B, 0 faults. GPU ms
+per frame A -> B: Home 14.85 -> 15.5, CC 17.1 -> 19.5-20.8. fbr7 counters (EMA times per decision): ideal per-batch
+choice would save only 1.2 ms Home / 2.3 ms CC (all-GMEM 16.3 / 30.9 vs all-sysmem 11.8 / 16.7); the timed rule's
+exploration loses more. Home is also render-CPU bound. **GMEM work stopped; 0013 stays in the series, default off.**
+Phone: charging shell, 77 %, production lib bf5328c0 unchanged, nothing flashed; test files /usr/local/bin/fbr5.dylib,
+fbr.dylib, sweetgpu_gltest-fbr4.
+
 ### 2026-10-30 23:40: GMEM framebuffer read works on the Adreno 512 (probe); every CA feedback barrier is a fetch; patch 0013 default off
 
 Report jasmine/PERF-GMEM-FBREAD-20261030.md. Question from the ios-apollo comparison: stage 3 lost because every feedback

@@ -1,4 +1,9 @@
-# GMEM framebuffer read: feedback draws can read the tile (2026-10-30)
+# GMEM framebuffer read: feedback draws can read the tile (2026-10-30/31)
+
+**Bottom line (2026-10-31 00:25): the route works on real CoreAnimation frames, pixel-correct, but GMEM does not
+pay on this GPU. With an ideal per-batch choice it would save 1.2 ms (Home) / 2.3 ms (Control Center) of GPU per
+frame; the timed rule as built loses 0.6 / 2.4 ms instead. Keep it off; not installed.** Details in
+"Multi-tile and real frames" at the end.
 
 Follow-up to [GMEM stage 3](PERF-GMEM-STAGE3-20261028.md), which ended with "no global uplift". Stage 3's
 blocker: every batch with a feedback draw (a draw that samples its own render target) had to stay in
@@ -59,7 +64,7 @@ baseline `--sysbarrier-wide` 85/85. No SMMU fault, panic or hang in any boot.
   `feedback-both` (DRAWPROF), and the first 16 programs with a non-fetch self-read are logged.
 - fd5 (`SWEETCA_GMEM_FBREAD=1`): a retained barrier (0008) no longer forces sysmem; views of the batch's
   target emitted in its draw IB are recorded and, if the batch renders through GMEM, rewritten in
-  `fd5_emit_tile_init()` to the tile (base, pitch, TILE5_2, swizzle). **One bin at the origin only**:
+  `fd5_emit_tile_init()` to the tile (base, pitch, TILE5_2, swizzle). **First version: one bin at the origin only** (superseded on 2026-10-31 by multi-tile, below):
   shader coordinates are absolute, the tile's are the bin's, so `fd_gmem_render_tiles()` keeps
   multi-bin fbread batches in sysmem (`fbread-sys-bins`). `SWEETCA_GMEM_FBREAD_TILE` for tests.
 - gltest `--fbread` / `--fbread-only`: the probe above.
@@ -89,3 +94,63 @@ gltest 75bcb55f...). Round scripts `research/fbread/session{1,2,3}.sh` + logs; g
 `shim/out/shim-boot-j0118-fbr1.img`: slot b args + `SWEETCA_DRAWPROF=1`, lib `/usr/local/bin/fbr.dylib`,
 `B_DROP="keepsyms=1 panicwait=60"` for cmdline room). Phone files left under test names:
 `/usr/local/bin/fbr.dylib` (fbr1 libsweetca, inert), `/usr/local/bin/sweetgpu_gltest-fbr3`.
+
+## Multi-tile and real frames (2026-10-31)
+
+**Addressing.** fbread batches (a retained barrier with `SWEETCA_GMEM_FBREAD`) get one column of full-width bins
+(`gmem_key.strips`, minx 0; 828x1792 -> 28 bins of 832x64), so a bin is only rows `yoff..`. Each view of the target is
+loaded a second time, indirectly (`CP_LOAD_STATE4` `SS4_INDIRECT`), from a 64-byte slot in a per-context upload buffer
+(`emit_fbread_slots`, deduplicated per batch). Sysmem batches leave the slot as the memory view. GMEM batches get
+the tile view in the slot (TILE5_2, bin pitch, swizzle), and every bin prologue writes the slot's base
+`gmem_base + cbuf_base - yoff * pitch` (49-bit, wrapping below zero) with `CP_MEM_WRITE`, then `CP_WAIT_MEM_WRITES`,
+`CP_WAIT_FOR_ME` and a UCHE invalidate. Wider than 1024 px (tile_max_w) cannot be one column: sysmem.
+`SWEETCA_GMEM_FBREAD=1` now also sets `SWEETCA_GMEM=1` and `SWEETCA_SYS_BARRIER=2` in libsweetca. Test settings can
+come from `<library path>.env` (NAME=VALUE lines, read by a constructor; sweetenv wins), for lack of cmdline room.
+
+**Correctness.** gltest (VM build fbr4) `--fbread-only`, TC and no-TC: 28/28, every pixel exact, on 832x512,
+832x1792, 828x1792 BGRA IOSurface (CoreAnimation's frame), 512x512 and the single-bin sizes; the 1125x600 BGRA target
+falls back to sysmem as designed. Full `--fbread` 112/112. Control with `SWEETCA_GMEM_FBREAD_TILE=0`: every
+multi-tile target 99.8-99.9 % wrong (so they really read GMEM), 1125x600 still 0 wrong (sysmem). The negative-base
+wrap works. Real frames (boot B below): Home and Control Center screen dumps match boot A (labels, icons,
+materials, blur); 0 SMMU faults, panics or hangs in all boots.
+
+**Performance.** Temporary j0118 boots, same library twice (`/usr/local/bin/fbr5.dylib`, settings file), GPUPROF +
+DRAWPROF, `tools/g2/gpwork.py` gestures, `research/fbread/abprof.py` (first/last window dropped):
+
+| GPU ms per frame | Home | Control Center |
+| --- | ---: | ---: |
+| A: switch off (fbr5) | 14.85 | 17.08 |
+| B: `SWEETCA_GMEM_FBREAD=1` (fbr5) | 15.52 | 20.76 |
+| B again (fbr7, ideal-choice counters) | 15.45 | 19.48 |
+
+GL flush interval: Home 22.4 -> 21.6-22.4 ms, CC 29.7 -> 30.7-31.7 ms. Batches per frame 55.8 -> 18.5 (Home),
+101.8 -> 56.5 (CC), as in stage 2.
+
+Per committed decision with history (fbr7 counters, the timed rule's EMA times of the same batch kind):
+
+| Per frame | Home | CC |
+| --- | ---: | ---: |
+| decisions (of them GMEM) | 14.2 (2.8) | 41.9 (12.8) |
+| all in sysmem | 11.82 ms | 16.74 ms |
+| all in GMEM | 16.32 ms | 30.91 ms |
+| ideal (faster mode each) | 10.62 ms | 14.47 ms |
+| fbread batches: sysmem -> ideal | 5.60 -> 4.95 ms (4.5 decisions) | 9.52 -> 8.30 ms (16.2) |
+
+Reading:
+- GMEM loses for most batch kinds: restore + resolve of the frame (~12 MB at 828x1792) costs as much as their draws,
+  and fetch-heavy batches pay a barrier per fetch per bin (28 bins). Some kinds win: the main BGRA composite (6 draws,
+  one fetch) 3.8 ms in GMEM against 4.4-6.1 ms in sysmem.
+- The ceiling of the whole route is the "ideal" row: -1.2 ms Home, -2.3 ms CC of GPU per frame, before exploration.
+  The timed rule pays more than that in exploration and retries, because CA's batch kinds (draw count, cost) change
+  with every animation frame.
+- Home frames are also render-thread CPU bound (~16 ms, [bottleneck report](PERF-BOTTLENECK-20261029.md)), so even
+  the ideal 1.2 ms of GPU would barely show as frame rate.
+
+**Recommendation: stop GMEM work here.** Patch 0013 stays in the series, default off (the barrier classification
+counters and the gltest probe are useful). If GMEM is ever revisited: a static rule for the main composite only
+(no exploration), and fewer per-bin barriers for fetches that do not overlap earlier draws.
+
+Builds: `xnu/out-mesa-fbr4` (multi-tile gltest), `-fbr5` (A/B library), `-fbr7` (ideal-choice counters).
+Rounds: `research/fbread/session4.sh`-`session7.sh`, logs `logs/netlog-fbr4.txt`, `logs/netlog-fbr6-{A,B}.txt`,
+`logs/netlog-fbr7-B.txt`, screen dumps `research/fbread/fbr6-{A,B}-{home,cc}.*.png`. Phone files (test names):
+`/usr/local/bin/fbr5.dylib` (fbr7 library), `fbr.dylib`, `sweetgpu_gltest-fbr4`; settings file removed.
