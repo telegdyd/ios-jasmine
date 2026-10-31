@@ -1,3 +1,20 @@
+### 2026-10-31 19:29: Metal step 2 rounding milestone PASS; narrow SSBO still pending
+
+User authorized continuing until step 2 done. New focused Gallium/NIR compute probe (0020 target,
+mesa/darwin/sweetgpu_ir3test.c) built on local VM. Baseline metal-s2base2: default uint/int->float32
+92/1024 bytes wrong; explicit RTNE/RTZ and negative-offset shape PASS. Patch 0021 ports Chlorophyll
+ir3-round-default unchanged: metal-s2round2 all four probes PASS, 0 wrong. First harness attempt
+used unhandled local-invocation-index intrinsic, sweetd killed before dispatch; corrected to ID.x.
+Round candidate GL: 85 PASS default, 86 with --glthread; fbread-only: 27 pixel comparisons + glthread
+and final PASS (29 PASS lines). Earlier commentary said 112 fbread cases; actual round is 27, all exact.
+Temporary fastboot boot shim/out/shim-boot-j0120on-metal-s2round.img (backboardd /usr/local/bin/m2r.dylib,
+SpringBoard /s.dylib as installed). UI 19:27:58-19:28:34 PASS; Home screenshot visually intact; console
+0 SMMU/panic, ticket errors, SpringBoard crashes. Logs/scripts/readbacks research/metal-step2/.
+No production replacement or flash. Phone still temporary rounding boot, charging 70%, 39.3 C.
+Shift patch unnecessary: rewrite absent in 26.2.5 + GPU negative-offset PASS. NEXT narrow patch:
+a5xx LDGB/STGB emit TYPE_U32 unconditionally; widen via NIR + atomic partial stores, then GPU/GL/UI.
+Report mesa/METAL-STEP2.md. This rounding milestone committed before narrow work (see git log).
+
 ### 2026-10-31 19:15: Metal first phone step: ARM64 frontend + GLES/UI baseline PASS
 
 User now authorized phone access, requested ONE step then report. Report mesa/METAL-DEVICE-BASELINE.md.

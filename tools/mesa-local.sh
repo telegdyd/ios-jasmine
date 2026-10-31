@@ -60,6 +60,7 @@ mesa)
 	# Compile its AIR frontend against our patched Mesa instead.
 	mkdir -p "$ROOT/stage/src/compiler/air"
 	rsync -a --delete "$TREE/mesa/metal/air/" "$ROOT/stage/src/compiler/air/"
+	cp "$TREE/mesa/darwin/sweetgpu_ir3test.c" "$ROOT/stage/src/gallium/drivers/freedreno/"
 	mkdir -p "$ROOT/mesa-src"
 	rsync -rlpc --delete --exclude=/build --exclude=/build-host "$ROOT/stage/" "$ROOT/mesa-src/"
 	cd "$ROOT/mesa-src"
@@ -77,7 +78,7 @@ mesa)
 			{ tail -40 "$ROOT/setup.log"; tail -80 build/meson-logs/meson-log.txt 2>/dev/null; exit 1; }
 		printf '%s' "$stamp" > build/.topaz-setup
 	fi
-	ninja -C build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest src/gallium/frontends/sweetgl/sweetgpu_gltest src/gallium/frontends/sweetgl/libsweetca.dylib > "$ROOT/build.log" 2>&1 || {
+	ninja -C build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest src/gallium/drivers/freedreno/sweetgpu_ir3test src/gallium/frontends/sweetgl/sweetgpu_gltest src/gallium/frontends/sweetgl/libsweetca.dylib > "$ROOT/build.log" 2>&1 || {
 		tail -100 "$ROOT/build.log"
 		exit 1
 	}
@@ -88,6 +89,8 @@ mesa)
 	test -f build/src/gallium/frontends/sweetgl/libsweetca.dylib
 	cp build/src/gallium/drivers/freedreno/sweetgpu_fdtest "$OUT/"
 	codesign -f -s - --entitlements "$TREE/ios/entitlements.plist" "$OUT/sweetgpu_fdtest"
+	cp build/src/gallium/drivers/freedreno/sweetgpu_ir3test "$OUT/"
+	codesign -f -s - --entitlements "$TREE/ios/entitlements.plist" "$OUT/sweetgpu_ir3test"
 	cp build/src/gallium/frontends/sweetgl/sweetgpu_gltest "$OUT/"
 	codesign -f -s - --entitlements "$TREE/ios/entitlements.plist" "$OUT/sweetgpu_gltest"
 	# libsweetca (EAGL on sweetgl for CoreAnimation) and its test; the test is Objective-C, so clang builds it here
