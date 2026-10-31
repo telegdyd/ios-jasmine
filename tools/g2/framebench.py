@@ -154,7 +154,8 @@ def parse_snapshot(text):
 
 
 class Run:
-    def __init__(self, client, out, duration):
+    def __init__(self, client, out, duration, sample_b=False):
+        self.sample_b = sample_b
         self.client, self.out = client, out
         self.deadline = time.monotonic() + duration
         self.next_snapshot = 0
@@ -241,7 +242,7 @@ class Run:
         self.gesture('key 3 1; key 3 0', .5)
         self.rest(2)
         for n in (5, 6, 7, 8):
-            self.phase(n, 4000 if n in (5, 6) else 0)
+            self.phase(n, 4000 if n in (5, 6) or self.sample_b else 0)
             self.home() if n in (5, 7) else self.control()
             self.command('key 3 1; key 3 0')
             self.rest(.4)
@@ -306,7 +307,7 @@ def collect(a):
                 if reply != 'OK bench started':
                     raise RuntimeError(reply)
                 started = True
-                run = Run(client, out, duration - 2)
+                run = Run(client, out, duration - 2, a.sample_b)
                 run.manual(a.seconds) if a.manual else run.standard()
                 manifest['status'] = 'captured'
             except (OSError, ValueError, RuntimeError, KeyboardInterrupt) as exc:
@@ -907,6 +908,7 @@ def parser():
     run.add_argument('--manual', action='store_true')
     run.add_argument('--seconds', type=int, default=45)
     run.add_argument('--export-timeout', type=float, default=45)
+    run.add_argument('--sample-b', action='store_true', help='CPU-sample home-b and control-b too (4 s each)')
     report = sub.add_parser('report')
     report.add_argument('out', type=Path)
     cpu = sub.add_parser('_cpu', help=argparse.SUPPRESS)

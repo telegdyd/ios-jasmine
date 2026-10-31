@@ -1,0 +1,199 @@
+diff --git a/bsd/dev/redwood_net.c b/bsd/dev/redwood_net.c
+--- a/bsd/dev/redwood_net.c
++++ b/bsd/dev/redwood_net.c
+@@ -269,13 +269,17 @@
+ }
+ 
+ /* The interface's own thread: for a link that wants to be asked, and for the minute's line in the log. */
++extern void sweet_poll_thread_to_e(bool *on_e);     /* osfmk/kern/sched_prim.c, j0120 */
++
+ static void
+ net_thread(__unused void *parameter, __unused wait_result_t result)
+ {
+ 	uint64_t said = 0, total;
+ 	unsigned quiet = 0;
++	bool on_e = false;
+ 
+ 	for (unsigned tick = 1;; tick++) {
++		sweet_poll_thread_to_e(&on_e);
+ 		quiet = net_link->poll != NULL && net_link->poll() ? 0 : quiet + 1;
+ 		/* about once a minute, if anything has moved since */
+ 		total = net_count.sent + net_count.received + net_count.dropped_out + net_count.dropped_in;
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -226,13 +226,17 @@
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
++extern void sweet_poll_thread_to_e(bool *on_e);     /* osfmk/kern/sched_prim.c, j0120 */
++
+ static void
+ pmic_keys_thread(void *arg, wait_result_t result)
+ {
+ 	unsigned errors = 0;
++	bool on_e = false;
+ 	(void)arg;
+ 	(void)result;
+ 	for (;;) {
++		sweet_poll_thread_to_e(&on_e);
+ 		for (unsigned k = 0; k < pmic_nkeys; k++) {
+ 			struct pmic_key *key = &pmic_keys[k];
+ 			uint32_t v = 0;
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1292,11 +1292,17 @@
+ 	}
+ }
+ 
++extern void sweet_poll_thread_to_e(bool *on_e);     /* osfmk/kern/sched_prim.c, j0120 */
++extern int sweet_poll_e;
++extern int sweet_console_muted;                     /* osfmk/console/serial_console.c */
++
+ static void
+ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+ 	uint32_t ticks = 0;
++	bool on_e = false;
+ 	for (;;) {
++		sweet_poll_thread_to_e(&on_e);
+ 		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
+ 		if (count) {
+ 			ud_sync(UD_EVT, UD_EVT_SIZE);
+@@ -1510,7 +1516,9 @@
+ 			ls = NULL;
+ 		}
+ 	}
++	bool on_e = false;
+ 	for (;;) {
++		sweet_poll_thread_to_e(&on_e);
+ 		socket_t cs = NULL;
+ 		if (sock_accept(ls, NULL, 0, 0, NULL, NULL, &cs) != 0 || cs == NULL) {
+ 			ud_sleep_ms(500);
+@@ -1893,7 +1901,9 @@
+ 			ls = NULL;
+ 		}
+ 	}
++	bool on_e = false;
+ 	for (;;) {
++		sweet_poll_thread_to_e(&on_e);
+ 		socket_t cs = NULL;
+ 		if (sock_accept(ls, NULL, 0, 0, NULL, NULL, &cs) != 0 || cs == NULL) {
+ 			ud_sleep_ms(500);
+@@ -1944,6 +1954,13 @@
+ 		}
+ 		const char *reply = reboot ? "rebooting\n" : vcycle ? "VBUS session off in 1 s for the time asked\n" : "?\n";
+ 		const char *prof = binary_header != NULL ? binary_header : reboot ? NULL : sweet_prof_cmd(line);
++		if (prof == NULL && !reboot && (strcmp(line, "pollE 0") == 0 || strcmp(line, "pollE 1") == 0)) {
++			sweet_poll_e = line[6] - '0';           /* j0120: the polling threads follow on their next poll */
++			prof = sweet_poll_e ? "OK polling threads to the E cluster\n" : "OK polling threads unbound\n";
++		} else if (prof == NULL && !reboot && (strcmp(line, "fbcon 0") == 0 || strcmp(line, "fbcon 1") == 0)) {
++			sweet_console_muted = line[6] == '0';   /* j0120: kernel console drawn into the boot framebuffer or not */
++			prof = sweet_console_muted ? "OK console no longer drawn\n" : "OK console drawn\n";
++		}
+ 		if (prof == NULL && !reboot) {
+ 			prof = sweet_gpu_cmd(line);
+ 		}
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -7318,6 +7318,8 @@
+ static volatile uint32_t *mss_mk, *mss_sk;
+ static volatile bool mss_up, mss_stopping;
+ 
++extern "C" void sweet_poll_thread_to_e(bool *on_e);     /* osfmk/kern/sched_prim.c, j0120 */
++
+ static void
+ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ {
+@@ -7337,7 +7339,9 @@
+ 		ipa_out = smp2p_add_out(out, "ipa", 0);
+ 	}
+ 	bool glink = false;
++	bool on_e = false;
+ 	for (unsigned ms = 0; seconds == 0 || ms < seconds * 1000; ms++) {
++		sweet_poll_thread_to_e(&on_e);
+ 		if (mss_stopping) {
+ 			break;                          /* topaz_modem_stop: the reboot takes it from here */
+ 		}
+diff --git a/osfmk/arm64/sweet_prof.c b/osfmk/arm64/sweet_prof.c
+--- a/osfmk/arm64/sweet_prof.c
++++ b/osfmk/arm64/sweet_prof.c
+@@ -512,6 +512,8 @@
+ 	sp_meta_printf("end\n");
+ }
+ 
++extern void sweet_thread_to_e(bool *on_e, bool force);   /* osfmk/kern/sched_prim.c, j0120 */
++
+ static void
+ sp_census_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+@@ -536,7 +538,10 @@
+ 	lck_mtx_unlock(&tasks_threads_lock);
+ 	bzero(sp_cache, sizeof(sp_cache));
+ 
++	bool on_e = false;
+ 	for (uint64_t now = mach_absolute_time(); now < sp_end && sp_on; now = mach_absolute_time()) {
++		/* j0120: on Silver, so the census does not preempt the Gold threads it then counts as runnable */
++		sweet_thread_to_e(&on_e, true);
+ 		if (sp_bench && now - bc_last_memory >= sp_period * 500) {
+ 			for (unsigned i = 0; i < nt; i++) { task_deallocate(targets[i]); }
+ 			nt = 0;
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -8712,6 +8712,53 @@
+ #endif /* __AMP__ */
+ }
+ 
++/*
++ * jasmine (j0120, task 19): the port's polling kernel threads (modem watch and USB device at 1 ms, the live log,
++ * the command port, the Wi-Fi net poll, the PMIC keys) are kernel threads, so they prefer the Gold (P) cluster
++ * and preempt the UI there (~70 ms/s of Gold CPU during Control Center motion) while Silver idles.
++ * sweet_poll_e = 1 (boot-arg sweetpollE=1, or "pollE 1" on the command port) soft-binds each of them to the
++ * E cluster on its next poll (soft: it still runs on Gold when no Silver CPU is available); 0 unbinds them.
++ * Default off. force: always on the E cluster (the profiler's census thread, a measurement thread).
++ */
++int sweet_poll_e = -1;
++void sweet_poll_thread_to_e(bool *on_e);
++void sweet_thread_to_e(bool *on_e, bool force);
++
++void
++sweet_thread_to_e(bool *on_e, bool force)
++{
++	if (sweet_poll_e < 0) {
++		uint32_t v = 0;
++		(void)PE_parse_boot_argn("sweetpollE", &v, sizeof(v));
++		sweet_poll_e = v != 0;
++	}
++	bool want = force || sweet_poll_e > 0;
++	if (want == *on_e) {
++		return;
++	}
++#if __AMP__
++	if (want) {
++		processor_set_t e = pset0.pset_cluster_type == PSET_AMP_E ? &pset0 :
++		    (pset_node1.psets != PROCESSOR_SET_NULL && pset_node1.pset_cluster_type == PSET_AMP_E ? pset_node1.psets : PROCESSOR_SET_NULL);
++		if (e == PROCESSOR_SET_NULL || os_atomic_load(&e->online_processor_count, relaxed) == 0) {
++			return;         /* Silver not up yet: ask again on the next poll */
++		}
++	}
++	*on_e = want;
++	thread_bind_cluster_type(current_thread(), want ? 'E' : '-', want);
++	printf("SWEET POLL: thread %llu %s, now on cpu %d\n", thread_tid(current_thread()),
++	    want ? "soft-bound to the E cluster" : "unbound", cpu_number());
++#else
++	*on_e = want;
++#endif /* __AMP__ */
++}
++
++void
++sweet_poll_thread_to_e(bool *on_e)
++{
++	sweet_thread_to_e(on_e, false);
++}
++
+ extern uint32_t thread_bound_cluster_id(thread_t thread);
+ uint32_t
+ thread_bound_cluster_id(thread_t thread)

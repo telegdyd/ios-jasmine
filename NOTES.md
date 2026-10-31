@@ -1,3 +1,22 @@
+### 2026-10-31 18:55: task 19: SpringBoard's frame time is genuine UIKit work + three port costs (fixes default off, not installed)
+
+Report jasmine/PERF-TASK19-SPRINGBOARD.md. Installed capture research/ab/t19-cap1 (17:26, new framebench `--sample-b`): SpringBoard
+main 12.7 ms/Home frame (57.7/s), 9.8/CC frame, ~19 in the slowest CC quartile (render thread then 66 % busy, waiting for it);
+~95 % genuine UIKit/ControlCenterUI/CA work on Gold at 2208. Port costs: (1) polling kernel threads (modem watch, USB device, command
+port, live log, net poll, PMIC keys) on Gold ~70 ms/s -> kernel j0120 (xnu/patches/j0120-jasmine-poll-threads-on-silver.patch, VM build
+xnu/out-jasmine-j0120, `sweetpollE=1` or `pollE 1|0` on the command port, default off; census thread always on Silver; `fbcon 0|1`
+mutes the console drawing). Two same-boot ABBA sets (research/t19/abba.sh, 17:38 and 17:50): Home +6 %/+5 % (pollers alone give it),
+CC A +7 %/+0.5 %, CC B +8 %/+5 %, Spotlight within spread, Gold load -150..200 ms/s, 0 faults. (2) Home-icon parallax starts CoreMotion,
+which retries the missing 0xff0c accelerometer/gyro, logs a FAULT ("[CLIoHidInterface] Could not set all properties after too many
+retries"), and each fault makes libtrace run all SpringBoard state-capture handlers (0.25-1.3 s CPU, partly main thread; from the 2nd
+framebench run of a boot on). ios/sweet_sbshape.c: /usr/local/bin/sbs-noparallax -> motion effects unsupported (build: tools/vm-mesa.sh ios
+TAG -> sweet_sbshape.dylib; xnu/out-ios-t19). research/t19/mtest.sh (image shim/out/shim-boot-j0120-t19m.img, SpringBoard loads /t.dylib):
+dumps 0 of 3 runs vs 2 of 3; frame-rate gain not provable (boot spread Home 43-58). (3) console drawn into the unseen boot framebuffer
+~14 ms/s CPU: `fbcon 0`, no frame gain. Earlier "SpringBoard runnable 4-5 ms/frame" was the census thread preempting it (real: ~1.2).
+Follow-up for task 2: dvfs_worker's PMIC read-back costs ~27 ms/s on Gold. **Phone:** charging shell ~66 %; installed boot_b j0119on,
+production lib bb3a7a9e and /s.dylib unchanged; side files /t.dylib (new sbshape), /usr/local/bin/sbs-noparallax removed.
+**Next:** user's OK -> j0120 with `pollE` default on (slot-b image, flash boot_b), new /s.dylib + sbs-noparallax; plain-reboot check.
+
 ### 2026-10-31: Metal offline host compiler + real iOS 16 shader corpus (NO phone access)
 
 Report mesa/METAL-OFFLINE.md. Chlorophyll 0e2de69bc3fe39fff0ac8a1e322eb33546256b73 pushed to
