@@ -70,9 +70,38 @@ private -> private). `rwa_texture_copy` now sends renderable same-format 2D copi
 output and compute 11/11 unchanged. Not investigated: why the 2D blitter writes nothing (Mesa fd5 vs our kernel);
 `resource_copy_region` remains for compressed/other copies.
 
+## Rounds 7-14: corner boxes, flicker and tearing (user checked the panel each round)
+
+A/B switches no longer need a new image: the injector reads `KEY=VALUE` lines from `/private/var/tmp/bgmtl-bb.env`
+(a temporary file on the phone) and sets them before the device exists. Image `shim-boot-j0120on-metal-s7tk.img`
+(`research/metal-step7/mkimg-mtl.sh`): sweetenv only inserts the injector with `BGMTL_ENABLE=1`, plus
+`sweetgpu_tickets=1`; `BGMTL_BB=1` and `BGMTL_DEFER_SCHEDULED=1` come from the env file.
+
+| Round | Change | Panel (user) |
+| --- | --- | --- |
+| r6 | shadow + 3D-engine copies | camera button a square box, CC platters missing, widget corners octagonal; flashing |
+| r7 | `FD_MESA_DEBUG=inorder` | same: not the a6xx barrier/reorder race |
+| r8 | `BGMTL_SYNC=1` | same: not CPU/GPU buffer reuse |
+| r9 | `RWA_TEX_POOL=0 RWA_LINEAR_SAMPLED=0 RWA_CB_DELTA=0` | **boxes and flicker gone**; motion "twitchy", tearing |
+| r10-r12 | `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1`; `CA_FORCE_TRIPLE_BUFFERING` (not an iOS 16 variable, no effect); `CA_DISABLE_LOW_LATENCY=1` (5 framebuffers, no change) | still tearing |
+| r13 | `BGMTL_SHADOW=0` | black band back |
+| r14 | **render tickets** (`metal-s7k`) | **"fixed, no tearing"** |
+
+Which of r9's three switches fixed the boxes is not known yet (all three still off).
+
+**Tearing, measured.** framebench (r12): frames flip in order, no drops (1159 admitted/flipped), 26-34 swaps/s in
+motion (GL t19: 40-47). Kernel GPU jobs touched the surface on the panel in 47-88 % of Metal frames (GL ~6 %),
+a median 0.5 ms after that surface was flipped: CA hands a framebuffer to the display (SwapEnd) without waiting for
+the GPU (Apple's display waits on the GPU itself), and the present queue only waits for jobs already submitted.
+**Fix:** Chlorophyll opens a kernel render ticket (j0110, as libsweetca mode 2) for every IOSurface a render pass
+draws into, when the pass is encoded, and seals it with the command buffer's submit seqno at commit (abort if never
+committed); the presenter shows the surface only once sealed and passed. r14 kernel: tickets begin/seal/abort
+614/613/0, 0 stale/error/timeout, **0 jobs into a held surface, guard q/s/r 0/0/0** (was 79/282/0), 0 faults.
+
 ## Open (next)
 
-- The user's look at the panel on r6 (captures clean). Whether `BGMTL_DEFER_SCHEDULED` is still needed with shadows.
+- Bisect r9's three switches (two of them are speed). Whether `BGMTL_DEFER_SCHEDULED` and the shadow copy are still
+  needed with tickets (both cost frame time). Move the needed switches from the env file into the code/image.
 - Cost of the shadow copy (6 MB per frame) and of the deferral: frame times vs GLES not measured yet.
 - One ASTC_4x4 no-copy texture refresh computes its row as 832 bytes for 828 texels (texel rows instead of block
   rows) in `bgmtl.m` `rwaTexture` (`_ncLength / height`): refused (23 times in r6).

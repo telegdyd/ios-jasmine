@@ -1,3 +1,12 @@
+### 2026-10-31 23:10: Metal step 7: lock/home/CC through Metal, no flicker, no tearing (user confirmed)
+
+Report mesa/METAL-STEP7.md "Rounds 7-14". Tearing cause measured: CA swaps before the GPU drew the frame; fix =
+kernel render tickets from Chlorophyll (open at pass encode, seal at commit). Boxes/flicker fixed by
+RWA_TEX_POOL=0 RWA_LINEAR_SAMPLED=0 RWA_CB_DELTA=0 together (culprit not bisected). Switches live in the TEMPORARY
+phone file /private/var/tmp/bgmtl-bb.env (read by the injector) plus image shim/out/shim-boot-j0120on-metal-s7tk.img
+(sweetgpu_tickets=1). VM metal-s7k. **Phone:** on the temporary s7tk boot; plain reboot = installed GL boot_b.
+NEXT: bisect the three switches, try without DEFER_SCHEDULED/shadow, frame times vs GLES (r12: 26-34 swaps/s vs 40-47).
+
 ### 2026-10-31 22:30: Metal step 7: lock screen through Metal CLEAN (flicker fixed), not yet confirmed by user
 
 Report mesa/METAL-STEP7.md (rounds r4-r6). User saw black areas rolling down the panel on r3/r4. Fixes: compositor
