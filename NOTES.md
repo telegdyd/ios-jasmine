@@ -1,3 +1,36 @@
+### 2026-10-31: Metal STEP 5 COMPLETE; phone parked, no production install
+
+Report mesa/METAL-STEP5.md. Chlorophyll 288d410 pushed origin/adreno5xx;
+parent implementation 45fa4fc. Local VM metal-s5final3 PASS (no CI): signed
+arm64/iOS16 libbgmtl + standalone probes. Two complete final device rounds:
+compute 11 PASS/0 FAIL (20x65536 exact stress each); quad cases all whole;
+render 25 PASS/0 FAIL. Read/sample/write textures, triangle, nearest/inline/
+linear/high-slot quads, depth pass. Two-target feedback after 3 draws:
+5624/5624 channel values exact. IOSurface 37x19/256 pitch, 12 CPU->GPU->CPU
+pattern/clear rounds per final run: zero wrong, no explicit surface sync.
+a5xx VS SSBO caps are zero: read-only device buffers lower to bounded UBOs;
+1 MiB buffer explicitly refused with 65536-byte-limit error, status5. SweetGPU
+wrapper now propagates refused draws (upstream silently skipped with success).
+Screen-derived registry b512, dims512x512x64 (512 total/pipeline), shared32768;
+format-aware linear BGRA256/RGBA32F1024 alignment. a5xx shared image/SSBO budget
+checked; feedback reserves tex/sampler12..15, single-sample2D only. SweetGPU
+skips Bergamota's resource-pin import cache. Earlier s5c CPU test-process crash
+(missing NIR insertion cursor) fixed in s5d; all later positive probes pass.
+Final console WINDOW after final3 upload: zero SMMU/panic/ticket/SpringBoard
+or test-process crashes. Logger replays old s5c crash before this window;
+research/metal-step5/final-window-console.txt + counts.json preserve boundary.
+Built libsweetca 1441c96d... byte-identical to Step4/Step2 candidate: no shared
+Mesa edits, no new GLES/UI candidate round required. Production readback bb3a7a9e
+unchanged; boot_b j0120on and /s.dylib unchanged. Temporary fastboot boot only;
+side files /usr/local/bin, no registration/production replacement/root install.
+Artifacts xnu/out-mesa-metal-s5final3; raw logs/scripts research/metal-step5/.
+Phone parked temporary charge-shell.img: 73%, Charging; lock released.
+STOP before Step6. Next authorized task would be iOS16 test-process registration/
+injection using MTLCreateSystemDefaultDevice. Root bundle/plist or installed
+boot/renderer changes still need separate approval. No compositor/performance
+claim; overlapping primitives within one fetching draw, large VS device buffers,
+real CA half shaders and sustained multi-device/resource stress remain untested.
+
 ### 2026-10-31: Metal STEP 4 compute COMPLETE; no production install
 
 User authorized step 4. Report mesa/METAL-STEP4.md. Chlorophyll 6eee3f0 pushed

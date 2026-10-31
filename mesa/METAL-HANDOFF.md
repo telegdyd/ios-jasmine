@@ -16,6 +16,18 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 2. Where things stand (2026-10-31)
 
+**Step 5 complete:** [METAL-STEP5.md](METAL-STEP5.md).
+User authorized Step5. Chlorophyll `288d410`, parent implementation `45fa4fc`;
+VM `metal-s5final3` PASS. Two final phone rounds: compute 11 PASS/0 FAIL,
+quad cases whole, render 25 PASS/0 FAIL including two-attachment feedback,
+12 repeated IOSurface CPU/GPU visibility rounds and explicit oversized-VS
+buffer refusal. Queried a512 limits, bounded read-only VS SSBO->UBO lowering,
+texture feedback + a5xx barrier; no shared Mesa or production changes.
+Phone parked charging shell: 73%, Charging. STOP before Step6 registration/
+injection; no root bundle/plist/installed boot/renderer installation authorized.
+See report for tested limits and remaining compositor gaps. Earlier stop-at-
+Step4/Step2 instructions below are historical.
+
 **Step 4 complete:** [METAL-STEP4.md](METAL-STEP4.md).
 Chlorophyll `6eee3f0` pushed; final VM `metal-s4final2` links/signs libbgair
 and bgair_test. Four device runs of AIR add/copy/groupsum give exact results,
