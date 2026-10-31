@@ -1,8 +1,8 @@
-From 2178356b4e69dde391c04cace163b8ca2e56f5b1 Mon Sep 17 00:00:00 2001
+From ae1e1244e1cb53b9eac5ee9f08fd0aa191cf4687 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Sat, 31 Oct 2026 01:14:57 +0100
-Subject: [PATCH] sweetgl: glthread for CoreAnimation's contexts
- (SWEETCA_GLTHREAD=1, default off)
+Subject: [PATCH] sweetgl: glthread for CoreAnimation's contexts (default on,
+ SWEETCA_GLTHREAD=0 off)
 
 Task 26 (jasmine/PERF-TASK26-GLTHREAD.md): Mesa's glthread records CA's GL
 calls on backboardd's render thread and runs Mesa's frontend (st/mesa
@@ -20,7 +20,8 @@ validation, state atoms, vertex uploads) on a worker thread per context.
   order on the worker; drains, make-current and the Mesa sampler read wait
   for the worker first. Wrapper fences (sgl_fence_*) avoid glthread's waits
   at glFenceSync/glClientWaitSync. set_background_context hook.
-- libsweetca: SWEETCA_GLTHREAD=1 enables it per context at creation; the
+- libsweetca: enables it per context at creation (SWEETCA_GLTHREAD=0:
+  off); the
   per-draw Mesa reads are answered from the wrapper's own state (sampler2D
   units per program, MIN_FILTER per texture, texture names), GL error
   captures that would wait are skipped where the wrapper can vouch for the
@@ -31,7 +32,7 @@ validation, state atoms, vertex uploads) on a worker thread per context.
 ---
  .../drivers/freedreno/freedreno_resource.c    |  15 +-
  .../drivers/freedreno/freedreno_screen.c      |   5 +
- src/gallium/frontends/sweetgl/sweetca.c       | 342 ++++++++++++++++--
+ src/gallium/frontends/sweetgl/sweetca.c       | 343 ++++++++++++++++--
  src/gallium/frontends/sweetgl/sweetgl.c       | 338 ++++++++++++++++-
  src/gallium/frontends/sweetgl/sweetgl.h       |  32 ++
  .../frontends/sweetgl/sweetgl_tickets.inc     |  25 +-
@@ -39,7 +40,7 @@ validation, state atoms, vertex uploads) on a worker thread per context.
  src/mesa/glapi/glapi/gen/gl_API.xml           |   7 +
  src/mesa/glapi/glapi/gen/static_data.py       |   1 +
  src/mesa/main/errors.c                        |   7 +
- 10 files changed, 739 insertions(+), 49 deletions(-)
+ 10 files changed, 740 insertions(+), 49 deletions(-)
 
 diff --git a/src/gallium/drivers/freedreno/freedreno_resource.c b/src/gallium/drivers/freedreno/freedreno_resource.c
 index 6910a8c..719a960 100644
@@ -98,22 +99,23 @@ index f3bf3b6..c8c3f77 100644
  
     /* Supported features (boolean caps). */
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
-index 62683be..e929642 100644
+index 62683be..476c7cd 100644
 --- a/src/gallium/frontends/sweetgl/sweetca.c
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -28,6 +28,11 @@
+@@ -28,6 +28,12 @@
   *
   * Environment: SWEETCA_TRACE=1 logs GL errors after each call (and eats them),
   * the first call of each slot and every shader that fails to compile.
-+ * SWEETCA_GLTHREAD=1 runs Mesa's GL frontend on a worker thread per context
-+ * (Mesa's glthread; jasmine/PERF-TASK26-GLTHREAD.md): the wrapper then answers
-+ * what it can from its own state instead of querying Mesa. With it,
++ * Mesa's GL frontend runs on a worker thread per context (Mesa's glthread;
++ * jasmine/PERF-TASK26-GLTHREAD.md; SWEETCA_GLTHREAD=0 turns it off): the
++ * wrapper then answers what it can from its own state instead of querying
++ * Mesa. With it,
 + * SWEETCA_GLTHREAD_ASYNC_ERRORS=1 answers glGetError from errors the worker
 + * has collected (reported in order, but up to a frame late) instead of waiting.
   */
  
  #include <objc/NSObjCRuntime.h>
-@@ -167,11 +172,26 @@ report_send(void)
+@@ -167,11 +173,26 @@ report_send(void)
  #define OBJ_RECT 1   /* fragment shader with a sampler2DRect */
  #define OBJ_FBFETCH 2 /* fragment shader reading gl_LastFragData */
  
@@ -140,11 +142,11 @@ index 62683be..e929642 100644
  };
  
  /* CA reads {rctx, disp[]} from getMacroContextPrivate: rctx first, then the table */
-@@ -208,6 +228,11 @@ struct sca_ctx {
+@@ -208,6 +229,11 @@ struct sca_ctx {
     IOSurfaceRef ticket_frame_surface[32];
     uint32_t ticket_gl_errors; /* preserve error flags inspected while replacing import storage */
     struct sca_pass_trace *pass_trace; /* allocated only for opt-in task-23 diagnostics */
-+   bool glthread;                      /* SWEETCA_GLTHREAD: Mesa's glthread runs this context */
++   bool glthread;                      /* Mesa's glthread runs this context (SWEETCA_GLTHREAD=0: off) */
 +   bool async_errors;                  /* SWEETCA_GLTHREAD_ASYNC_ERRORS: glGetError from async_err */
 +   unsigned async_err;                 /* GL error bits the worker collected (atomic) */
 +   uint8_t tex_minf[TEXMAX];           /* glthread: MIN_FILTER set: 0 never, 1 NEAREST/LINEAR, 2 other */
@@ -152,7 +154,7 @@ index 62683be..e929642 100644
  };
  
  static void copy_forget(struct sca_ctx *c, GLuint tex);
-@@ -269,20 +294,27 @@ void darwin_prof_report(void (*log)(const char *fmt, ...));
+@@ -269,20 +295,27 @@ void darwin_prof_report(void (*log)(const char *fmt, ...));
  struct prof_mark {
     const char *fn;
     uint64_t t0, s0;
@@ -181,7 +183,7 @@ index 62683be..e929642 100644
     if (--prof_depth == 0)
        prof_gl_ticks += dt;
     unsigned h = (unsigned)(((uintptr_t)m->fn >> 3) % PROF_SLOTS);
-@@ -292,6 +324,7 @@ prof_end(struct prof_mark *m)
+@@ -292,6 +325,7 @@ prof_end(struct prof_mark *m)
           prof[h].calls++;
           prof[h].ticks += dt;
           prof[h].submits += ds;
@@ -189,7 +191,7 @@ index 62683be..e929642 100644
           return;
        }
     }
-@@ -304,7 +337,11 @@ prof_end(struct prof_mark *m)
+@@ -304,7 +338,11 @@ prof_end(struct prof_mark *m)
     prof_depth++;                                                                  \
     struct sca_ctx *c = (struct sca_ctx *)(r);                                     \
     if (__builtin_expect(cur != c, 0))                                             \
@@ -202,7 +204,7 @@ index 62683be..e929642 100644
  
  static void
  post(int slot)
-@@ -384,7 +421,6 @@ WV(513, DisableVertexAttribArray, (GLuint i), (i))
+@@ -384,7 +422,6 @@ WV(513, DisableVertexAttribArray, (GLuint i), (i))
  WV(598, AttachShader, (GLuint p, GLuint s), (p, s))
  WV(602, Uniform1f, (GLint l, GLfloat a), (l, a))
  WV(605, Uniform4f, (GLint l, GLfloat a, GLfloat b, GLfloat cc, GLfloat d), (l, a, b, cc, d))
@@ -210,7 +212,7 @@ index 62683be..e929642 100644
  WV(603, Uniform2f, (GLint l, GLfloat a, GLfloat b), (l, a, b))
  WV(604, Uniform3f, (GLint l, GLfloat a, GLfloat b, GLfloat cc), (l, a, b, cc))
  WV(607, Uniform2i, (GLint l, GLint a, GLint b), (l, a, b))
-@@ -392,7 +428,6 @@ WV(608, Uniform3i, (GLint l, GLint a, GLint b, GLint cc), (l, a, b, cc))
+@@ -392,7 +429,6 @@ WV(608, Uniform3i, (GLint l, GLint a, GLint b, GLint cc), (l, a, b, cc))
  WV(609, Uniform4i, (GLint l, GLint a, GLint b, GLint cc, GLint d), (l, a, b, cc, d))
  WV(610, Uniform1fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
  WV(611, Uniform2fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
@@ -218,7 +220,7 @@ index 62683be..e929642 100644
  WV(615, Uniform2iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
  WV(616, Uniform3iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
  WV(617, Uniform4iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
-@@ -404,9 +439,108 @@ WV(620, UniformMatrix4fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v), (
+@@ -404,9 +440,108 @@ WV(620, UniformMatrix4fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v), (
  WR(625, GLint, GetUniformLocation, (GLuint p, const GLchar *name), (p, name))
  WV(630, BindAttribLocation, (GLuint p, GLuint i, const GLchar *name), (p, i, name))
  WV(674, GenFramebuffers, (GLsizei n, GLuint *f), (n, f))
@@ -330,7 +332,7 @@ index 62683be..e929642 100644
  
  static GLenum
  w_GetError(void *rctx)
-@@ -417,6 +551,16 @@ w_GetError(void *rctx)
+@@ -417,6 +552,16 @@ w_GetError(void *rctx)
        c->ticket_gl_errors &= ~(1u << bit);
        return GL_INVALID_ENUM + bit;
     }
@@ -347,7 +349,7 @@ index 62683be..e929642 100644
     return glGetError();
  }
  
-@@ -542,14 +686,38 @@ prof_report(double wall_ms)
+@@ -542,14 +687,38 @@ prof_report(double wall_ms)
           break;
        shown[best] = 1;
     }
@@ -389,27 +391,27 @@ index 62683be..e929642 100644
  /* every 100 flushes (CA flushes once per frame): wall time, time in glFinish, draws */
  static void
  flush_stats(double wait_ms)
-@@ -575,6 +743,8 @@ flush_stats(double wait_ms)
+@@ -575,6 +744,8 @@ flush_stats(double wait_ms)
  static int pipeline_mode = -1;
  static bool pipeline_tickets;
  static bool sync_flush; /* SWEETCA_SYNC_FLUSH=1: mode 2 drains the driver thread at w_Flush (comparison) */
-+static bool glthread_requested; /* SWEETCA_GLTHREAD=1 */
++static bool glthread_requested; /* default on; SWEETCA_GLTHREAD=0 turns it off */
 +static bool glthread_async_errors; /* SWEETCA_GLTHREAD_ASYNC_ERRORS=1 */
  static unsigned pipeline_errors, pipeline_slow;
  static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
  
-@@ -586,6 +756,10 @@ pipeline_init(void)
+@@ -586,6 +757,10 @@ pipeline_init(void)
     pipeline_tickets = pipeline_mode == 2;
     v = getenv("SWEETCA_SYNC_FLUSH");
     sync_flush = v && !strcmp(v, "1");
 +   v = getenv("SWEETCA_GLTHREAD");
-+   glthread_requested = v && !strcmp(v, "1");
++   glthread_requested = !(v && !strcmp(v, "0"));
 +   v = getenv("SWEETCA_GLTHREAD_ASYNC_ERRORS");
 +   glthread_async_errors = v && !strcmp(v, "1");
  }
  
  static bool
-@@ -825,6 +999,12 @@ w_Flush(void *rctx)
+@@ -825,6 +1000,12 @@ w_Flush(void *rctx)
        c->ticket_surface_count = 0;
     }
     sgl_trace_frame_end(c->gl, c->frame);
@@ -422,7 +424,7 @@ index 62683be..e929642 100644
     flush_stats(now_ms() - t);
     if (trace_on && traced++ < 20)
        trace_fb("flush");
-@@ -1117,6 +1297,8 @@ w_BindTexture(void *rctx, GLenum target, GLuint tex)
+@@ -1117,6 +1298,8 @@ w_BindTexture(void *rctx, GLenum target, GLuint tex)
     } else {
        glBindTexture(target, tex);
     }
@@ -431,7 +433,7 @@ index 62683be..e929642 100644
     POST(5);
  }
  
-@@ -1142,6 +1324,7 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
+@@ -1142,6 +1325,7 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
              c->ticket_version[tex[i]] = 0; /* a reused GL name is a fresh object */
           c->tex_w[tex[i]] = c->tex_h[tex[i]] = 0;
           c->tex_swizzled[tex[i]] = 0;
@@ -439,7 +441,7 @@ index 62683be..e929642 100644
        }
        for (int f = 0; f < FBOMAX; f++) {
           if (c->fbo_tex[f] == tex[i])
-@@ -1152,11 +1335,22 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
+@@ -1152,11 +1336,22 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
     POST(59);
  }
  
@@ -463,7 +465,7 @@ index 62683be..e929642 100644
     POST(304);
  }
  
-@@ -1164,7 +1358,9 @@ static void
+@@ -1164,7 +1359,9 @@ static void
  w_TexParameterf(void *rctx, GLenum target, GLenum pname, GLfloat param)
  {
     CUR(rctx);
@@ -474,7 +476,7 @@ index 62683be..e929642 100644
     POST(302);
  }
  
-@@ -1325,12 +1521,16 @@ w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum text
+@@ -1325,12 +1522,16 @@ w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum text
                         GLint level)
  {
     CUR(rctx);
@@ -493,7 +495,7 @@ index 62683be..e929642 100644
        c->ticket_fbo_bad[c->fbo] = 1;
     if (attachment == GL_COLOR_ATTACHMENT0 && c->fbo > 0 && c->fbo < FBOMAX &&
         (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
-@@ -1338,7 +1538,7 @@ w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum text
+@@ -1338,7 +1539,7 @@ w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum text
     glFramebufferTexture2D(target, attachment,
                            textarget == GL_TEXTURE_RECTANGLE_ARB ? GL_TEXTURE_2D : textarget, tex,
                            level);
@@ -502,7 +504,7 @@ index 62683be..e929642 100644
         (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
        c->ticket_fbo_bad[c->fbo] = 1;
     POST(677);
-@@ -1654,6 +1854,49 @@ w_CompileShader2(void *rctx, GLuint shader)
+@@ -1654,6 +1855,49 @@ w_CompileShader2(void *rctx, GLuint shader)
     POST(596);
  }
  
@@ -552,7 +554,7 @@ index 62683be..e929642 100644
  static void
  w_LinkProgram(void *rctx, GLuint program)
  {
-@@ -1675,6 +1918,8 @@ w_LinkProgram(void *rctx, GLuint program)
+@@ -1675,6 +1919,8 @@ w_LinkProgram(void *rctx, GLuint program)
        GLuint shaders[8];
        GLsizei n = 0;
        glGetAttachedShaders(program, 8, &n, shaders);
@@ -561,7 +563,7 @@ index 62683be..e929642 100644
        p->flags = 0;
        p->rect_sampler_loc = p->rect_scale_loc = p->fb_sampler_loc = p->fb_scale_loc = -1;
        for (GLsizei i = 0; i < n; i++) {
-@@ -1725,6 +1970,40 @@ texel_scale(struct sca_ctx *c, GLuint tex, GLint loc)
+@@ -1725,6 +1971,40 @@ texel_scale(struct sca_ctx *c, GLuint tex, GLint loc)
   * renders into (CA reads the destination that way; Apple's GPUs return what
   * memory held when the pass began).
   */
@@ -602,7 +604,7 @@ index 62683be..e929642 100644
  static void
  draw_prep(struct sca_ctx *c)
  {
-@@ -1733,7 +2012,7 @@ draw_prep(struct sca_ctx *c)
+@@ -1733,7 +2013,7 @@ draw_prep(struct sca_ctx *c)
     int runit = -1;
     if (p && (p->flags & OBJ_RECT)) {
        GLint unit = 0;
@@ -611,7 +613,7 @@ index 62683be..e929642 100644
           SWEET_SCOPE(sp_query, SP_PREP_QUERY);
           glGetUniformiv(c->program, p->rect_sampler_loc, &unit);
        }
-@@ -1760,10 +2039,13 @@ draw_prep(struct sca_ctx *c)
+@@ -1760,10 +2040,13 @@ draw_prep(struct sca_ctx *c)
           glActiveTexture(GL_TEXTURE0 + c->fbfetch_unit);
           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
           glActiveTexture(GL_TEXTURE0 + c->active);
@@ -625,7 +627,7 @@ index 62683be..e929642 100644
        }
        if (p->fb_scale_loc >= 0)
           texel_scale(c, fbtex, p->fb_scale_loc);
-@@ -1780,7 +2062,7 @@ draw_prep(struct sca_ctx *c)
+@@ -1780,7 +2063,7 @@ draw_prep(struct sca_ctx *c)
            * across program switches, relinks, arrays and uniform-unit changes.
            * Keep the barrier for any active feedback, including non-fetch reads.
            */
@@ -634,7 +636,7 @@ index 62683be..e929642 100644
           bool needed = read != 0;
           SWEET_EVENT(needed ? SPE_BARRIER_NEEDED : SPE_BARRIER_SKIPPED, 1);
           if (needed) {
-@@ -2678,11 +2960,13 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
+@@ -2678,11 +2961,13 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
      * GPU takes it in place there when the start is 64-byte aligned (texture bases
      * need 32, render targets more); our mapping of it begins at the page */
     size_t offset = (uintptr_t)IOSurfaceGetBaseAddress(s) & vm_page_mask;
@@ -650,7 +652,7 @@ index 62683be..e929642 100644
        done = false;
     if (!done && format) {
        /* the copy is uploaded as GL_ALPHA / GL_LUMINANCE(_ALPHA) itself: the swizzle
-@@ -2712,9 +2996,16 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
+@@ -2712,9 +2997,16 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
      * which it does not always do (Apple's are complete as they are; the same cause
      * as step 2's black corners). CA's own TexParameter calls come later and win. */
     GLint minf = 0;
@@ -669,7 +671,7 @@ index 62683be..e929642 100644
     if (trace_on && logged++ < 80)
        sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, flip %d)", why,
                IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, flip);
-@@ -2940,6 +3231,15 @@ make_ctx(id self, NSUInteger api)
+@@ -2940,6 +3232,15 @@ make_ctx(id self, NSUInteger api)
     c->eagl = self;
     c->api = (unsigned)api;
     c->gl = gl;

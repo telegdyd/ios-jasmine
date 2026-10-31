@@ -30,9 +30,11 @@ Two ways were considered:
   `InternalSweetCallbackMESA(fn, data)` (GLintptr args, so the generator marshals it asynchronously).
   Through the current dispatch it is queued with glthread on and called inline with glthread off.
 
-Switch: `SWEETCA_GLTHREAD=1` (read once by libsweetca, applied to every context it creates, at creation:
+Switch: `SWEETCA_GLTHREAD` (read once by libsweetca, applied to every context it creates, at creation:
 glthread must see every call from the start, its VAO/binding tracking cannot be started mid-life).
-Default off: with it off no code path changes (every new branch tests the per-context flag).
+Default on since the install (2026-10-31 13:16); `SWEETCA_GLTHREAD=0` turns it off, and then no code path
+changes (every new branch tests the per-context flag). The measurements below were taken while it was
+opt-in (`=1`).
 
 ## Inventory: what the wrapper does on the hot path that a deferred thread cannot answer
 
@@ -115,7 +117,8 @@ Patch `mesa/patches/0014-sweetgl-glthread.patch` (freedreno cap + thread-safe tr
 callback function, sweetgl, libsweetca, `sweetgpu_gltest --glthread`). Switches, read by libsweetca (boot
 environment or the `<library>.env` settings file of 0013):
 
-- `SWEETCA_GLTHREAD=1`: glthread for every context libsweetca creates. Default off; off changes no path.
+- `SWEETCA_GLTHREAD`: glthread for every context libsweetca creates. Default on; `=0` turns it off (off
+  changes no path).
 - `SWEETCA_GLTHREAD_ASYNC_ERRORS=1` (only with the above): `glGetError` answers from errors the worker has
   collected (polled at frame ends and on each ask) instead of waiting. Errors still arrive, in order, but
   up to a frame late: a GL deviation, so a separate switch (see "glGetError" below).
@@ -219,10 +222,20 @@ Costs: one more thread per CA context (~6 ms CPU per CC frame on a Gold core, sa
 added: Mesa render-thread time fell by about what the worker spends), and one more pipeline stage of
 latency per frame. Leave `SWEETCA_GLTHREAD_ASYNC_ERRORS` off.
 
-How it would be the default (needs the user's OK; userland only, no flash): make glthread the default in
-libsweetca (`SWEETCA_GLTHREAD=0` keeps the old path), rebuild, install as `/usr/local/bin/libsweetca.dylib`
-(production now bf5328c0 = 0001-0011), plain reboot and check. Note that 0012 and 0013 (both default
-off/neutral) come along with it.
+## Installed (2026-10-31 13:16, user OK)
+
+glthread is now the default in libsweetca (patch 0014 amended: `SWEETCA_GLTHREAD=0` keeps the old path).
+VM build `xnu/out-mesa-t26c`, libsweetca SHA256 21ca5c4d0a031a7d... (0001-0014; 0012 and 0013 come along,
+both default off/neutral), installed as `/usr/local/bin/libsweetca.dylib` with phone readback. Previous
+production bf5328c0 (0001-0011) backed up as phone `/usr/local/bin/libsweetca-pre-t26.dylib` (readback
+verified) and ignored `research/libsweetca-backup/libsweetca-pre-t26-bf5328c0.dylib`; rollback = copy it over
+libsweetca.dylib and reboot. No settings file. Boot image unchanged (no kernel or boot-args change), so no
+flash.
+
+Plain reboot into installed boot_b (13:17, `research/t26/install.sh`, log `logs/netlog-t26-installed.txt`):
+backboardd logs `glthread on` and the worker's scheduling set; 0 faults/panics, 0 ticket errors; Home and
+Control Center screen dumps normal (0 % black). One framebench capture (`research/ab/t26-installed`, 150 s
+settle): Home B 44.15/s, CC A 35.80, CC B 36.92, Spotlight 37.46: in line with the ABBA's B rounds.
 
 Next limit for Control Center: gdrv0 (~19 ms per frame, freedreno emit/submit) and the GPU (~21 ms occupied);
 the render thread (~17 ms) is now below both.

@@ -1,3 +1,14 @@
+### 2026-10-31 13:23: task 26 glthread INSTALLED as production libsweetca (user OK)
+
+glthread is now the default (patch 0014 amended: `SWEETCA_GLTHREAD=0` turns it off). /usr/local/bin/libsweetca.dylib =
+VM build xnu/out-mesa-t26c (0001-0014), SHA256 21ca5c4d0a031a7d... (phone readback matches). Backup of the previous
+production lib bf5328c0 (0001-0011): phone /usr/local/bin/libsweetca-pre-t26.dylib (readback verified) and ignored
+research/libsweetca-backup/libsweetca-pre-t26-bf5328c0.dylib. Rollback = copy it over libsweetca.dylib and reboot. No
+settings file; boot_b image unchanged (no flash needed). Plain reboot into installed boot_b 13:17
+(logs/netlog-t26-installed.txt): `glthread on`, worker scheduling set, 0 faults/ticket errors, Home/CC dumps normal.
+framebench (research/ab/t26-installed): Home B 44.15/s, CC A 35.80, CC B 36.92, Spotlight 37.46. Script
+research/t26/install.sh. **Phone:** charging shell, 86 %; installed boot_b j0118 + glthread lib.
+
 ### 2026-10-31 02:45: task 26 glthread: CA's Mesa frontend on a worker thread, Control Center +8-9 % (ABBA); not installed, user's call
 
 Report jasmine/PERF-TASK26-GLTHREAD.md. mesa/patches/0014-sweetgl-glthread.patch: Mesa's own glthread for libsweetca's
