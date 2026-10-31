@@ -1,3 +1,29 @@
+### 2026-10-31: Metal STEP 6 COMPLETE; process-local registration, phone parked
+
+User authorized Step6. Report mesa/METAL-STEP6.md. Chlorophyll c3ef65a pushed
+origin/adreno5xx; parent build integration ffae38b. VM metal-s6c PASS (no CI).
+Signed arm64/iOS16 DYLD injector gated to BGMTL_ENABLE=1 AND exact test basename.
+MTLCreateSystemDefaultDevice primes iOS16 enumeration before MTLAddDevice;
+no MTLCopyAllDevices dependency. Framework-only registered probe has no direct
+Chlorophyll link. Two final processes: BGMTLDevice, repeated-call identity,
+registry10000b512; each 25 PASS/0 FAIL render checks, including 12 IOSurface
+visibility rounds (zero wrong), two-target feedback and expected limit refusals.
+No-insertion, disabled flag, absent flag, wrong executable name, and stock
+process after enabled runs all PASS; inert checks verified injector present.
+Root lacks /usr/bin/env: added bgmtl_exec per-exec environment launcher.
+No new sweetenv boot config needed. No unknown selector messages; expected
+oversized-buffer error logged. Captured final console zero SMMU/panic/ticket,
+SpringBoard or bgmtl-process crashes. Logs/scripts research/metal-step6/;
+artifacts xnu/out-mesa-metal-s6c. GPU runtime libraries byte-identical Step5,
+no shared Mesa changes. Production readback bb3a7a9e unchanged, installed
+boot_b j0120on and /s.dylib unchanged. Side files /usr/local/bin only, temporary
+fastboot boot only. No plugin/root bundle/plist or compositor installation.
+Phone parked temporary charge-shell.img: 75%, Charging; lock released.
+STOP before Step7: next iOS16 QuartzCore Metal selection + isolated temporary
+compositor test/recovery/shared-screen behaviour. No compositor/performance
+claim. Root plugin/plist, installed boot or production replacement still need
+separate approval. Step5 device-buffer/feedback limits remain.
+
 ### 2026-10-31: Metal STEP 5 COMPLETE; phone parked, no production install
 
 Report mesa/METAL-STEP5.md. Chlorophyll 288d410 pushed origin/adreno5xx;

@@ -16,6 +16,18 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 2. Where things stand (2026-10-31)
 
+**Step 6 complete:** [METAL-STEP6.md](METAL-STEP6.md).
+User authorized Step6. Chlorophyll `c3ef65a`, parent integration `ffae38b`;
+VM `metal-s6c` PASS. Framework-only test gets BGMTLDevice through iOS16's
+MTLCreateSystemDefaultDevice after DYLD insertion/MTLAddDevice. Two processes
+pass stable device identity/registry and all 25 render checks each. Disabled,
+absent flag and wrong-name gates pass with injector loaded; uninjected process
+remains device-less after tests. No runtime/shared Mesa changes, no production
+or installed boot changes. Phone parked charging shell: 75%, Charging.
+STOP before Step7. Next: QuartzCore Metal selection and an isolated temporary
+compositor test; root plugin/bundle/plist or installed boot/renderer changes
+still need separate approval. Earlier stop-before-Step6 entries are historical.
+
 **Step 5 complete:** [METAL-STEP5.md](METAL-STEP5.md).
 User authorized Step5. Chlorophyll `288d410`, parent implementation `45fa4fc`;
 VM `metal-s5final3` PASS. Two final phone rounds: compute 11 PASS/0 FAIL,
