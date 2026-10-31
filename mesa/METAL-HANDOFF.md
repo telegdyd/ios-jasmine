@@ -16,6 +16,15 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 2. Where things stand (2026-10-31)
 
+**Further offline milestone:** [METAL-OFFLINE.md](METAL-OFFLINE.md).
+Chlorophyll `0e2de69` pushed: native macOS AIR/a512 compiler, probes and corpus
+runner. VM `metal-host7` passes its offline checks. All 141 QuartzCore functions
+from cached iOS 16.7.16 20H392 tested: 104 compile, 33 ir3 failures (20 are
+explicit framebuffer-fetch refusals), 4 frontend failures. Two CoreImage
+libraries: 100/133 compile. Inputs/tables in ignored research storage; no phone
+access, no shared ir3 edits. Step 2 audit found the old shift-splitting rewrite
+absent; rounding/narrow accesses still need investigation and device validation.
+
 **Update: step 1 completed offline**, see [METAL-STEP1.md](METAL-STEP1.md).
 Chlorophyll local commit `ff309fc` adapts AIR to Mesa 26.2.5; patches 0017/0018
 and the local build integration compile the frontend and runtime C for iOS arm64.

@@ -3,6 +3,7 @@
 # ios-tools jobs of xnu.yml; no runner queue, incremental Mesa rebuilds).
 #   tools/vm-mesa.sh mesa TAG    -> xnu/out-mesa-TAG (files of the mesa-ios artifact)
 #   tools/vm-mesa.sh ios TAG     -> xnu/out-ios-TAG  (files of the ios-tools artifact)
+#   tools/vm-mesa.sh metal-host TAG -> xnu/out-metal-host-TAG (native macOS compiler tools)
 # Sends this checkout's mesa, ios and tools (uncommitted edits included) to the VM, runs
 # tools/mesa-local.sh there and copies the signed outputs back. tools/g2 scripts push from
 # xnu/out-mesa: OUT=xnu/out-mesa writes there instead.
@@ -11,10 +12,10 @@
 # Shares vm-build.sh's lock, so kernel and Mesa builds on the VM never run at once.
 set -eu
 cd "$(dirname "$0")/.."
-usage='usage: vm-mesa.sh mesa|ios TAG'
+usage='usage: vm-mesa.sh mesa|ios|metal-host TAG'
 mode=${1:?$usage}
 tag=${2:?$usage}
-case $mode in mesa|ios) ;; *) echo "$usage" >&2; exit 1;; esac
+case $mode in mesa|ios|metal-host) ;; *) echo "$usage" >&2; exit 1;; esac
 vm=${VM:-mac}
 out=${OUT:-xnu/out-$mode-$tag}
 src=$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- mesa ios || echo -dirty)

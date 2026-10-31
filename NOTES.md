@@ -1,3 +1,27 @@
+### 2026-10-31: Metal offline host compiler + real iOS 16 shader corpus (NO phone access)
+
+Report mesa/METAL-OFFLINE.md. Chlorophyll 0e2de69bc3fe39fff0ac8a1e322eb33546256b73 pushed to
+origin/adreno5xx: new air2ir3, synthetic jasmine_compile.metal, tools/jasmine-corpus.py. Parent patch 0019
+adds compiler-only target; vm-mesa.sh metal-host TAG builds native macOS tools after iOS baseline validation.
+VM final build metal-host7 -> xnu/out-metal-host-metal-host7 (exit 0): native x86_64 air2nir/air2ir3;
+five a512 compile+assemble probes PASS, uchar store fails ir3 half-register validation, fbfetch explicitly
+refused. Earlier host1/2 NIR headers-only, host3 missing profiling hooks, host4/5 harness IR lifetime bugs,
+host6 reached uchar gap; fixed harness before real corpus. No CI. Production libsweetca SHA256 remains
+bb3a7a9ef7927bd189e9b74c8799610df7f4abec26bcb958b5712d688a12a445 (byte-identical). No shared ir3 changes.
+Existing WSL cached iPhone10,3 iOS 16.7.16 20H392 IPSW -> temporary OS DMG read-only apfs-fuse mount ->
+21 metallibs copied to research/metallib/ios16-20H392 (manifest hashes), VM ~/metal-offline-inputs/20H392.
+Mount unmounted and temporary extracted DMG deleted; original IPSW preserved. QuartzCore 141 functions:
+104 compile, 33 backend failures (20 fbfetch, 7 register-width, 4 ffma, 2 image-dimension), 4 frontend failures
+(2 program-scope initializers, 2 thread_index_in_quadgroup). CoreImage default + portrait_filters_archive:
+100/133 compile, 25 backend failures, 8 frontend failures. Per-function tables/full logs in ignored
+research/metal-corpus/{quartzcore,coreimage}-20H392; VM ~/metal-offline-results/ same names. All function
+constants default zero; compilation is NOT GPU correctness. Shared ir3 audit: old shift-split rewrite absent
+in 26.2.5; rounding default issue still present in source; a512 narrow store fails, a6xx workaround cannot be
+assumed appropriate for a5xx. No patch applied. **Next:** offline frontend/ALU/width fixes possible; phone
+needed for step 2 GL/UI regression and actual compute. User still says no device access. Unrelated concurrent
+ios/sweet_sbshape.c + tools/g2/framebench.py edits left untouched. Initial publication e5e7ddc pushed jasmine;
+this milestone commits new submodule pointer and tooling/report changes (see git log).
+
 ### 2026-10-31: Metal step 1 publication authorized and Chlorophyll pushed
 
 User explicitly approved commit/push. Chlorophyll ff309fc1512e932a840856e3687b524a0bea71f4 pushed to

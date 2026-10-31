@@ -1,0 +1,21 @@
+jasmine: compiler-only AIR -> ir3 tool, with no screen or device creation.
+MIT; sources staged from mesa/metal/air. Does not alter shared ir3 code.
+
+--- a/src/freedreno/meson.build
++++ b/src/freedreno/meson.build
+@@ -24,5 +24,15 @@
+ subdir('fdl')
+ 
++air2ir3 = executable(
++  'air2ir3',
++  '../compiler/air/air2ir3.c',
++  include_directories : [inc_freedreno, inc_include, inc_src],
++  dependencies : [idep_air, idep_mesautil, idep_libir3decode],
++  link_with : [libfreedreno_ir3],
++  build_by_default : false,
++  install : false,
++)
++
+ if system_has_kms_drm or host_machine.system() == 'darwin'
+   subdir('drm')
+ endif

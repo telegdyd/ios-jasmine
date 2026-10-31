@@ -3,6 +3,7 @@
 # tools/vm-mesa.sh, which syncs mesa/, ios/ and tools/ there and calls this).
 #   tools/mesa-local.sh mesa     Mesa 26.2.5 + mesa/patches -> ~/topaz-mesa/out-mesa (= mesa-ios artifact)
 #   tools/mesa-local.sh ios      ios/*.c, ios/lib/*.c       -> ~/topaz-mesa/out-ios  (= ios-tools artifact)
+#   tools/mesa-local.sh metal-host  iOS build + native AIR/ir3 tools and probes -> out-metal-host
 # Same compiler flags, meson options, ninja targets and ad-hoc signatures as the workflow.
 # TASK24_CONTROLS=1 adds the workflow's Task 24 control (gltest without patch0008); SOURCE
 # names the checkout for its provenance file (the workflow writes $GITHUB_SHA there).
@@ -14,7 +15,7 @@
 set -euo pipefail
 TREE=$(cd "$(dirname "$0")/.." && pwd)
 ROOT=$HOME/topaz-mesa
-mode=${1:?usage: mesa-local.sh mesa|ios}
+mode=${1:?usage: mesa-local.sh mesa|ios|metal-host}
 OUT=$ROOT/out-$mode
 cd "$TREE"
 rm -rf "$OUT"
@@ -25,6 +26,7 @@ case $mode in
 ios)
 	for src in ios/*.c; do
 		name=$(basename "$src" .c)
+		[ "$name" = sweet_sbshape ] && continue	# a SpringBoard dylib, below
 		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror -o "$OUT/$name" "$src"
 		codesign -f -s - --entitlements ios/entitlements.plist "$OUT/$name"
 		codesign -dv "$OUT/$name" 2>&1 | head -3
@@ -35,6 +37,16 @@ ios)
 			-dynamiclib -install_name "/usr/local/bin/$name.dylib" -o "$OUT/$name.dylib" "$src"
 		codesign -f -s - "$OUT/$name.dylib"
 	done
+	# injected into SpringBoard (installed as /s.dylib)
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror \
+		-dynamiclib -install_name /s.dylib -lobjc -o "$OUT/sweet_sbshape.dylib" ios/sweet_sbshape.c
+	codesign -f -s - "$OUT/sweet_sbshape.dylib"
+	;;
+metal-host)
+	# Stage and validate the same sources as the iOS build, then build native
+	# compiler tools in a separate persistent directory. No device is opened.
+	"$TREE/tools/mesa-local.sh" mesa
+	"$TREE/tools/metal-host-local.sh"
 	;;
 mesa)
 	export PATH="$ROOT/venv/bin:$ROOT/tools/bin:$PATH"
@@ -49,7 +61,7 @@ mesa)
 	mkdir -p "$ROOT/stage/src/compiler/air"
 	rsync -a --delete "$TREE/mesa/metal/air/" "$ROOT/stage/src/compiler/air/"
 	mkdir -p "$ROOT/mesa-src"
-	rsync -rlpc --delete --exclude=/build "$ROOT/stage/" "$ROOT/mesa-src/"
+	rsync -rlpc --delete --exclude=/build --exclude=/build-host "$ROOT/stage/" "$ROOT/mesa-src/"
 	cd "$ROOT/mesa-src"
 	opts="--cross-file $TREE/mesa/ios-arm64.ini -Dbuildtype=release -Dplatforms= -Dgallium-drivers=freedreno -Dvulkan-drivers= -Dfreedreno-kmds=msm
 		-Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false -Dgles1=disabled -Dgles2=enabled
@@ -127,7 +139,7 @@ mesa)
 	fi
 	;;
 *)
-	echo "usage: mesa-local.sh mesa|ios" >&2
+	echo "usage: mesa-local.sh mesa|ios|metal-host" >&2
 	exit 1
 	;;
 esac
