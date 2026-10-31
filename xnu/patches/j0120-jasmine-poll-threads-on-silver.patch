@@ -151,9 +151,9 @@ diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
 + * jasmine (j0120, task 19): the port's polling kernel threads (modem watch and USB device at 1 ms, the live log,
 + * the command port, the Wi-Fi net poll, the PMIC keys) are kernel threads, so they prefer the Gold (P) cluster
 + * and preempt the UI there (~70 ms/s of Gold CPU during Control Center motion) while Silver idles.
-+ * sweet_poll_e = 1 (boot-arg sweetpollE=1, or "pollE 1" on the command port) soft-binds each of them to the
++ * sweet_poll_e = 1 (the default; boot-arg sweetpollE=0 or "pollE 0" on the command port turns it off) soft-binds each of them to the
 + * E cluster on its next poll (soft: it still runs on Gold when no Silver CPU is available); 0 unbinds them.
-+ * Default off. force: always on the E cluster (the profiler's census thread, a measurement thread).
++ * Default on since the task 19 install (2026-10-31). force: always on the E cluster (the profiler's census thread, a measurement thread).
 + */
 +int sweet_poll_e = -1;
 +void sweet_poll_thread_to_e(bool *on_e);
@@ -163,7 +163,7 @@ diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
 +sweet_thread_to_e(bool *on_e, bool force)
 +{
 +	if (sweet_poll_e < 0) {
-+		uint32_t v = 0;
++		uint32_t v = 1;
 +		(void)PE_parse_boot_argn("sweetpollE", &v, sizeof(v));
 +		sweet_poll_e = v != 0;
 +	}

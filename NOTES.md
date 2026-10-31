@@ -1,3 +1,14 @@
+### 2026-10-31 19:07: task 19 INSTALLED (user: "Install it"): boot_b j0120on + no-parallax /s.dylib
+
+boot_b = shim/out/shim-boot-j0120on-slotb.img (bf33a55f...; kernel xnu/out-jasmine-j0120on: port polling threads soft-bound to Silver
+by default, `sweetpollE=0` / `pollE 0` off; cmdline identical to j0119on). /s.dylib = xnu/out-ios-t19/sweet_sbshape.dylib (d18be426...)
++ /usr/local/bin/sbs-noparallax; old /s.dylib 3fa51848 kept as /usr/local/bin/s-pre-t19.dylib and research/t19/install/. Rollback:
+`fastboot flash boot_b shim/out/shim-boot-j0119on-slotb.img`; rm sbs-noparallax (or restore the old /s.dylib). Plain reboot 19:02
+(logs/netlog-t19-installed.txt, research/t19/install.sh): 7 SWEET POLL threads on CPU 4-7, "motion effects reported unsupported",
+0 faults/panics/ticket errors, Home normal; framebench research/ab/t19-installed: Home B 46.9/s, CC A 39.7, CC B 42.1, Spotlight 36.3
+(a low boot in today's 41-58 Home range). Console drawing unchanged (`fbcon 0` only at runtime). **Phone:** left in iOS (installed
+boot_b, unlocked, on USB charge, 72 %) for the user's look; park it on the charging shell afterwards.
+
 ### 2026-10-31 18:55: task 19: SpringBoard's frame time is genuine UIKit work + three port costs (fixes default off, not installed)
 
 Report jasmine/PERF-TASK19-SPRINGBOARD.md. Installed capture research/ab/t19-cap1 (17:26, new framebench `--sample-b`): SpringBoard

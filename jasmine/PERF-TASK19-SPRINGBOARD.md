@@ -191,9 +191,24 @@ exhausted at 2208) or less UI work would cut it. CPU DVFS limits are tasks 2/13 
 Not port-caused / not changed: the two AppleKeyStore log lines and NSLog per CC open (negligible once the console is
 not drawn), `dvfs_worker`'s PMIC read-back (27 ms/s on Gold; task 2 follow-up), the glthread worker already on Silver.
 
+## Installed (2026-10-31 19:02, user: "Install it")
+
+- boot_b = `shim/out/shim-boot-j0120on-slotb.img` (SHA256 bf33a55f...; kernel `xnu/out-jasmine-j0120on`, polling threads on
+  Silver by default, `sweetpollE=0` or `pollE 0` turns it off; command line byte-identical to j0119on's). Flashed 19:02.
+  Rollback: `fastboot flash boot_b shim/out/shim-boot-j0119on-slotb.img`.
+- `/s.dylib` = `xnu/out-ios-t19/sweet_sbshape.dylib` (d18be426...) + `/usr/local/bin/sbs-noparallax`. Backup of the previous
+  3fa51848...: phone `/usr/local/bin/s-pre-t19.dylib`, local `research/t19/install/s-pre-t19.dylib` (ignored). Rollback: remove
+  `sbs-noparallax` (behaviour as before) or copy the backup back; reboot. The console stays drawn (`fbcon` not changed).
+- Plain reboot (`research/t19/install.sh`, log `logs/netlog-t19-installed.txt`): abmark=b, glthread on, 7 `SWEET POLL` threads on
+  CPUs 4-7, sbshape log "motion effects reported unsupported", 0 faults / panics / ticket errors / SpringBoard crashes, Home screen
+  normal (`research/t19/install/home.png`). framebench `research/ab/t19-installed` (first run after boot): Home B 46.9/s, CC A 39.7,
+  CC B 42.1, Spotlight 36.3. This boot sits in the lower part of the boot-to-boot range seen today (Home 41-58); the measured gain is
+  the same-boot ABBA above, not this single capture. Phone left in iOS for the user's own look.
+
 ## Files
 
-- `xnu/patches/j0120-jasmine-poll-threads-on-silver.patch`; VM build `xnu/out-jasmine-j0120` (17:33).
+- `xnu/patches/j0120-jasmine-poll-threads-on-silver.patch` (now default on); VM builds `xnu/out-jasmine-j0120` (17:33, tests,
+  default off) and `xnu/out-jasmine-j0120on` (18:59, installed).
 - `ios/sweet_sbshape.c` (no-parallax switch), `tools/mesa-local.sh` (builds it); VM build `xnu/out-ios-t19`.
 - `tools/g2/framebench.py --sample-b`.
 - Images `shim/out/shim-boot-j0120-t19.img` (production SpringBoard lib) and `-t19m.img` (SpringBoard loads `/t.dylib`),
