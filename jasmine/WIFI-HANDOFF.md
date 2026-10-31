@@ -1,7 +1,7 @@
 # Wi-Fi on jasmine: handoff (2026-10-25, 05:20 CET)
 
 Status: **Wi-Fi works under iOS: joined, DHCP address, internet (round j86-wlan, 23:35, user-confirmed).**
-wifid scans (networks in Settings), joins WPA2 (TelekNet, keys in ~50 ms) and, since j0098 (round j98,
+wifid scans (networks in Settings), joins WPA2 (the home network, keys in ~50 ms) and, since j0098 (round j98,
 04:03), **auto-joins the known network on boot** with no tap,
 configd runs DHCP on en0, traffic both ways. The factory MAC comes from persist. Still test images only
 (`wifi=1` boot arg, nothing flashed). The USB link runs on 192.168.7.0/24 (j0088/j0089: the phone hands
@@ -188,7 +188,7 @@ starves without them. Rounds (all `modem_nowlan=1`, logs `logs/netlog-j80{u,v,w}
    hangs (j83/j85/j93 stalled in the same reboot phase), not proven.
 3. (Done 02:40, j0093/j0095: gray Wi-Fi icon.) The bars come from Apple80211 event 39 (LQM), see WIFI.md.
    j0095 (bars right at the join) is built but not yet tested.
-4. (Done 2026-10-25 04:03, j0098: auto-join.) wifid refused TelekNet as "Below minimum RSSI threshold"
+4. (Done 2026-10-25 04:03, j0098: auto-join.) wifid refused the home network as "Below minimum RSSI threshold"
    because RSSI_BOUNDS was unanswered. Left on the phone from the search: com.apple.wifi.plist
    `LoggingFileEnabled` true (wifid writes `/private/var/logs/wifimanager.log`; useful, set it false to undo).
    Not tried: a second known network (preference order), the AP going away and coming back.
