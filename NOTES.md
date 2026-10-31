@@ -1,4 +1,14 @@
-### 2026-11-01: Metal step 7: unchanged state no longer re-bound per draw (commit CPU -20 %), user check pending
+### 2026-11-01 later: Metal step 7: replay off CoreAnimation's thread (CC +15 %), GL reference measured; user check pending
+
+Report mesa/METAL-STEP7.md "Round 26". GL on a settled installed boot: home 56.5, CC 42.7/43.4 swaps/s; its driver
+work runs on gdrv0/gl0, not CA's render thread. libbgmtl now replays a committed command buffer on a serial queue
+in the compositor (BGMTL_ASYNC=0 inline). VM metal-s7r: libbgair 852bf5dd, libbgmtl 4ab1879e in /usr/local/bin;
+probe 26/26 plain + --bb. r26 (settled): home 37.7, CC 33.9/32.2 (r25b 39.3, 27.9/29.9). backboardd CPU 54-67 %;
+CA now mostly waits for the previous command buffer's completion (CA ~7 + replay ~5 + GPU ~11 ms). round.sh now
+settles 240 s before framebench. **Phone:** temporary s7tk boot (r26); env CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 +
+BGMTL_TIMING=1. NEXT: user's look at the panel; what CA waits on between frames; GPU time per frame.
+
+### 2026-11-01: Metal step 7: unchanged state no longer re-bound per draw (commit CPU -20 %), user: clean and smooth
 
 Report mesa/METAL-STEP7.md "Rounds 22-25". libbgair skips binds equal to the last draw's (rwa_device.gs;
 RWA_STATE_CACHE=0 off), builds error text only on failure; libbgmtl refreshes CPU-memory textures once per commit
@@ -6,7 +16,7 @@ and retains only bound slots. VM metal-s7q: libbgair 852bf5dd, libbgmtl b7d0a818
 /usr/local/bin; probe 26/26 --bb. framebench r25b (settled boot): home 39.3, CC 27.9/29.9 swaps/s (r20 37.3,
 28.4/28.2). Commit CPU per unit of CA work -22 % home, -20 % CC. Benchmarks started right after boot are skewed by
 aggregated/trustd/accessoryupdaterd CPU (r23-r25). **Phone:** temporary s7tk boot (r25); env file
-CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 + BGMTL_TIMING=1. NEXT: user's look at the panel; then per-batch state
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 + BGMTL_TIMING=1. User r25: clean and smooth. NEXT: GL reference profile on a settled boot; per-batch state
 emission, resource tracking, recorded-work dealloc.
 
 ### 2026-10-31 late: Metal step 7: the 29 ms frame found; in-batch a5xx feedback barrier (+10 %, CPU -39 %)

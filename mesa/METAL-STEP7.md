@@ -169,7 +169,7 @@ left in commit (r20, ms of 1892): `fd5_emit_state` 354 (`emit_common_consts` 152
 `ir3_emit_ubos` 88), `batch_draw_tracking` 150 (`fd_batch_resource_read_slowpath` 132), batch flush at commit 136,
 `rwaTextureSampled` 94, CPU texture uploads 72, command buffer dealloc 72.
 
-## Rounds 22-25: state that did not change, bound again every draw (r25 not yet checked by the user)
+## Rounds 22-25: state that did not change, bound again every draw (user checked r25: clean and smooth)
 
 Yes: `rwa_render_draw` bound blend, depth/stencil, rasterizer, both shaders, vertex elements and buffers, viewport,
 scissor and stencil reference for every draw, and freedreno marks state dirty on every bind, equal or not (Mesa
@@ -212,12 +212,44 @@ Control Center; texture refresh on home 0.37 -> 0.16, `check_bindings` 0.06 -> 0
 control-a, per unit of CA time): `fd_draw_vbo` 0.85 (state emit 0.42, resource tracking 0.23), batch flush and
 submit 0.20 (the kernel submit call itself is most of it, same path as GL), command buffer dealloc 0.13.
 
+## Round 26: GL reference, and the replay off CoreAnimation's thread (r26 not yet checked by the user)
+
+**GL reference** (installed boot_b, production libsweetca `bb3a7a9e`, framebench `fb-gl1` after a 4-minute settle):
+spotlight-repeat 40.9, home-b **56.5**, control-a / -b **42.7 / 43.4** swaps/s (the old "40-47" was an early-boot
+figure). The render thread there is 61 % QuartzCore and 15 % libsweetca: the driver work runs on other threads,
+`gdrv0` (u_threaded_context, patch 0004) 2486 ms and `gl0` (glthread, patch 0014) 840 ms in control-a. On Metal all
+of the replay into Mesa ran inside `commit` on CoreAnimation's render thread.
+
+**r26** (`metal-s7r`: libbgair `852bf5dd` unchanged, libbgmtl `4ab1879e`). In the compositor `commit` now only marks
+the command buffer committed and hands the replay to one serial queue (`chlorophyll.replay`, user-interactive QoS), in
+commit order; `BGMTL_ASYNC=0`, `BGMTL_SYNC=1` and tracing replay inline. `waitUntilScheduled` waits for the replay's
+submit (`_sched` group), `waitUntilCompleted` as before; status changes and the handler lists are under
+`@synchronized`. The worker lets go of the context lock between work items, and the lock is fair-share
+(`PTHREAD_MUTEX_POLICY_FAIRSHARE_NP`), so CoreAnimation's thread can open the next frame's passes (render tickets)
+during a replay. Render probe 26/26 plain and `--bb`; 0 faults/crashes/command buffer failures.
+
+| Phase (swaps/s, settled boot) | r25b | r26 | GL |
+| --- | ---: | ---: | ---: |
+| home-b | 39.3 | 37.7 | 56.5 |
+| control-a / control-b | 27.9 / 29.9 | **33.9 / 32.2** | 42.7 / 43.4 |
+
+Control-a render thread: QuartzCore 64 %, ours 9 % (GL: 61 % / 15 %); the replay worker carries what commit did
+(≈1.5x QuartzCore's time, unchanged). backboardd CPU 54-67 % of a core (was 77-95 %): no longer CPU-bound. Replay
+~5 ms per command buffer, submit to GPU completion ~11 ms. 84 % of command buffers are now created with none in flight
+and 39 % within 2 ms of a completion (r20: 54 % / 14 %), so CoreAnimation mostly starts the next frame once the last
+one completed; CA + replay + GPU ≈ 7 + 5 + 11 ms does not fit one refresh. (Guess, not measured: a completion gate in
+CA's Metal renderer that GL's path does not have, or that GL's shorter chain fits.) GL renders in sysmem too
+(`FD_MESA_DEBUG=sysmem` in sweetca.c), so that is not the difference.
+
 ## Open (next)
 
 - More CPU off the commit: state emission per new batch (each render-target switch re-emits everything), resource
   tracking per draw, the dealloc of recorded work. Then GL vs Metal on a settled boot of each. Whether sysmem is
   needed for passes with no framebuffer fetch (GPU time).
-- Benchmark only a few minutes after boot (background services).
+- Benchmark only a few minutes after boot (background services). home-a of framebench comes out with no swaps on
+  some boots, GL included (fb-gl1): a benchmark problem, not a renderer one.
+- What CoreAnimation waits on between frames (completion handler, scheduled handler, drawable/ticket), and the GPU
+  time per frame (~11 ms submit to completion).
 - Drop `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` (last env line; added in r10 without effect).
 - `RWA_CB_DELTA` on a5xx (above).
 - One ASTC_4x4 no-copy texture refresh computes its row as 832 bytes for 828 texels (texel rows instead of block
