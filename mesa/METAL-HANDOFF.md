@@ -16,6 +16,19 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 2. Where things stand (2026-10-31)
 
+**Step 2 completed on the phone:** [METAL-STEP2.md](METAL-STEP2.md).
+Parent commits `24da65e` / `a1a360f`: rounding and narrow SSBO fixes validated
+on a512; shift-split patch unnecessary in Mesa 26.2.5. Eight focused GPU probes
+PASS, GLES/glthread/framebuffer-read comparisons exact after each shared
+change, temporary UI boots normal with no fault/panic/ticket/crash lines.
+Final local VM `metal-s2final` passes six mandatory AIR compile probes.
+QuartzCore coverage is now 111/141 (seven register-width failures fixed).
+Production renderer and boot_b unchanged; phone parked in charging shell,
+69%, Charging. User authorized work through step 2 only: stop here. Step 3's
+table exists; next runtime task is step 4 (libbgair/SweetGPU compute).
+The following entries describe earlier milestones.
+
+
 **Further offline milestone:** [METAL-OFFLINE.md](METAL-OFFLINE.md).
 Chlorophyll `0e2de69` pushed: native macOS AIR/a512 compiler, probes and corpus
 runner. VM `metal-host7` passes its offline checks. All 141 QuartzCore functions

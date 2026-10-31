@@ -1,7 +1,9 @@
 # Step 2: shared ir3 fixes for a512
 
-Work in progress, 2026-10-31. User authorized phone access through completion
-of handoff step 2; do not start runtime bring-up (step 4) afterwards.
+Completed 2026-10-31. Implementation commits: `24da65e` (rounding and probes),
+`a1a360f` (narrow accesses and mandatory byte-store smoke check). Chlorophyll
+submodule remains `0e2de69`; no fork changes in this step. User authorized
+phone access through completion of step 2. Stopped before runtime bring-up.
 
 ## Probes
 
@@ -59,12 +61,61 @@ has been exhaustively tested.
 
 ## Narrow SSBO accesses
 
-Pending validation. The upstream patch's a6xx descriptor explanation cannot
+Patch 0022 adapts Chlorophyll's `ir3-ssbo-subdword`. Its a6xx descriptor
+explanation cannot
 be assumed for a5xx. Our source audit found a direct a5xx reason for dword
 lowering: `ir3_a4xx.c` emits LDGB/STGB with TYPE_U32 unconditionally. Passing
 8/16-bit NIR memory ops to these emitters violates their register widths.
-The planned adaptation asks generic NIR memory lowering for dwords and uses
+The adaptation asks generic NIR memory lowering for dwords and uses
 atomic AND/OR for partial stores so adjacent writers preserve other bytes.
+It passes the compiler through the callback and enables generic partial-store
+atomic lowering. a5xx stays on dwords; newer generations respect the existing
+storage_8bit/storage_16bit compiler options.
+
+VM `metal-s2narrow` (metal-host mode, both iOS and native compiler builds):
+
+| GPU probe | Wrong bytes / 1024 | Result |
+|---|---:|---|
+| default u2f/i2f | 0 | PASS |
+| explicit RTNE | 0 | PASS |
+| explicit RTZ | 0 | PASS |
+| negative offset | 0 | PASS |
+| load8 | 0 | PASS |
+| load16 | 0 | PASS |
+| store8, adjacent parallel writers | 0 | PASS |
+| store16, adjacent parallel writers | 0 | PASS |
+
+The synthetic AIR `jasmine_byte` now compiles and assembles with debug
+assertions enabled, emitting dword atomic AND/OR. It failed register-width
+validation before this change. Final VM `metal-s2final` passes the updated
+host check: all six probes, including byte store, are mandatory. Framebuffer
+fetch is still explicitly refused. Final iOS renderer and GPU probe hashes
+match the tested `metal-s2narrow` outputs.
+
+Final candidate GLES results: 85 PASS lines default, 86 with glthread, and 27
+exact framebuffer-read comparisons (29 PASS lines including glthread and final
+status). Temporary image `shim/out/shim-boot-j0120on-metal-s2narrow.img` selects
+`/usr/local/bin/m2n.dylib`. UI round 19:33:36-19:34:12 completed with visually
+intact Home screenshot. Console: zero SMMU faults/panics, ticket errors and
+SpringBoard crashes in this capture. This is regression evidence, not a
+performance A/B measurement or exhaustive correctness proof. Direct float32
+to float16 rounding was not separately probed.
+
+## QuartzCore compile regression
+
+Same 141 functions, same zero-default specialization constants as the offline
+baseline: **111 compile**, 26 backend failures, 4 frontend failures (previously
+104 / 33 / 4). All seven previous register-width failures now compile:
+`buffer_image_blit_frag_lpf`, `fixed_vert_lph_gen`, `fixed_vert_lpf_gen`,
+`compute_apl`, `compute_apl_fast`, `sum_apl_and_compute_dimming_factor`,
+`buffer_image_blit_frag_lph`.
+
+The remaining 26 backend failures are the same 20 framebuffer-fetch refusals,
+four unhandled ffma cases, and two image-dimension assertions. This table is
+compile/assemble coverage, not execution of these Apple shaders. Full updated
+logs are in `research/metal-step2/quartzcore-corpus/`, also on the VM under
+`~/metal-offline-results/quartzcore-step2`.
+
 
 ## Artifacts and device state
 
@@ -72,3 +123,16 @@ Ignored logs, scripts, readbacks and captures: `research/metal-step2/`.
 VM builds use `tools/vm-mesa.sh mesa TAG`; no CI. No production installation
 is authorized by this step. Temporary UI images retain kernel j0120on and
 828x1792@2 canvas; candidate libraries live only in `/usr/local/bin`.
+
+Candidate renderer SHA256:
+`1441c96dbe9a4c0f2d4a485af401b5923c616d7e0340c67a53bdbc1464e12eca`.
+Installed production library remains the baseline `bb3a7a9e...`; neither
+production libraries nor boot_b were written. Test binaries and candidate
+libraries remain under `/usr/local/bin`. At the end, rebooted into the
+temporary charging shell: 69%, Charging; phone lock released.
+
+Step 2 disposition: rounding ported and tested; shift splitting unnecessary;
+narrow SSBO lowering ported and tested. Step 3's shader table already exists.
+Next runtime work is step 4: replace libbgair's backend dependencies with
+SweetGPU and run real AIR compute kernels through that runtime. None of that
+runtime work was started here.

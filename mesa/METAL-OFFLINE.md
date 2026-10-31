@@ -1,5 +1,9 @@
 # Metal offline compiler baseline, 2026-10-31
 
+Update after shared ir3 Step 2: QuartzCore now compiles 111/141, with all seven
+register-width failures fixed. See [METAL-STEP2.md](METAL-STEP2.md) for phone
+validation and updated corpus results. Counts below are the original baseline.
+
 No phone access. Shared ir3 code and installed libraries remain unchanged.
 Chlorophyll `adreno5xx` commit `0e2de69bc3fe39fff0ac8a1e322eb33546256b73`
 is pushed to `telegdyd/Chlorophyll`. It adds a native compiler harness, synthetic

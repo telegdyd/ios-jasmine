@@ -1,3 +1,25 @@
+### 2026-10-31 19:35: Metal STEP 2 COMPLETE; phone parked, production unchanged
+
+Report mesa/METAL-STEP2.md. Commits 24da65e (rounding + GPU probes), a1a360f (narrow SSBO + mandatory
+host byte-store check); Chlorophyll remains 0e2de69, no submodule edits. 0021 ports round-default:
+a512 baseline default u2f/i2f had 92/1024 bytes wrong; corrected default + explicit RTNE/RTZ all PASS.
+Shift-split patch unnecessary: offending rewrite absent in 26.2.5, negative-offset GPU probe PASS.
+0022 adapts subdword lowering for a5xx TYPE_U32 LDGB/STGB + dword atomic AND/OR partial stores.
+VM metal-s2narrow: all eight focused GPU probes PASS (u2f, rtne, rtz, negative, load8/16, store8/16),
+0/1024 wrong including guards. Final VM metal-s2final: mandatory six AIR/a512 compile probes PASS,
+fbfetch refused as intended. Final iOS renderer/probe hashes equal tested narrow build. No CI.
+After EACH shared fix: GL default 85 PASS, glthread 86 PASS; framebuffer-read-only 27 pixel comparisons
+exact (29 PASS lines including glthread/final). Temporary boots of j0120on with m2r/m2n.dylib side files:
+UI rounds 19:27:58-19:28:34 and 19:33:36-19:34:12 normal; captured console each 0 SMMU/panic, ticket
+errors, SpringBoard crashes; Home images visually intact. No performance A/B claim; direct F16 rounding
+not separately tested. QuartzCore same 141 zero-default variants: 111 compile /26 backend fail /4 NIR
+fail (was104/33/4); all7 register-width failures fixed. Remaining20 fbfetch,4 ffma,2 image-dim assertions.
+Raw scripts/logs/readbacks/corpus in research/metal-step2/. Candidate renderer SHA256
+1441c96dbe9a4c0f2d4a485af401b5923c616d7e0340c67a53bdbc1464e12eca. Production bb3a7a9e and boot_b
+j0120on untouched: only fastboot boot and /usr/local/bin side files. Parked with charge-shell.img:
+69%, Charging; shared phone lock released. STOP at user limit (step2). Step3 table already exists;
+NEXT step4: libbgair SweetGPU backend/link and actual AIR compute kernels. No runtime bring-up started.
+
 ### 2026-10-31 19:29: Metal step 2 rounding milestone PASS; narrow SSBO still pending
 
 User authorized continuing until step 2 done. New focused Gallium/NIR compute probe (0020 target,
