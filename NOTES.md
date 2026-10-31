@@ -1,3 +1,18 @@
+### 2026-10-31 16:55: task 28: CC GPU idles ~10 ms/frame waiting on gdrv0; SYS_BARRIER=2 cuts gdrv0 3.3 ms but no frame gain; heat test done
+
+Report jasmine/PERF-TASK28-GPU-TIME.md. Patch mesa/patches/0015-freedreno-gpu-batch-trace.patch (default off; WSL tree
+~/t28-gpu branch t28, VM build xnu/out-mesa-t28a): GPUPROF interval union (the old gap sum stuck at 0 after one late
+batch), SWEETCA_GPUTRACE=<file> per-batch/per-draw trace (to the log; backboardd cannot write /usr/local/bin),
+SWEETCA_SYS_BARRIER_NOP (timing only). Round 1 (temporary j0119on boots, image shim/out/shim-boot-j0119on-t28.img, lib
+/usr/local/bin/t28.dylib + .env): production CC = 103 batches, GPU covered 16.3 ms + idle 9.7 ms per frame (HW busy
+64 %); level 2 = 55 batches, 18.2 + 6.0. gdrv0 (19 ms) is ~12 ms per-batch overhead. ABBA (research/t28/abba.sh,
+a1 bad boot excluded): level 2 gdrv0 18.5 -> 15.2 ms/CC frame, CC frame 23.0 vs 23.0-23.8 ms, swap rates within
+spread; slow frames are SpringBoard (~20 ms) / GPU spikes (~29). Not installed (CPU-only saving, user's call).
+Heat test (research/t28/heat.sh, installed system, 10 min continuous CC+Home on charger): 0 faults/hangs, hottest
+TSENS 55 -> 78 C still rising ~0.5 C/min, no throttling (none exists), flush interval +5 % over the run, charger
+surplus ~240 mA -> ~0. **Phone:** charging shell, 70 %; installed boot_b j0119on + lib 21ca5c4d unchanged; side files
+/usr/local/bin/t28.dylib, t28/ (lib, sweetca_test, .env), sweetgpu_gltest-t28.
+
 ### 2026-10-31 15:10: task 27 j0119 INSTALLED to boot_b (user: "Yes, install j0119")
 
 j0119 patch amended: SwapWait(0) fix on by default (`sweetfb_wait0=0` = old rule). VM build xnu/out-jasmine-j0119on, image
