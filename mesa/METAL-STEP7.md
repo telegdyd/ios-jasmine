@@ -135,11 +135,46 @@ half a core in control-a. Guess (not measured): CA's encoding and the GPU do not
 ~ the 29 ms frame), e.g. a frame-in-flight limit in CA released late by our completion queue. Second lead: sysmem
 rendering forced for every pass (fbfetch emulation) where GL renders in GMEM.
 
+## Rounds 19-20: where the 29 ms went (user checked r20: clean and smooth)
+
+**r19** (`metal-s7m`: libbgmtl `a1ac5f12` with `BGMTL_TIMING=1`, a once-a-second commit timeline in backboardd's log;
+env file `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1`, `BGMTL_TIMING=1`). Per second, idle and in motion alike: ~41
+command buffers; our `commit` 7-10 ms each, CA between commits ~16-17 ms (one refresh: CA starts a frame on vsync),
+submit to fence observed ~16.5 ms (asynchronous); CA created a command buffer with none in flight in ~1/3 of
+cases, right after a completion in ~1/5; `waitUntilScheduled` never waited; **process CPU 82-91 %**. So backboardd
+is CPU-bound, not waiting for the GPU. CPU samples of the render thread (framebench `fb-r19`, symbolized with the
+one-off `research/metal-step7/bbcpu.py`, ignored), Control Center (control-a, 4 s): 3106 ms, **ours 62 %** (54 % inside
+`-[BGMTLCommandBuffer commit]`, which replays the recorded draws into Mesa), QuartzCore 28 %. Inside commit:
+`fd_draw_vbo` 802 ms and **`fd_texture_barrier` 248 ms**: on a5xx freedreno's texture barrier is a whole context
+flush (only a6xx has an in-batch one), and Chlorophyll's attachment feedback calls it before every fetching draw
+(CoreAnimation's rounded-corner clip), so each one ended the batch, began a new one (`fd_batch_create`,
+`alloc_batch_locked`, new ringbuffers) and re-emitted all state.
+
+**r20** (`metal-s7n`, libbgair `ab94be09`): `fd5_feedback_barrier` in `air_metal.c` emits libsweetca's
+`SWEETCA_SYS_BARRIER=2` commands (Mesa patch 0008, GL's production setting) in the batch: CCU colour flush (+ depth
+if bound), `CACHE_FLUSH_TS`, WFI, CCU colour invalidate, UCHE invalidate + WFI. Wider than GL's rule: up to four colour
+attachments and depth (CA's corner clip draws into two). Falls back to the flush for UBWC/compressed attachments, no
+or empty batch, queries, a pending fence; `RWA_FB_BARRIER=0` always flushes. Render probe 26/26 plain and `--bb`;
+on the phone 60,000 barriers kept, 0 fell back; 0 faults/crashes.
+
+| Phase (swaps/s) | r18 | r19 (timing on) | r20 |
+| --- | ---: | ---: | ---: |
+| spotlight-repeat | 24.1 | 26.9 | **39.3** |
+| home-a / home-b | (broken) / 33.3 | (broken) / 34.3 | **37.4 / 37.3** |
+| control-a / control-b | 27.1 / 25.8 | 25.8 / 25.0 | **28.4 / 28.2** |
+
+Render thread in control-a: 3106 -> **1892 ms** (commit 1684 -> 992). It is now busy about half the time and spends
+~17 ms CPU per displayed Control Center frame, right at the 16.7 ms refresh, so frames still slip a vsync. What is
+left in commit (r20, ms of 1892): `fd5_emit_state` 354 (`emit_common_consts` 152, `fd5_program_emit` 130,
+`ir3_emit_ubos` 88), `batch_draw_tracking` 150 (`fd_batch_resource_read_slowpath` 132), batch flush at commit 136,
+`rwaTextureSampled` 94, CPU texture uploads 72, command buffer dealloc 72.
+
 ## Open (next)
 
-- Why frames take ~29 ms: per-frame timeline of encode / commit / fence / completed handler / next encode in
-  backboardd; whether sysmem for passes without framebuffer fetch is needed. r19: drop
-  `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` (last env line; added in r10 without effect).
+- More CPU off the commit: the per-draw state above (state that did not change re-emitted?), resource tracking per
+  draw, `rwaTextureSampled`. Then GL vs Metal on the same boot type. Whether sysmem is needed for passes with no
+  framebuffer fetch (GPU time).
+- Drop `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` (last env line; added in r10 without effect).
 - `RWA_CB_DELTA` on a5xx (above).
 - One ASTC_4x4 no-copy texture refresh computes its row as 832 bytes for 828 texels (texel rows instead of block
   rows) in `bgmtl.m` `rwaTexture` (`_ncLength / height`): refused (23 times in r6).

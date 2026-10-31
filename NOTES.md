@@ -1,3 +1,13 @@
+### 2026-10-31 late: Metal step 7: the 29 ms frame found; in-batch a5xx feedback barrier (+10 %, CPU -39 %)
+
+Report mesa/METAL-STEP7.md "Rounds 19-20". backboardd is CPU-bound (~86 % of a core); 54 % of the render thread was
+our commit, much of it a whole-context flush per framebuffer-fetching draw (a5xx texture_barrier). Fix: libsweetca's
+in-batch barrier ported to libbgair (fd5_feedback_barrier; RWA_FB_BARRIER=0 off). VM metal-s7n: libbgair ab94be09,
+libbgmtl a1ac5f12 (opt-in BGMTL_TIMING=1 timeline) in /usr/local/bin. User: r20 clean and smooth. framebench r20:
+home 37.3, CC 28.3, spotlight 39.3 swaps/s (r18: 33.3 / 25.8 / 24.1; GL t19 40-47). CC render-thread CPU 3106 ->
+1892 ms per 4 s. **Phone:** temporary s7tk boot (r20); env file = CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 only.
+NEXT: per-draw state emission / resource tracking in commit, GL vs Metal same-boot comparison.
+
 ### 2026-10-31 23:55: Metal step 7: speed switches back, culprit RWA_CB_DELTA; frame rate unchanged (~33 vs GL 40-47)
 
 Report mesa/METAL-STEP7.md "Rounds 15-18". User checked each round: r15 pool+linear on clean; r16 no
