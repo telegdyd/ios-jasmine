@@ -140,6 +140,20 @@ mesa)
 			"mesa/metal/test/$shader.metal" -o "$OUT/$shader.air"
 		xcrun --sdk iphoneos metallib "$OUT/$shader.air" -o "$OUT/$shader.metallib"
 	done
+	# jasmine step 6: opt-in injector and framework-only registration/render probe.
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
+		-DRWA_SWEETGPU=1 -dynamiclib mesa/metal/inject/bgmtl_inject.m -L"$OUT" -lbgmtl \
+		-framework Foundation -framework Metal -install_name @rpath/bgmtl_inject.dylib \
+		-Wl,-rpath,@loader_path -o "$OUT/bgmtl_inject.dylib"
+	codesign -f -s - "$OUT/bgmtl_inject.dylib"
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
+		-Wno-deprecated-declarations -DBGMTL_REGISTERED_PROBE=1 mesa/metal/test/bgmtl_render_probe.m \
+		-framework Foundation -framework Metal -framework IOSurface \
+		-o "$OUT/bgmtl_registered_probe"
+	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgmtl_registered_probe"
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O2 -Wall -Werror \
+		mesa/metal/test/bgmtl_exec.c -o "$OUT/bgmtl_exec"
+	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgmtl_exec"
 	# screenshot through the render server (G2 step 3)
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 mesa/darwin/sweetgl/sweet_shot.m -o "$OUT/sweet_shot" -framework Foundation -framework IOSurface
 	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/sweet_shot"
