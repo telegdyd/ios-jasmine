@@ -1,3 +1,13 @@
+### 2026-10-31 22:30: Metal step 7: lock screen through Metal CLEAN (flicker fixed), not yet confirmed by user
+
+Report mesa/METAL-STEP7.md (rounds r4-r6). User saw black areas rolling down the panel on r3/r4. Fixes: compositor
+drawables drawn in a private shadow + one GPU copy per command buffer (BGMTL_BB; BGMTL_SHADOW=0 off), and
+rwa_texture_copy via the 3D engine because the a5xx 2D blitter's copies come out EMPTY on the a512 (new render
+probe P13; 26/26 plain and --bb). VM metal-s7h: libbgair 3d66d10d, libbgmtl 477d1be6, libsweetca 1441c96d
+unchanged. Image shim/out/shim-boot-j0120on-metal-s7ds.img (+BGMTL_DEFER_SCHEDULED=1, no sweetgpu_tickets).
+r6 captures clean, 0 refusals/crashes/faults. **Phone:** on the temporary s7ds boot. NEXT: user's look at the panel,
+unlock/home, frame times vs GLES, ASTC no-copy row bug.
+
 ### 2026-10-31 22:10: Metal step 7 STARTED: probes re-run PASS; backboardd draws the lock screen through Metal
 
 User: "re-run the probes, then start step 7". Report mesa/METAL-STEP7.md. Probes with corpus libbgair (VM metal-s7a):

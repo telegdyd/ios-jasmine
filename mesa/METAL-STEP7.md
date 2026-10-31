@@ -49,13 +49,32 @@ Fixes in r3:
 - Metal 43 BGR5A1 resolves to `B5G5R5A1` when the screen lacks R5G5B5A1; `rwa_texture_write` / `rwa_texture_read`
   exchange the red and blue fields. IOSurface imports of format 43 would show red/blue exchanged (not seen).
 
+4. **r4** (image s7ds: `+BGMTL_DEFER_SCHEDULED=1`, CA told "scheduled" only after the GPU finished; `sweetgpu_tickets=1`
+   dropped for command-line room, libsweetca's only): log clean, but the user saw black areas "running down" the panel
+   like an old TV, and a box around the camera button that came and went.
+5. **r5** (`metal-s7e`, drawable shadows): the screen went entirely black.
+6. **r6** (`metal-s7h`): **lock screen clean** in every swap-surface capture (`s7-r6-shot1.{2,3}.png`): wallpaper,
+   clock, "Swipe up to open", blurred camera button; 0 refusals/crashes/faults.
+
+What the flicker was (measured vs guessed): CA's server draws into a swap surface the panel's scaler may still read
+(the kernel counts ~65 % of GL submits and ~97 % of Metal submits drawing into a held surface; same CA buffer logic).
+GL renders in GMEM, so memory only goes from one finished frame to the next; Chlorophyll forces sysmem (fbfetch
+emulation), so the clear's black is in memory while the frame's draws follow (guess for the mechanism; the fix below
+removed the symptom). Fix: in the compositor (`BGMTL_BB`) each imported drawable is drawn in a private shadow and
+copied to the surface in one GPU blit per command buffer (`BGMTL_SHADOW=0` turns it off).
+
+r5's black screen was a second bug, reproduced in a test process: **the a5xx 2D blitter's copies come out empty**
+on the a512 (new render probe P13: private texture -> imported surface 12800/12800 texels zero; with `--bb` also
+private -> private). `rwa_texture_copy` now sends renderable same-format 2D copies through the 3D engine (a scissored
+`pipe->blit`, which fd5_blitter declines, so u_blitter draws it). Render probe 26/26 plain and 26/26 `--bb`, quad
+output and compute 11/11 unchanged. Not investigated: why the 2D blitter writes nothing (Mesa fd5 vs our kernel);
+`resource_copy_region` remains for compressed/other copies.
+
 ## Open (next)
 
-- **The black bands.** Guess, not verified: the CPU-side captures read stale cache lines (`BGMTL_BB` skips the
-  per-commit clean/seed bump; a new surface's zeros are black), so the captures may not show what the panel shows.
-  Alternative: CA swaps before the GPU finished the frame. Needs the user's look at the panel and/or a capture that
-  cleans caches first; then check `waitUntilScheduled`/present ordering against IOMFB swap.
+- The user's look at the panel on r6 (captures clean). Whether `BGMTL_DEFER_SCHEDULED` is still needed with shadows.
+- Cost of the shadow copy (6 MB per frame) and of the deferral: frame times vs GLES not measured yet.
 - One ASTC_4x4 no-copy texture refresh computes its row as 832 bytes for 828 texels (texel rows instead of block
-  rows) in `bgmtl.m` `rwaTexture` (`_ncLength / height`): refused once per boot.
+  rows) in `bgmtl.m` `rwaTexture` (`_ncLength / height`): refused (23 times in r6).
 - Unimplemented selectors answered zero: `setCompletionQueue:`, `setGPUPriority:` (command queue).
 - Not yet: unlock/home screen, UI rounds, frame times vs GLES, libsweetca + libbgair in one process.
