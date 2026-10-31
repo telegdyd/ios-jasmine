@@ -67,3 +67,7 @@ command because exporting code to the fork requires separate user approval.
 Commit ff309fc was subsequently created locally. Do not assume it is on origin.
 Once the user authorizes pushing to `telegdyd/Chlorophyll` branch `adreno5xx`,
 push it, then commit the parent submodule pointer as the handoff requires.
+
+Publication update: user explicitly approved push; ff309fc is now pushed to
+`telegdyd/Chlorophyll` branch `adreno5xx`. The parent publication commit records
+the submodule pointer. The earlier rejection above is historical.

@@ -1,3 +1,12 @@
+### 2026-10-31: Metal step 1 publication authorized and Chlorophyll pushed
+
+User explicitly approved commit/push. Chlorophyll ff309fc1512e932a840856e3687b524a0bea71f4 pushed to
+origin/adreno5xx (telegdyd/Chlorophyll). Parent e254791 holds build/report changes; this milestone commits
+the mesa/metal pointer and pushes jasmine. Earlier publication-pending entries are historical.
+Phone access remains prohibited until user makes it available. Further offline work: inspect existing
+metallib inputs, prepare a native macOS AIR/a512 compiler harness, and audit step 2 without applying any
+shared ir3 changes that would need device validation.
+
 ### 2026-10-31: Metal step 1 compiled offline; STOP before device access (user instruction)
 
 Report mesa/METAL-STEP1.md. Chlorophyll local adreno5xx commit ff309fc1512e932a840856e3687b524a0bea71f4:

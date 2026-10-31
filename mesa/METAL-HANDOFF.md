@@ -22,8 +22,8 @@ and the local build integration compile the frontend and runtime C for iOS arm64
 VM `metal-s1e`: existing outputs pass, libsweetca byte-identical to production;
 libbgair link still lacks three documented backend symbols. No phone access.
 User requested stopping before device access: stop before step 2's regression
-checks. Fork push awaits separate approval (automatic review rejected it), then
-the parent submodule pointer must be committed. The following bullets describe
+checks. Fork push was explicitly authorized by the user and `ff309fc` is now on
+origin/adreno5xx; the parent pointer is recorded in the publication milestone. The following bullets describe
 the original starting state, not the completed step 1.
 
 - Fork: https://github.com/telegdyd/Chlorophyll. `main` = upstream ry-diffusion/Chlorophyll @ `787338f`; our work goes on
