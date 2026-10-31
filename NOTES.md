@@ -1,3 +1,14 @@
+### 2026-11-01: Metal step 7: unchanged state no longer re-bound per draw (commit CPU -20 %), user check pending
+
+Report mesa/METAL-STEP7.md "Rounds 22-25". libbgair skips binds equal to the last draw's (rwa_device.gs;
+RWA_STATE_CACHE=0 off), builds error text only on failure; libbgmtl refreshes CPU-memory textures once per commit
+and retains only bound slots. VM metal-s7q: libbgair 852bf5dd, libbgmtl b7d0a818 (+ render probe) in
+/usr/local/bin; probe 26/26 --bb. framebench r25b (settled boot): home 39.3, CC 27.9/29.9 swaps/s (r20 37.3,
+28.4/28.2). Commit CPU per unit of CA work -22 % home, -20 % CC. Benchmarks started right after boot are skewed by
+aggregated/trustd/accessoryupdaterd CPU (r23-r25). **Phone:** temporary s7tk boot (r25); env file
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 + BGMTL_TIMING=1. NEXT: user's look at the panel; then per-batch state
+emission, resource tracking, recorded-work dealloc.
+
 ### 2026-10-31 late: Metal step 7: the 29 ms frame found; in-batch a5xx feedback barrier (+10 %, CPU -39 %)
 
 Report mesa/METAL-STEP7.md "Rounds 19-20". backboardd is CPU-bound (~86 % of a core); 54 % of the render thread was

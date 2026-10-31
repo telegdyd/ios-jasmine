@@ -169,11 +169,55 @@ left in commit (r20, ms of 1892): `fd5_emit_state` 354 (`emit_common_consts` 152
 `ir3_emit_ubos` 88), `batch_draw_tracking` 150 (`fd_batch_resource_read_slowpath` 132), batch flush at commit 136,
 `rwaTextureSampled` 94, CPU texture uploads 72, command buffer dealloc 72.
 
+## Rounds 22-25: state that did not change, bound again every draw (r25 not yet checked by the user)
+
+Yes: `rwa_render_draw` bound blend, depth/stencil, rasterizer, both shaders, vertex elements and buffers, viewport,
+scissor and stencil reference for every draw, and freedreno marks state dirty on every bind, equal or not (Mesa
+26.2.5 `freedreno_state.c`, `freedreno_program.c`). A dirty program re-runs `fd5_program_emit` and re-tracks every
+bound resource. Changes, all in Chlorophyll:
+
+- `rwa_device.gs` in `air_metal.c`: what the last draw bound; an equal bind is skipped (pointers for state objects;
+  values for viewport, scissor, stencil ref; resource + offset for vertex buffers and for constant buffers that are
+  real buffers). `gs_invalidate` when a pipeline or depth/stencil state is destroyed (they bind NULL) and before
+  `util_gen_mipmap`. `RWA_STATE_CACHE=0` binds everything as before. A new batch still re-emits everything
+  (freedreno's `fd_context_all_dirty`), which needs nothing from us.
+- User constant buffers (CA's per-draw uniforms at offsets the a5xx cannot bind) are bound every time. r22 also
+  compared and copied their bytes to skip equal ones: `memcmp` + `memmove` cost 124 ms per 8 s, more than the skip
+  saved (normalised commit 1.84 -> 2.21, worse). Dropped in r24.
+- Error text built only on failure: `snprintf` of "colour attachment %u" per attachment and "buffer %u of %s" per
+  buffer ran on every draw (≈1 % and ≈4 % of the commit).
+- `bgmtl.m`: a texture over CPU memory (`_linSrc`, `_ncBytes`) is refreshed once per commit, and again after a CPU
+  blit in the replay (`bg_refresh_epoch`), instead of at every draw that samples it. Each refresh after the first
+  wrote a texture the open batch had already read.
+- `bgRecordDraw` retains only up to the highest bound slot of each table (was all 16 of four tables).
+
+**Measuring.** Swap rates right after boot are not comparable: `round.sh` (ignored helper: env file, `bb.py`,
+framebench with the netlog) started the benchmark 3 s after boot, while `aggregated` (85 % CPU), `trustd` (59 %) and
+`accessoryupdaterd` (34 %) were still busy. r23-r25 then showed slow early phases and a home-a with no swaps; r25
+re-run minutes later (r25b) was normal. The profiler also drops a varying share of samples, so absolute ms differ
+between runs; costs below are our time divided by QuartzCore's own time on the render thread in the same phase
+(`research/metal-step7/norm.py`, ignored), which my changes do not touch.
+
+| Round (VM build) | change | home-b | control-a / -b | commit / CA, home-a | commit / CA, control-a |
+| --- | --- | ---: | ---: | ---: | ---: |
+| r20 (`metal-s7n`) | before | 37.3 | 28.4 / 28.2 | 1.68 | 1.84 |
+| r22 (`metal-s7o`) | cache + byte compare | 35.6 | 26.5 / 26.2 | 1.88 | 2.21 |
+| r23 (`metal-s7o`) | same, `RWA_STATE_CACHE=0`, bench at boot | 33.8 | 25.0 / 24.5 | - | 2.79 |
+| r24 (`metal-s7p`) | no byte compare, refresh per commit, bench at boot | 38.2 | 27.0 / 25.7 | - | 1.56 |
+| r25b (`metal-s7q`) | + lazy error text, fewer retains, settled boot | **39.3** | **27.9 / 29.9** | **1.31** | **1.48** |
+
+r25 (`metal-s7q`: libbgair `852bf5dd`, libbgmtl `b7d0a818`): render probe 26/26 `--bb`; 0 faults/crashes, 0 command
+buffer failures, feedback barriers all kept in the batch. Commit cost relative to CA's own work: −22 % home, −20 %
+Control Center; texture refresh on home 0.37 -> 0.16, `check_bindings` 0.06 -> 0.00-0.03. Left in commit (r25b
+control-a, per unit of CA time): `fd_draw_vbo` 0.85 (state emit 0.42, resource tracking 0.23), batch flush and
+submit 0.20 (the kernel submit call itself is most of it, same path as GL), command buffer dealloc 0.13.
+
 ## Open (next)
 
-- More CPU off the commit: the per-draw state above (state that did not change re-emitted?), resource tracking per
-  draw, `rwaTextureSampled`. Then GL vs Metal on the same boot type. Whether sysmem is needed for passes with no
-  framebuffer fetch (GPU time).
+- More CPU off the commit: state emission per new batch (each render-target switch re-emits everything), resource
+  tracking per draw, the dealloc of recorded work. Then GL vs Metal on a settled boot of each. Whether sysmem is
+  needed for passes with no framebuffer fetch (GPU time).
+- Benchmark only a few minutes after boot (background services).
 - Drop `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` (last env line; added in r10 without effect).
 - `RWA_CB_DELTA` on a5xx (above).
 - One ASTC_4x4 no-copy texture refresh computes its row as 832 bytes for 828 texels (texel rows instead of block
