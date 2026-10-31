@@ -155,9 +155,9 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   (`_LimitLoadToDeviceTree`), which `tools/mkadt.py` made only for topaz. Fixed on branch `jasmine`
   (8fda077): `mkadt.py --wlan`, passed by `mkimg.sh` when EXTRA_ARGS has `wifi=1` (other images unchanged).
 - **j83-wlan (22:52): wifid scans, networks show in Settings (user saw them), and the first join works at
-  the 802.11 level**: wifid ASSOCIATE (TelekNet, WPA2, passphrase) -> `join: TelekNet 2472 MHz WPA2`, auth
+  the 802.11 level**: wifid ASSOCIATE (the home network, WPA2, passphrase) -> `join: <ssid> 2472 MHz WPA2`, auth
   status 0, assoc status 0 aid 7, 4-way handshake, `WPA2 keys installed (group key yes, idx 2)`,
-  `joined TelekNet` in 56 ms; wifid reads CURRENT_NETWORK/SSID/BSSID fine after it, link stays up.
+  `joined <ssid>` in 56 ms; wifid reads CURRENT_NETWORK/SSID/BSSID fine after it, link stays up.
   **No IP address** (Settings spins, no address under the network's info): DHCP never completes; the data
   path after the keys has no log (counters existed, never printed) -> j0084.
   The **reboot afterwards hung**: modem stop-ack after 128 ms, then `mba: halt modem port: ack 0 idle 0`
@@ -169,7 +169,7 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 - j0085: Wi-Fi off before the modem stop, as Linux (ath10k leaves the AP and sends WLFW WLAN_MODE OFF, then
   remoteproc stops the modem): `topaz_modem_stop` (not on a panic) asks the modem thread for `w_teardown()`
   and WLAN_MODE OFF (mode 4), waits up to 1.5 s for the answer, then the stop handshake as before.
-- **j85-wlan (23:13, 420 s)**: TelekNet joined again (keys in 51 ms; the user tapped it: wifid does not
+- **j85-wlan (23:13, 420 s)**: the home network joined again (keys in 51 ms; the user tapped it: wifid does not
   auto-join on boot, see the handoff). j0084's counters: rx works
   (478 frames up to en0: ARP, IGMP, SSDP/WS-Discovery multicast), but **`tx queued 0`**: iOS never sent a
   frame (redwood_net: `0 frames sent`). Cause: configd had **no network service at all** —
@@ -195,7 +195,7 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   j0086 did not run; the phone was left in iOS.
 - j0087: scoped routes for ue0 (192.168.7/24, 169.254/16) and the 5140/5141/5142 listeners bound to ue0
   (IP_BOUND_IF, inherited by accepted connections; also keeps them off the Wi-Fi network).
-  **j87-wlan (23:59)**: both scoped routes added (0), the user tapped TelekNet at ~00:02, joined, DHCP
+  **j87-wlan (23:59)**: both scoped routes added (0), the user tapped the home network at ~00:02, joined, DHCP
   DISCOVERs out, and the USB log stopped at 00:02:06 again. From the PC, 169.254.7.2 did not even answer
   ARP (neighbour state Probe; the PC's adapter "ios-sweet Sweet iOS (USB Ethernet)" had 169.254.218.81).
   Cause, in XNU: `arp_lookup_route()` never scopes a 169.254 lookup ("don't constrain the lookup"), so IPv4
@@ -213,7 +213,7 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   whole 300 s, the reboot over the command port and the park worked (69%, 70%). No Wi-Fi join happened in
   either round, so the link with Wi-Fi up is still to be seen. The modem port never halts, Wi-Fi or not.
 - **j89c-wlan (01:02, 360 s): the USB link survives Wi-Fi.** PC on 192.168.7.1 by DHCP, log over
-  192.168.7.2; the user joined TelekNet at t=26 s; the log ran on (`wifi data` at 36/46/56 s: 1805 frames sent,
+  192.168.7.2; the user joined the home network at t=26 s; the log ran on (`wifi data` at 36/46/56 s: 1805 frames sent,
   all completed ok, 0 drops; 2720 received up to en0). Reboot over the command port while joined at 01:05:53:
   the j0086 teardown made the WLAN firmware assert at once (`Asserted in wlan_vdev.c`, modem FATAL),
   WLAN_MODE OFF unanswered (2.5 s), no stop handshake, modem port not halted -> mss_restart left alone ->
@@ -267,7 +267,7 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   as ath10k, both -95 dBm based, averaged over ~8), into the station state; NOISE (17) answered with -95 dBm
   (ath10k/ath11k's default floor); the link event gets snr/noise; the wifi-station thread posts event 39
   every 5 s while joined and idle. `wifi data:` lines now end with `signal N dBm (beacons B, ppdus P)`.
-- **j93-wlan (02:37-02:49)**: TelekNet joined at t=35.7 s (keys in 63 ms), signal -52..-57 dBm (beacons 2303,
+- **j93-wlan (02:37-02:49)**: the home network joined at t=35.7 s (keys in 63 ms), signal -52..-57 dBm (beacons 2303,
   ppdus ~4100 by the end), LQM events every 5 s; **the bars turned white** (user), ~15 s after the join (the
   first quiet 5 s came late, wifid scans after a join): j0095 posts one with the link-up event too.
   **Reboot while joined hung again, without mss_restart**: wlan off 258 ms (clean leave), stop-ack 51 ms,
@@ -293,7 +293,7 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 - Good reboot, every round: SIGTERM wait ends at ~0.65 s, sync 0.19 s, vfs_unmountall(nonsystem) at
   ~0.87 s, vfs_unmountall(system) at ~0.9 s, then the USB link goes with the hfs unmount.
 - **j96 (02:20), j96b (02:27), j96c (02:34), j96d (02:42): four joined reboots, all clean** (user joined
-  TelekNet each time). Joined reboots overall: 3 hung (j83, j85, j93), 6 fine (j89c, j92, j96a-d).
+  the home network each time). Joined reboots overall: 3 hung (j83, j85, j93), 6 fine (j89c, j92, j96a-d).
 - Lead tested and dropped: in j83 and j85 the last logged line is `SMP --- sample N` (sweet_sample.c,
   every 120 s) printed right after `launchd quiesce complete`, with no process line after it. j96c/d
   timed the reboot onto a sample from the PC (landed in the modem stop, ~1 s jitter). j0097 adds
@@ -312,20 +312,20 @@ The state and the sequence match Linux; the difference is in how XNU touches the
 ## 2026-10-25 03:10-04:00 CET (j0098): no auto-join explained, a reboot stall caught
 
 - Known networks are stored fine: `/private/var/preferences/SystemConfiguration/com.apple.wifi.plist`,
-  "List of known networks" holds TelekNet (WPA2, ch 13, password date, lastJoined), and wifid loads it
+  "List of known networks" holds the home network (WPA2, ch 13, password date, lastJoined), and wifid loads it
   after the first unlock ("Fetched 1 known networks from the plist").
 - **wifid's own log file**: `LoggingFileEnabled = true` in that plist (wifid notices the change live) makes it
   write `/private/var/logs/wifimanager.log` (WFLog lines). It showed auto-join running on every trigger and
   ending in `__WiFiDeviceManagerPostAutoJoinNotification: auto-join failed with no network found. Unsuitable
-  network count:0`, while the driver heard TelekNet (-52 dBm) in every scan.
+  network count:0`, while the driver heard the home network (-52 dBm) in every scan.
 - CoreWiFi's `AUTO-JOIN:` lines go only to os_log. Not reachable on stderr: `applog_name`/`sweetnull`,
   `OS_ACTIVITY_DT_MODE`, `ACTIVITY_LOG_STDERR` in the launchd job with `StandardErrorPath` to a file (file made,
   stays empty); `applog=1` (all daemons' stdio to the console) killed the USB log after ~17 s.
   **What works: the persisted unified log.** `tools/tracev3-strings.py` decompresses a tracev3
   (LZ4 `bv41` chunksets) and prints its strings; the arguments (`%@`) are plain text, so CoreWiFi's lines come
   out nearly whole. Files: `/private/var/db/diagnostics/{Persist,Special}/*.tracev3` (pull with sweet-fs).
-- **The cause**: `AUTO-JOIN: Found matching network (TelekNet ... rssi=-57 ...)`, then `Join candidate
-  'wifi.network.ssid.TelekNet' is not allowed (error=(1 'Below minimum RSSI threshold') ... rssi=-54`.
+- **The cause**: `AUTO-JOIN: Found matching network (<ssid> ... rssi=-57 ...)`, then `Join candidate
+  'wifi.network.ssid.<ssid>' is not allowed (error=(1 'Below minimum RSSI threshold') ... rssi=-54`.
   wifid's check (`sub_10010b0a0`, the one that logs `__WiFiDeviceManagerGetAutoJoinThreshold`) compares the
   network's RSSI with a threshold that `WiFiDeviceOpen` copies from Apple80211 **RSSI_BOUNDS (106)**, which we
   refused (`wifid gets 106 (RSSI_BOUNDS), value 0, 16 bytes: REFUSED`): the threshold stayed 0 dBm.
@@ -334,7 +334,7 @@ The state and the sequence match Linux; the difference is in how XNU touches the
   through the CFString pointers).
 - j0098: 106 answered: min -100, max 0, threshold -80 dBm (our choice). Build run 40156300246.
   **j98-wlan (04:02-04:07): auto-join works.** `wifid gets 106 (RSSI_BOUNDS) ... answered`; nobody touched
-  the phone: wifid sent ASSOCIATE itself (TelekNet, the stored key as a 32-byte PMK), joined at t=11.8 s after
+  the phone: wifid sent ASSOCIATE itself (the home network, the stored key as a 32-byte PMK), joined at t=11.8 s after
   the Wi-Fi start (keys in 58 ms), DHCP, then traffic (`wifi data` at t=101 s: 3125 sent, all ok; 3397 up to
   en0; -54 dBm). The reboot while joined was clean (wlan off 251 ms, stop-ack 49 ms); parked 82%.
 - **Reboot stall caught by j0096 (round j97-aj2, unjoined, 03:2x)**: `RootUnmount notification` took 30 s
@@ -386,7 +386,7 @@ Whether j83/j85/j93's joined hangs are the same is not proven (their capture end
 - Build run 40159794543 (j0099 applied; only the 4 usual blacktop patches skipped), image `shim-boot-j99-wlan.img`
   (same arguments as j98). **j99-wlan (05:03-05:09)**: home screen, icons, wallpaper, dock drawn normally (user);
   wraps without the lifetime wire: 6 logged (backboardd's 512 B LUT, five 180x180 icons, a 28x28); auto-join
-  TelekNet at t=12.2 s. **Joined reboot clean**: leave in 26 ms, wlan off 258 ms, stop-ack 51 ms, kill phase 0.92 s,
+  the home network at t=12.2 s. **Joined reboot clean**: leave in 26 ms, wlan off 258 ms, stop-ack 51 ms, kill phase 0.92 s,
   `SDW pinned client memory (RootUnmount notification): 0 wrapped surfaces alive, wired by 0 GPU imports and 0 pins`,
   RootUnmount 1 ms, vfs_unmountall(system) at +1124 ms, log ends with the hfs unmount as in every good reboot.
 - **After that reboot the phone powered off** instead of resetting to fastboot (user: never happened before in this
