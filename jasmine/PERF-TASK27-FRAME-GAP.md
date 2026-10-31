@@ -10,7 +10,7 @@ present queue answered "done" for a swap only once a *later* swap latched, which
 swap, so every poll ran into its 3 ms timeout. Kernel patch j0119 (`sweetfb_wait0=1`) calls `SwapWait(0)` done
 once the newest swap is on the panel. ABBA (8 temporary boots): Control Center A **36.6 -> 40.4 swaps/s (+11 %)**,
 Home B +6 %, Control Center B +5 %, Spotlight within spread; every B round's mean CC frame is below every A
-round's; 0 faults. Not installed yet: that needs the user's OK (j0119 default on, flashed to boot_b).
+round's; 0 faults. **Installed 2026-10-31 15:03 (user OK): boot_b = j0119 with the fix on by default.**
 
 ## Method: a per-frame timeline from framebench's own events
 
@@ -123,4 +123,22 @@ the previous swap is free only after the current one latched), a real dependency
 
 Install j0119 with `SwapWait(0)` latched semantics **on by default** (`sweetfb_wait0=0` to turn it off), as a
 new boot_b image with slot b's command line unchanged (the default flips in the kernel), plain reboot check
-like task 26. Needs the user's OK (flash). Not done yet.
+like task 26.
+
+## Installed (2026-10-31 15:03, user: "Yes, install j0119")
+
+The patch was amended to default on (`uint32_t wait0 = 1`; `sweetfb_wait0=0` restores the old rule). VM build
+`xnu/out-jasmine-j0119on` (14:58). Image `shim/out/shim-boot-j0119on-slotb.img` (SHA256 a38527dc...,
+`research/t27/mkslotb.sh`): command line byte-identical to j0118's boot_b (`shim/out/args-j0119on-slotb.txt`),
+828x1792@2 ADT (canvas-width 828, as in the j0118 image; mkadt output differs between runs in one byte).
+Flashed boot_b only, from fastboot, `research/t27/install.sh` (phone lock held); production libsweetca
+unchanged (21ca5c4d). Rollback: `fastboot flash boot_b shim/out/shim-boot-j0118-slotb.img` (09377837...).
+
+Plain boot into slot b (15:03:19, log `logs/netlog-t27-installed.txt`): abmark=b, command port after 19 s,
+`glthread on`, 0 SMMU faults/panics, 0 ticket/submit errors. One framebench capture after 150 s settle
+(`research/ab/t27-installed`): Home B 41.24/s, CC A 36.84, CC B 36.78, Spotlight 36.85. The fix is active
+(CC: 1 SwapWait(0) call over 0.1 ms in 357 swaps, 0.14 ms; A boots had 737-763 x 3 ms). This single capture
+sits at the low end of the B rounds (CC A frame 27.6 ms, render CPU 17.5): the render thread idles 4.9 ms per
+frame in CA's run loop waiting for vsync, as in B1, and its flip->latch was 12.3 ms (ABBA 8.9-10.5), so the
+frame is set by gdrv0 (19.2) + GPU (22.1 occupied) + vsync phase. Read as run-to-run spread of a gdrv0/GPU-bound
+frame, not a loss of the fix. Phone parked in the charging shell, 72 %, 15:08.

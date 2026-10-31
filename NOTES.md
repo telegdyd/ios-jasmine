@@ -1,3 +1,14 @@
+### 2026-10-31 15:10: task 27 j0119 INSTALLED to boot_b (user: "Yes, install j0119")
+
+j0119 patch amended: SwapWait(0) fix on by default (`sweetfb_wait0=0` = old rule). VM build xnu/out-jasmine-j0119on, image
+shim/out/shim-boot-j0119on-slotb.img (SHA256 a38527dc...; cmdline byte-identical to j0118's boot_b, 828x1792 ADT), flashed
+boot_b 15:03 (research/t27/install.sh). Plain boot (logs/netlog-t27-installed.txt): abmark=b, glthread on, 0 faults/ticket
+errors; framebench research/ab/t27-installed: Home B 41.2/s, CC A 36.8, CC B 36.8, Spotlight 36.9; fix active (SwapWait(0)
+timeouts 0); this capture at the low end of the B rounds (render thread idles for vsync, gdrv0 19 / GPU 22 bound, unlucky
+flip->latch 12.3 ms). Rollback: `fastboot flash boot_b shim/out/shim-boot-j0118-slotb.img` (09377837...). **Phone:**
+charging shell, 72 %; boot_b j0119on, production lib 21ca5c4d unchanged. **Next CC limit:** gdrv0 (~19 ms freedreno
+emit/submit) and GPU (~21 ms).
+
 ### 2026-10-31 14:55: task 27: the CC frame gap is CA sleeping in SwapWait(0); kernel j0119 fixes it (+11 % CC A); not installed, user's call
 
 Report jasmine/PERF-TASK27-FRAME-GAP.md. New tools/g2/frametl.py (per-frame timeline from framebench events + samples,
