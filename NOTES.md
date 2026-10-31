@@ -1,3 +1,12 @@
+### 2026-10-31 17:13: task 28 level 2 INSTALLED as production libsweetca (user: "Install level 2")
+
+Patch mesa/patches/0016-freedreno-a5xx-sysbarrier-default-on.patch: SWEETCA_SYS_BARRIER defaults to 2 (=0 off).
+/usr/local/bin/libsweetca.dylib = VM build xnu/out-mesa-t28b (0001-0016), SHA256 bb3a7a9e... (readback matches).
+Backup of 21ca5c4d: phone /usr/local/bin/libsweetca-pre-t28.dylib, local research/libsweetca-backup/
+libsweetca-pre-t28-21ca5c4d.dylib; rollback = copy back + reboot. boot_b j0119on unchanged. Plain reboot 17:07
+(logs/netlog-t28-installed.txt): glthread on, level 2 active, 0 faults/ticket errors, dumps normal; framebench
+research/ab/t28-installed: Home B 57.0/s, CC A 43.8, CC B 43.5, Spotlight 40.7. **Phone:** charging shell, 73 %.
+
 ### 2026-10-31 16:55: task 28: CC GPU idles ~10 ms/frame waiting on gdrv0; SYS_BARRIER=2 cuts gdrv0 3.3 ms but no frame gain; heat test done
 
 Report jasmine/PERF-TASK28-GPU-TIME.md. Patch mesa/patches/0015-freedreno-gpu-batch-trace.patch (default off; WSL tree

@@ -167,3 +167,18 @@ the USB charger throughout (no unplugged drain run).
   battery.
 - Reading: 78 C after 10 min, still rising, is the point where task 13 (TSENS-driven caps) matters for longer use.
   Nothing failed.
+
+## Installed (2026-10-31 17:06, user: "Install level 2")
+
+`mesa/patches/0016-freedreno-a5xx-sysbarrier-default-on.patch`: `SWEETCA_SYS_BARRIER` defaults to 2 (`=0` restores
+a batch end at every barrier). gltest's default mode still sets 0 itself. VM build `xnu/out-mesa-t28b` (0001-0016),
+libsweetca SHA256 bb3a7a9ef7927bd1... = /usr/local/bin/libsweetca.dylib (readback matches). Backup of the previous
+production lib 21ca5c4d: phone /usr/local/bin/libsweetca-pre-t28.dylib and ignored
+research/libsweetca-backup/libsweetca-pre-t28-21ca5c4d.dylib. Rollback = copy it over libsweetca.dylib, reboot.
+boot_b unchanged (j0119on), nothing flashed. Script `research/t28/install.sh`.
+
+Plain reboot into installed boot_b (17:07, `logs/netlog-t28-installed.txt`): `glthread on`, `sysbarrier retained ...
+level 2` without any settings file, 0 SMMU faults/panics, 0 ticket/submit errors, Home/CC screen dumps normal
+(0 % black). framebench after 150 s settle (`research/ab/t28-installed`): Home B 57.0/s, CC A 43.8, CC B 43.5,
+Spotlight 40.7, at the top of every earlier installed capture (task 27 installed: 41.2 / 36.8 / 36.8 / 36.9; that
+capture was on the low side) and in line with the ABBA rounds above. One capture, so not a measured gain.

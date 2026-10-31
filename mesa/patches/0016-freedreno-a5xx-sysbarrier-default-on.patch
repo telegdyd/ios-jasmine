@@ -1,0 +1,31 @@
+From c31d121f330383f1b41d363b52f025eaa57a46b9 Mon Sep 17 00:00:00 2001
+From: Xiaomi <x@x>
+Date: Sat, 31 Oct 2026 17:03:43 +0100
+Subject: [PATCH] freedreno/a5xx: retained sysmem feedback barriers (level 2)
+ on by default (SWEETCA_SYS_BARRIER=0 off)
+
+---
+ src/gallium/drivers/freedreno/a5xx/fd5_context.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_context.c b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
+index 5f8e4a3..a5d6180 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_context.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_context.c
+@@ -57,8 +57,11 @@ fd5_context_create(struct pipe_screen *pscreen, void *priv,
+    if (!fd5_ctx)
+       return NULL;
+ 
+-   /* 0 off, 1 narrow (1-5 draws, no clear, nothing else pending), 2 widened */
+-   fd5_ctx->sysmem_barrier_level = debug_get_num_option("SWEETCA_SYS_BARRIER", 0);
++   /* 0 off, 1 narrow (1-5 draws, no clear, nothing else pending), 2 widened.
++    * Task 28: 2 is the default (half the batches, gdrv0 -3.3 ms per CC frame);
++    * SWEETCA_SYS_BARRIER=0 ends the batch at every barrier as before.
++    */
++   fd5_ctx->sysmem_barrier_level = debug_get_num_option("SWEETCA_SYS_BARRIER", 2);
+    fd5_ctx->gmem_fbread = debug_get_num_option("SWEETCA_GMEM_FBREAD", 0);
+    fd5_ctx->fbread_tile = debug_get_num_option("SWEETCA_GMEM_FBREAD_TILE", TILE5_2) & 3;
+    fd5_ctx->base.sysmem_barrier_keeps_clears = fd5_ctx->sysmem_barrier_level >= 2;
+-- 
+2.47.3
+
