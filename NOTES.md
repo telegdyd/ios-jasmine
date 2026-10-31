@@ -1,3 +1,19 @@
+### 2026-10-31 19:15: Metal first phone step: ARM64 frontend + GLES/UI baseline PASS
+
+User now authorized phone access, requested ONE step then report. Report mesa/METAL-DEVICE-BASELINE.md.
+No compiler changes: handoff step 2 NOT completed. Existing VM metal-s1e air2nir and gltest copied as
+/usr/local/bin/{air2nir,gltest}-metal-baseline, synthetic metallib also there. ARM64 frontend lists 7
+functions and translates add/u2f/negative/vertex/fragment, all exit 0 (CPU translation, NOT GPU execution).
+GL renderer FD512 / Mesa 26.2.5: default, env glthread off, barrier off/narrow/wide: 5 runs each 85 PASS,
+zero FAIL, zero wrong pixels, exit 0. Standalone default does not enable glthread (needs --glthread).
+UI gesture round 19:14:11–19:14:47 returned 0; Home capture visually intact. Raw logs/readback/script:
+research/metal-device-baseline/. Console collector connected but got no kernel payload: no claim about
+fault/panic counts. Production readback SHA256 bb3a7a9ef7927bd189e9b74c8799610df7f4abec26bcb958b5712d688a12a445.
+No reboot/flash/production replacement or boot-setting change. Phone left in installed iOS, display on,
+charging 71%, 39.3 C, lock released; side test files remain. Next: focused a512 integer-to-float rounding
+probe before/after first ir3 patch, then glthread/pixel tests and temporary-boot candidate UI comparison.
+STOPPED after this baseline as requested. This milestone committed/pushed with report (see git log).
+
 ### 2026-10-31 19:07: task 19 INSTALLED (user: "Install it"): boot_b j0120on + no-parallax /s.dylib
 
 boot_b = shim/out/shim-boot-j0120on-slotb.img (bf33a55f...; kernel xnu/out-jasmine-j0120on: port polling threads soft-bound to Silver
