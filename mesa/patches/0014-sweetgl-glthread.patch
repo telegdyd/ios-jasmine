@@ -1,0 +1,1378 @@
+From 2178356b4e69dde391c04cace163b8ca2e56f5b1 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 31 Oct 2026 01:14:57 +0100
+Subject: [PATCH] sweetgl: glthread for CoreAnimation's contexts
+ (SWEETCA_GLTHREAD=1, default off)
+
+Task 26 (jasmine/PERF-TASK26-GLTHREAD.md): Mesa's glthread records CA's GL
+calls on backboardd's render thread and runs Mesa's frontend (st/mesa
+validation, state atoms, vertex uploads) on a worker thread per context.
+
+- freedreno: PIPE_MAP_THREAD_SAFE transfers (glthread's upload buffer, mapped
+  from the application thread) are heap-allocated instead of coming from the
+  context's slab pools, and never take the upload-pointer path; the screen
+  now claims map_unsynchronized_thread_safe, which glthread requires.
+- glapi: InternalSweetCallbackMESA(fn, data) runs fn(data) in command order
+  (on the worker with glthread, inline without).
+- sweetgl: sgl_context_enable_glthread; st/TC uses (kick, async flush,
+  ticket seal, trace marker, IOSurface texture storage, texture barrier,
+  driver-thread priority, which the worker now follows too) run in command
+  order on the worker; drains, make-current and the Mesa sampler read wait
+  for the worker first. Wrapper fences (sgl_fence_*) avoid glthread's waits
+  at glFenceSync/glClientWaitSync. set_background_context hook.
+- libsweetca: SWEETCA_GLTHREAD=1 enables it per context at creation; the
+  per-draw Mesa reads are answered from the wrapper's own state (sampler2D
+  units per program, MIN_FILTER per texture, texture names), GL error
+  captures that would wait are skipped where the wrapper can vouch for the
+  call, the 100-flush report counts glthread waits per wrapper.
+  SWEETCA_GLTHREAD_ASYNC_ERRORS=1 (opt-in on top): glGetError is answered
+  from errors the worker collected (in order, up to a frame late).
+- sweetgpu_gltest --glthread.
+---
+ .../drivers/freedreno/freedreno_resource.c    |  15 +-
+ .../drivers/freedreno/freedreno_screen.c      |   5 +
+ src/gallium/frontends/sweetgl/sweetca.c       | 342 ++++++++++++++++--
+ src/gallium/frontends/sweetgl/sweetgl.c       | 338 ++++++++++++++++-
+ src/gallium/frontends/sweetgl/sweetgl.h       |  32 ++
+ .../frontends/sweetgl/sweetgl_tickets.inc     |  25 +-
+ .../frontends/sweetgl/sweetgpu_gltest.c       |  16 +-
+ src/mesa/glapi/glapi/gen/gl_API.xml           |   7 +
+ src/mesa/glapi/glapi/gen/static_data.py       |   1 +
+ src/mesa/main/errors.c                        |   7 +
+ 10 files changed, 739 insertions(+), 49 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_resource.c b/src/gallium/drivers/freedreno/freedreno_resource.c
+index 6910a8c..719a960 100644
+--- a/src/gallium/drivers/freedreno/freedreno_resource.c
++++ b/src/gallium/drivers/freedreno/freedreno_resource.c
+@@ -727,6 +727,11 @@ fd_resource_transfer_unmap(struct pipe_context *pctx,
+ 
+    assert(trans->b.staging == NULL); /* for threaded context only */
+ 
++   if (ptrans->usage & PIPE_MAP_THREAD_SAFE) {
++      FREE(ptrans);
++      return;
++   }
++
+    /* Don't use pool_transfers_unsync. We are always in the driver
+     * thread. Freeing an object into a different pool is allowed.
+     */
+@@ -802,7 +807,8 @@ resource_transfer_map_unsync(struct pipe_context *pctx,
+    char *buf;
+ 
+    if ((prsc->target == PIPE_BUFFER) &&
+-       !(usage & (PIPE_MAP_READ | PIPE_MAP_DIRECTLY | PIPE_MAP_PERSISTENT)) &&
++       !(usage & (PIPE_MAP_READ | PIPE_MAP_DIRECTLY | PIPE_MAP_PERSISTENT |
++                  PIPE_MAP_THREAD_SAFE)) &&
+        ((usage & PIPE_MAP_DISCARD_RANGE) || !valid_range(rsc, box)) &&
+        fd_bo_prefer_upload(rsc->bo, box->width)) {
+       trans->upload_ptr = malloc(box->width);
+@@ -1009,7 +1015,12 @@ fd_resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
+       return NULL;
+    }
+ 
+-   if (usage & TC_TRANSFER_MAP_THREADED_UNSYNC) {
++   if (usage & PIPE_MAP_THREAD_SAFE) {
++      /* Called from any thread (glthread's application thread) while the
++       * frontend and driver threads use the slab pools: */
++      assert(usage & PIPE_MAP_UNSYNCHRONIZED);
++      ptrans = CALLOC(1, sizeof(struct fd_transfer));
++   } else if (usage & TC_TRANSFER_MAP_THREADED_UNSYNC) {
+       ptrans = slab_zalloc(&ctx->transfer_pool_unsync);
+    } else {
+       ptrans = slab_zalloc(&ctx->transfer_pool);
+diff --git a/src/gallium/drivers/freedreno/freedreno_screen.c b/src/gallium/drivers/freedreno/freedreno_screen.c
+index f3bf3b6..c8c3f77 100644
+--- a/src/gallium/drivers/freedreno/freedreno_screen.c
++++ b/src/gallium/drivers/freedreno/freedreno_screen.c
+@@ -383,6 +383,11 @@ fd_init_screen_caps(struct fd_screen *screen)
+ 
+    u_init_pipe_screen_caps(&screen->base, 1);
+ 
++   /* PIPE_MAP_THREAD_SAFE transfers (glthread's upload buffer, mapped from the
++    * application thread) do not use the context's slab pools; see
++    * fd_resource_transfer_map(). */
++   caps->map_unsynchronized_thread_safe = true;
++
+    /* this is probably not totally correct.. but it's a start: */
+ 
+    /* Supported features (boolean caps). */
+diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
+index 62683be..e929642 100644
+--- a/src/gallium/frontends/sweetgl/sweetca.c
++++ b/src/gallium/frontends/sweetgl/sweetca.c
+@@ -28,6 +28,11 @@
+  *
+  * Environment: SWEETCA_TRACE=1 logs GL errors after each call (and eats them),
+  * the first call of each slot and every shader that fails to compile.
++ * SWEETCA_GLTHREAD=1 runs Mesa's GL frontend on a worker thread per context
++ * (Mesa's glthread; jasmine/PERF-TASK26-GLTHREAD.md): the wrapper then answers
++ * what it can from its own state instead of querying Mesa. With it,
++ * SWEETCA_GLTHREAD_ASYNC_ERRORS=1 answers glGetError from errors the worker
++ * has collected (reported in order, but up to a frame late) instead of waiting.
+  */
+ 
+ #include <objc/NSObjCRuntime.h>
+@@ -167,11 +172,26 @@ report_send(void)
+ #define OBJ_RECT 1   /* fragment shader with a sampler2DRect */
+ #define OBJ_FBFETCH 2 /* fragment shader reading gl_LastFragData */
+ 
++#define OBJ_SAMPLERS 16
++
+ struct sca_obj {
+    uint8_t flags;
+    char rect_sampler[32];
+    /* programs: uniform locations of the emulation's uniforms, -1 for none */
+    GLint rect_sampler_loc, rect_scale_loc, fb_sampler_loc, fb_scale_loc;
++   /* glthread: the active sampler2D uniforms and the units they hold, as linked
++    * and as set through the wrapper since; samp_known false: ask Mesa */
++   bool samp_known;
++   uint8_t nsamp;
++   int16_t samp_loc[OBJ_SAMPLERS];
++   uint8_t samp_unit[OBJ_SAMPLERS];
++};
++
++/* glthread: what CA gets for a GLsync */
++struct sca_fence {
++   struct sgl_fence *f;
++   unsigned stale_frame; /* frame of the last answer from the published state */
++   bool stale;
+ };
+ 
+ /* CA reads {rctx, disp[]} from getMacroContextPrivate: rctx first, then the table */
+@@ -208,6 +228,11 @@ struct sca_ctx {
+    IOSurfaceRef ticket_frame_surface[32];
+    uint32_t ticket_gl_errors; /* preserve error flags inspected while replacing import storage */
+    struct sca_pass_trace *pass_trace; /* allocated only for opt-in task-23 diagnostics */
++   bool glthread;                      /* SWEETCA_GLTHREAD: Mesa's glthread runs this context */
++   bool async_errors;                  /* SWEETCA_GLTHREAD_ASYNC_ERRORS: glGetError from async_err */
++   unsigned async_err;                 /* GL error bits the worker collected (atomic) */
++   uint8_t tex_minf[TEXMAX];           /* glthread: MIN_FILTER set: 0 never, 1 NEAREST/LINEAR, 2 other */
++   uint8_t tex_named[TEXMAX];          /* glthread: bound at least once (an existing texture object) */
+ };
+ 
+ static void copy_forget(struct sca_ctx *c, GLuint tex);
+@@ -269,20 +294,27 @@ void darwin_prof_report(void (*log)(const char *fmt, ...));
+ struct prof_mark {
+    const char *fn;
+    uint64_t t0, s0;
++   struct sca_ctx *y; /* glthread: the context whose syncs y0 counted */
++   unsigned y0;
+ };
+ struct prof_slot {
+    const char *fn;
+-   uint64_t calls, ticks, submits;
++   uint64_t calls, ticks, submits, syncs;
+ };
++static bool glthread_any;  /* some context runs glthread: count syncs */
++static unsigned glthread_sampler_fallbacks, glthread_stale_fences, glthread_fence_waits;
+ #define PROF_SLOTS 128
+ static struct prof_slot prof[PROF_SLOTS];
+ static uint64_t prof_gl_ticks;
+ static __thread unsigned prof_depth;
+ 
++static unsigned prof_syncs(struct sca_ctx *c);
++
+ static void
+ prof_end(struct prof_mark *m)
+ {
+    uint64_t dt = mach_absolute_time() - m->t0, ds = darwin_submits - m->s0;
++   unsigned dy = m->y ? prof_syncs(m->y) - m->y0 : 0;
+    if (--prof_depth == 0)
+       prof_gl_ticks += dt;
+    unsigned h = (unsigned)(((uintptr_t)m->fn >> 3) % PROF_SLOTS);
+@@ -292,6 +324,7 @@ prof_end(struct prof_mark *m)
+          prof[h].calls++;
+          prof[h].ticks += dt;
+          prof[h].submits += ds;
++         prof[h].syncs += dy;
+          return;
+       }
+    }
+@@ -304,7 +337,11 @@ prof_end(struct prof_mark *m)
+    prof_depth++;                                                                  \
+    struct sca_ctx *c = (struct sca_ctx *)(r);                                     \
+    if (__builtin_expect(cur != c, 0))                                             \
+-      bind_ctx(c)
++      bind_ctx(c);                                                                \
++   if (__builtin_expect(glthread_any, 0) && c->glthread) {                        \
++      sca_pm.y = c;                                                               \
++      sca_pm.y0 = prof_syncs(c);                                                  \
++   }
+ 
+ static void
+ post(int slot)
+@@ -384,7 +421,6 @@ WV(513, DisableVertexAttribArray, (GLuint i), (i))
+ WV(598, AttachShader, (GLuint p, GLuint s), (p, s))
+ WV(602, Uniform1f, (GLint l, GLfloat a), (l, a))
+ WV(605, Uniform4f, (GLint l, GLfloat a, GLfloat b, GLfloat cc, GLfloat d), (l, a, b, cc, d))
+-WV(606, Uniform1i, (GLint l, GLint a), (l, a))
+ WV(603, Uniform2f, (GLint l, GLfloat a, GLfloat b), (l, a, b))
+ WV(604, Uniform3f, (GLint l, GLfloat a, GLfloat b, GLfloat cc), (l, a, b, cc))
+ WV(607, Uniform2i, (GLint l, GLint a, GLint b), (l, a, b))
+@@ -392,7 +428,6 @@ WV(608, Uniform3i, (GLint l, GLint a, GLint b, GLint cc), (l, a, b, cc))
+ WV(609, Uniform4i, (GLint l, GLint a, GLint b, GLint cc, GLint d), (l, a, b, cc, d))
+ WV(610, Uniform1fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
+ WV(611, Uniform2fv, (GLint l, GLsizei n, const GLfloat *v), (l, n, v))
+-WV(614, Uniform1iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+ WV(615, Uniform2iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+ WV(616, Uniform3iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+ WV(617, Uniform4iv, (GLint l, GLsizei n, const GLint *v), (l, n, v))
+@@ -404,9 +439,108 @@ WV(620, UniformMatrix4fv, (GLint l, GLsizei n, GLboolean t, const GLfloat *v), (
+ WR(625, GLint, GetUniformLocation, (GLuint p, const GLchar *name), (p, name))
+ WV(630, BindAttribLocation, (GLuint p, GLuint i, const GLchar *name), (p, i, name))
+ WV(674, GenFramebuffers, (GLsizei n, GLuint *f), (n, f))
+-WR(779, GLsync, FenceSync, (GLenum cond, GLbitfield flags), (cond, flags))
+-WV(781, DeleteSync, (GLsync s), (s))
+-WR(782, GLenum, ClientWaitSync, (GLsync s, GLbitfield flags, GLuint64 timeout), (s, flags, timeout))
++
++/*
++ * Fences. With glthread, glFenceSync and glClientWaitSync would each wait for
++ * the worker (they return values): CA gets a wrapper fence, the real one is
++ * made on the worker and polled there at frame ends (sgl_fence_*). A zero
++ * timeout is answered from the last poll once per frame (not signaled yet is
++ * a valid answer: the fence's commands may not even have reached the driver);
++ * a repeated ask in the same frame or a real timeout waits for real.
++ */
++static GLsync
++w_FenceSync(void *rctx, GLenum cond, GLbitfield flags)
++{
++   CUR(rctx);
++   if (!c->glthread || cond != GL_SYNC_GPU_COMMANDS_COMPLETE || flags) {
++      GLsync r = glFenceSync(cond, flags);
++      POST(779);
++      return r;
++   }
++   struct sca_fence *w = calloc(1, sizeof(*w));
++   if (w && !(w->f = sgl_fence_create(c->gl))) {
++      free(w);
++      w = NULL;
++   }
++   return (GLsync)w;
++}
++
++static void
++w_DeleteSync(void *rctx, GLsync s)
++{
++   CUR(rctx);
++   if (!c->glthread) {
++      glDeleteSync(s);
++      POST(781);
++      return;
++   }
++   struct sca_fence *w = (struct sca_fence *)s;
++   if (w) {
++      sgl_fence_delete(c->gl, w->f);
++      free(w);
++   }
++}
++
++static GLenum
++w_ClientWaitSync(void *rctx, GLsync s, GLbitfield flags, GLuint64 timeout)
++{
++   CUR(rctx);
++   if (!c->glthread) {
++      GLenum r = glClientWaitSync(s, flags, timeout);
++      POST(782);
++      return r;
++   }
++   struct sca_fence *w = (struct sca_fence *)s;
++   if (!w)
++      return GL_WAIT_FAILED;
++   if (sgl_fence_state(w->f) == SGL_FENCE_SIGNALED)
++      return GL_ALREADY_SIGNALED;
++   if (timeout == 0 && !(w->stale && w->stale_frame == c->frame)) {
++      w->stale = true;
++      w->stale_frame = c->frame;
++      glthread_stale_fences++;
++      /* a fresher answer for the next ask: poll on the worker soon */
++      sgl_fence_poll(c->gl);
++      sgl_glthread_flush(c->gl);
++      return GL_TIMEOUT_EXPIRED;
++   }
++   glthread_fence_waits++;
++   return sgl_fence_wait(c->gl, w->f, flags, timeout);
++}
++
++/* glthread: the sampler units of the current program after glUniform1i(v) */
++static void
++samplers_set(struct sca_ctx *c, GLint loc, GLsizei n, const GLint *v)
++{
++   if (!c->glthread || loc < 0 || !c->program || c->program >= OBJMAX)
++      return;
++   struct sca_obj *p = &c->obj[c->program];
++   for (GLsizei k = 0; k < n; k++) {
++      for (unsigned i = 0; i < p->nsamp; i++) {
++         if (p->samp_loc[i] == loc + k && v[k] >= 0 && v[k] < UNITS)
++            p->samp_unit[i] = (uint8_t)v[k];
++      }
++   }
++}
++
++static void
++w_Uniform1i(void *rctx, GLint l, GLint a)
++{
++   CUR(rctx);
++   glUniform1i(l, a);
++   samplers_set(c, l, 1, &a);
++   POST(606);
++}
++
++static void
++w_Uniform1iv(void *rctx, GLint l, GLsizei n, const GLint *v)
++{
++   CUR(rctx);
++   glUniform1iv(l, n, v);
++   if (v && n > 0)
++      samplers_set(c, l, n, v);
++   POST(614);
++}
+ 
+ static GLenum
+ w_GetError(void *rctx)
+@@ -417,6 +551,16 @@ w_GetError(void *rctx)
+       c->ticket_gl_errors &= ~(1u << bit);
+       return GL_INVALID_ENUM + bit;
+    }
++   if (c->async_errors) {
++      /* what the worker has collected so far; ask it to collect again */
++      unsigned bits = __atomic_load_n(&c->async_err, __ATOMIC_ACQUIRE);
++      sgl_error_poll(c->gl, &c->async_err);
++      if (!bits)
++         return GL_NO_ERROR;
++      unsigned bit = (unsigned)__builtin_ctz(bits);
++      __atomic_and_fetch(&c->async_err, ~(1u << bit), __ATOMIC_ACQ_REL);
++      return GL_INVALID_ENUM + bit;
++   }
+    return glGetError();
+ }
+ 
+@@ -542,14 +686,38 @@ prof_report(double wall_ms)
+          break;
+       shown[best] = 1;
+    }
++   if (glthread_any) {
++      static unsigned fallbacks0, stale0, waits0f, pending0;
++      unsigned fallbacks = glthread_sampler_fallbacks, stale = glthread_stale_fences,
++               fwaits = glthread_fence_waits, pending = sgl_ticket_pending_drains();
++      report_line("sweetca: glthread: sampler fallbacks %u, fence answers from state %u, real fence waits %u, "
++                  "ticket pending drains %u", fallbacks - fallbacks0, stale - stale0, fwaits - waits0f,
++                  pending - pending0);
++      fallbacks0 = fallbacks;
++      stale0 = stale;
++      waits0f = fwaits;
++      pending0 = pending;
++   }
+    for (int i = 0; i < PROF_SLOTS; i++) {
+-      if (prof[i].fn && (shown[i] || prof[i].submits))
+-         report_line("sweetca: prof:   %-28s %7llu calls %7.1f ms %5llu submits", prof[i].fn,
++      if (prof[i].fn && (shown[i] || prof[i].submits || prof[i].syncs)) {
++         if (glthread_any)
++            report_line("sweetca: prof:   %-28s %7llu calls %7.1f ms %5llu submits %5llu syncs", prof[i].fn,
++                        (unsigned long long)prof[i].calls, prof[i].ticks * ms_per_tick,
++                        (unsigned long long)prof[i].submits, (unsigned long long)prof[i].syncs);
++         else
++            report_line("sweetca: prof:   %-28s %7llu calls %7.1f ms %5llu submits", prof[i].fn,
+                  (unsigned long long)prof[i].calls, prof[i].ticks * ms_per_tick, (unsigned long long)prof[i].submits);
+-      prof[i].calls = prof[i].ticks = prof[i].submits = 0;
++      }
++      prof[i].calls = prof[i].ticks = prof[i].submits = prof[i].syncs = 0;
+    }
+ }
+ 
++static unsigned
++prof_syncs(struct sca_ctx *c)
++{
++   return sgl_glthread_syncs(c->gl);
++}
++
+ /* every 100 flushes (CA flushes once per frame): wall time, time in glFinish, draws */
+ static void
+ flush_stats(double wait_ms)
+@@ -575,6 +743,8 @@ flush_stats(double wait_ms)
+ static int pipeline_mode = -1;
+ static bool pipeline_tickets;
+ static bool sync_flush; /* SWEETCA_SYNC_FLUSH=1: mode 2 drains the driver thread at w_Flush (comparison) */
++static bool glthread_requested; /* SWEETCA_GLTHREAD=1 */
++static bool glthread_async_errors; /* SWEETCA_GLTHREAD_ASYNC_ERRORS=1 */
+ static unsigned pipeline_errors, pipeline_slow;
+ static pthread_once_t pipeline_once = PTHREAD_ONCE_INIT;
+ 
+@@ -586,6 +756,10 @@ pipeline_init(void)
+    pipeline_tickets = pipeline_mode == 2;
+    v = getenv("SWEETCA_SYNC_FLUSH");
+    sync_flush = v && !strcmp(v, "1");
++   v = getenv("SWEETCA_GLTHREAD");
++   glthread_requested = v && !strcmp(v, "1");
++   v = getenv("SWEETCA_GLTHREAD_ASYNC_ERRORS");
++   glthread_async_errors = v && !strcmp(v, "1");
+ }
+ 
+ static bool
+@@ -825,6 +999,12 @@ w_Flush(void *rctx)
+       c->ticket_surface_count = 0;
+    }
+    sgl_trace_frame_end(c->gl, c->frame);
++   if (c->glthread) {
++      sgl_fence_poll(c->gl);
++      if (c->async_errors)
++         sgl_error_poll(c->gl, &c->async_err);
++      sgl_glthread_flush(c->gl); /* the rest of the frame goes to the worker now */
++   }
+    flush_stats(now_ms() - t);
+    if (trace_on && traced++ < 20)
+       trace_fb("flush");
+@@ -1117,6 +1297,8 @@ w_BindTexture(void *rctx, GLenum target, GLuint tex)
+    } else {
+       glBindTexture(target, tex);
+    }
++   if (tex < TEXMAX)
++      c->tex_named[tex] = 1;
+    POST(5);
+ }
+ 
+@@ -1142,6 +1324,7 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
+             c->ticket_version[tex[i]] = 0; /* a reused GL name is a fresh object */
+          c->tex_w[tex[i]] = c->tex_h[tex[i]] = 0;
+          c->tex_swizzled[tex[i]] = 0;
++         c->tex_minf[tex[i]] = c->tex_named[tex[i]] = 0;
+       }
+       for (int f = 0; f < FBOMAX; f++) {
+          if (c->fbo_tex[f] == tex[i])
+@@ -1152,11 +1335,22 @@ w_DeleteTextures(void *rctx, GLsizei n, const GLuint *tex)
+    POST(59);
+ }
+ 
++/* glthread: what bind_surface needs to know without glGetTexParameteriv */
++static void
++note_min_filter(struct sca_ctx *c, GLenum t, GLenum pname, GLint param)
++{
++   GLuint tex = c->held[c->active];
++   if (pname == GL_TEXTURE_MIN_FILTER && t == GL_TEXTURE_2D && tex < TEXMAX)
++      c->tex_minf[tex] = param == GL_NEAREST || param == GL_LINEAR ? 1 : 2;
++}
++
+ static void
+ w_TexParameteri(void *rctx, GLenum target, GLenum pname, GLint param)
+ {
+    CUR(rctx);
+-   glTexParameteri(tgt(c, target), pname, param);
++   GLenum t = tgt(c, target);
++   glTexParameteri(t, pname, param);
++   note_min_filter(c, t, pname, param);
+    POST(304);
+ }
+ 
+@@ -1164,7 +1358,9 @@ static void
+ w_TexParameterf(void *rctx, GLenum target, GLenum pname, GLfloat param)
+ {
+    CUR(rctx);
+-   glTexParameterf(tgt(c, target), pname, param);
++   GLenum t = tgt(c, target);
++   glTexParameterf(t, pname, param);
++   note_min_filter(c, t, pname, (GLint)param);
+    POST(302);
+ }
+ 
+@@ -1325,12 +1521,16 @@ w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum text
+                        GLint level)
+ {
+    CUR(rctx);
+-   if (ticket_requested())
++   /* glthread: a GL error check waits for the worker; the attach is instead
++    * trusted only when the wrapper can tell it is valid (an existing texture) */
++   bool check = ticket_requested() && !c->glthread;
++   if (check)
+       (void)ticket_gl_capture(c);
+    if (ticket_requested() && c->fbo < FBOMAX &&
+        (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) &&
+        (attachment != GL_COLOR_ATTACHMENT0 || level ||
+-        (textarget != GL_TEXTURE_2D && textarget != GL_TEXTURE_RECTANGLE_ARB)))
++        (textarget != GL_TEXTURE_2D && textarget != GL_TEXTURE_RECTANGLE_ARB) ||
++        (c->glthread && tex && (tex >= TEXMAX || !c->tex_named[tex]))))
+       c->ticket_fbo_bad[c->fbo] = 1;
+    if (attachment == GL_COLOR_ATTACHMENT0 && c->fbo > 0 && c->fbo < FBOMAX &&
+        (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
+@@ -1338,7 +1538,7 @@ w_FramebufferTexture2D(void *rctx, GLenum target, GLenum attachment, GLenum text
+    glFramebufferTexture2D(target, attachment,
+                           textarget == GL_TEXTURE_RECTANGLE_ARB ? GL_TEXTURE_2D : textarget, tex,
+                           level);
+-   if (ticket_requested() && ticket_gl_capture(c) != GL_NO_ERROR && c->fbo < FBOMAX &&
++   if (check && ticket_gl_capture(c) != GL_NO_ERROR && c->fbo < FBOMAX &&
+        (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER))
+       c->ticket_fbo_bad[c->fbo] = 1;
+    POST(677);
+@@ -1654,6 +1854,49 @@ w_CompileShader2(void *rctx, GLuint shader)
+    POST(596);
+ }
+ 
++/*
++ * glthread: the program's active sampler2D uniforms, which all start on unit 0
++ * after a link. Like Mesa's SamplersUsed/TexturesUsed: other sampler types do
++ * not sample a 2D binding. Anything that does not fit leaves samp_known false.
++ */
++static void
++samplers_note(struct sca_obj *p, GLuint program)
++{
++   GLint active = 0;
++   p->samp_known = false;
++   p->nsamp = 0;
++   glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &active);
++   for (GLint i = 0; i < active; i++) {
++      char name[128];
++      GLsizei len = 0;
++      GLint size = 0;
++      GLenum type = 0;
++      glGetActiveUniform(program, (GLuint)i, sizeof(name), &len, &size, &type, name);
++      if (type != GL_SAMPLER_2D)
++         continue;
++      if (len >= (GLsizei)sizeof(name) - 1)
++         return;
++      char *bracket = strchr(name, '[');
++      if (bracket)
++         *bracket = 0;
++      for (GLint e = 0; e < size; e++) {
++         char el[160];
++         if (size > 1)
++            snprintf(el, sizeof(el), "%s[%d]", name, e);
++         else
++            snprintf(el, sizeof(el), "%s", name);
++         GLint loc = glGetUniformLocation(program, el);
++         if (loc < 0)
++            continue;
++         if (p->nsamp == OBJ_SAMPLERS || loc > INT16_MAX)
++            return;
++         p->samp_loc[p->nsamp] = (int16_t)loc;
++         p->samp_unit[p->nsamp++] = 0;
++      }
++   }
++   p->samp_known = true;
++}
++
+ static void
+ w_LinkProgram(void *rctx, GLuint program)
+ {
+@@ -1675,6 +1918,8 @@ w_LinkProgram(void *rctx, GLuint program)
+       GLuint shaders[8];
+       GLsizei n = 0;
+       glGetAttachedShaders(program, 8, &n, shaders);
++      if (c->glthread)
++         samplers_note(p, program);
+       p->flags = 0;
+       p->rect_sampler_loc = p->rect_scale_loc = p->fb_sampler_loc = p->fb_scale_loc = -1;
+       for (GLsizei i = 0; i < n; i++) {
+@@ -1725,6 +1970,40 @@ texel_scale(struct sca_ctx *c, GLuint tex, GLint loc)
+  * renders into (CA reads the destination that way; Apple's GPUs return what
+  * memory held when the pass began).
+  */
++/* glthread: the unit the current program's sampler at loc holds, if known */
++static bool
++sampler_unit(struct sca_ctx *c, const struct sca_obj *p, GLint loc, GLint *unit)
++{
++   if (!c->glthread || !p->samp_known)
++      return false;
++   for (unsigned i = 0; i < p->nsamp; i++) {
++      if (p->samp_loc[i] == loc) {
++         *unit = p->samp_unit[i];
++         return true;
++      }
++   }
++   return false;
++}
++
++/* units whose 2D binding the current program samples (sgl_sampled_2d_units) */
++static uint32_t
++sampled_units(struct sca_ctx *c)
++{
++   if (!c->glthread)
++      return sgl_sampled_2d_units(c->gl);
++   if (!c->program)
++      return 0;
++   const struct sca_obj *p = c->program < OBJMAX ? &c->obj[c->program] : NULL;
++   if (!p || !p->samp_known) {
++      glthread_sampler_fallbacks++;
++      return sgl_sampled_2d_units(c->gl); /* waits for the worker */
++   }
++   uint32_t units = 0;
++   for (unsigned i = 0; i < p->nsamp; i++)
++      units |= UINT32_C(1) << p->samp_unit[i];
++   return units;
++}
++
+ static void
+ draw_prep(struct sca_ctx *c)
+ {
+@@ -1733,7 +2012,7 @@ draw_prep(struct sca_ctx *c)
+    int runit = -1;
+    if (p && (p->flags & OBJ_RECT)) {
+       GLint unit = 0;
+-      if (p->rect_sampler_loc >= 0) {
++      if (p->rect_sampler_loc >= 0 && !sampler_unit(c, p, p->rect_sampler_loc, &unit)) {
+          SWEET_SCOPE(sp_query, SP_PREP_QUERY);
+          glGetUniformiv(c->program, p->rect_sampler_loc, &unit);
+       }
+@@ -1760,10 +2039,13 @@ draw_prep(struct sca_ctx *c)
+          glActiveTexture(GL_TEXTURE0 + c->fbfetch_unit);
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+          glActiveTexture(GL_TEXTURE0 + c->active);
++         if (fbtex < TEXMAX)
++            c->tex_minf[fbtex] = 1;
+       }
+       if (p->fb_sampler_loc >= 0) {
+          SWEET_SCOPE(sp_sampler, SP_PREP_UNIFORM);
+          glUniform1i(p->fb_sampler_loc, c->fbfetch_unit);
++         samplers_set(c, p->fb_sampler_loc, 1, &c->fbfetch_unit);
+       }
+       if (p->fb_scale_loc >= 0)
+          texel_scale(c, fbtex, p->fb_scale_loc);
+@@ -1780,7 +2062,7 @@ draw_prep(struct sca_ctx *c)
+           * across program switches, relinks, arrays and uniform-unit changes.
+           * Keep the barrier for any active feedback, including non-fetch reads.
+           */
+-         uint32_t read = bound_feedback & sgl_sampled_2d_units(c->gl);
++         uint32_t read = bound_feedback & sampled_units(c);
+          bool needed = read != 0;
+          SWEET_EVENT(needed ? SPE_BARRIER_NEEDED : SPE_BARRIER_SKIPPED, 1);
+          if (needed) {
+@@ -2678,11 +2960,13 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
+     * GPU takes it in place there when the start is 64-byte aligned (texture bases
+     * need 32, render targets more); our mapping of it begins at the page */
+    size_t offset = (uintptr_t)IOSurfaceGetBaseAddress(s) & vm_page_mask;
+-   if (ticket_requested())
++   /* glthread: the texture change is queued; it raises no GL error anyway */
++   bool check = ticket_requested() && !c->glthread;
++   if (check)
+       (void)ticket_gl_capture(c);
+    if (pitch % 64 == 0 && offset % 64 == 0 && !flip)
+       done = sgl_tex_image_iosurface_fmt(c->gl, t, IOSurfaceGetID(s), w, h, pitch, (unsigned)offset, f.f);
+-   if (ticket_requested() && ticket_gl_capture(c) != GL_NO_ERROR)
++   if (check && ticket_gl_capture(c) != GL_NO_ERROR)
+       done = false;
+    if (!done && format) {
+       /* the copy is uploaded as GL_ALPHA / GL_LUMINANCE(_ALPHA) itself: the swizzle
+@@ -2712,9 +2996,16 @@ bind_surface(struct sca_ctx *c, IOSurfaceRef s, GLenum target, GLenum format, GL
+     * which it does not always do (Apple's are complete as they are; the same cause
+     * as step 2's black corners). CA's own TexParameter calls come later and win. */
+    GLint minf = 0;
+-   glGetTexParameteriv(t, GL_TEXTURE_MIN_FILTER, &minf);
+-   if (minf != GL_NEAREST && minf != GL_LINEAR)
++   GLuint held = c->held[c->active];
++   if (c->glthread)
++      minf = held < TEXMAX && c->tex_minf[held] == 1 ? GL_LINEAR : 0;
++   else
++      glGetTexParameteriv(t, GL_TEXTURE_MIN_FILTER, &minf);
++   if (minf != GL_NEAREST && minf != GL_LINEAR) {
+       glTexParameteri(t, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++      if (held < TEXMAX)
++         c->tex_minf[held] = 1;
++   }
+    if (trace_on && logged++ < 80)
+       sca_log("sweetca: %s: surface %u '%s' %zux%zu pitch %zu bound %s (gl %#x/%#x, flip %d)", why,
+               IOSurfaceGetID(s), cc, w, h, pitch, how, format, type, flip);
+@@ -2940,6 +3231,15 @@ make_ctx(id self, NSUInteger api)
+    c->eagl = self;
+    c->api = (unsigned)api;
+    c->gl = gl;
++   pthread_once(&pipeline_once, pipeline_init);
++   if (glthread_requested) {
++      c->glthread = sgl_context_enable_glthread(gl);
++      if (c->glthread)
++         glthread_any = true;
++      c->async_errors = c->glthread && glthread_async_errors;
++      sca_log("sweetca: EAGLContext %p: glthread %s%s", self, c->glthread ? "on" : "not available",
++              c->async_errors ? ", glGetError without waiting" : "");
++   }
+    c->fbfetch_unit = UNITS - 1;
+    for (int i = 0; i < OBJMAX; i++)
+       c->obj[i].rect_sampler_loc = c->obj[i].rect_scale_loc = c->obj[i].fb_sampler_loc =
+diff --git a/src/gallium/frontends/sweetgl/sweetgl.c b/src/gallium/frontends/sweetgl/sweetgl.c
+index 7e2989e..71f6a07 100644
+--- a/src/gallium/frontends/sweetgl/sweetgl.c
++++ b/src/gallium/frontends/sweetgl/sweetgl.c
+@@ -25,6 +25,7 @@
+ #include "state_tracker/st_context.h"
+ #include "main/mtypes.h"
+ #include "main/context.h"
++#include "main/glthread.h"
+ #include "state_tracker/st_cb_flush.h"
+ #include "util/driconf.h"
+ #include "util/simple_mtx.h"
+@@ -64,8 +65,74 @@ struct sgl_context {
+    struct sgl_display *dpy;
+    struct st_context *st;
+    struct sgl_render_set *tickets;
++   bool glthread;             /* Mesa's glthread records this context's GL calls */
++   struct sgl_fence *fences;  /* live wrapper fences; the GL thread's list */
+ };
+ 
++/*
++ * glthread (sgl_context_enable_glthread): GL calls made on the application
++ * thread are recorded and executed by Mesa's worker thread; st/mesa and the
++ * threaded context's queue then belong to the worker. Everything here that
++ * uses them directly either runs in command order on the worker (sgl_run) or
++ * waits for the worker first (sgl_glthread_finish). Without glthread both run
++ * at once, as before.
++ */
++void GLAPIENTRY _mesa_marshal_InternalSweetCallbackMESA(GLintptr fn, GLintptr data);
++
++static bool
++sgl_is_current(struct sgl_context *ctx)
++{
++   return st_api_get_current() == ctx->st;
++}
++
++void
++sgl_glthread_finish(struct sgl_context *ctx)
++{
++   /* An idle worker is all that is needed when ctx is not current here: it
++    * was finished when it stopped being current (sgl_make_current). */
++   if (ctx->glthread && sgl_is_current(ctx))
++      _mesa_glthread_finish(ctx->st->ctx);
++}
++
++static void
++sgl_run(struct sgl_context *ctx, void (*fn)(void *), void *data)
++{
++   if (ctx->glthread && sgl_is_current(ctx)) {
++      _mesa_marshal_InternalSweetCallbackMESA((GLintptr)fn, (GLintptr)data);
++      return;
++   }
++   fn(data);
++}
++
++bool
++sgl_context_enable_glthread(struct sgl_context *ctx)
++{
++   if (!ctx->glthread) {
++      _mesa_glthread_init(ctx->st->ctx);
++      ctx->glthread = ctx->st->ctx->GLThread.enabled;
++   }
++   return ctx->glthread;
++}
++
++bool
++sgl_glthread_enabled(struct sgl_context *ctx)
++{
++   return ctx->glthread;
++}
++
++void
++sgl_glthread_flush(struct sgl_context *ctx)
++{
++   if (ctx->glthread && sgl_is_current(ctx))
++      _mesa_glthread_flush_batch(ctx->st->ctx);
++}
++
++unsigned
++sgl_glthread_syncs(struct sgl_context *ctx)
++{
++   return ctx->glthread ? p_atomic_read(&ctx->st->ctx->GLThread.stats.num_syncs) : 0;
++}
++
+ struct sgl_surface {
+    struct pipe_frontend_drawable base;
+    struct st_visual visual;
+@@ -82,6 +149,12 @@ sgl_get_param(struct pipe_frontend_screen *fscreen, enum st_manager_param param)
+    return 0;
+ }
+ 
++/* glthread's worker starts (no HUD here) */
++static void
++sgl_set_background_context(struct st_context *st, struct util_queue_monitoring *queue_info)
++{
++}
++
+ struct sgl_display *
+ sgl_display_create(void)
+ {
+@@ -117,6 +190,7 @@ sgl_display_create(void)
+       return NULL;
+    }
+    dpy->fscreen.get_param = sgl_get_param;
++   dpy->fscreen.set_background_context = sgl_set_background_context;
+    return dpy;
+ }
+ 
+@@ -180,8 +254,10 @@ sgl_context_destroy(struct sgl_context *ctx)
+ {
+    if (!ctx)
+       return;
+-   if (st_api_get_current() == ctx->st)
++   if (st_api_get_current() == ctx->st) {
++      sgl_glthread_finish(ctx);
+       st_api_make_current(NULL, NULL, NULL);
++   }
+    st_context_flush(ctx->st, 0, NULL, NULL, NULL);
+    sgl_tickets_destroy(ctx);
+    st_destroy_context(ctx->st);
+@@ -407,6 +483,23 @@ sgl_import_cached(struct sgl_display *dpy, uint32_t id, unsigned width, unsigned
+    return res;
+ }
+ 
++struct sgl_teximage {
++   struct sgl_context *ctx;
++   unsigned target;
++   enum pipe_format format;
++   struct pipe_resource *tex;
++};
++
++/* in command order: the binding it changes is the one current at this point */
++static void
++sgl_teximage_gl(void *data)
++{
++   struct sgl_teximage *t = data;
++   st_context_teximage(t->ctx->st, t->target, 0, t->format, t->tex, false);
++   pipe_resource_reference(&t->tex, NULL);
++   FREE(t);
++}
++
+ bool
+ sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t iosurface_id,
+                             unsigned width, unsigned height, unsigned bytes_per_row,
+@@ -419,6 +512,16 @@ sgl_tex_image_iosurface_fmt(struct sgl_context *ctx, unsigned target, uint32_t i
+       sgl_import_cached(ctx->dpy, iosurface_id, width, height, bytes_per_row, offset, pf);
+    if (!tex)
+       return false;
++   if (ctx->glthread) {
++      struct sgl_teximage *t = CALLOC_STRUCT(sgl_teximage);
++      if (!t) {
++         pipe_resource_reference(&tex, NULL);
++         return false;
++      }
++      *t = (struct sgl_teximage){ctx, target, pf, tex};
++      sgl_run(ctx, sgl_teximage_gl, t);
++      return true;
++   }
+    st_context_teximage(ctx->st, target, 0, pf, tex, false);
+    pipe_resource_reference(&tex, NULL);
+    return true;
+@@ -440,12 +543,23 @@ sgl_tex_image_iosurface(struct sgl_context *ctx, unsigned target, uint32_t iosur
+                                       format);
+ }
+ 
+-void _mesa_TextureBarrierNV(void);
++void GLAPIENTRY _mesa_TextureBarrierNV(void);
++
++static void
++sgl_texture_barrier_gl(void *data)
++{
++   _mesa_TextureBarrierNV();
++}
+ 
+ void
+ sgl_texture_barrier(void)
+ {
+-   _mesa_TextureBarrierNV();
++   struct st_context *st = st_api_get_current();
++   struct sgl_context *ctx = st ? st->frontend_context : NULL;
++   if (ctx && ctx->glthread)
++      sgl_run(ctx, sgl_texture_barrier_gl, NULL);
++   else
++      _mesa_TextureBarrierNV();
+ }
+ 
+ /*
+@@ -497,6 +611,26 @@ sgl_trace_frame_driver(void *data)
+    FREE(marker);
+ }
+ 
++struct sgl_trace_queue {
++   struct sgl_context *ctx;
++   struct sgl_trace_frame *marker;
++};
++
++static void
++sgl_trace_frame_gl(void *data)
++{
++   struct sgl_trace_queue *q = data;
++   struct pipe_context *pipe = q->ctx->st->pipe;
++   struct sgl_trace_frame *marker = q->marker;
++   FREE(q);
++   if (marker->driver) {
++      pipe->callback(pipe, sgl_trace_frame_driver, marker, false);
++   } else {
++      marker->driver = pipe;
++      sgl_trace_frame_driver(marker);
++   }
++}
++
+ void
+ sgl_trace_frame_end(struct sgl_context *ctx, unsigned frame)
+ {
+@@ -504,30 +638,36 @@ sgl_trace_frame_end(struct sgl_context *ctx, unsigned frame)
+       return;
+    struct pipe_context *pipe = ctx->st->pipe;
+    struct sgl_trace_frame *marker = MALLOC_STRUCT(sgl_trace_frame);
+-   if (!marker) {
++   struct sgl_trace_queue *q = MALLOC_STRUCT(sgl_trace_queue);
++   if (!marker || !q) {
++      FREE(marker);
++      FREE(q);
+       sweet_batch_trace("event=frame-marker-lost ctx=%p frame=%u", (void *)pipe, frame);
+       return;
+    }
+    marker->driver = sgl_driver_pipe(ctx);
+    marker->frame = frame;
+-   if (marker->driver) {
+-      pipe->callback(pipe, sgl_trace_frame_driver, marker, false);
+-   } else {
+-      marker->driver = pipe;
+-      sgl_trace_frame_driver(marker);
+-   }
++   q->ctx = ctx;
++   q->marker = marker;
++   sgl_run(ctx, sgl_trace_frame_gl, q);
+ }
+ 
+-bool
+-sgl_kick(struct sgl_context *ctx)
++static void
++sgl_kick_gl(void *data)
+ {
+-   struct pipe_context *driver = sgl_driver_pipe(ctx);
+-   if (!driver)
+-      return false;
++   struct sgl_context *ctx = data;
+    struct pipe_context *pipe = ctx->st->pipe;
+-   pipe->callback(pipe, sgl_kick_driver, driver, false);
++   pipe->callback(pipe, sgl_kick_driver, sgl_driver_pipe(ctx), false);
+    /* hand the queued calls, the kick among them, to the driver thread now */
+    pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
++}
++
++bool
++sgl_kick(struct sgl_context *ctx)
++{
++   if (!sgl_driver_pipe(ctx))
++      return false;
++   sgl_run(ctx, sgl_kick_gl, ctx);
+    return true;
+ }
+ 
+@@ -536,14 +676,148 @@ sgl_kick(struct sgl_context *ctx)
+  * thread, then waits for the driver thread. Mode 2 does not need that: every
+  * shared write holds a kernel ticket that the driver thread seals after its own
+  * flush (sgl_render_driver), and readers wait for the seal. */
+-void
+-sgl_flush_async(struct sgl_context *ctx)
++static void
++sgl_flush_async_gl(void *data)
+ {
++   struct sgl_context *ctx = data;
+    struct gl_context *gl = ctx->st->ctx;
+    FLUSH_VERTICES(gl, 0, 0);
+    st_glFlush(gl, PIPE_FLUSH_ASYNC);
+ }
+ 
++void
++sgl_flush_async(struct sgl_context *ctx)
++{
++   sgl_run(ctx, sgl_flush_async_gl, ctx);
++}
++
++/*
++ * Wrapper fences for glthread: glFenceSync and glClientWaitSync return values,
++ * so Mesa's marshalling waits for the worker at each. Here the real fence is
++ * made in command order on the worker, which keeps the live ones in a list and
++ * polls them at each frame end (sgl_fence_poll); the application thread reads
++ * the published state and takes the real (waiting) path only when it must.
++ */
++GLsync GLAPIENTRY _mesa_FenceSync(GLenum condition, GLbitfield flags);
++GLenum GLAPIENTRY _mesa_ClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout);
++void GLAPIENTRY _mesa_DeleteSync(GLsync sync);
++
++struct sgl_fence {
++   struct sgl_fence *next;
++   struct sgl_context *ctx;
++   GLsync real;
++   unsigned state; /* SGL_FENCE_*, published by the worker */
++};
++
++static void
++sgl_fence_create_gl(void *data)
++{
++   struct sgl_fence *f = data;
++   f->real = _mesa_FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++   f->next = f->ctx->fences;
++   f->ctx->fences = f;
++   __atomic_store_n(&f->state, SGL_FENCE_CREATED, __ATOMIC_RELEASE);
++}
++
++struct sgl_fence *
++sgl_fence_create(struct sgl_context *ctx)
++{
++   struct sgl_fence *f = CALLOC_STRUCT(sgl_fence);
++   if (!f)
++      return NULL;
++   f->ctx = ctx;
++   sgl_run(ctx, sgl_fence_create_gl, f);
++   return f;
++}
++
++unsigned
++sgl_fence_state(struct sgl_fence *f)
++{
++   return __atomic_load_n(&f->state, __ATOMIC_ACQUIRE);
++}
++
++static void
++sgl_fence_poll_gl(void *data)
++{
++   struct sgl_context *ctx = data;
++   for (struct sgl_fence *f = ctx->fences; f; f = f->next) {
++      if (__atomic_load_n(&f->state, __ATOMIC_RELAXED) != SGL_FENCE_CREATED || !f->real)
++         continue;
++      GLenum r = _mesa_ClientWaitSync(f->real, 0, 0);
++      if (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED)
++         __atomic_store_n(&f->state, SGL_FENCE_SIGNALED, __ATOMIC_RELEASE);
++   }
++}
++
++void
++sgl_fence_poll(struct sgl_context *ctx)
++{
++   if (ctx->glthread)
++      sgl_run(ctx, sgl_fence_poll_gl, ctx);
++}
++
++unsigned
++sgl_fence_wait(struct sgl_context *ctx, struct sgl_fence *f, unsigned flags, uint64_t timeout)
++{
++   /* the worker is idle afterwards: the fence exists and nothing else uses it */
++   sgl_glthread_finish(ctx);
++   if (!f->real)
++      return GL_WAIT_FAILED;
++   GLenum r = _mesa_ClientWaitSync(f->real, flags, timeout);
++   if (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED)
++      __atomic_store_n(&f->state, SGL_FENCE_SIGNALED, __ATOMIC_RELEASE);
++   return r;
++}
++
++/*
++ * glGetError without waiting (glthread, opt-in): the GL thread moves Mesa's
++ * error flags into *mask (one bit per GL_INVALID_ENUM + n) in command order;
++ * the application reads them from there, so an error shows up at the first
++ * glGetError after the GL thread got past the call that raised it.
++ */
++GLenum GLAPIENTRY _mesa_GetError(void);
++
++static void
++sgl_error_poll_gl(void *data)
++{
++   unsigned *mask = data;
++   for (unsigned i = 0; i < 8; i++) {
++      GLenum e = _mesa_GetError();
++      if (e == GL_NO_ERROR)
++         break;
++      if (e >= GL_INVALID_ENUM && e < GL_INVALID_ENUM + 8)
++         __atomic_or_fetch(mask, 1u << (e - GL_INVALID_ENUM), __ATOMIC_RELEASE);
++   }
++}
++
++void
++sgl_error_poll(struct sgl_context *ctx, unsigned *mask)
++{
++   if (ctx->glthread)
++      sgl_run(ctx, sgl_error_poll_gl, mask);
++}
++
++static void
++sgl_fence_delete_gl(void *data)
++{
++   struct sgl_fence *f = data;
++   struct sgl_fence **p = &f->ctx->fences;
++   while (*p && *p != f)
++      p = &(*p)->next;
++   if (*p)
++      *p = f->next;
++   if (f->real)
++      _mesa_DeleteSync(f->real);
++   FREE(f);
++}
++
++void
++sgl_fence_delete(struct sgl_context *ctx, struct sgl_fence *f)
++{
++   if (f)
++      sgl_run(ctx, sgl_fence_delete_gl, f);
++}
++
+ extern int darwin_pipeline_error(void);
+ extern uint64_t darwin_pipeline_capability(void);
+ 
+@@ -589,6 +863,7 @@ sgl_pipeline_available(struct sgl_context *ctx)
+ int
+ sgl_flush_submit(struct sgl_context *ctx)
+ {
++   sgl_glthread_finish(ctx);
+    struct pipe_context *pipe = ctx->st->pipe;
+    struct pipe_context *driver = sgl_driver_pipe(ctx);
+    if (!driver) {
+@@ -640,6 +915,7 @@ sgl_flush_submit(struct sgl_context *ctx)
+ struct sgl_sched {
+    int policy;
+    struct sched_param param;
++   struct sgl_context *ctx;
+ };
+ 
+ static void
+@@ -652,6 +928,20 @@ sgl_follow_driver(void *data)
+    FREE(s);
+ }
+ 
++/* on the GL thread: with glthread that is the worker, which follows too */
++static void
++sgl_follow_gl(void *data)
++{
++   struct sgl_sched *s = data;
++   if (s->ctx->glthread) {
++      int r = pthread_setschedparam(pthread_self(), s->policy, &s->param);
++      fprintf(stderr, "sweetgl: glthread worker scheduling policy %d priority %d: %s\n", s->policy,
++              s->param.sched_priority, r ? strerror(r) : "set");
++   }
++   struct pipe_context *pipe = s->ctx->st->pipe;
++   pipe->callback(pipe, sgl_follow_driver, s, false);
++}
++
+ void
+ sgl_follow_thread(struct sgl_context *ctx)
+ {
+@@ -665,14 +955,17 @@ sgl_follow_thread(struct sgl_context *ctx)
+       FREE(s);
+       return;
+    }
+-   struct pipe_context *pipe = ctx->st->pipe;
+-   pipe->callback(pipe, sgl_follow_driver, s, false);
++   s->ctx = ctx;
++   sgl_run(ctx, sgl_follow_gl, s);
+ }
+ 
+ uint32_t
+ sgl_sampled_2d_units(struct sgl_context *ctx)
+ {
+    uint32_t units = 0;
++   /* glthread: the linked-program state below is the worker's (libsweetca
++    * keeps its own copy and only falls back here) */
++   sgl_glthread_finish(ctx);
+    /* sweetgl dispatches GL synchronously (no GLThread). UseProgram and sampler
+     * uniforms update these linked programs immediately, before draw validation.
+     * Do not use Texture.Unit[]._Current: it can still describe the last draw.
+@@ -706,6 +999,11 @@ sgl_surface_destroy(struct sgl_surface *surf)
+ bool
+ sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf)
+ {
++   /* _mesa_make_current flushes the previous context and rebinds drawables
++    * here: the previous context's worker must be idle */
++   struct st_context *prev = st_api_get_current();
++   if (prev)
++      _mesa_glthread_finish(prev->ctx);
+    return st_api_make_current(ctx ? ctx->st : NULL, surf ? &surf->base : NULL,
+                               surf ? &surf->base : NULL);
+ }
+diff --git a/src/gallium/frontends/sweetgl/sweetgl.h b/src/gallium/frontends/sweetgl/sweetgl.h
+index 722518c..fd467ad 100644
+--- a/src/gallium/frontends/sweetgl/sweetgl.h
++++ b/src/gallium/frontends/sweetgl/sweetgl.h
+@@ -109,6 +109,38 @@ int sgl_ticket_finish(struct sgl_context *ctx); /* resolve own writes before CPU
+ int sgl_ticket_error(struct sgl_context *ctx);
+ void sgl_follow_thread(struct sgl_context *ctx);
+ 
++/*
++ * Mesa's glthread for ctx (call before ctx is first made current): GL calls
++ * are recorded and run on a worker thread; false if the driver cannot.
++ * sgl_glthread_finish waits until the worker has run everything recorded
++ * (ctx current), sgl_glthread_flush hands the recorded calls over now, and
++ * sgl_glthread_syncs counts the waits so far. All are no-ops without glthread.
++ */
++bool sgl_context_enable_glthread(struct sgl_context *ctx);
++bool sgl_glthread_enabled(struct sgl_context *ctx);
++void sgl_glthread_finish(struct sgl_context *ctx);
++void sgl_glthread_flush(struct sgl_context *ctx);
++unsigned sgl_glthread_syncs(struct sgl_context *ctx);
++unsigned sgl_ticket_pending_drains(void);
++
++/*
++ * Fences without a glthread wait (glthread only): sgl_fence_create queues a
++ * real GL fence, sgl_fence_poll queues a check of the live ones (once per
++ * frame), sgl_fence_state reads the last result, sgl_fence_wait waits for the
++ * worker and then for the fence like glClientWaitSync (returns its GLenum).
++ */
++#define SGL_FENCE_QUEUED 0
++#define SGL_FENCE_CREATED 1
++#define SGL_FENCE_SIGNALED 2
++struct sgl_fence;
++struct sgl_fence *sgl_fence_create(struct sgl_context *ctx);
++void sgl_fence_poll(struct sgl_context *ctx);
++unsigned sgl_fence_state(struct sgl_fence *f);
++unsigned sgl_fence_wait(struct sgl_context *ctx, struct sgl_fence *f, unsigned flags, uint64_t timeout);
++void sgl_fence_delete(struct sgl_context *ctx, struct sgl_fence *f);
++/* glthread: queue a move of Mesa's GL error flags into *mask (bits GL_INVALID_ENUM + n) */
++void sgl_error_poll(struct sgl_context *ctx, unsigned *mask);
++
+ /* bind ctx and surf to the calling thread (NULL, NULL unbinds) */
+ bool sgl_make_current(struct sgl_context *ctx, struct sgl_surface *surf);
+ /* Optional FIFO marker after a CA flush; does not submit or wait. */
+diff --git a/src/gallium/frontends/sweetgl/sweetgl_tickets.inc b/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
+index ab1cba8..c05060b 100644
+--- a/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
++++ b/src/gallium/frontends/sweetgl/sweetgl_tickets.inc
+@@ -10,6 +10,7 @@ struct sgl_render_ticket {
+ struct sgl_render_batch {
+    struct sgl_render_set *set;
+    struct pipe_context *driver;
++   struct pipe_context *queue; /* st/mesa's pipe, used by the GL thread */
+    unsigned count;
+    struct sgl_render_batch *next;
+    struct sgl_render_ticket tickets[32];
+@@ -24,6 +25,14 @@ struct sgl_render_set {
+    struct sgl_render_batch *inflight;
+ };
+ 
++static unsigned sgl_pending_drains;
++
++unsigned
++sgl_ticket_pending_drains(void)
++{
++   return p_atomic_read(&sgl_pending_drains);
++}
++
+ static void
+ sgl_render_unref(struct sgl_render_set *set)
+ {
+@@ -91,6 +100,7 @@ sgl_ticket_write(struct sgl_context *ctx, uint32_t surface)
+    if (pending) {
+       /* Reusing an offscreen target can reach us before its previous callback.
+        * Wait only at this write hazard, never at the preceding w_Flush. */
++      p_atomic_inc(&sgl_pending_drains);
+       error = sgl_flush_submit(ctx);
+       if (error)
+          return error;
+@@ -197,6 +207,16 @@ sgl_render_driver(void *data)
+    FREE(batch);
+ }
+ 
++/* on the GL thread, after the frame's draws and flush */
++static void
++sgl_ticket_queue(void *data)
++{
++   struct sgl_render_batch *batch = data;
++   struct pipe_context *pipe = batch->queue;
++   pipe->callback(pipe, sgl_render_driver, batch, false);
++   pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
++}
++
+ int
+ sgl_ticket_flush(struct sgl_context *ctx)
+ {
+@@ -209,9 +229,8 @@ sgl_ticket_flush(struct sgl_context *ctx)
+       batch->next = set->inflight;
+       set->inflight = batch;
+       pthread_mutex_unlock(&set->lock);
+-      struct pipe_context *pipe = ctx->st->pipe;
+-      pipe->callback(pipe, sgl_render_driver, batch, false);
+-      pipe->flush(pipe, NULL, PIPE_FLUSH_ASYNC);
++      batch->queue = ctx->st->pipe;
++      sgl_run(ctx, sgl_ticket_queue, batch);
+    }
+    return sgl_ticket_error(ctx);
+ }
+diff --git a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
+index 387a0eb..8159461 100644
+--- a/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
++++ b/src/gallium/frontends/sweetgl/sweetgpu_gltest.c
+@@ -600,10 +600,12 @@ sampler_units(struct sgl_context *ctx)
+    return ok;
+ }
+ 
++static bool ok_glthread = true;
++
+ int
+ main(int argc, char **argv)
+ {
+-   bool feedback_diagnostics = false, fbread_on = false, fbread_only = false;
++   bool feedback_diagnostics = false, fbread_on = false, fbread_only = false, glthread = false;
+    for (int i = 1; i < argc; i++) {
+       if (!strcmp(argv[i], "--sysbarrier-on") || !strcmp(argv[i], "--sysbarrier-off") ||
+           !strcmp(argv[i], "--sysbarrier-wide")) {
+@@ -629,8 +631,11 @@ main(int argc, char **argv)
+          setenv("GALLIUM_THREAD", "0", 1);
+       } else if (!strcmp(argv[i], "--feedback-diagnostics")) {
+          feedback_diagnostics = true;
++      } else if (!strcmp(argv[i], "--glthread")) {
++         /* task 26: Mesa's glthread runs the GL calls (as SWEETCA_GLTHREAD=1 in CA) */
++         glthread = true;
+       } else {
+-         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--gmem|--gmem-force] [--env=NAME=VALUE] [--no-tc] [--feedback-diagnostics] [--fbread|--fbread-only]\n");
++         fprintf(stderr, "usage: sweetgpu_gltest [--sysbarrier-on|--sysbarrier-wide|--sysbarrier-off] [--gmem|--gmem-force] [--env=NAME=VALUE] [--no-tc] [--feedback-diagnostics] [--fbread|--fbread-only] [--glthread]\n");
+          return 2;
+       }
+    }
+@@ -660,6 +665,11 @@ main(int argc, char **argv)
+       printf("FAIL: no GL ES context\n");
+       return 1;
+    }
++   if (glthread) {
++      bool on = sgl_context_enable_glthread(ctx);
++      printf("%s glthread %s\n", on ? "PASS:" : "FAIL:", on ? "on" : "not available");
++      ok_glthread = on;
++   }
+    printf("step: surface\n");
+    struct sgl_surface *surf = sgl_surface_create(dpy, W, H, true);
+    if (!surf || !sgl_make_current(ctx, surf)) {
+@@ -676,7 +686,7 @@ main(int argc, char **argv)
+    printf("GL_EXTENSIONS: %u\n", n + (ext && *ext));
+    glViewport(0, 0, W, H);
+ 
+-   bool ok = true;
++   bool ok = ok_glthread;
+    int64_t t0 = os_time_get_nano();
+    unsigned steps = 0;
+ #ifdef __APPLE__
+diff --git a/src/mesa/glapi/glapi/gen/gl_API.xml b/src/mesa/glapi/glapi/gen/gl_API.xml
+index dcce935..8448f79 100644
+--- a/src/mesa/glapi/glapi/gen/gl_API.xml
++++ b/src/mesa/glapi/glapi/gen/gl_API.xml
+@@ -11046,6 +11046,13 @@
+         <param name="error" type="GLenum"/>
+     </function>
+ 
++    <!-- ios-jasmine sweetgl: call fn(data) in GL command order, on the glthread
++         worker when glthread is on, inline otherwise. -->
++    <function name="InternalSweetCallbackMESA" es1="1.0" es2="2.0">
++        <param name="fn" type="GLintptr"/> <!-- "void (*)(void *)" really -->
++        <param name="data" type="GLintptr"/> <!-- "void *" really -->
++    </function>
++
+     <function name="DrawArraysUserBuf" es1="1.0" es2="2.0" marshal="custom">
+     </function>
+ 
+diff --git a/src/mesa/glapi/glapi/gen/static_data.py b/src/mesa/glapi/glapi/gen/static_data.py
+index 42396ff..1d9dcda 100644
+--- a/src/mesa/glapi/glapi/gen/static_data.py
++++ b/src/mesa/glapi/glapi/gen/static_data.py
+@@ -1666,6 +1666,7 @@ all_functions = [
+     "GetnHistogramARB",
+     "GetnMinmaxARB",
+     "GetnSeparableFilterARB",
++    "InternalSweetCallbackMESA",
+ ]
+ 
+ offsets = {}
+diff --git a/src/mesa/main/errors.c b/src/mesa/main/errors.c
+index 58e152e..5419ca1 100644
+--- a/src/mesa/main/errors.c
++++ b/src/mesa/main/errors.c
+@@ -359,3 +359,10 @@ _mesa_InternalSetError(GLenum error)
+    GET_CURRENT_CONTEXT(ctx);
+    _mesa_error(ctx, error, "glthread");
+ }
++
++/* ios-jasmine sweetgl: fn(data) in command order (on the glthread worker) */
++void GLAPIENTRY
++_mesa_InternalSweetCallbackMESA(GLintptr fn, GLintptr data)
++{
++   ((void (*)(void *))fn)((void *)data);
++}
+-- 
+2.47.3
+

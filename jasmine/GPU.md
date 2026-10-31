@@ -1164,3 +1164,5 @@ Task 23 closed at user request on 2026-10-26: Gaussian downsampling observed; no
 
 GMEM framebuffer read (2026-10-30): [report](PERF-GMEM-FBREAD-20261030.md). Every CA feedback barrier is a framebuffer fetch (Home 33.4, CC 44.6 per frame); a fetch reads the GMEM tile through the UCHE GMEM window (TILE5_2, BGRA swizzle undone), pixel-exact in gltest (97/97). Patch 0013 default off, single-bin only; multi-bin addressing and per-bin barrier cost are next.
 GMEM framebuffer read, multi-tile (2026-10-31): works on real CA frames (strip bins, per-bin rebased indirect descriptor), but the ideal per-batch GMEM choice saves only 1.2 ms Home / 2.3 ms CC of GPU per frame and the timed rule loses; GMEM work stopped, 0013 off.
+
+glthread (2026-10-31, task 26): [report](PERF-TASK26-GLTHREAD.md). Mesa's glthread runs CA's GL frontend on a worker thread (patch 0014, `SWEETCA_GLTHREAD=1`, default off): Control Center +8-9 % swap arrivals (ABBA), render-thread CPU per CC frame 24.4 -> 18.2 ms, a third of CC frames in one period; Home/Spotlight unchanged. Not installed yet (user's call).

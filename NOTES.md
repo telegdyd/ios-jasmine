@@ -1,3 +1,23 @@
+### 2026-10-31 02:45: task 26 glthread: CA's Mesa frontend on a worker thread, Control Center +8-9 % (ABBA); not installed, user's call
+
+Report jasmine/PERF-TASK26-GLTHREAD.md. mesa/patches/0014-sweetgl-glthread.patch: Mesa's own glthread for libsweetca's
+contexts behind `SWEETCA_GLTHREAD=1` (default off; off changes no path). Needed: freedreno thread-safe unsynchronized maps
+(heap transfers for PIPE_MAP_THREAD_SAFE, cap set), an ordered worker callback (`InternalSweetCallbackMESA`), sweetgl's TC/st
+uses queued on the worker or synced first, wrapper shadows for the per-draw Mesa reads (sampler2D units per program,
+MIN_FILTER, texture names), wrapper fences, no error captures where the wrapper can vouch. Correctness: gltest t26a all PASS
+with and without `--glthread` (7 variants), sweetca_test identical off/on/on+mode 2 (9958 px, the known orientation
+mismatch), CA boots render Home/CC normally, 0 faults/ticket errors. ABBA (temporary j0118 boots, same lib t26a, settings
+file switch): CC A 32.3 -> 35.0/s, CC B 32.5 -> 35.4 (both B above both A), Home 44.5 -> 43.3, Spotlight 35.2 -> 35.1; per CC
+frame render CPU 24.4 -> 18.2 ms (Mesa 9.0 -> 2.4, worker 6-7 ms), frames in one period 3-5 -> 36-47 of ~120; gdrv0 (~19) and
+GPU (~22 occupied) are now the CC limit. Opt-in `SWEETCA_GLTHREAD_ASYNC_ERRORS=1` (CA's 2 glGetError/frame without waiting,
+t26b): last waits gone but no measurable gain; not recommended. Gotcha: test images need `CANVAS=828x1792 SCALE=2` (mkimg) or
+backboardd loops on AppleM2ScalerCSCDriver and the screen stays black (cost two rounds; captures in research/t26/bad-canvas/).
+VM builds xnu/out-mesa-t26a (28b9d9df), -t26b (3f1d0b9d). Scripts research/t26/ (mkimg.sh, round1.sh, abba.sh, fc.sh),
+image shim/out/shim-boot-j0118-t26.img (backboardd lib /usr/local/bin/t26.dylib + t26.dylib.env).
+**Phone:** charging shell, 73 %; production lib bf5328c0 unchanged, nothing flashed; side files /usr/local/bin/t26.dylib
+(t26b), sweetgpu_gltest-t26, /usr/local/bin/t26/ (libsweetca.dylib + sweetca_test). **Next:** user's OK to make glthread the
+default in libsweetca and install it as production (userland only), then plain-reboot check.
+
 ### 2026-10-31 00:25: GMEM framebuffer read multi-tile works on real CA frames, but GMEM does not pay; stopped, 0013 off
 
 Report jasmine/PERF-GMEM-FBREAD-20261030.md ("Multi-tile and real frames"). 0013 now: fbread batches get one column of

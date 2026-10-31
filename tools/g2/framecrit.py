@@ -2,7 +2,7 @@
     python3 tools/g2/framecrit.py research/framebench/NAME xnu/out-jasmine-K/kernel.development.sweet LIB
 For every swap interval inside the CPU-sampled motion windows: GPU occupancy (union of
 submit..completion-observed, an upper bound), the CoreAnimation render thread's state, SpringBoard's
-main thread and the GPU driver thread, on a 0.5 ms grid."""
+main thread, the GPU driver thread and (task 26) Mesa's glthread worker "gl0", on a 0.5 ms grid."""
 import collections
 import json
 import statistics
@@ -13,6 +13,7 @@ import framebench as fb
 import prof
 
 out, K, L = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+LIBNAME = Path(L).name  # test libraries under other names (task 26: t26.dylib) count as Mesa too
 events = sorted(fb.unpack_file(out / 'events.bin', fb.EVENT), key=lambda e: e[0])
 samples = fb.unpack_file(out / 'samples.bin', fb.SAMPLE)
 stacks = fb.unpack_file(out / 'stacks.bin', fb.STACK)
@@ -48,6 +49,8 @@ def classify_render(kind, fr):
     if kind == 2:
         if 'sweet_fb_gpu_write_wait' in trace or 'AppleCLCD' in trace:
             return 'wait-panel'
+        if '_mesa_glthread_finish' in trace:
+            return 'wait-glthread'
         if 'ir3_get_shader' in trace or 'util_queue_fence_wait' in trace:
             return 'wait-shader'
         if 'darwin_pipe_wait' in trace or 'sweet_gpu_wait' in trace:
@@ -65,7 +68,7 @@ def classify_render(kind, fr):
         if 'AppleCLCD' in trace or 'sweet_fb' in trace:
             return 'cpu-k-display'
         return 'cpu-k-other'
-    if any(i.startswith('libsweetca') for i in images):
+    if any(i.startswith('libsweetca') or i == LIBNAME for i in images):
         return 'cpu-mesa'
     if 'QuartzCore' in images:
         return 'cpu-CA'
@@ -91,6 +94,7 @@ for phase, pname in ((5, 'home-a'), (6, 'control-a')):
     render = [None] * nb
     sbmain = [0] * nb
     gdrv = [0] * nb
+    glw = [0] * nb
     rstack = collections.defaultdict(collections.Counter)
     sbstack = collections.Counter()
     for us, sid, tid, pt, ev, p, kind, cpu, pad in ps:
@@ -119,18 +123,21 @@ for phase, pname in ((5, 'home-a'), (6, 'control-a')):
         elif task == 'backboardd' and 'gdrv0' in tn and kind < 2:
             for i in range(lo, hi + 1):
                 gdrv[i] = 1
+        elif task == 'backboardd' and tn.endswith(':gl0') and kind < 2:
+            for i in range(lo, hi + 1):
+                glw[i] = 1
     rows = []
     for a, b in zip(swaps, swaps[1:]):
         if a < t0 or b > t1 or not any(wa <= a and b <= wb + 50000 for wa, wb in wins):
             continue
         ia, ib = (a - t0) // GRID, (b - t0) // GRID
         r = collections.Counter()
-        n = dict(gpu=0, rcpu=0, sb=0, gdrv=0, idle_both=0, idle_all=0)
+        n = dict(gpu=0, rcpu=0, sb=0, gdrv=0, glw=0, idle_both=0, idle_all=0)
         for i in range(ia, ib):
             cat = render[i] or 'unsampled'
             r[cat] += GRID / 1000
             rc = cat.startswith('cpu')
-            n['gpu'] += gpu[i]; n['rcpu'] += rc; n['sb'] += sbmain[i]; n['gdrv'] += gdrv[i]
+            n['gpu'] += gpu[i]; n['rcpu'] += rc; n['sb'] += sbmain[i]; n['gdrv'] += gdrv[i]; n['glw'] += glw[i]
             if not gpu[i] and not rc:
                 n['idle_both'] += 1
                 if not sbmain[i] and not gdrv[i]:
@@ -143,7 +150,7 @@ for phase, pname in ((5, 'home-a'), (6, 'control-a')):
     def st(k):
         v = [x[k] for x in rows]
         return f'mean {statistics.mean(v):6.2f}  median {statistics.median(v):6.2f}'
-    for k in ('ms', 'gpu', 'rcpu', 'sb', 'gdrv', 'idle_both', 'idle_all', 'jobs'):
+    for k in ('ms', 'gpu', 'rcpu', 'sb', 'gdrv', 'glw', 'idle_both', 'idle_all', 'jobs'):
         print(f'  {k:10s} {st(k)}')
     tot = collections.Counter()
     for x in rows:

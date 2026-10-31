@@ -341,6 +341,9 @@ steps pass; the CA tree retains its pre-existing image-orientation mismatch.
 per-frame `tc_sync` (inline TC batch + 1.3-2 ms wait) from CA's render thread; ABBA +10 % Home, +6-12 % CC swap
 arrivals; render-thread Mesa CPU only -0.4 ms/frame. Installed 2026-10-29 23:05 (bf5328c0), plain reboot verified.
 
+**2026-10-31: glthread** (task 26, patch 0014, [report](PERF-TASK26-GLTHREAD.md)): Mesa's frontend off CA's render
+thread behind `SWEETCA_GLTHREAD=1`; ABBA CC +8-9 %, render CPU per CC frame -6 ms; Home unchanged. Not installed (user's call).
+
 **Remaining work:** use CPU sampling and opt-in draw diagnostics to split
 `st_prepare_draw` / `st_validate_state` atoms, `fd5_emit_state` / `fd5_program_emit`,
 and remaining batch creation/finalization. Confirm redundant state or avoidable
