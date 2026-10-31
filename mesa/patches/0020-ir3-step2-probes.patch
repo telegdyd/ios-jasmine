@@ -17,5 +17,5 @@ jasmine: Step 2 focused GPU probes (MIT), no compiler behavior change.
 +  )
 +endif
 +
- # jasmine: AIR runtime, built separately until the SweetGPU port links.
+ # jasmine: AIR runtime over the SweetGPU darwin backend.
  if host_machine.system() == 'darwin'

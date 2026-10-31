@@ -1,3 +1,23 @@
+### 2026-10-31: Metal STEP 4 compute COMPLETE; no production install
+
+User authorized step 4. Report mesa/METAL-STEP4.md. Chlorophyll 6eee3f0 pushed
+origin/adreno5xx: RWA_SWEETGPU screen, IOSurface metadata/FD import, explicit
+no-op surface sync, hardware-only mode, strong internal fd_mesa_debug link.
+Parent requires signed libbgair/bgair_test + generated bg_kernels.metallib;
+patch application now fails immediately on ANY patch error. Local VM final
+metal-s4final2 PASS (no CI). Final runtime SHA256 4bae4215e80e011804bebe91ee6cc2c8d7119edf70fe79731442081f8c716325.
+Temporary fastboot boot j0120on-slotb image; side files only in /usr/local/bin.
+AIR add 1024/1024 floats, copy 4096/4096 uints, groupsum 32/32 correct: three
+s4b runs + one final-build run, each 3 PASS/0 FAIL, FD512, no software fallback.
+Captured boot/final console: 0 SMMU fault/panic/ticket errors/SpringBoard crash.
+Production readback bb3a7a9ef7927bd189e9b74c8799610df7f4abec26bcb958b5712d688a12a445 unchanged.
+Built libsweetca 1441c96d... remains byte-identical to tested Step2 candidate;
+no shared Mesa behavior edits this step. Logs/scripts/readback research/metal-step4/.
+No flash, production replacement, root bundle/plist or installed boot changes.
+NEXT Step5 test-process Metal device/probes; texture/IOSurface cache coherence
+not yet tested, framebuffer fetch and a512 limits still pending. Step4 buffer
+compute success is NOT a Metal compositor claim. Phone parked in charge-shell.img: 75%, Charging; phone lock released.
+
 ### 2026-10-31 19:35: Metal STEP 2 COMPLETE; phone parked, production unchanged
 
 Report mesa/METAL-STEP2.md. Commits 24da65e (rounding + GPU probes), a1a360f (narrow SSBO + mandatory

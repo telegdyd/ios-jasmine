@@ -16,6 +16,14 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 2. Where things stand (2026-10-31)
 
+**Step 4 complete:** [METAL-STEP4.md](METAL-STEP4.md).
+Chlorophyll `6eee3f0` pushed; final VM `metal-s4final2` links/signs libbgair
+and bgair_test. Four device runs of AIR add/copy/groupsum give exact results,
+with zero captured faults/panics/submission errors. Production readback and
+installed boot_b unchanged. Next: Step 5 test-process Metal device, a512 limits,
+texture/IOSurface coherence and render probes. User authorized Step 4; stop
+before Step 5. Earlier stop-at-Step-2 authorization below is historical.
+
 **Step 2 completed on the phone:** [METAL-STEP2.md](METAL-STEP2.md).
 Parent commits `24da65e` / `a1a360f`: rounding and narrow SSBO fixes validated
 on a512; shift-split patch unnecessary in Mesa 26.2.5. Eight focused GPU probes

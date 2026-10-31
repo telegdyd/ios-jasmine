@@ -2,17 +2,17 @@ Chlorophyll libbgair build target for jasmine, Mesa 26.2.5.
 
 Adapted from Chlorophyll patches/air-ir3.patch (MIT, Darwin on redwood
 contributors). No softpipe dependency: jasmine uses the freedreno darwin
-backend. Runtime backend adaptation is a later step; link failures there
-are deliberately reported separately from the existing production targets.
+backend. The jasmine SweetGPU runtime is required to link alongside the existing
+production targets (step 4).
 
 --- a/src/gallium/drivers/freedreno/meson.build
 +++ b/src/gallium/drivers/freedreno/meson.build
-@@ -297,3 +297,26 @@
+@@ -297,3 +297,28 @@
      install : false,
    )
  endif
 +
-+# jasmine: AIR runtime, built separately until the SweetGPU port links.
++# jasmine: AIR runtime over the SweetGPU darwin backend.
 +if host_machine.system() == 'darwin'
 +  libbgair = shared_library(
 +    'bgair',
@@ -29,7 +29,9 @@ are deliberately reported separately from the existing production targets.
 +    dependencies : [dep_m, idep_air, idep_mesautil, idep_u_tracepoints,
 +                    idep_xmlconfig, driver_freedreno],
 +    link_with : [libgallium, libfreedreno_perfcntrs],
-+    link_args : ['-Wl,-install_name,@rpath/libbgair.dylib'],
++    c_args : ['-DRWA_SWEETGPU=1'],
++    link_args : ['-Wl,-install_name,@rpath/libbgair.dylib',
++                 '-framework', 'IOSurface', '-framework', 'CoreFoundation'],
 +    build_by_default : false,
 +    install : false,
 +  )

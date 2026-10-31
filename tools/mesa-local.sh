@@ -53,7 +53,7 @@ mesa)
 	test -x "$ROOT/venv/bin/meson" -a -x "$ROOT/tools/bin/bison" || { echo "no Mesa toolchain: ssh mac sh -s < tools/vm-mesa-setup.sh" >&2; exit 1; }
 	test -d "$ROOT/mesa-26.2.5" || git clone -q --depth 1 --branch mesa-26.2.5 https://gitlab.freedesktop.org/mesa/mesa.git "$ROOT/mesa-26.2.5"
 	rsync -a --delete --exclude=/.git "$ROOT/mesa-26.2.5/" "$ROOT/stage/"
-	(cd "$ROOT/stage" && for p in "$TREE"/mesa/patches/*.patch; do git apply --verbose "$p"; done) > "$ROOT/patch.log" 2>&1 ||
+	(cd "$ROOT/stage" && for p in "$TREE"/mesa/patches/*.patch; do git apply --verbose "$p" || exit 1; done) > "$ROOT/patch.log" 2>&1 ||
 		{ cat "$ROOT/patch.log"; exit 1; }
 	grep -c '^Applied patch' "$ROOT/patch.log" | sed 's/$/ patch files applied cleanly/'
 	# jasmine: Chlorophyll's nested Mesa/libdrm submodules stay uninitialised.
@@ -96,30 +96,31 @@ mesa)
 	# libsweetca (EAGL on sweetgl for CoreAnimation) and its test; the test is Objective-C, so clang builds it here
 	cp build/src/gallium/frontends/sweetgl/libsweetca.dylib "$OUT/"
 	codesign -f -s - "$OUT/libsweetca.dylib"
-	# jasmine step 1 requires the frontend and runtime C to compile. Only the
-	# runtime link may fail while its Bergamota backend is still unported.
-	ninja -C build -k 0 src/compiler/air/air2nir \
-		src/gallium/drivers/freedreno/libbgair.dylib.p/.._.._.._compiler_air_air_metal.c.o > "$ROOT/air-build.log" 2>&1 || {
+	# jasmine step 4: frontend and complete SweetGPU runtime must link.
+	ninja -C build src/compiler/air/air2nir src/gallium/drivers/freedreno/libbgair.dylib > "$ROOT/air-build.log" 2>&1 || {
 		cp "$ROOT/air-build.log" "$OUT/air-build.log"
-		tail -100 "$ROOT/air-build.log"
-		exit 1
+		tail -100 "$ROOT/air-build.log"; exit 1
 	}
 	cp build/src/compiler/air/air2nir "$OUT/"
 	codesign -f -s - --entitlements "$TREE/ios/entitlements.plist" "$OUT/air2nir"
-	if ninja -C build src/gallium/drivers/freedreno/libbgair.dylib >> "$ROOT/air-build.log" 2>&1; then
-		echo 'AIR compile: PASS; libbgair link: PASS' > "$OUT/air-build-status.txt"
-	else
-		echo 'AIR compile: PASS; libbgair link: INCOMPLETE (see air-build.log)' > "$OUT/air-build-status.txt"
-	fi
+	cp build/src/gallium/drivers/freedreno/libbgair.dylib "$OUT/"
+	codesign -f -s - "$OUT/libbgair.dylib"
 	cp "$ROOT/air-build.log" "$OUT/air-build.log"
-	cat "$OUT/air-build-status.txt"
-	tail -30 "$ROOT/air-build.log"
+	echo 'AIR compile: PASS; libbgair link: PASS' > "$OUT/air-build-status.txt"
 	cd "$TREE"
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -fobjc-arc -O1 -Wno-deprecated-declarations \
 		mesa/darwin/sweetgl/sweetca_test.m -o "$OUT/sweetca_test" \
 		-framework Foundation -framework QuartzCore -framework CoreGraphics -framework IOSurface -framework OpenGLES \
 		-L"$OUT" -lsweetca
 	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/sweetca_test"
+	# The executable finds only its side-by-side test runtime via @rpath.
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O2 \
+		-I mesa/metal/air mesa/metal/test/bgair_test.c -L"$OUT" -lbgair \
+		-Wl,-rpath,@executable_path -o "$OUT/bgair_test"
+	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgair_test"
+	xcrun --sdk iphoneos metal -mios-version-min=16.0 -std=ios-metal2.4 -c \
+		mesa/metal/test/bg_kernels.metal -o "$OUT/bg_kernels.air"
+	xcrun --sdk iphoneos metallib "$OUT/bg_kernels.air" -o "$OUT/bg_kernels.metallib"
 	# screenshot through the render server (G2 step 3)
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 mesa/darwin/sweetgl/sweet_shot.m -o "$OUT/sweet_shot" -framework Foundation -framework IOSurface
 	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/sweet_shot"
