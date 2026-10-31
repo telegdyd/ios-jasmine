@@ -1,0 +1,362 @@
+From b251569f900d6e6d757c7f0c78025dfec79b4046 Mon Sep 17 00:00:00 2001
+From: Xiaomi <x@x>
+Date: Sat, 31 Oct 2026 15:38:59 +0100
+Subject: [PATCH] freedreno: task 28 GPU batch trace, interval union, barrier
+ NOP knob (default off)
+
+---
+ src/gallium/drivers/freedreno/a5xx/fd5_draw.c |  48 ++++-
+ .../drivers/freedreno/freedreno_batch.h       |  16 ++
+ .../drivers/freedreno/freedreno_gmem.c        | 187 ++++++++++++++++++
+ 3 files changed, 247 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+index 39b8dda..6f47159 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -332,6 +332,34 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
+ 
+ #ifdef __APPLE__
+    int gd_slot = gd_begin(ctx, fp, info, draw);
++   if (sweet_gputrace_draws) {
++      struct fd_batch *batch = ctx->batch;
++      struct pipe_framebuffer_state *pfb = &batch->framebuffer;
++      struct pipe_scissor_state *sc = fd_context_get_scissor(ctx);
++      struct fd_texture_stateobj *tex = &ctx->tex[MESA_SHADER_FRAGMENT];
++      float sx = ctx->viewport[0].scale[0], sy = ctx->viewport[0].scale[1];
++      struct sweet_gt_draw t = {
++         .fs = fp, .seqno = batch->seqno, .fbk = batch->sweet_fb_barriers,
++         .instrs = fp->info.instrs_count, .waves = fp->info.max_waves,
++         .count = draw->count, .inst = info->instance_count,
++         .vp_w = (uint32_t)(2 * (sx < 0 ? -sx : sx)), .vp_h = (uint32_t)(2 * (sy < 0 ? -sy : sy)),
++         .sc_w = sc && sc->maxx > sc->minx ? sc->maxx - sc->minx : 0,
++         .sc_h = sc && sc->maxy > sc->miny ? sc->maxy - sc->miny : 0,
++         .fb_w = pfb->width, .fb_h = pfb->height, .ntex = tex->num_textures,
++         .blend = ctx->blend && ctx->blend->rt[0].blend_enable,
++      };
++      struct fd_resource *target = pfb->nr_cbufs && pfb->cbufs[0].texture ? fd_resource(pfb->cbufs[0].texture) : NULL;
++      for (unsigned i = 0; i < 2 && i < tex->num_textures; i++) {
++         struct pipe_sampler_view *view = tex->textures[i];
++         if (!view || !view->texture)
++            continue;
++         t.tw[i] = view->texture->width0;
++         t.th[i] = view->texture->height0;
++         t.tf[i] = view->format;
++         t.tfb[i] = target && fd_resource(view->texture)->bo == target->bo;
++      }
++      sweet_gputrace_draw(&t);
++   }
+ #endif
+    draw_impl(ctx, ctx->batch->draw, &emit, index_offset);
+ #ifdef __APPLE__
+@@ -473,6 +501,10 @@ fd5_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
+    }
+    if (FD_DBG(SYSMEM))
+       SWEET_EVENT(SPE_CLEAR_FAST, 1);
++#ifdef __APPLE__
++   if (ctx->batch->sweet_clears < UINT16_MAX)
++      ctx->batch->sweet_clears++;
++#endif
+ 
+    fd5_emit_render_cntl(ctx, true, false);
+ 
+@@ -667,10 +699,18 @@ fd5_texture_barrier(struct fd_context *ctx, unsigned flags) in_dt
+     * publish color writes; complete prior work; invalidate sampler storage.
+     * Hardware pixel tests are required before enabling this experiment.
+     */
+-   fd5_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
+-   fd5_emit_flush(ctx, ring); /* CACHE_FLUSH_TS then WAIT_FOR_IDLE */
+-   fd5_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
+-   fd5_cache_flush(batch, ring); /* UCHE invalidate then WAIT_FOR_IDLE */
++   /* Task 28: SWEETCA_SYS_BARRIER_NOP=1 (timing only, may render wrong)
++    * emits nothing, to measure what the retained barriers cost the GPU.
++    */
++   static int nop = -1;
++   if (nop < 0)
++      nop = debug_get_bool_option("SWEETCA_SYS_BARRIER_NOP", false);
++   if (!nop) {
++      fd5_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
++      fd5_emit_flush(ctx, ring); /* CACHE_FLUSH_TS then WAIT_FOR_IDLE */
++      fd5_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
++      fd5_cache_flush(batch, ring); /* UCHE invalidate then WAIT_FOR_IDLE */
++   }
+    /* 0013: the first barrier decides; one without the switch keeps it sysmem */
+    batch->a5xx_fbread = fd5_ctx->gmem_fbread > 0 &&
+                         (batch->a5xx_fbread || !batch->a5xx_sysmem_barrier);
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch.h b/src/gallium/drivers/freedreno/freedreno_batch.h
+index 4f73c5a..8f41366 100644
+--- a/src/gallium/drivers/freedreno/freedreno_batch.h
++++ b/src/gallium/drivers/freedreno/freedreno_batch.h
+@@ -125,6 +125,9 @@ struct fd_batch {
+    bool a5xx_fbread : 1; /* ... whose reads may be pointed at GMEM (0013) */
+    /* task 24 stage 3: retained feedback barriers, draws before the first, sample slot + 1 */
+    uint16_t sweet_fb_barriers, sweet_fb_pre;
++#ifdef __APPLE__
++   uint16_t sweet_clears;        /* task 28: fast clears emitted into this batch */
++#endif
+    uint32_t sweet_meas;
+ 
+    /* Keep track if WAIT_FOR_IDLE is needed for registers we need
+@@ -492,4 +495,17 @@ struct fd_ringbuffer *fd_batch_get_prologue(struct fd_batch *batch);
+ }
+ #endif
+ 
++#ifdef __APPLE__
++/* ios-jasmine task 28 (SWEETCA_GPUTRACE): one draw as seen by the driver */
++struct sweet_gt_draw {
++   const void *fs;
++   uint32_t seqno, fbk, instrs, waves, count, inst, vp_w, vp_h, sc_w, sc_h, fb_w, fb_h, ntex, blend;
++   uint32_t tw[2], th[2];
++   uint8_t tfb[2];
++   enum pipe_format tf[2];
++};
++extern volatile int sweet_gputrace_draws;
++void sweet_gputrace_draw(const struct sweet_gt_draw *d);
++#endif
++
+ #endif /* FREEDRENO_BATCH_H_ */
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index 6c3beee..a533a19 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -714,6 +714,8 @@ flush_ring(struct fd_batch *batch)
+ #include <string.h>
+ #include "util/simple_mtx.h"
+ #include "util/sweet_profile.h"
++#include <stdio.h>
++#include <sys/stat.h>
+ 
+ /* ios-jasmine: SWEETCA_GPUPROF=1 times every batch on the GPU. An RB_DONE_TS
+  * timestamp (the 19.2 MHz always-on counter, once everything before it is
+@@ -730,9 +732,43 @@ struct gp_pass {
+    uint32_t w, h, draws, nbins, cleared, restore, resolve, nr_cbufs, fbk, pre;
+    enum pipe_format fmt;
+    uint8_t mode;                 /* 0 nondraw, 1 sysmem, 2 gmem, 3 sysmem with retained feedback barriers */
++   uint8_t trace;                /* task 28: listed by SWEETCA_GPUTRACE */
++   uint32_t seqno, ctxid, clears;
+    uint64_t t, gap;
+ };
+ 
++/* Task 28. (1) The busy/gap sums above assume batches finish in slot order; one
++ * late batch moves last_end past every later start and the gap sum stays 0
++ * from then on. Each report now also takes the union of the window's
++ * [start, end] stamps: GPU time covered by a batch, idle gaps between them.
++ * (2) SWEETCA_GPUTRACE=<file>: each time that file's mtime changes, the next
++ * SWEETCA_GPUTRACE_N (default 300) batches and every draw recorded meanwhile
++ * are written to <file>.out (or, if that cannot be opened, to the log) at the
++ * following report: one line per batch (GPU start/end) and per draw.
++ */
++#define GP_IV      16384
++#define GT_BATCHES 1024
++#define GT_DRAWS   4096
++#define GT_FS      512
++
++struct gt_batch {
++   uint32_t seqno, ctxid, w, h, draws, cleared, restore, resolve, fbk, pre, nbins, clears;
++   enum pipe_format fmt;
++   uint8_t mode;
++   uint64_t s, e;
++};
++
++volatile int sweet_gputrace_draws;
++static struct {
++   int checked;
++   const char *path;
++   time_t mtime;
++   unsigned n_target, left, marked;
++   unsigned nb, nd;
++   struct gt_batch b[GT_BATCHES];
++   struct sweet_gt_draw d[GT_DRAWS];
++} gt;
++
+ static struct {
+    simple_mtx_t lock;
+    int enabled;                  /* -1: not checked yet */
+@@ -746,6 +782,8 @@ static struct {
+    uint64_t cls_n[4][3], cls_t[4][3], cls_max[4][3];
+    struct gp_pass top[GP_TOP];
+    unsigned ntop;
++   uint64_t iv[GP_IV][2];
++   unsigned niv, bad;
+ } gp = { .lock = SIMPLE_MTX_INITIALIZER, .enabled = -1 };
+ 
+ static const char *const gp_modes[4] = { "nondraw", "sysmem", "gmem", "sysfb" };
+@@ -767,6 +805,20 @@ gp_harvest(void)
+       }
+       gp.tail++;
+       struct gp_pass *p = &gp.pass[i];
++      if (e < s || e - s > 19200000)
++         gp.bad++;
++      else if (gp.niv < GP_IV) {
++         gp.iv[gp.niv][0] = s;
++         gp.iv[gp.niv][1] = e;
++         gp.niv++;
++      }
++      if (p->trace && gt.nb < GT_BATCHES)
++         gt.b[gt.nb++] = (struct gt_batch){
++            .seqno = p->seqno, .ctxid = p->ctxid, .w = p->w, .h = p->h, .draws = p->draws,
++            .cleared = p->cleared, .restore = p->restore, .resolve = p->resolve, .fbk = p->fbk,
++            .pre = p->pre, .nbins = p->nbins, .clears = p->clears, .fmt = p->fmt, .mode = p->mode,
++            .s = s, .e = e,
++         };
+       p->t = e > s ? e - s : 0;
+       p->gap = gp.last_end && s > gp.last_end ? s - gp.last_end : 0;
+       if (p->gap > GP_GAP) {
+@@ -797,11 +849,139 @@ gp_harvest(void)
+    }
+ }
+ 
++static int
++gp_iv_cmp(const void *a, const void *b)
++{
++   uint64_t x = ((const uint64_t *)a)[0], y = ((const uint64_t *)b)[0];
++   return x < y ? -1 : x > y;
++}
++
++/* with gp.lock: union of this window's batch intervals */
++static void
++gp_union(void (*log)(const char *fmt, ...))
++{
++   if (!gp.niv)
++      return;
++   qsort(gp.iv, gp.niv, sizeof(gp.iv[0]), gp_iv_cmp);
++   uint64_t cover = 0, gaps = 0, idle = 0, ngaps = 0, cs = gp.iv[0][0], ce = gp.iv[0][1];
++   uint64_t g_small = 0, n_small = 0;   /* gaps under 50 us: back-to-back batches */
++   for (unsigned k = 1; k < gp.niv; k++) {
++      uint64_t s = gp.iv[k][0], e = gp.iv[k][1];
++      if (s > ce) {
++         cover += ce - cs;
++         uint64_t gap = s - ce;
++         if (gap > GP_GAP)
++            idle += gap;
++         else {
++            gaps += gap;
++            ngaps++;
++            if (gap < 960) {
++               g_small += gap;
++               n_small++;
++            }
++         }
++         cs = s;
++         ce = e;
++      } else if (e > ce) {
++         ce = e;
++      }
++   }
++   cover += ce - cs;
++   uint64_t span = ce - gp.iv[0][0] - idle;
++   log("sweetca: gpuprof: union %u batches, covered %.1f ms, gaps %.1f ms (%llu, of them %llu under 50 us: %.1f ms), "
++       "idle over 100 ms %.1f ms, span %.1f ms, %u bad stamps",
++       gp.niv, cover / 19200.0, gaps / 19200.0, (unsigned long long)ngaps, (unsigned long long)n_small,
++       g_small / 19200.0, idle / 19200.0, span / 19200.0, gp.bad);
++   gp.niv = gp.bad = 0;
++}
++
++static const char *
++gt_fmt(enum pipe_format f)
++{
++   return f ? util_format_short_name(f) : "-";
++}
++
++/* with gp.lock, from the report: arm on a new mtime, write a finished trace */
++static void
++gt_check(void (*log)(const char *fmt, ...))
++{
++   struct stat st;
++   if (!gt.checked) {
++      gt.checked = 1;
++      gt.path = getenv("SWEETCA_GPUTRACE");
++      const char *n = getenv("SWEETCA_GPUTRACE_N");
++      gt.n_target = n ? atoi(n) : 300;
++      if (!gt.n_target || gt.n_target > GT_BATCHES)
++         gt.n_target = GT_BATCHES;
++      if (gt.path && !stat(gt.path, &st))
++         gt.mtime = st.st_mtime;
++   }
++   if (!gt.path)
++      return;
++   if (gt.marked && !gt.left) {
++      char out[512];
++      snprintf(out, sizeof(out), "%s.out", gt.path);
++      FILE *f = fopen(out, "w");
++      const void *fs[GT_FS];
++      unsigned nfs = 0;
++      uint64_t t0 = gt.nb ? gt.b[0].s : 0;
++      for (unsigned k = 0; k < gt.nb; k++)
++         if (gt.b[k].s < t0)
++            t0 = gt.b[k].s;
++      char line[400];
++#define GT_OUT(...) do { snprintf(line, sizeof(line), __VA_ARGS__); if (f) fprintf(f, "%s\n", line); else log("%s", line); } while (0)
++      GT_OUT("sweetca: gputrace: %u batches (%u marked), %u draws", gt.nb, gt.marked, gt.nd);
++      for (unsigned k = 0; k < gt.nb; k++) {
++         struct gt_batch *b = &gt.b[k];
++         GT_OUT("sweetca: gputrace: b %u c%x s %.1f e %.1f %ux%u %s %s d%u fbk%u pre%u clr%u cl%x rs%x rv%x bins%u",
++                b->seqno, b->ctxid, (b->s - t0) / 19.2, (b->e - t0) / 19.2, b->w, b->h, gt_fmt(b->fmt),
++                gp_modes[b->mode], b->draws, b->fbk, b->pre, b->clears, b->cleared, b->restore, b->resolve,
++                b->nbins);
++      }
++      for (unsigned k = 0; k < gt.nd; k++) {
++         struct sweet_gt_draw *d = &gt.d[k];
++         unsigned id;
++         for (id = 0; id < nfs && fs[id] != d->fs; id++)
++            ;
++         if (id == nfs && nfs < GT_FS)
++            fs[nfs++] = d->fs;
++         GT_OUT("sweetca: gputrace: d %u fs%u i%u w%u v%u x%u vp%ux%u sc%ux%u fb%ux%u bl%u fbk%u t%u %ux%u%s %s %ux%u%s %s",
++                d->seqno, id, d->instrs, d->waves, d->count, d->inst, d->vp_w, d->vp_h, d->sc_w, d->sc_h, d->fb_w,
++                d->fb_h, d->blend, d->fbk, d->ntex, d->tw[0], d->th[0], d->tfb[0] ? "*" : "", gt_fmt(d->tf[0]),
++                d->tw[1], d->th[1], d->tfb[1] ? "*" : "", gt_fmt(d->tf[1]));
++      }
++#undef GT_OUT
++      if (f)
++         fclose(f);
++      log("sweetca: gputrace: %u batches, %u draws written to %s", gt.nb, gt.nd, f ? out : "the log");
++      gt.marked = gt.nb = gt.nd = 0;
++      return;
++   }
++   if (gt.left || stat(gt.path, &st) || st.st_mtime == gt.mtime)
++      return;
++   gt.mtime = st.st_mtime;
++   gt.left = gt.marked = gt.n_target;
++   gt.nb = gt.nd = 0;
++   sweet_gputrace_draws = 1;
++   log("sweetca: gputrace: armed for %u batches", gt.left);
++}
++
++void
++sweet_gputrace_draw(const struct sweet_gt_draw *d)
++{
++   simple_mtx_lock(&gp.lock);
++   if (sweet_gputrace_draws && gt.nd < GT_DRAWS)
++      gt.d[gt.nd++] = *d;
++   simple_mtx_unlock(&gp.lock);
++}
++
+ static void
+ gp_report(void (*log)(const char *fmt, ...))
+ {
+    simple_mtx_lock(&gp.lock);
+    gp_harvest();
++   gp_union(log);
++   gt_check(log);
+    double span = gp.last > gp.first ? (gp.last - gp.first) / 19200.0 : 0;
+    log("sweetca: gpuprof: %llu batches, GPU busy %.1f ms in %.1f ms (%.0f%%); gaps under 100 ms %.1f ms, "
+        "longer %.1f ms; %llu dropped, %u pending",
+@@ -865,7 +1045,14 @@ gp_begin(struct fd_batch *batch, bool sysmem) assert_dt
+             .nr_cbufs = pfb->nr_cbufs, .fmt = pipe_surface_format(&pfb->cbufs[0]),
+             .mode = batch->nondraw ? 0 : !sysmem ? 2 : batch->a5xx_sysmem_barrier ? 3 : 1,
+             .fbk = batch->sweet_fb_barriers, .pre = batch->sweet_fb_pre,
++            .seqno = batch->seqno, .ctxid = (uint32_t)(((uintptr_t)batch->ctx >> 4) & 0xfff),
++            .clears = batch->sweet_clears,
+          };
++         if (gt.left) {
++            gp.pass[slot].trace = 1;
++            if (!--gt.left)
++               sweet_gputrace_draws = 0;
++         }
+       } else {
+          gp.dropped++;
+       }
+-- 
+2.47.3
+
