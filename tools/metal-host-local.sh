@@ -34,9 +34,10 @@ for name in jasmine_add jasmine_u2f jasmine_negative jasmine_vertex jasmine_frag
         cat "$OUT/$name.txt"; exit 1;
     }
 done
-if "$OUT/air2ir3" "$OUT/jasmine_compile.metallib" jasmine_fetch > "$OUT/jasmine_fetch.txt" 2>&1; then
-    echo 'unexpected success for unimplemented a5xx framebuffer fetch' >&2; exit 1
-fi
-grep -q 'a5xx framebuffer fetch requires' "$OUT/jasmine_fetch.txt"
-printf 'PASS: six a512 compile/assemble probes (including byte store); framebuffer fetch rejected explicitly\n' > "$OUT/status.txt"
+# a5xx framebuffer fetch compiles through the runtime's attachment-texture lowering
+"$OUT/air2ir3" "$OUT/jasmine_compile.metallib" jasmine_fetch > "$OUT/jasmine_fetch.txt" 2>&1 || {
+    cat "$OUT/jasmine_fetch.txt"; exit 1;
+}
+grep -q 'attachment reads of targets 0x1 lowered' "$OUT/jasmine_fetch.txt"
+printf 'PASS: seven a512 compile/assemble probes (byte store; framebuffer fetch via attachment-texture lowering)\n' > "$OUT/status.txt"
 cat "$OUT/status.txt"

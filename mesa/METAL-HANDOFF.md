@@ -16,6 +16,14 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 2. Where things stand (2026-10-31)
 
+**Corpus pass before step 7 (offline):** [METAL-CORPUS.md](METAL-CORPUS.md).
+QuartzCore 139/141 compile for a512 (was 111), CA's uber shaders `fixed_frag_*` /
+`fixed_vert_*_gen` included; CoreImage 125/133. The offline tool now runs the
+runtime's own NIR path (shared `air/air_lower.c`). libbgair changed (fetch units,
+image access, write types, ffma_weak, pointer slots), so **re-run the step 5/6
+probes on the phone before step 7**. libsweetca still the step 2 candidate
+`1441c96d`; production and phone untouched. Committed locally, not pushed.
+
 **Step 6 complete:** [METAL-STEP6.md](METAL-STEP6.md).
 User authorized Step6. Chlorophyll `c3ef65a`, parent integration `ffae38b`;
 VM `metal-s6c` PASS. Framework-only test gets BGMTLDevice through iOS16's

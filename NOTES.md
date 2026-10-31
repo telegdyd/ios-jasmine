@@ -1,3 +1,17 @@
+### 2026-10-31: Metal corpus pass before step 7 (offline, NO phone): QuartzCore 139/141, uber shaders compile
+
+User: "Do the corpus first". Report mesa/METAL-CORPUS.md. Chlorophyll adreno5xx + parent committed locally, NOT
+pushed (see git log). air2ir3 now runs the runtime's NIR path (new shared air/air_lower.c; before it ran
+ir3_finalize_nir, NULL compute-sysval options, and refused fbfetch). Fixes: fbfetch on free units (uber shader
+declares textures to 14; dead reads skipped), Mesa 26 ffma -> ffma_weak for fmuladd/fast_fma/mad (precise fma()
+unfused on a5xx: deviation), image_load access (ir3 LDIB vs dims-scan mismatch; release build would read wrong
+consts), write src_type from the value + 16-bit store widening, AIR_VAL_SLOT pointer locals/constant pointer
+globals (uber fragment shader), VS read_write-but-unwritten buffers as UBO. VM metal-host cq3: QuartzCore 139/141
+(was 111; left tile_downsample_4/8, tile kernels CA should not pick at supportsFamily<=Apple3), CoreImage 125/133
+(was 100). libbgair 90cfa405 (changed: re-run step 5/6 probes on phone before step 7), libsweetca 1441c96d =
+step 2 candidate; production bb3a7a9e, boot_b and phone untouched. Results research/metal-corpus/*-cq3 (ignored).
+**Next:** user's OK for phone -> step 5/6 probe rerun, then step 7.
+
 ### 2026-10-31: Metal STEP 6 COMPLETE; process-local registration, phone parked
 
 User authorized Step6. Report mesa/METAL-STEP6.md. Chlorophyll c3ef65a pushed
