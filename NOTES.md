@@ -1,3 +1,16 @@
+### 2026-10-31 22:10: Metal step 7 STARTED: probes re-run PASS; backboardd draws the lock screen through Metal
+
+User: "re-run the probes, then start step 7". Report mesa/METAL-STEP7.md. Probes with corpus libbgair (VM metal-s7a):
+compute 3/3, device 11/11, quad = step 5, render 25/25, registered 25/25, two rounds, 0 faults, production bb3a7a9e.
+Step 7: injector allows backboardd (still BGMTL_ENABLE=1); CA takes Metal by itself (CAMetalContextCreate first).
+Temporary image shim/out/shim-boot-j0120on-metal-s7bb.img (research/metal-step7/mkimg-mtl.sh; backboardd gets
+bgmtl_inject + BGMTL_BB=1, NO libsweetca). Fixes: format 551 (abort), odd-pitch sampled IOSurfaces copied (seed
+re-copy), BGR5A1 as B5G5R5A1 + CPU R/B exchange. VM metal-s7d (libbgair 31940a81, libbgmtl d1a227d7, libsweetca
+1441c96d unchanged), pushed to /usr/local/bin. r3: 0 refusals/crashes/faults; lock screen correct colours BUT
+captures show moving black bands, CA render capture black (guess: stale CPU cache in captures; unverified).
+**Phone:** left on the temporary s7bb boot (Metal backboardd); a plain reboot returns to installed boot_b.
+Commits local, not pushed. NEXT: what the panel really shows (user), bands, ASTC no-copy row, home screen, frame times.
+
 ### 2026-10-31: Metal corpus pass before step 7 (offline, NO phone): QuartzCore 139/141, uber shaders compile
 
 User: "Do the corpus first". Report mesa/METAL-CORPUS.md. Chlorophyll adreno5xx + parent committed locally, NOT
