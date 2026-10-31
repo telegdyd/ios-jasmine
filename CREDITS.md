@@ -54,4 +54,5 @@ SOFTWARE.
 
 - **ios-sweet** (dipa-studio): the XNU port this tree is built on.
 - **Mesa / freedreno**: the OpenGL ES driver for the Adreno.
+- **Chlorophyll** ([Bergamota](https://github.com/ry-diffusion/Bergamota)): the Metal driver in `mesa/metal`, ported to the Adreno 512 in [telegdyd/Chlorophyll](https://github.com/telegdyd/Chlorophyll). Its AIR shader front end comes from the HackiOS user space (MIT); see `mesa/metal/NOTICE.md`.
 - **blacktop/darwin-xnu-build**: the XNU build scripts.
