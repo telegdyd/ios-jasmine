@@ -106,6 +106,7 @@ stays here until its remaining scope is finished and the result is on by default
 | [16](#16-pipeline-rendering-and-presentation-using-surface-completion-fences) | Pipeline rendering and presentation | Planned 2026-10-25: [step plan](PERF-TASK16-PLAN.md). After the threaded context, `glFinish` (GPU fence + driver drain) is the display thread's largest wait. G1 passed 2026-10-25 16:21 (CA uses a third swap surface when the previous page is busy); S4 design approved 16:46; next build 1 (S5 + S7, mode 1). Benefit unmeasured. | j0100 (build 1) and j0101 (build 2, conditional) reserved 2026-10-25 |
 | [17](#17-persistent-shader-cache) | Persistent shader cache | New, unstarted; target first-use/reboot compilation hitches, not warm lookup. Feasibility and gain unvalidated. | Mesa/build; no reservation |
 | [24](PERF-TASK23-25-GPU-TRAFFIC.md#24-fewer-batches-per-frame-then-gmem-for-the-big-ones) | Fewer batches per frame, then GMEM | 2026-10-28: stages 1/2 done in test libraries. [Stage 3 measured](PERF-GMEM-STAGE3-20261028.md): 16/16 pixel cases pass, but two framebench pairs show no global gain (Home 33.09 -> 32.92/s; CC B 23.87 -> 23.50). Current GMEM rule stays off; no production install. Feedback-path redesign/user direction open. 2026-10-30: [GMEM framebuffer read](PERF-GMEM-FBREAD-20261030.md): all CA feedback barriers are fetches (Home 33.4, CC 44.6 per frame), and a fetch can read the GMEM tile pixel-exact (patch 0013, default off). 2026-10-31: multi-tile works on real CA frames, pixel-correct, but GMEM does not pay: ideal per-batch choice -1.2 ms Home / -2.3 ms CC GPU per frame, the timed rule +0.6 / +2.4 ms; frames are also render-CPU bound. GMEM work stopped; 0013 stays off. | Mesa/libsweetca; kernel only if the VA pad must grow |
+| [27](PERF-TASK27-FRAME-GAP.md) | Control Center frame gap (27 ms with no stage that long) | 2026-10-31: cause found: CA's `IOMFBDisplay::is_ready` slept 2 x 3 ms per frame in `SwapWait(0)` polls the queue-mode kernel (j0109) could never answer "done". Kernel j0119 `sweetfb_wait0=1` (default off): ABBA CC A +11 %, Home +6 %, CC B +5 %, Spotlight within spread; 0 faults. Install (default on, flash boot_b) awaits the user's OK. | j0119 |
 
 ## Open bug fixes
 
@@ -344,6 +345,11 @@ arrivals; render-thread Mesa CPU only -0.4 ms/frame. Installed 2026-10-29 23:05 
 **2026-10-31: glthread** (task 26, patch 0014, [report](PERF-TASK26-GLTHREAD.md)): Mesa's frontend off CA's render
 thread, default on (`SWEETCA_GLTHREAD=0` off); ABBA CC +8-9 %, render CPU per CC frame -6 ms; Home unchanged. Installed
 2026-10-31 13:16 (libsweetca 21ca5c4d, plain reboot clean).
+
+**2026-10-31: SwapWait(0) after a screen wake** (task 27, kernel j0119, [report](PERF-TASK27-FRAME-GAP.md)): the
+~6 ms CC frame gap was CA's `is_ready` polling `SwapWait(0)` (3 ms timeout, 2 per frame), which the present queue
+only answered once a later swap latched; j0119 answers it once the newest swap latched. ABBA CC A 36.6 -> 40.4/s,
+Home 45.8 -> 48.5, every B CC frame mean below every A; behind `sweetfb_wait0=1`, not installed.
 
 **Remaining work:** use CPU sampling and opt-in draw diagnostics to split
 `st_prepare_draw` / `st_validate_state` atoms, `fd5_emit_state` / `fd5_program_emit`,

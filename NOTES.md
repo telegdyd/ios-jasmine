@@ -1,3 +1,19 @@
+### 2026-10-31 14:55: task 27: the CC frame gap is CA sleeping in SwapWait(0); kernel j0119 fixes it (+11 % CC A); not installed, user's call
+
+Report jasmine/PERF-TASK27-FRAME-GAP.md. New tools/g2/frametl.py (per-frame timeline from framebench events + samples,
+SwapWait table). Cause: CA's IOMFBDisplay::will_unblank sets a flag that makes IOMFBDisplay::is_ready poll
+SwapWait(0, 0x80000003) until done; j0109's queue mode calls a swap done only once a LATER swap latched, impossible for
+the newest one, so since every screen wake each is_ready (2 per frame) slept 3 ms: 6.6-7.5 ms per swap in every phase
+(render CPU ~19 + SwapWait ~8 = the 27 ms CC frame). Before j0109 SwapWait(0) returned at once. Fix
+xnu/patches/j0119-jasmine-swapwait-newest-latched.patch: `sweetfb_wait0=1` (default off) -> SwapWait(0) done once the
+newest swap latched; page SwapWaits (real IDs) keep the later-latch rule. VM build xnu/out-jasmine-j0119 (14:04). Images
+shim/out/shim-boot-j0119-t27a.img (no arg) / -t27b.img (arg; 607/607 cmdline bytes), research/t27/mkimg.sh. Two ABBA sets
+(research/t27/abba.sh, 14:06-14:53, 8 temporary boots): CC A 36.6 -> 40.4/s, Home B 45.8 -> 48.5, CC B 36.8 -> 38.8,
+Spotlight 39.4 -> 37.9 (spread); CC frame mean A 26.8-28.1 vs B 23.2-26.6 ms; SwapWait(0) 6.7 -> 0 ms/swap; 0 faults,
+0 ticket errors, dumps normal; gltest PASS, sweetca_test = known 9958 px. Now CC is bounded by gdrv0 (~18.5) and GPU
+(~20-22). **Phone:** charging shell, 67 %; boot_b j0118 and production lib unchanged. **Next:** user's OK -> j0119 with
+the default flipped on (`sweetfb_wait0=0` off), slot-b image, flash boot_b, plain reboot check.
+
 ### 2026-10-31 13:23: task 26 glthread INSTALLED as production libsweetca (user OK)
 
 glthread is now the default (patch 0014 amended: `SWEETCA_GLTHREAD=0` turns it off). /usr/local/bin/libsweetca.dylib =

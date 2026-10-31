@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Sat, 31 Oct 2026 16:00:00 +0100
+Subject: [PATCH] jasmine-j0119: SwapWait(0) in queue mode is done once the
+ newest swap latched (sweetfb_wait0=1, default off)
+
+Task 27. CoreAnimation's IOMFBDisplay::will_unblank sets a flag that makes
+IOMFBDisplay::is_ready poll SwapWait(0, 0x80000003) until it succeeds, then
+apply update_framebuffer_locked(0). In queue mode (j0109) id 0 resolves to the
+client's newest swap and is done only once a later swap latched, which cannot
+happen for the newest swap: from the first unblank on every is_ready call slept
+the full 3 ms (Control Center 2.1 calls per frame, 6.9 ms of the render
+thread's ~27 ms frame; every phase, idle included). Before j0109 SwapWait(0)
+returned at once. With sweetfb_wait0=1 id 0 is done once the newest swap is on
+the panel (latched); a page's SwapWait (a real swap ID) keeps the later-swap
+rule. Framebench event 18 carries the id-0 flag in its last word.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -148,6 +148,13 @@
+  */
+ static bool sweet_fb_force_sync;
+ static bool sweet_fb_sleeping;
++/*
++ * boot-arg sweetfb_wait0=1 (j0119): in queue mode SwapWait(0) (the client's newest swap) is done
++ * once that swap latched. Without it, it needs a later swap to latch like a page's SwapWait, which
++ * never happens for the newest one: CoreAnimation's IOMFBDisplay::is_ready polls SwapWait(0, 3 ms)
++ * from the first unblank on and slept the whole 3 ms, twice per frame.
++ */
++static bool sweet_fb_wait0;
+ static uint64_t sweet_fb_slept_us, sweet_fb_spun_us;
+ 
+ /*
+@@ -743,6 +750,9 @@
+ 	PE_parse_boot_argn("sweetfb_sleep", &sleep, sizeof(sleep));
+ 	PE_parse_boot_argn("sweetfb_queue", &queue, sizeof(queue));
+ 	sweet_fb_sleeping = sleep != 0;
++	uint32_t wait0 = 0;
++	PE_parse_boot_argn("sweetfb_wait0", &wait0, sizeof(wait0));
++	sweet_fb_wait0 = wait0 != 0;
+ 	if (queue && (!sleep || topaz || !fScaler || console || !fFlipVA[0] || !fFlipVA[1] || sweet_fb_nohold())) {
+ 		IOLog("SWEET FB: queue refused: requires sleep, jasmine scaler, flip buffers, holds and GUI\n");
+ 		queue = 0;
+@@ -2095,6 +2105,8 @@
+ 		ms = 100;
+ 	}
+ 	uint64_t serial = 0;
++	/* SwapWait(0): the newest swap is done once it latched (j0119), a page's once a later one did */
++	bool newest = id == 0 && sweet_fb_wait0;
+ 	if (fProtocol) {
+ 		IOLockLock(fLock);
+ 		bool queueMode = fQueueActive;
+@@ -2140,12 +2152,12 @@
+ 				}
+ 			}
+ 		}
+-		if (fQueueActive) { done = fShownValid && fLatchedSerial > serial; }
++		if (fQueueActive) { done = fShownValid && (newest ? fLatchedSerial >= serial : fLatchedSerial > serial); }
+ 		done = done || cancelled;
+ 		IOLockUnlock(fLock);
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+ 		if (done || ns >= (uint64_t)ms * NSEC_PER_MSEC) {
+-			if (ns > 100000) { sweet_bench_event(18, id, (uint32_t)(ns / 1000), done, 0); }
++			if (ns > 100000) { sweet_bench_event(18, id, (uint32_t)(ns / 1000), done, newest); }
+ 			sweet_fb_wait_us += ns / 1000;
+ 			sweet_fb_wait_busy += !done;
+ 			return done ? kIOReturnSuccess : kIOReturnTimeout;
+-- 
+2.47.3
