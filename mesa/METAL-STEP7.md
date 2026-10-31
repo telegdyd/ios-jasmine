@@ -98,11 +98,49 @@ draws into, when the pass is encoded, and seals it with the command buffer's sub
 committed); the presenter shows the surface only once sealed and passed. r14 kernel: tickets begin/seal/abort
 614/613/0, 0 stale/error/timeout, **0 jobs into a held surface, guard q/s/r 0/0/0** (was 79/282/0), 0 faults.
 
+## Rounds 15-18: speed switches back (user checked the panel each round)
+
+All on the s7tk image with tickets; one change per reboot.
+
+| Round | Env file | Panel (user) |
+| --- | --- | --- |
+| r15 | r14 minus `RWA_TEX_POOL=0`, `RWA_LINEAR_SAMPLED=0` (pool and linear textures back on) | clean, no boxes |
+| r16 | minus `BGMTL_DEFER_SCHEDULED=1` | clean and smooth |
+| r17 | plus `BGMTL_SHADOW=0` (no shadow copy) | clean and smooth |
+| r18 | `metal-s7l` defaults below; file holds only `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` | clean and smooth |
+
+So the corner boxes and flashing were **`RWA_CB_DELTA`** (misaligned unbounded constant buffers bound in place, the
+shader adding the remainder from slot 15). Not understood on a5xx; traced as far as ir3's a5xx `ldg` UBO path (Mesa 26
+`emit_intrinsic_load_ubo`; fd5 never invalidates UCHE, our ring neither; a5xx keeps user constant buffers as pointers
+until emit, `fd_set_constant_buffer` uploads only for gen >= 6). Not a CPU/GPU reuse race (r8 `BGMTL_SYNC=1` kept it).
+On a6xx it was worth ~3 % of backboardd.
+
+`metal-s7l` (libbgair `6d611be8`, libbgmtl `6154f42a`, inject `fc4d5071`, in `/usr/local/bin`): the injector sets
+`BGMTL_BB=1` in backboardd itself; the shadow is opt-in (`BGMTL_SHADOW=1`); `RWA_CB_DELTA` defaults off on gen < 6
+(`=1` forces it); `waitUntilScheduled` waits for the GPU only with `BGMTL_DEFER_SCHEDULED=1` (before, it waited in the
+compositor even without the deferral). Render probe 26/26 plain and `--bb`. r15-r18 logs: 0 SMMU faults, panics,
+crashes, command-buffer failures; 0 jobs into a held surface; tickets e.g. r18 1218/1217/0, one ticket timeout in r15
+and r17 each (not looked at).
+
+**Speed, measured (framebench, swap arrivals/s in motion):** unchanged by all of it.
+
+| Phase | r12 (all off, deferral, shadow) | r17 (no deferral, no shadow) | r18 (s7l) | GL t19 |
+| --- | ---: | ---: | ---: | ---: |
+| home-b | 33.9 | 34.5 | 33.3 | 40-47 |
+| control-a / control-b | 27.7 / 25.7 | 25.1 / 25.6 | 27.1 / 25.8 | |
+
+(home-a was a broken capture in r12 and r18.) r18: presenter's ticket wait median 8.9 ms / p95 17.8 ms after the
+swap; GPU job submit-to-completion median 11.1 ms / p90 16.1 ms (fence observation, an upper bound); backboardd about
+half a core in control-a. Guess (not measured): CA's encoding and the GPU do not overlap (~15 ms CPU + ~11 ms GPU
+~ the 29 ms frame), e.g. a frame-in-flight limit in CA released late by our completion queue. Second lead: sysmem
+rendering forced for every pass (fbfetch emulation) where GL renders in GMEM.
+
 ## Open (next)
 
-- Bisect r9's three switches (two of them are speed). Whether `BGMTL_DEFER_SCHEDULED` and the shadow copy are still
-  needed with tickets (both cost frame time). Move the needed switches from the env file into the code/image.
-- Cost of the shadow copy (6 MB per frame) and of the deferral: frame times vs GLES not measured yet.
+- Why frames take ~29 ms: per-frame timeline of encode / commit / fence / completed handler / next encode in
+  backboardd; whether sysmem for passes without framebuffer fetch is needed. r19: drop
+  `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` (last env line; added in r10 without effect).
+- `RWA_CB_DELTA` on a5xx (above).
 - One ASTC_4x4 no-copy texture refresh computes its row as 832 bytes for 828 texels (texel rows instead of block
   rows) in `bgmtl.m` `rwaTexture` (`_ncLength / height`): refused (23 times in r6).
 - Unimplemented selectors answered zero: `setCompletionQueue:`, `setGPUPriority:` (command queue).

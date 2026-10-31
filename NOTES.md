@@ -1,3 +1,13 @@
+### 2026-10-31 23:55: Metal step 7: speed switches back, culprit RWA_CB_DELTA; frame rate unchanged (~33 vs GL 40-47)
+
+Report mesa/METAL-STEP7.md "Rounds 15-18". User checked each round: r15 pool+linear on clean; r16 no
+DEFER_SCHEDULED clean+smooth; r17 no shadow clean+smooth; r18 VM metal-s7l (defaults in code: injector sets
+BGMTL_BB in backboardd, shadow opt-in BGMTL_SHADOW=1, RWA_CB_DELTA off on a5xx, waitUntilScheduled no GPU wait
+without deferral) clean+smooth. libbgair 6d611be8, libbgmtl 6154f42a, inject fc4d5071 in /usr/local/bin.
+framebench r17/r18: home ~33-34, CC ~25-27 swaps/s, same as r12. Env file /private/var/tmp/bgmtl-bb.env now
+only CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. **Phone:** temporary s7tk boot (r18). NEXT: per-frame CPU/GPU overlap
+timeline in backboardd (guess: no overlap), sysmem-for-all-passes cost, r19 without the env file.
+
 ### 2026-10-31 23:10: Metal step 7: lock/home/CC through Metal, no flicker, no tearing (user confirmed)
 
 Report mesa/METAL-STEP7.md "Rounds 7-14". Tearing cause measured: CA swaps before the GPU drew the frame; fix =
