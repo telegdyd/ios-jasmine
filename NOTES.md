@@ -1,3 +1,10 @@
+### 2026-10-31: Metal port handoff written (mesa/METAL-HANDOFF.md)
+
+Route chosen: Chlorophyll (AIR -> NIR -> ir3 over Gallium freedreno), not ios-flame (metal2vulkan on Turnip: no Vulkan
+driver for a5xx). mesa/METAL-HANDOFF.md = state, rules and 7 ordered steps with done-criteria for the next agent;
+mesa/METAL-PORT.md stays the call-site map. Submodule mesa/metal on branch adreno5xx = upstream 787338f, no changes,
+nothing built. Phone untouched.
+
 ### 2026-10-31 17:13: task 28 level 2 INSTALLED as production libsweetca (user: "Install level 2")
 
 Patch mesa/patches/0016-freedreno-a5xx-sysbarrier-default-on.patch: SWEETCA_SYS_BARRIER defaults to 2 (=0 off).
