@@ -44,6 +44,10 @@ mesa)
 	(cd "$ROOT/stage" && for p in "$TREE"/mesa/patches/*.patch; do git apply --verbose "$p"; done) > "$ROOT/patch.log" 2>&1 ||
 		{ cat "$ROOT/patch.log"; exit 1; }
 	grep -c '^Applied patch' "$ROOT/patch.log" | sed 's/$/ patch files applied cleanly/'
+	# jasmine: Chlorophyll's nested Mesa/libdrm submodules stay uninitialised.
+	# Compile its AIR frontend against our patched Mesa instead.
+	mkdir -p "$ROOT/stage/src/compiler/air"
+	rsync -a --delete "$TREE/mesa/metal/air/" "$ROOT/stage/src/compiler/air/"
 	mkdir -p "$ROOT/mesa-src"
 	rsync -rlpc --delete --exclude=/build "$ROOT/stage/" "$ROOT/mesa-src/"
 	cd "$ROOT/mesa-src"
@@ -61,7 +65,10 @@ mesa)
 			{ tail -40 "$ROOT/setup.log"; tail -80 build/meson-logs/meson-log.txt 2>/dev/null; exit 1; }
 		printf '%s' "$stamp" > build/.topaz-setup
 	fi
-	ninja -C build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest src/gallium/frontends/sweetgl/sweetgpu_gltest src/gallium/frontends/sweetgl/libsweetca.dylib > "$ROOT/build.log" 2>&1 || true
+	ninja -C build -k 0 src/gallium/drivers/freedreno/sweetgpu_fdtest src/gallium/frontends/sweetgl/sweetgpu_gltest src/gallium/frontends/sweetgl/libsweetca.dylib > "$ROOT/build.log" 2>&1 || {
+		tail -100 "$ROOT/build.log"
+		exit 1
+	}
 	grep -E -A12 "^FAILED|error:|Undefined symbols" "$ROOT/build.log" | grep -v "warning:" | head -300 || true
 	tail -15 "$ROOT/build.log"
 	test -f build/src/gallium/drivers/freedreno/sweetgpu_fdtest
@@ -74,6 +81,24 @@ mesa)
 	# libsweetca (EAGL on sweetgl for CoreAnimation) and its test; the test is Objective-C, so clang builds it here
 	cp build/src/gallium/frontends/sweetgl/libsweetca.dylib "$OUT/"
 	codesign -f -s - "$OUT/libsweetca.dylib"
+	# jasmine step 1 requires the frontend and runtime C to compile. Only the
+	# runtime link may fail while its Bergamota backend is still unported.
+	ninja -C build -k 0 src/compiler/air/air2nir \
+		src/gallium/drivers/freedreno/libbgair.dylib.p/.._.._.._compiler_air_air_metal.c.o > "$ROOT/air-build.log" 2>&1 || {
+		cp "$ROOT/air-build.log" "$OUT/air-build.log"
+		tail -100 "$ROOT/air-build.log"
+		exit 1
+	}
+	cp build/src/compiler/air/air2nir "$OUT/"
+	codesign -f -s - --entitlements "$TREE/ios/entitlements.plist" "$OUT/air2nir"
+	if ninja -C build src/gallium/drivers/freedreno/libbgair.dylib >> "$ROOT/air-build.log" 2>&1; then
+		echo 'AIR compile: PASS; libbgair link: PASS' > "$OUT/air-build-status.txt"
+	else
+		echo 'AIR compile: PASS; libbgair link: INCOMPLETE (see air-build.log)' > "$OUT/air-build-status.txt"
+	fi
+	cp "$ROOT/air-build.log" "$OUT/air-build.log"
+	cat "$OUT/air-build-status.txt"
+	tail -30 "$ROOT/air-build.log"
 	cd "$TREE"
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -fobjc-arc -O1 -Wno-deprecated-declarations \
 		mesa/darwin/sweetgl/sweetca_test.m -o "$OUT/sweetca_test" \

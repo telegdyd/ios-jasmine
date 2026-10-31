@@ -1,0 +1,17 @@
+Chlorophyll AIR frontend, forward-ported to Mesa 26.2.5 for jasmine.
+
+Adapted from Chlorophyll patches/air-frontend.patch (MIT, Darwin on redwood
+contributors). The frontend sources are staged from mesa/metal/air by
+tools/mesa-local.sh. No shared ir3 code changes in this step.
+
+--- a/src/compiler/meson.build
++++ b/src/compiler/meson.build
+@@ -67,6 +67,8 @@
+ 
+ subdir('spirv')
+ 
++subdir('air')
++
+ if with_clc
+   subdir('clc')
+ endif

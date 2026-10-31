@@ -16,6 +16,16 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 2. Where things stand (2026-10-31)
 
+**Update: step 1 completed offline**, see [METAL-STEP1.md](METAL-STEP1.md).
+Chlorophyll local commit `ff309fc` adapts AIR to Mesa 26.2.5; patches 0017/0018
+and the local build integration compile the frontend and runtime C for iOS arm64.
+VM `metal-s1e`: existing outputs pass, libsweetca byte-identical to production;
+libbgair link still lacks three documented backend symbols. No phone access.
+User requested stopping before device access: stop before step 2's regression
+checks. Fork push awaits separate approval (automatic review rejected it), then
+the parent submodule pointer must be committed. The following bullets describe
+the original starting state, not the completed step 1.
+
 - Fork: https://github.com/telegdyd/Chlorophyll. `main` = upstream ry-diffusion/Chlorophyll @ `787338f`; our work goes on
   branch **`adreno5xx`** (same commit, **no changes yet**, pushed). Remote `upstream` is set in the local clone.
 - Checked out as submodule **`mesa/metal`** on `adreno5xx`, clean. Its nested submodules `mesa` (25.0.7) and `libdrm`
@@ -50,7 +60,9 @@ backboardd/SpringBoard/apps on the GPU.
 
 ## 4. Steps
 
-Each step ends in something checkable. Do them in order; 1-3 need no phone.
+Each step ends in something checkable. Do them in order. Step 1 needs no phone;
+step 2's required GL/UI regression checks need the phone after each shared ir3
+change. Step 3's shader compilation is offline if metallibs are already available.
 
 ### Step 1: get the AIR front end into our Mesa build
 

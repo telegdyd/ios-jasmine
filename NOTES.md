@@ -1,3 +1,22 @@
+### 2026-10-31: Metal step 1 compiled offline; STOP before device access (user instruction)
+
+Report mesa/METAL-STEP1.md. Chlorophyll local adreno5xx commit ff309fc1512e932a840856e3687b524a0bea71f4:
+AIR NIR/Gallium API adaptation for Mesa 26.2.5; notices preserved, changes marked jasmine. Parent patches
+0017-chlorophyll-air-frontend + 0018-chlorophyll-air-ir3-targets; tools/mesa-local.sh stages metal/air and
+requires frontend/runtime C compilation. Also fixes stale-success production ninja handling. VM final build
+metal-s1e -> xnu/out-mesa-metal-s1e (exit 0): all existing outputs PASS, AIR frontend + air_metal.c compile,
+air2nir linked/signed arm64 IOS min 16.0. libbgair link INCOMPLETE: _null_sw_create, _sweet_drm_bo_sync,
+_sweet_drm_surface_bo only. Full diagnostics in artifact air-build.log/status. No CI. libsweetca SHA256
+bb3a7a9ef7927bd189e9b74c8799610df7f4abec26bcb958b5712d688a12a445 = byte-identical to out-mesa-t28b.
+No shared ir3 edits; no metallib execution or runtime validation. ir3_cmdline.c/executable absent in 26.2.5;
+step 3 needs a new host compiler harness. No phone access, boots, transfers or installation this session.
+**Stop:** step 2 requires device GL/UI regression checks; user says stop before device access. Handoff corrected
+its contradictory "1-3 need no phone" sentence. **Publication pending:** automatic approval review rejected push
+to origin as needing separate export authorization; submodule commit saved locally, NOT pushed. After user
+approves push to telegdyd/Chlorophyll adreno5xx, push ff309fc then commit parent mesa/metal pointer. Parent
+build/report changes committed separately (see git log). Unrelated tools/g2/framebench.py edits and j0120 patch
+were present before this task and left untouched. Windows/Git Bash ssh mac works; WSL lacks the mac alias.
+
 ### 2026-10-31: Metal port handoff written (mesa/METAL-HANDOFF.md)
 
 Route chosen: Chlorophyll (AIR -> NIR -> ir3 over Gallium freedreno), not ios-flame (metal2vulkan on Turnip: no Vulkan
