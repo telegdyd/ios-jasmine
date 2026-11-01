@@ -1,3 +1,14 @@
+### 2026-11-01 05:05: slot-b candidate shim/out/shim-boot-heic2-slotb.img READY; flash awaits the user's OK
+
+Built by research/wallpaper-metal/slotb/mkslotb.py + build.sh from the user-checked heic2 payload: only the boot
+args change (pool1/heic2 args + " abmark=b", 600 of 608 bytes; -noprogress/panicwait/wdt_test/sweetgpu_debug=0
+stay omitted as for the earlier candidate). Image 17514496 bytes, SHA 4bbf6adb449352f8d9763202d9598d53d849f12e8ae64d4c0f11f56efa0ec754;
+vs shim-boot-heic2.img (dfa1fa45...) exactly 29 bytes differ: 20-byte header id + the 9 args bytes. ADT = the
+installed one apart from its random-seed (64 bytes). Kernel j0122+j0123+j0124. Side files it relies on:
+/usr/local/p/i.dylib (9a96858, Pride withheld) + libbgmtl heap4 (69a460d3...), poster env SDR=1, @2x wallpaper
+folders. Rollback image: shim/out/shim-boot-j0120on-metal-slotb.img (current boot_b). Flash with
+tools/g2/flash-slotb.sh only after the user confirms (AGENTS.md).
+
 ### 2026-11-01 05:05: USER CONFIRMS Clownfish + iOS 16 (WWDC_2022) render in Collections on heic2
 
 heic2 (shim/out/shim-boot-heic2.img, kernel j0122+j0123+j0124, pool1 cmdline + canvas.adt) verified in this
