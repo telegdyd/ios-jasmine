@@ -1,3 +1,36 @@
+### 2026-11-01: M1 upload inventory complete; dominant source is a full-screen ASTC no-copy texture
+
+User requested task 1 and reuse of the existing baseline (no new baseline run).
+Chlorophyll 306908b adds opt-in BGMTL_UPLOAD_PROFILE=1 plus the trigger
+/private/var/tmp/bgmtl-upload-start. Fixed 256-resource table, 120 command buffers /
+8 seconds (checked on replay), 256 MiB hash budget, aggregate CSV only; hashes never
+skip uploads. Layout helper counts compressed block rows and packed mip levels.
+Host ASan/UBSan accounting/bounds test PASS. GPU suites 28/28 plain and --bb PASS
+(inventory1; subsequent inventory builds change capture control only).
+VM builds m1inventory/m1inventory2/m1inventory3 PASS (14/12/13 s), no CI.
+
+Successful inventory: research/metal-m1/inventory.csv (ignored), backboardd 10464,
+120 command buffers, 42 textures, no table overflow, 72,340,664 bytes uploaded,
+all bytes within hash budget. One 828x1792 format204 (ASTC_4x4_LDR from local mapping),
+1 mip no-copy-packed texture: 65,286,144 bytes /44 uploads, first +43 same hashes,
+no changed/unknown. Linear 431x258 format1 at buffer offset64 pitch448:
+6,115,890 bytes /55 uploads, first +54 same hashes. Other linear textures together
+938,630 bytes. Total 2,248 epoch reuses; no upload failures. Content-hash matches
+are evidence, not immutable-memory guarantees. Mixed short Home/CC input; no claim
+that this inventory is a settled performance run or that it establishes UI identity.
+
+Capture debugging: first restart check incorrectly used a stale idle framebench
+snapshot; corrected to live sysctl process enumeration. Second short attempt did
+not produce a final CSV; added time limit/start diagnostic. No baseline benchmarks
+were repeated. Runtime/env restored byte-for-byte after each installed attempt;
+final restore backboardd10531 (live), original ccfix hashes, env only
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. No reboot/flash/partition writes, clocks unchanged.
+Own phone lock released. Temporary test directory /private/var/tmp/metal-m1 remains.
+
+Next: exact-byte no-copy cache, bounded memory, explicit invalidation on texture
+writes; mutation/CPU-blit/mip tests, both GPU suites, then ONE optimized performance
+capture compared with the existing baseline2. M1 is in progress; no speedup yet.
+
 ### 2026-11-01: Detailed Metal performance task list prepared
 
 User clarified the requested deliverable: a list with detailed task explanations.
