@@ -1,3 +1,43 @@
+### 2026-11-01: Wallpaper ASTC fix INSTALLED and verified after normal reboot
+
+Chlorophyll b5bfde9 (local, not pushed); report mesa/WALLPAPER-METAL-DIAGNOSIS.md. VM wallpaper-astc3 PASS,
+full render probe27pass/0fail plain + --bb; P14 0wrong/1099392 channels (old libs fail). Temporary boot then
+production library backups/exact readback, plain installed Metal boot_b reboot PASS; NO FLASH/kernel change.
+Installed gallery screenshot research/wallpaper-metal/installed.png: category icons + Collections/Color
+previews correct. Astronomy remains blank (no extension Metal registration), CURRENT cards remain gray.
+100-second installed console research/metal-step7/netlog-wallpaper-astc-installed.txt:0 no-copy errors,
+0 SMMU faults/command failures/backboardd or SpringBoard crashes/QUEUE FALLBACK;24 AegirPoster crashes.
+Phone left on installed Metal with gallery open. Production libbgair176d9a11/libbgmtl090b6f6c, exact hashes below.
+libsweetca and injector byte-identical to prior build, not replaced. Env remains compression=1 only.
+Rollback two libs from research/wallpaper-metal/production-before-* then plain reboot. Parent commit records
+submodule+report+handoff (see git log), not pushed. NEXT: isolated AegirPoster Metal registration; separately
+diagnose CURRENT snapshot cards. Do not reset wallpaper configuration/cache or claim whole page fixed.
+
+### 2026-11-01: Wallpaper ASTC repaired; production libraries promoted, installed-boot check pending
+
+Chlorophyll b5bfde9 committed locally (not pushed). Temporary boot UI: colored gallery icons + Collections
+and Color previews render after loading; Astronomy blank, CURRENT cards still gray. Settled Home intact.
+Captured ring through gallery:0 no-copy upload/refusal errors,0 SMMU faults/command failures/backboardd or
+SpringBoard crashes;0 ticket fallback/stale/error/timeout. AegirPoster still crashes (28 in captured ring).
+Production /usr/local/bin libbgair + libbgmtl replaced only AFTER old readback matched metal-s7s and candidate
+probes/UI passed; exact new readback PASS. Hashes 176d9a119148fe3bf59f19f5cd0b31bc141651f76ebdb3672bc94312468c889a
+and 090b6f6cff59977129732adaafc1d398085a08f20050e851993eed3315669395. Old backups research/wallpaper-metal/production-before-*.
+Plain installed boot_b reboot started (NO FLASH). NEXT: verify installed boot + gallery, finish report/parent commit.
+
+### 2026-11-01: Wallpaper ASTC fix in progress; standalone GPU verification PASS
+
+User authorized ASTC first, Astronomy later. Uncommitted Chlorophyll changes: packed 2D no-copy upload
+uses format block strides, validates complete mip chain against allocation length, uploads every mip;
+page-rounded trailing allocation bytes do not affect pitch. CoreAnimation disassembly confirms length
+is page-rounded. P14 tests 144x144,224x487,828x9,13x9(4mips), CPU mutation between commits and short-buffer
+refusal. VM wallpaper-astc3 PASS (astc1 compile access error corrected in astc2; astc3 tightens NaN checking).
+Final probe with OLD metal-s7s libs: 26pass/1fail (ASTC 1098980 wrong including expected-refusal checks);
+candidate: 27pass/0fail,0wrong/1099392 sampled channel values, both plain and --bb. Side directories
+/usr/local/bin/wallpaper-astc-old and -new. Candidate compositor libs in /usr/local/w/ (i.dylib injector).
+Temporary fastboot boot shim/out/shim-boot-j0120on-wallpaper-astc.img sent/booted OKAY, UI result pending.
+Installed boot_b and /usr/local/bin production libs untouched. Logs research/wallpaper-metal/ plus
+research/metal-step7/netlog-wallpaper-astc.txt. NEXT: verify boot/gallery and faults, then commit fix/report.
+
 ### 2026-11-01: Settings Wallpaper diagnosis (read-only; no renderer/boot change)
 
 Report: mesa/WALLPAPER-METAL-DIAGNOSIS.md. Current console: 4,227 ASTC no-copy upload refusals

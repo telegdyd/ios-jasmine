@@ -4,6 +4,66 @@ Investigation requested after the installed Metal boot. Read-only phone inspecti
 no reboot, wallpaper selection, renderer replacement, build, CI run or flash.
 Raw device logs and crash report are ignored under `research/wallpaper-metal/`.
 
+## ASTC repair, 2026-11-01 (subsequent authorized implementation)
+
+Chlorophyll commit `b5bfde9` replaces the no-copy `length / height` heuristic
+with format-aware packed 2D mip uploads. It checks the full mip chain against the
+allocation length before reading it, handles partial blocks, and ignores trailing
+allocation padding. A short allocation or unsupported texture shape is refused
+at texture creation. Existing upload stride validation remains intact.
+
+Further local CoreAnimation analysis: `MetalContext::update_texture` rounds the
+memory length to a page before calling `newTextureWithBytesNoCopy`. Consequently,
+dividing length by block-row count would also be incorrect. The length bounds the
+allocation; the format and mip dimensions determine the packed image layout.
+
+Local VM build `wallpaper-astc3` passed (no CI). New P14 runs the real GPU sampler
+against ASTC 4x4 constant-color blocks at 144x144, 224x487, 828x9, and 13x9 with
+four mip levels. It checks every mip, page-rounded trailing bytes, CPU mutations
+between command buffers, and refusal of an allocation one byte too short.
+The final comparison explicitly rejects NaNs as well as wrong finite values:
+
+| Libraries | Mode | Full suite | P14 |
+| --- | --- | --- | --- |
+| Installed-version metal-s7s | plain, --bb | 26 pass / 1 fail each | 1,098,980 failures (includes four missing short-buffer refusals) |
+| wallpaper-astc3 | plain, --bb | 27 pass / 0 fail each | zero wrong / 1,099,392 sampled channels |
+
+Temporary image `shim/out/shim-boot-j0120on-wallpaper-astc.img` was accepted by
+fastboot (send/boot OKAY) and booted the existing kernel with candidate libraries
+isolated in `/usr/local/w/`. After gallery loading settled, the category icons,
+Collections preview and Color preview render correctly. Astronomy remains blank.
+CURRENT cards remain gray even after visiting the gallery. Thus this fixes the
+confirmed compressed-image upload fault, not every Wallpaper problem.
+
+`research/wallpaper-metal/gallery-settled.png` preserves the repaired gallery;
+`current-final.png` preserves the remaining gray cards. The captured candidate
+boot ring through the gallery has zero no-copy refresh/refusal errors, GPU SMMU
+faults, command-buffer failures, backboardd crashes, or SpringBoard crashes.
+Final ticket samples show zero fallback/stale/error/timeout. AegirPoster still
+has 28 crashes in that captured ring; its separate Metal scope is unchanged.
+
+Installed: production libbgair/libbgmtl were first backed up and verified against
+metal-s7s, then replaced with the candidate and read back byte-for-byte. SHA256:
+
+```
+libbgair 176d9a119148fe3bf59f19f5cd0b31bc141651f76ebdb3672bc94312468c889a
+libbgmtl 090b6f6cff59977129732adaafc1d398085a08f20050e851993eed3315669395
+```
+
+A plain reboot (`fastboot reboot`, no flash) into the existing installed Metal
+boot_b succeeded. The installed boot's gallery again shows correct category
+icons and Collections/Color previews (`research/wallpaper-metal/installed.png`).
+Its 100-second captured console has zero no-copy errors, GPU faults, command
+failures, SpringBoard/backboardd crashes, or queue fallback. AegirPoster still
+crashes (24 in that capture). Rebuilt libsweetca and the injector are byte-identical
+to metal-s7s and were not replaced. No kernel/boot partition, poster database,
+wallpaper selection, or process registration was changed.
+
+Phone left running the installed Metal boot with the ASTC fix and the gallery
+open. Rollback if needed: restore the two `production-before-*.dylib` backups
+from `research/wallpaper-metal/` to their original `/usr/local/bin/` names and
+plain reboot. Astronomy registration and CURRENT snapshot diagnosis remain next.
+
 ## Confirmed compositor upload bug
 
 The current boot console contains 4,227 `no-copy texture refresh` rejections:
