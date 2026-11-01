@@ -8,7 +8,7 @@ the kernel fall back to untracked presentation for the whole boot (QUEUE FALLBAC
 (r26) widened that window, so it is now opt-in (BGMTL_ASYNC=1). Reboot after: tickets 4206/4206/0, no fallback,
 0 faults; user: "Looks right" after that reboot. User checked r26 (fine) before this. ROLLBACK: fastboot flash boot_b shim/out/shim-boot-j0120on-slotb.img
 (bf33a55f, GL; libsweetca bb3a7a9e still in /usr/local/bin). Plain reboot = command port -> fastboot -> `fastboot
-reboot` (research/metal-step7/reboot-installed.py). **Phone:** installed Metal boot_b. NEXT: async replay without
+reboot` (research/metal-step7/reboot-installed.py). **Phone:** installed Metal boot_b. Speed ideas for the next agent: mesa/METAL-SPEED-IDEAS.md. NEXT: async replay without
 the boot-time ticket fallback (kernel: drop the frame instead of falling back; or open tickets in the replay), then
 what CA waits on between frames, GPU time per frame.
 

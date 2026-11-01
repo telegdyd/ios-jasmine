@@ -266,6 +266,9 @@ back for the whole boot on a stale ticket, or the ticket's begin should move to 
 
 ## Open (next)
 
+The speed work is laid out idea by idea in [METAL-SPEED-IDEAS.md](METAL-SPEED-IDEAS.md).
+
+
 - More CPU off the commit: state emission per new batch (each render-target switch re-emits everything), resource
   tracking per draw, the dealloc of recorded work. Then GL vs Metal on a settled boot of each. Whether sysmem is
   needed for passes with no framebuffer fetch (GPU time).
