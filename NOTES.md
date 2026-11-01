@@ -1,3 +1,40 @@
+### 2026-11-01: Wallpaper-wide Metal READY for USER inspection; no UI automation
+
+User wants to do ALL navigation/visual checks: tell them ready, wait until they say they're in Wallpaper.
+Do NOT inject touches/swipes, open apps, or capture screenshots. Active phone: temporary wpall2 kernel
++group injector9133d91, all9 wallpaper providers+PosterBoard get Metal. PosterBoard unified log CONFIRMS
+selected=BGMTLDevice same=1 +SDR fallback enabled; kernelENV logs providers starting automatically. Exact
+member table/test29checks pass; LegacyPoster membership covered but may not have launched yet.
+Both temporary boots send+boot OKAY, backboardd+SpringBoard ready20/19s. BOTH hit known startup QUEUE
+FALLBACK reason16; single retry did not fix it. Do not conflate presentation bands/tearing with missing
+wallpaper renderers; user should report what they see. Retry capture0SMMU faults/backboardd or SpringBoard
+crashes. No visual success claim yet. ACTIVE logger research/wallpaper-metal/blanket/retry/console.txt,
+PID in samefolder/logger.pid, bounded900s. Read logs when user enters page; don't navigate for them.
+Builds: wpall1 group patch skipped due CRLF, caught/NEVERBOOTED; wpall2LF+buildguard PASS53s, compiled
+matcher confirmed; wallpaper-all1 PASS12s,runtime byte-identical aegir5. Image shim/out/shim-boot-wpall2.img
+SHA1422106e80735c0611f4962e3508924f4770dab4cfacd9a506dd926b81b52e66,17498112bytes,payload checkPASS.
+Side /usr/local/p/i.dylib2632367f exactreadbackPASS; previousinjector backup blanket/injector-before.dylib.
+Installed boot_b+compositor libraries untouched, noflash. Plain reboot returns installed ASTC-only Metal.
+Report mesa/WALLPAPER-METAL-ENABLEMENT.md topsection; codecommit9133d91+parenthandoffcommit local/notpushed.
+NEXT: user's visual feedback. Pending older Astronomy-only boot_b install is superseded by this broader test.
+
+### 2026-11-01: Wallpaper-wide Metal temporary boot starting; USER controls UI
+
+User explicitly approved all wallpaper providers + PosterBoard together, and asked us NOT to control
+the phone UI: tell them when ready; they will enter Wallpaper and report. Do not inject touches/swipes
+or open apps. This supersedes the pending Astronomy-only installation. No flash authorized/needed here.
+Report mesa/WALLPAPER-METAL-ENABLEMENT.md top section. New j0121 sweetenv=@wallpaper group covers exact
+PosterBoard+9 provider executable names; matching injector allowlist+BGMTL_ENABLE gate. Shared poster
+SDR fallback enabled, compositor unchanged. Matcher test29/29 PASS, both lists identical. Kernel wpall1
+patch was silently skipped due CRLF (caught, NEVER BOOTED); LF corrected + build guard, wpall2 PASS53s,
+compiled matcher confirmed. VM wallpaper-all1 PASS12s; GPU runtime unchanged from tested aegir5.
+Image shim/out/shim-boot-wpall2.img,17498112bytes,SHA1422106e80735c0611f4962e3508924f4770dab4cfacd9a506dd926b81b52e66.
+Payload/readback checks PASS; /usr/local/p/i.dylib new group injector2632367f, runtimea7e526cf unchanged.
+Boot-only script research/wallpaper-metal/blanket/boot.py started, no UI automation or captures. Console
+logger bounded900s, PID in blanket/logger.pid; records blanket/console.txt. NEXT: check boot.txt readiness,
+basic faults, commit completed changes, tell user ready and let THEM navigate. No visual success claim yet.
+Installed boot_b and compositor libs untouched; plain reboot returns installed ASTC-only Metal.
+
 ### 2026-11-01: Astronomy Metal WORKS; final image verified, boot_b flash awaiting confirmation
 
 Report mesa/WALLPAPER-METAL-ENABLEMENT.md. Chlorophyll 8e54e39+97234d5 committed locally/not pushed.

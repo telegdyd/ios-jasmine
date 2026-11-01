@@ -1,5 +1,58 @@
 # Astronomy Metal enablement, 2026-11-01
 
+## Wallpaper-wide temporary experiment (supersedes the pending Astronomy-only install)
+
+User approved enabling all wallpaper providers and PosterBoard together, with
+**the user doing all UI navigation and visual verification**. Do not inject
+touches, swipes or app-opening commands for this experiment.
+
+Kernel patch j0121 adds the compact `sweetenv=@wallpaper:...` selector for these
+ten exact executable names: PosterBoard, AegirPoster, CollectionsPoster,
+GradientPosterExtension, PridePosterExtension, LegacyPoster, PhotosPosterProvider,
+UnityPosterExtension, EmojiPosterExtension and ExtragalacticPoster. Other process
+selectors retain their original exact-name semantics. The injector independently
+checks the same list and still requires `BGMTL_ENABLE=1`. All ten use the separate
+poster env file and the previously tested SDR fallback. Preferences, SpringBoard,
+backboardd and unrelated xpcproxy children are not members of this group; the
+existing compositor injection remains a separate entry.
+
+`tools/g2/check-wallpaper-group.py` compiles the actual matcher from the patch:
+29 boundary/compatibility checks PASS and kernel/injector membership agrees.
+VM kernel wpall1 built but verification found j0121 skipped because its newly
+generated patch had CRLF line endings; that image was NEVER booted. Corrected LF
+patch, added a local-build check rejecting kernels without the matcher, then
+VM wpall2 PASS (53 s), compiled source confirmed. VM Mesa wallpaper-all1 PASS
+(12 s); libbgair/libbgmtl byte-identical to the GPU-tested aegir5 runtime.
+
+Temporary image `shim/out/shim-boot-wpall2.img`, 17,498,112 bytes, SHA256
+`1422106e80735c0611f4962e3508924f4770dab4cfacd9a506dd926b81b52e66`.
+Payload/ramdisk exact check PASS, previous canvas ADT preserved, boot args 591
+bytes. Side injector `/usr/local/p/i.dylib` exact readback PASS, SHA256
+`2632367f65200cb56032064ec08da3128fcea3266fee0e05686cf8d93ec00591`.
+Previous Aegir-only injector backed up in ignored `research/wallpaper-metal/blanket/`.
+Poster env remains SDR=1 only; no trace marker. Installed boot and compositor
+libraries are untouched. Boot progress and user-readiness result are recorded in
+the active NOTES.md handoff; raw logs/scripts are in the same blanket directory.
+The bounded console logger runs for 900 seconds so the user can navigate and
+report what they see. No visual success is claimed before their feedback.
+
+Boot result: wpall2 temporarily booted successfully twice (send/boot OKAY), with
+Metal backboardd and SpringBoard ready at 20/19 seconds. Both boots hit the known
+startup `QUEUE FALLBACK reason 16`; a single retry did not remove it. This remains
+an observed presentation limitation to distinguish from wallpaper-provider bugs.
+No SMMU faults or backboardd/SpringBoard crashes in the retry capture. PosterBoard
+unified log confirms `selected=BGMTLDevice same=1` and SDR fallback enabled; the
+kernel also records injection into the automatically started wallpaper providers.
+LegacyPoster may not have launched yet; its group membership is tested, not a
+claim that its visual output was checked.
+
+Active manual-test boot logs are `research/wallpaper-metal/blanket/retry/console.txt`
+and `posterboard-metal.txt`; logger PID is in that directory's `logger.pid`.
+Injector commit `9133d91` is local, not pushed. No UI automation or screenshot
+capture was used in this wallpaper-wide round. Phone is ready for the user's
+Settings > Wallpaper inspection. Do not retry more boots or navigate it without
+further user steering; wait for their report. No permanent installation is done.
+
 User requested Metal for wallpapers requiring it and suggested it might also fix
 the CURRENT cards. Astronomy now renders Earth, Moon and Solar System in its live
 editor on a temporary boot. No wallpaper was added/applied. CURRENT cards remain

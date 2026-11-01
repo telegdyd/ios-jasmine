@@ -84,6 +84,13 @@ ccache -z >/dev/null
 (cd dxb && bash build.sh 2>&1 | tee ../build.log | grep -E "error:|\[ERROR\]|Building|DONE" || true)
 ccache -s | grep -E "Hits|Misses" || true
 
+if [ -f "$TREE/xnu/patches/j0121-jasmine-wallpaper-env-group.patch" ]; then
+	grep -q 'sweet_env_name_matches(entry, n, base)' dxb/xnu/bsd/kern/kern_exec.c || {
+		echo 'wallpaper process-group patch was not applied; refusing this kernel' >&2
+		exit 1
+	}
+fi
+
 rm -rf out && mkdir -p out
 cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
 test -s out/kernel.development.sweet || { echo "no kernel: see build.log" >&2; grep -E " error:" build.log | head -20 >&2; exit 1; }

@@ -1,0 +1,40 @@
+Subject: [PATCH] jasmine-j0121: compact exact wallpaper process group for sweetenv
+
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5605,6 +5605,25 @@
+  * sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib: a boot
+  * without it runs the root as it is, no launchd plist edited.
+  */
++/* A compact, explicit group for wallpaper experiments. It fits the boot-arg
++ * limit without injecting every xpcproxy or changing any launchd job. */
++static int
++sweet_env_name_matches(const char *entry, size_t n, const char *base)
++{
++	if (n == 10 && strncmp(entry, "@wallpaper", n) == 0) {
++		static const char *const names[] = {
++			"PosterBoard", "AegirPoster", "CollectionsPoster", "GradientPosterExtension",
++			"PridePosterExtension", "LegacyPoster", "PhotosPosterProvider",
++			"UnityPosterExtension", "EmojiPosterExtension", "ExtragalacticPoster"
++		};
++		for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
++			if (strcmp(base, names[i]) == 0) return 1;
++		}
++		return 0;
++	}
++	return strlen(base) == n && strncmp(base, entry, n) == 0;
++}
++
+ static int
+ sweet_exec_env(struct image_params *imgp, int ptr_size)
+ {
+@@ -5627,7 +5646,7 @@
+ 		size_t n = sweet_span(entry, ":;");
+ 		const char *vars = entry[n] == ':' ? entry + n + 1 : entry + n;
+ 		size_t vlen = sweet_span(vars, ";");
+-		if (entry[n] == ':' && strlen(base) == n && strncmp(base, entry, n) == 0) {
++		if (entry[n] == ':' && sweet_env_name_matches(entry, n, base)) {
+ 			for (const char *v = vars; v < vars + vlen;) {
+ 				char var[160];
+ 				size_t len = sweet_span(v, ",;");
