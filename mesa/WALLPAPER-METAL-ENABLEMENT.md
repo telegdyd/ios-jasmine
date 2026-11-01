@@ -1,5 +1,34 @@
 # Astronomy Metal enablement, 2026-11-01
 
+## Wallpaper-wide test FAILED; restored installed boot
+
+User reported an unresponsive phone with a red top bar referencing
+`rdar://45025538`. Process liveness was insufficient to call this boot ready.
+The user did the interaction; no agent UI navigation/capture was performed.
+The kernel command/file servers and sweetd still responded, and SpringBoard,
+backboardd and PosterBoard were alive. Existing console captures preserve
+SpringBoard thread samples; exact cause of the UI hang is not established.
+
+Local iOS shared-cache inspection identifies the radar reference as UIKit's
+missing status-bar visual-provider diagnostic, selected from screen width,
+scale, idiom and corner radius. String address `0x189f566a0` in the saved cache.
+This is evidence about the red bar, not proof of why touch/UI interaction froze.
+Both wallpaper-wide boots also had startup presentation fallback reason 16.
+
+Recovery: kernel command reboot -> fastboot -> **fastboot reboot**, loading the
+unchanged installed ASTC-only Metal boot_b. No flashing, file rollback, cache reset
+or wallpaper selection was needed. Userland returned in 20 seconds after the
+script's initial 30-second wait. `research/metal-step7/netlog-wallpaper-rollback.txt`
+records zero SMMU faults, backboardd/SpringBoard crashes, queue fallback, or
+PosterBoard/Aegir wallpaper injection. Physical UI recovery awaits user feedback;
+do not infer it solely from the processes being present again.
+
+The wallpaper-wide test is not accepted and must not be installed permanently.
+Future isolation should separate PosterBoard host injection from provider
+injection; the provider-only result has not been tested. Preserve the user's
+manual-navigation preference. Raw failure/recovery data are under
+`research/wallpaper-metal/blanket/retry/` plus the rollback log above.
+
 ## Wallpaper-wide temporary experiment (supersedes the pending Astronomy-only install)
 
 User approved enabling all wallpaper providers and PosterBoard together, with

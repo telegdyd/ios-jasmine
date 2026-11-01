@@ -1,3 +1,21 @@
+### 2026-11-01: Blanket Metal test FAILED (frozen/red rdar bar); restored installed boot
+
+User: phone unresponsive, red top bar "rdar:45025538". Process checks did NOT establish usable UI;
+previous READY label was premature. Do NOT install wpall2 or claim wallpaper-wide success. No agent UI
+inputs/captures used; user navigation remains required. Kernel/sweetd still responded; SB/backboardd/
+PosterBoard alive, SpringBoard thread samples saved in blanket/retry/console.txt. Exact freeze cause
+unknown. Local Apple cache stringVA0x189f566a0 identifies rdar45025538 as missing UIKit status-bar visual
+provider for screen metrics (width/scale/idiom/cornerRadius), not proof of hang's cause. Both wpall2 boots
+also hit QUEUE FALLBACK16. Recovery DONE: command reboot -> fastboot reboot into unchanged installed
+ASTC-only Metal boot_b, NOFLASH. rollback.txt says userland up20s after30s initial wait. Kernel rollback
+log research/metal-step7/netlog-wallpaper-rollback.txt:0SMMU faults,0SB/backboard crashes,0QUEUE FALLBACK,
+0PosterBoard/Aegir injection. PHYSICAL responsiveness awaits USER confirmation; don't call it usable
+solely from ps. Phone now INSTALLED Metal ASTC boot, blanket injection OFF. Side /usr/local/p files remain
+isolated/unused. No config/cache/wallpaper reset. Report mesa/WALLPAPER-METAL-ENABLEMENT.md top section.
+NEXT: ask user whether touch works after rollback, then discuss isolation (providers without PosterBoard)
+before further trials. Do NOT auto-reboot into experiment or navigate UI. Failure rawlogs blanket/retry/,
+UIKit string research/wallpaper-metal/blanket/redbar-message.txt. No new code changes this recovery turn.
+
 ### 2026-11-01: Wallpaper-wide Metal READY for USER inspection; no UI automation
 
 User wants to do ALL navigation/visual checks: tell them ready, wait until they say they're in Wallpaper.
