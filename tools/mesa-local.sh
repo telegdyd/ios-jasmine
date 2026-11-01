@@ -27,7 +27,9 @@ ios)
 	for src in ios/*.c; do
 		name=$(basename "$src" .c)
 		[ "$name" = sweet_sbshape ] && continue	# a SpringBoard dylib, below
-		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror -o "$OUT/$name" "$src"
+		libs=
+		[ "$name" = sweet_imgtest ] && libs="-framework CoreFoundation -framework CoreGraphics -framework ImageIO"
+		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror -o "$OUT/$name" "$src" $libs
 		codesign -f -s - --entitlements ios/entitlements.plist "$OUT/$name"
 		codesign -dv "$OUT/$name" 2>&1 | head -3
 	done

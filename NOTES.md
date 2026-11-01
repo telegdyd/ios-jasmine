@@ -1,3 +1,15 @@
+### 2026-11-01 04:12: Clownfish + WWDC_2022 (iOS 16 default) blank because HEIC decodes to all-zero pixels
+
+pool1 round 2 (research/wallpaper-metal/pool1/round2/, injector 9a96858 withholds Pride, heap4 runtime GPU suite
+27/27, 0 fallback/SMMU): Collections now ADDS iOS 16/Clownfish/Stripes (the @2x variants work) and
+CollectionsPoster has a Metal device with no failures. User: one tile plain blue, one black = Clownfish and
+WWDC_2022. New ios/sweet_imgtest (ImageIO decode + draw + pixel stats; mesa-local.sh links CF/CG/ImageIO for it
+only): WWDC_2022 Body.HEIC opens as public.heic 1271x1823 but draws 0.0% non-zero pixels. Only log line:
+"CoreVideo: Failed to read HardwarePlatform, MG query returned NULL". Their layers are HEIC (Head, Leg, Mask,
+Body, Arm...); Bokeh/Stripes are PNG/drawn. Likely no HEVC decoder path (hardware decoder absent, maybe
+platform-gated by MG HardwarePlatform). Options: PNG copies in our @2x folders (local fix) vs system-wide
+HEIC decode (separate investigation). Phone on temporary pool1 boot, logger 900 s.
+
 ### 2026-11-01 04:05: @2x variants of iOS 16 / Clownfish / Stripe wallpapers ADDED to the root (installed boot)
 
 Cause of the blank Collections tile (offline, WallpaperKit 16.7 disassembly): the variant key is
