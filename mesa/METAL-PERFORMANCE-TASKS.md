@@ -1,14 +1,19 @@
 # Metal performance tasks
 
-Status (2026-11-01): M1 has an opt-in implementation with correctness and upload
-reduction verified, but its render-CPU acceptance gate is NOT met. It remains
-disabled by default and the original runtime is restored. See
-[M1 results and decision](METAL-M1-UPLOADS.md). M2-M8 remain proposed work, based
-on the installed-runtime measurements of 2026-11-01.
+Status (2026-11-01): M1's packed-image upload elimination is accepted and enabled
+by default: verified unnecessary uploads are removed with pixel correctness
+preserved. See [M1 results and decision](METAL-M1-UPLOADS.md). M2-M8 remain proposed.
+
+User clarification: optimize unnecessary work, not benchmark scores. A verified
+work reduction with preserved correctness does not require an aggregate FPS or
+CPU-time speedup for acceptance. Reuse recorded baselines and keep validation
+bounded; do not roll back useful optimizations merely because a noisy whole-frame
+capture shows no speedup.
+
 Evidence: [fresh profile](METAL-PERF-20261101.md). Earlier experiments and known
 failure cases: [speed ideas](METAL-SPEED-IDEAS.md), [step 7](METAL-STEP7.md).
 
-Current reference is j0126 with the clean ccfix libraries: roughly 36 Home and
+The recorded baseline is j0126 with the clean ccfix libraries: roughly 36 Home and
 31–32 Control Center swap arrivals/s. Render CPU is approximately 25/29 ms per
 update; whole-GPU busy work is approximately 20 ms per swap in separate counter
 windows. These estimates overlap, use different windows, and cannot be added.
@@ -60,7 +65,8 @@ the upload. `RWA_LINEAR_SAMPLED` already exists; enabling it alone is not proof 
 zero-copy aliasing of caller memory.
 
 **Done when:** The largest upload sources and their lifecycle are documented; one
-safe path shows fewer uploaded bytes and lower render CPU in matched captures.
+safe path demonstrably avoids unnecessary uploads while preserving mutable
+contents. CPU/frame measurements provide context, not an aggregate-speedup gate.
 Pixel tests cover initial data, mutation after creation and between commits,
 multiple draws per commit, CPU blits, and relevant mip/compressed formats. The
 normal and compositor GPU correctness suites pass, including derivative edges.

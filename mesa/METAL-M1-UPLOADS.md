@@ -1,5 +1,9 @@
 # M1: caller-backed texture upload reduction
 
+**Accepted and enabled by default.** User clarification supersedes the initial
+performance-based rejection below: verified removal of unnecessary work with
+preserved correctness is the objective; an aggregate CPU/FPS gain is not required.
+
 Reference: the existing [2026-11-01 baseline](METAL-PERF-20261101.md), especially
 loss-free baseline2. No replacement baseline was collected for M1.
 
@@ -39,8 +43,7 @@ upload. Mutations still upload and replace the snapshot. Allocation padding is n
 compared; mip offsets and compressed block rows use the upload path's format
 helpers. It does not infer unchanged contents from pointers or hashes.
 
-The final cache is **disabled by default**; `BGMTL_NOCOPY_CACHE=1` explicitly
-enables it. Memory is bounded to 2 MiB per texture and 8 MiB per process. Oversized images,
+The cache is **enabled by default**; `BGMTL_NOCOPY_CACHE=0` opts out. Memory is bounded to 2 MiB per texture and 8 MiB per process. Oversized images,
 allocation failures and exhausted budget retain the original upload path. Texture
 destruction returns the budget. `BGMTL_NOCOPY_CACHE=0` disables the optimization.
 This adds a read/compare pass and can add a snapshot copy for changing images;
@@ -116,15 +119,13 @@ The first attempt after
 the credit interruption failed preflight because the user had parked in the
 charging shell; it collected no device workload and is not a performance result.
 
-## Single optimized capture and decision
+## Single optimized capture and initial decision (superseded)
 
-**Do not promote by default: the render-CPU acceptance gate is unmet.** Byte
-reduction and pixel correctness are proven; a speedup is not. Final Metal commit
-`471afde` makes the cache opt-in; GPU probe `--upload-cache` explicitly enables it.
-The enabled implementation passed 29/29 gates on `83058de` / `m1ready`. The final
-default/option-only revision builds as `m1optin` (13 seconds), with enabled,
-disabled and unset-default paths passing host ASan/UBSan tests. No further device
-benchmark followed the single optimized capture.
+The initial decision incorrectly required a lower whole-frame render-CPU result
+before accepting the verified upload reduction. Commit `471afde` temporarily made
+it opt-in. The user explicitly rejected that criterion; commit `c121e6a` restores
+default enablement. The measurements below remain factual context, not an
+acceptance gate. No further benchmarks were run.
 
 After the user parked the phone during the credit break, booted the existing
 installed slot b using `fastboot reboot` from 99% battery. Verified both candidate
@@ -158,19 +159,32 @@ CPU ticket waits had zero errors; no latch timeout fallback or DROP/CANCEL/ABORT
 Memory snapshots had no page waiters. Short fresh-boot footprint growth is not
 leak evidence. No physical panel validation was inferred.
 
-## Final state and next work
+## Corrected acceptance and installation
 
-Restored original ccfix libraries and compositor environment byte-for-byte; only
-`CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` remains. Removed this task's temporary
-binaries, CSVs, screenshots and trigger; the empty temporary directory may remain.
-Boot partitions, GPT and clock policy were unchanged. Returned with temporary
-`fastboot boot shim/out/charge-shell.img`: 99%, backlight 0, charger reports Full
-(fuel-gauge status says Discharging; measured current is positive). Shared phone
-lock released; profiler/benchmark idle before parking. Raw evidence stays ignored.
+User instruction: accept correctness-preserving removal of unnecessary workload;
+do not chase an aggregate speedup. The packed-image path meets that criterion:
+35 unnecessary uploads /51,932,160 bytes were avoided, while caller mutations and
+CPU/GPU writes remain correct in both 29/29 GPU suites. Other upload paths retain
+their existing behavior; this is not a claim that all M1 upload opportunities are
+exhausted or that a CPU/FPS gain was demonstrated.
 
-M1 is **partially implemented, not accepted as a performance win**. Before another
-device run, use existing loss-free stacks to distinguish packed-image and
-linear-buffer upload CPU: highest byte volume did not select a proven CPU win.
-Remaining buffer-backed refreshes are still prominent. A later matched, settled
-candidate capture is required before default enablement; do not repeat baselines
-or run an unbounded benchmark loop.
+Metal commit `c121e6a` enables the cache by default with the existing opt-out.
+VM build `tools/vm-mesa.sh mesa m1default` passes in 12 seconds. Both output
+libraries are byte-for-byte identical to the `m1ready` pair that passed the normal
+and compositor GPU suites. Focused ASan/UBSan tests pass for explicit enablement,
+opt-out, default-on, mutation, padding, invalidation, memory bounds and release.
+No repeated GPU suites or benchmarks were needed for the identical runtime.
+
+The pair is installed in `/usr/local/bin` with byte-exact readback verification;
+its hashes are recorded above. The environment remains byte-identical to the
+original: only `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1`, with no diagnostic or cache
+override. Next iOS boot loads the optimization by default. Original ccfix backups
+remain ignored locally for rollback.
+
+Phone returned to `charge-shell.img` by temporary fastboot boot, backlight off.
+No boot/GPT/partition flashing or clock-policy changes. The earlier rollback in
+this report is superseded by this installation. Baseline2 and the single optimized
+capture remain the only performance comparison; no speedup is claimed.
+
+The packed-image optimization is accepted. Remaining linear-buffer upload work is
+a follow-up opportunity, not a reason to disable the verified saved work.

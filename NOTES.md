@@ -1,3 +1,39 @@
+### 2026-11-01: User corrected acceptance criterion; M1 default ON and INSTALLED, phone parked
+
+USER PREFERENCE: optimize verified unnecessary work, not benchmark scores. If a
+correctness-preserving change avoids unnecessary workload, keep it. Aggregate FPS
+or CPU-time gains are NOT a promotion gate. Do not disable/roll back verified work
+elimination merely because a noisy whole-frame benchmark shows no speedup. Existing
+baselines suffice; no endless benchmark runs. This supersedes the preceding M1
+"performance gate unmet/default OFF" decision and its proposed next steps.
+
+Metal c121e6a restores default enablement of the exact no-copy upload cache;
+BGMTL_NOCOPY_CACHE=0 remains opt-out. VM tools/vm-mesa.sh mesa m1default PASS (12 s),
+xnu/out-mesa-m1default. BOTH libraries are byte-identical to m1ready, the runtime
+already tested 29/29 normal AND 29/29 --bb, including mutation, multiple draws,
+CPU/GPU copies, ASTC/mips and derivative edges. Focused ASan/UBSan tests also PASS:
+default-on, explicit enable/opt-out, exact comparisons, invalidation, caps/release.
+No repeated GPU suites, new baseline, performance runs or CI in this correction.
+
+Accepted benefit: 35 unnecessary full-screen ASTC uploads /51,932,160 bytes avoided
+in the bounded inventory, while preserving mutable caller-memory semantics.
+No FPS or total-CPU improvement is claimed. Remaining linear-buffer upload work
+is a separate opportunity, not a blocker to keeping the packed-image improvement.
+Task list and mesa/METAL-M1-UPLOADS.md updated to this acceptance criterion.
+
+INSTALLED in /usr/local/bin and verified byte-for-byte (enabled-final-* evidence):
+libbgair SHA256 326eaa30dcc1ccea1955b45383f5f97bdb25ec3cb83a18cf2a54fad2c0561074
+libbgmtl SHA256 185941370b1b67eb7256e19e1d3ab0182619e23b25c731eae74d4fbd07d3f4f4
+bgmtl-bb.env byte-identical to original: CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 only.
+No profiling flags or cache overrides. Original ccfix backups remain ignored at
+research/metal-m1/before-libbg{air,mtl}.dylib and before.env.
+
+Booted installed slot b from the charging shell solely for file installation;
+then temporary fastboot boot shim/out/charge-shell.img. No flash, GPT/partition,
+kernel or clock-policy changes. Final state verified: 99%, charger Full, backlight0
+(enabled-final-charging.txt). Shared phone.lock released. Next iOS boot loads the
+default-enabled optimization. No remaining installation work for this M1 path.
+
 ### 2026-11-01: M1 opt-in candidate retained; performance gate unmet; original runtime restored and phone parked
 
 Metal commits: 306908b (inventory), 83058de (exact cache and post-copy state fix),
