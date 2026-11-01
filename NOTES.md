@@ -1,3 +1,20 @@
+### 2026-11-01 03:31: Pride MPS work HUNG the GPU on pool1; rebooted to installed boot (no flash)
+
+User: pool1 no freeze at first, Astronomy + pre-Metal wallpapers fine, "a few" still blank (names not given).
+Only Pride failed visibly: 100+ SIGSEGV far 0x18 in MPSAutoCache ctor (MPSCommandBufferImageCache
+initWithCommandBuffer: returned nil). Causes found: (1) no -newHeapWithDescriptor: (chlorophyll 3fa6395 adds
+BGMTLHeap: plain device resources counted against heap size, -heap/makeAliasable via associated objects);
+(2) MPS checks conformsToProtocol:MTLCommandBuffer, our queue/cb/encoders declared no protocols (next commit
+adds them + heap protectionOptions + /private/var/tmp/bgmtl-poster-failures.txt failure file in injector).
+MPS metallibs (MPSCore 29 MB, MPSImage 16 MB) are AIR only (5942 functions), no Apple GPU binaries.
+With (2) Pride stopped crashing and submitted MPS work, which never completed: backboardd 41 submits in
+300 s, fence timeouts, QUEUE FALLBACK, close quarantined PridePosterExtension, then SMMU faults "before
+submit ... no client table". User saw frozen UI. Recovery: kernel reboot -> fastboot reboot, installed boot up.
+GPU suite heap1/heap2 27/27 plain+--bb before the hang; the heap4 suite run was interrupted (stuck GPU).
+Side /usr/local/p holds heap runtime + heap3 injector; unused by installed boot.
+NEXT: do NOT re-enable Pride's Metal until its MPS kernel hang is understood (which kernel; GPU hang
+recovery). Ask user which other wallpapers are blank. Pool share j0122 itself looked healthy (0 fallbacks).
+
 ### 2026-11-01: pool1 (j0122 pool share, PosterBoard out) booted; USER navigating, no UI automation
 
 Kernel j0122: last sweetpool_bb chunks (default 4 x 64 MB) backboardd-only, per-process pool accounting +
