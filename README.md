@@ -34,6 +34,7 @@ As of **2026-11-01**, the phone boots iOS by itself from slot b to the **lock sc
 | Metal | Chlorophyll's AIR-to-ir3 shader compiler and Metal runtime on Gallium freedreno (`libbgair`, `libbgmtl`, `bgmtl_inject.dylib` injected into backboardd); CoreAnimation's own Metal renderer draws the system UI. The default |
 | OpenGL ES | The previous path: sweetgl and `libsweetca.dylib` injected into backboardd run CoreAnimation's OpenGL ES renderer. Faster for now, no longer the default |
 | Wi-Fi | WCN3990 through the modem DSP and Apple80211: scanning in Settings, WPA2, DHCP, internet, joining a saved network at boot, leaving and rejoining. USB Ethernet keeps working alongside it |
+| HEVC decoding | In software, on the CPU: VideoToolbox's own software HEVC decoder takes over when Apple's hardware decoder declines the platform. HEIC images (photos, the iOS 16 wallpapers) decode correctly |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## What does not work (yet)
@@ -43,6 +44,7 @@ As of **2026-11-01**, the phone boots iOS by itself from slot b to the **lock sc
 - **Charging from a PC port** is slower than what the phone uses with the screen on. Use a wall charger.
 - **Bluetooth, cellular, audio, camera, motion sensors, fingerprint, GPS and the SEP** are unsupported. Without motion sensors, the home screen's parallax effect is turned off.
 - **Brightness**: the backlight is only switched on and off.
+- **Hardware video decoding and encoding**: HEVC is decoded in software only; the Snapdragon 660's video block (Venus) is not used yet.
 - **Stability**: a rare GPU freeze is still unsolved. A reboot sometimes stalls for a while, and the phone sometimes powers off instead of restarting.
 - **Some apps and panels crash**, for example some Settings panels and Photos. The wallpaper does not draw correctly. Safari has not been rechecked since GPU rendering arrived.
 - **Security is off**: permissive AMFI and sandbox, stub AppleKeyStore, no data protection.
@@ -136,6 +138,7 @@ The Metal driver reads switches from `/private/var/tmp/bgmtl-bb.env`: `BGMTL_TIM
 2. **Heat and battery**: thermal limits, then further idle power savings.
 3. **Stability**: the GPU freeze, the reboot stall and power-off, crashing apps and panels, wallpaper drawing.
 4. **Hardware coverage**: brightness control, audio and the other unsupported parts.
+5. **Hardware HEVC**: a kernel driver for the Venus video block (firmware through TrustZone, its HFI message queues; the Linux msm-4.4 `vidc` driver is the reference) and a VideoToolbox decoder plugin that uses it. Measure software playback first; camera recording will need Venus's encoder.
 
 Detailed status and measurements: [performance tasks](jasmine/PERF-TASKS.md), [power plan](jasmine/POWER-PLAN-20261029.md), [Metal port](mesa/METAL-HANDOFF.md), [Wi-Fi](jasmine/WIFI.md), and the running notes in [NOTES.md](NOTES.md) and [jasmine/NOTES.md](jasmine/NOTES.md).
 
