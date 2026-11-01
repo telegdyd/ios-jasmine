@@ -6,7 +6,7 @@ libbgmtl 97dfeff0 (VM metal-s7s), bgmtl_inject fc4d5071; env /private/var/tmp/bg
 CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. First installed boot showed the black band: a stale render ticket at boot made
 the kernel fall back to untracked presentation for the whole boot (QUEUE FALLBACK reason 16); the async replay
 (r26) widened that window, so it is now opt-in (BGMTL_ASYNC=1). Reboot after: tickets 4206/4206/0, no fallback,
-0 faults. User checked r26 (fine) before this. ROLLBACK: fastboot flash boot_b shim/out/shim-boot-j0120on-slotb.img
+0 faults; user: "Looks right" after that reboot. User checked r26 (fine) before this. ROLLBACK: fastboot flash boot_b shim/out/shim-boot-j0120on-slotb.img
 (bf33a55f, GL; libsweetca bb3a7a9e still in /usr/local/bin). Plain reboot = command port -> fastboot -> `fastboot
 reboot` (research/metal-step7/reboot-installed.py). **Phone:** installed Metal boot_b. NEXT: async replay without
 the boot-time ticket fallback (kernel: drop the frame instead of falling back; or open tickets in the replay), then

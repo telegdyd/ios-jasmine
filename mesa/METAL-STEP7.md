@@ -261,7 +261,7 @@ stays open until the worker submits, milliseconds instead of microseconds, so th
 Fix for the default: the async replay is now opt-in (`BGMTL_ASYNC=1`, libbgmtl `97dfeff0`). Plain reboot after that
 (`netlog-metal-installed2.txt`): tickets 4206/4206/0, stale/error/timeout 0/0/0, no fallback, 0 drew into a surface
 the display holds, 0 faults/crashes/command buffer failures; render probe 26/26 `--bb`. Speed is r25's (home ~39,
-Control Center ~28-30). To bring the async replay back safely: the kernel should drop one frame instead of falling
+Control Center ~28-30); user: "Looks right". To bring the async replay back safely: the kernel should drop one frame instead of falling
 back for the whole boot on a stale ticket, or the ticket's begin should move to the replay.
 
 ## Open (next)
