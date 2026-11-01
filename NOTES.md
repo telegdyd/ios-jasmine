@@ -1,3 +1,14 @@
+### 2026-11-01 05:08: heic2 slot-b image FLASHED to boot_b (user: "Flash it") and booted
+
+tools/g2/flash-slotb.sh shim/out/shim-boot-heic2-slotb.img (SHA 4bbf6adb...): lock taken 05:04:19, slot b, write
+OKAY, reboot 05:04:33; first-boot log research/wallpaper-metal/slotb/netlog-first-boot.txt (abmark=b present):
+0 QUEUE FALLBACK, 0 pool fallbacks, 0 SMMU faults, 0 quarantine; SWEET POOL 13 chunks / 4 for backboardd; @wallpaper
+env for providers incl. Pride (device withheld by the injector). Crashes: LockScreenPeople x2, assetsd x3,
+driverkitd (as every boot) + one CollectionsPoster SIGKILL "extension check-in timeout" at boot, relaunched.
+SpringBoard/backboardd up. INSTALLED NOW: kernel j0122+j0123+j0124, wallpaper Metal (no PosterBoard, no Pride),
+HEIC decode fix, @2x Clownfish/WWDC/Stripe variants. Rollback: flash shim/out/shim-boot-j0120on-metal-slotb.img.
+Open: Pride MPS GPU hang; user's visual check of the installed boot.
+
 ### 2026-11-01 05:05: slot-b candidate shim/out/shim-boot-heic2-slotb.img READY; flash awaits the user's OK
 
 Built by research/wallpaper-metal/slotb/mkslotb.py + build.sh from the user-checked heic2 payload: only the boot
