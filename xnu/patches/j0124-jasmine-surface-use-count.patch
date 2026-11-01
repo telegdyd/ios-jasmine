@@ -1,0 +1,141 @@
+Subject: [PATCH] jasmine-j0124: IOSurface use counts (IOSurfaceIsInUse) are kept, per process and category
+
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -110,6 +110,7 @@
+ #define SWEET_SURFACE_ROW_ALIGN         64
+ #define SWEET_SURFACE_TIMESTAMPS        0x800   /* offset in the state page */
+ #define SWEET_SURFACE_STATE_SEED        0xc     /* u32 in the state page */
++#define SWEET_SURFACE_STATE_USE         0x18    /* u32 per use-count category 0, 1 (j0124) */
+ #define SWEET_SURFACE_STATE_ACCEL       0x8     /* u16 accelerator id, u16 sub id */
+ #define SWEET_SURFACE_STATE_VSEED       0x20    /* u32 values seed */
+ #define SWEET_SURFACE_STATE_YCBCR       0x24    /* u32 */
+@@ -350,6 +351,19 @@
+ }
+ 
+ /*
++ * j0124: how many processes use s in a category (IOSurfaceIncrementUseCount). The framework
++ * counts per process and calls traps 0/1 only on its 0->1 and 1->0; IOSurfaceIsInUse reads
++ * the u64 at state +0x18. It was always 0, so CVPixelBufferPools handed out surfaces another
++ * process (or CMPhoto) still read: HEIC tiles came out half overwritten by the next decode.
++ */
++static void
++sweet_surface_use(SweetSurface *s, unsigned int category, int delta)
++{
++	OSAddAtomic(delta, (volatile SInt32 *)((uint8_t *)s->state->getBytesNoCopy() +
++	    SWEET_SURFACE_STATE_USE + 4 * category));
++}
++
++/*
+  * Give the surface an id and a table slot; the table holds one retain and a
+  * user count (creators, client mappings, kernel holders). Lock held.
+  */
+@@ -662,13 +676,27 @@
+ 	uint32_t      writeLocks;
+ 	bool          detached;     /* trap 4 seen: the framework is releasing this view */
+ 	bool          released;     /* released: only its state page stays mapped (fZombies) */
++	uint8_t       uses;         /* j0124: bit c: this client counts the surface in use in category c */
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { detached = false; released = false; writeLocks = 0; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { detached = false; released = false; writeLocks = 0; uses = 0; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
++	void dropUses();
+ };
+ 
+ OSDefineMetaClassAndStructors(SweetSurfaceRef, OSObject);
+ 
++/* j0124: the client lets go of the surface (release, exit): its in-use counts go with it */
++void
++SweetSurfaceRef::dropUses()
++{
++	for (unsigned int c = 0; c < 2; c++) {
++		if ((uses & (1u << c)) && surface != NULL) {
++			sweet_surface_use(surface, c, -1);
++		}
++	}
++	uses = 0;
++}
++
+ void
+ SweetSurfaceRef::free()
+ {
+@@ -686,6 +714,7 @@
+ 	OSSafeReleaseNULL(data);
+ 	while (writeLocks) { writeLocks--; sweet_fb_write_end(surface); }
+ 	OSSafeReleaseNULL(state);
++	dropUses();
+ 	if (surface != NULL) {
+ 		if (!released) {
+ 			sweet_surface_put(surface);
+@@ -743,7 +772,9 @@
+ 	    void *reference) APPLE_KEXT_OVERRIDE;
+ 	IOExternalTrap *getTargetAndTrapForIndex(IOService **targetP, UInt32 index) APPLE_KEXT_OVERRIDE;
+ 
+-	IOReturn trapUseCount(void *id, void *category, void *, void *, void *, void *);
++	IOReturn useCount(uint32_t id, uintptr_t category, bool up);
++	IOReturn trapUseIncrement(void *id, void *category, void *, void *, void *, void *);
++	IOReturn trapUseDecrement(void *id, void *category, void *, void *, void *, void *);
+ 	IOReturn trapLock(void *id, void *options, void *seedOut, void *, void *, void *);
+ 	IOReturn trapUnlock(void *id, void *options, void *seedOut, void *, void *, void *);
+ 	IOReturn trapRelease(void *id, void *, void *, void *, void *, void *);
+@@ -1634,13 +1665,38 @@
+ 	}
+ }
+ 
++/* j0124: this client starts (up) or stops using surface id in category (traps 0 and 1) */
+ IOReturn
+-IOSurfaceRootUserClient::trapUseCount(__unused void *id, __unused void *category,
+-    void *, void *, void *, void *)
++IOSurfaceRootUserClient::useCount(uint32_t id, uintptr_t category, bool up)
+ {
++	if (category > 1) {
++		return kIOReturnBadArgument;
++	}
++	IOLockLock(fLock);
++	SweetSurfaceRef *ref = findRef(id, NULL);
++	if (ref == NULL) {
++		ref = findRef(id, NULL, true);
++	}
++	if (ref != NULL && ref->surface != NULL && up != ((ref->uses >> category) & 1)) {
++		ref->uses ^= (uint8_t)(1u << category);
++		sweet_surface_use(ref->surface, (unsigned int)category, up ? 1 : -1);
++	}
++	IOLockUnlock(fLock);
+ 	return kIOReturnSuccess;
+ }
+ 
++IOReturn
++IOSurfaceRootUserClient::trapUseIncrement(void *id, void *category, void *, void *, void *, void *)
++{
++	return useCount((uint32_t)(uintptr_t)id, (uintptr_t)category, true);
++}
++
++IOReturn
++IOSurfaceRootUserClient::trapUseDecrement(void *id, void *category, void *, void *, void *, void *)
++{
++	return useCount((uint32_t)(uintptr_t)id, (uintptr_t)category, false);
++}
++
+ static IOReturn
+ sweet_surface_seed_out(SweetSurface *s, void *seedOut, bool bump)
+ {
+@@ -1876,6 +1932,7 @@
+ 		 */
+ 		OSSafeReleaseNULL(ref->data);
+ 		while (ref->writeLocks) { ref->writeLocks--; sweet_fb_write_end(ref->surface); }
++		ref->dropUses();
+ 		sweet_surface_put(ref->surface);
+ 		/* Keep the independent state mapping, not the surface's pixel backing.
+ 		 * fZombies may hold 256 views per client; retaining the surface here
+@@ -1896,8 +1953,8 @@
+ }
+ 
+ static IOExternalTrap sweet_surface_traps[] = {
+-	[kSweetSurfaceTrapIncrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseCount },
+-	[kSweetSurfaceTrapDecrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseCount },
++	[kSweetSurfaceTrapIncrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseIncrement },
++	[kSweetSurfaceTrapDecrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseDecrement },
+ 	[kSweetSurfaceTrapLock]          = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapLock },
+ 	[kSweetSurfaceTrapUnlock]        = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUnlock },
+ 	/*

@@ -1,3 +1,28 @@
+### 2026-11-01 04:55: HEIC decodes system-wide: two SweetSurface bugs fixed (j0123, j0124); temporary boot only
+
+Cause, found with ios/sweet_imgtest -c (CMPhoto decode + a brk trap on every CVReturn constant in
+CoreVideo, research/heic/, 20H392 cache addresses): HEVC itself was fine (VideoToolbox registers the
+software decoder VCPHEVC.videocodec unconditionally; only AVD says AppleAVDCheckPlatform FALSE). The MG
+HardwarePlatform log line is a red herring (CoreVideo only skips kCVPixelFormatExactRatioBetweenBytesPerRowOfPlanes).
+1. **j0123** CMPhoto failed with -6661: CVPixelBufferCreateWithIOSurface ->
+   checkIOSurfaceAndCreatePixelBufferBacking -6662 because IOSurfaceGetBytesPerRowOfPlane was 0 for every
+   planar surface not made by CoreVideo. IOSurface.framework reads a plane record (lock result +0x68 + i*0x80)
+   as width +0, height +4, offset +0xc, **row bytes +0x10**, size +0x14, bpe +0x18, element w/h +0x1a/+0x1b,
+   address format +0x1d, compression +0x54; SweetSurface wrote row bytes at +8. Also planar surfaces without
+   IOSurfaceBytesPerElement now default it to 1 (was 4: 512x512 '420f' took 1 MB instead of 384 KB).
+2. **j0124** then tiles came out half drawn (HEVC wavefront cut, values differing per run): trapUseCount was
+   a no-op, so IOSurfaceIsInUse (u64 at state page +0x18) was always false and CVPixelBufferPools reused
+   surfaces still being read. Now u32 per category at state +0x18/+0x1c = processes using the surface;
+   the framework traps only on its per-process 0->1 / 1->0; a client's share drops at release and exit.
+   This is system-wide (video, camera, CA buffers), not HEIC only.
+Result on temporary boot heic2 (shim/out/shim-boot-heic2.img SHA dfa1fa45..., kernel j0122+j0123+j0124,
+exact pool1 cmdline + canvas.adt, research/heic/mkimg.sh): WWDC_2022 Body.HEIC and Clownfish
+Background/Float/Foreground decode to the correct pictures (PNGs in research/heic/, Apple art, not in git),
+identical every run; CMPhoto OK on every option incl. the out-of-process VT path. Boot log: only the
+crashes pool1 also has (PosterBoard same abort, assetsd, LockScreenPeople). heic1 (j0123 only) decoded
+but with the torn tiles. NOT installed: boot_b unchanged, needs the user's OK; the wallpaper session's
+PNG workaround is not needed once this is in. User check of Collections (Clownfish/WWDC_2022 tiles) pending.
+
 ### 2026-11-01 04:12: Clownfish + WWDC_2022 (iOS 16 default) blank because HEIC decodes to all-zero pixels
 
 pool1 round 2 (research/wallpaper-metal/pool1/round2/, injector 9a96858 withholds Pride, heap4 runtime GPU suite

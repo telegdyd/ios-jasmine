@@ -1,0 +1,32 @@
+Subject: [PATCH] jasmine-j0123: planar IOSurfaces report their plane row bytes where IOSurface.framework reads them
+
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -578,6 +578,14 @@
+ 		s->pixelFormat = 0x42475241u;
+ 		one_plane = true;
+ 	}
++	/*
++	 * j0123: a planar surface describes its bytes in IOSurfacePlaneInfo; without its own
++	 * IOSurfaceBytesPerElement (CMPhoto's YUV surfaces) the 4-byte default made the top-level
++	 * rows, and with them the allocation, up to 4x too big.
++	 */
++	if (!one_plane && props->getObject("IOSurfacePlaneInfo") != NULL && props->getObject("IOSurfaceBytesPerElement") == NULL) {
++		s->bytesPerElement = 1;
++	}
+ 	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
+ 	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
+ 	if (s->width > SWEET_SURFACE_MAX_DIM || s->height > SWEET_SURFACE_MAX_DIM ||
+@@ -911,8 +919,10 @@
+ 		const struct sweet_surface_plane *pl = &s->planes[i];
+ 		put32(p, 0x00, pl->width);
+ 		put32(p, 0x04, pl->height);
+-		put32(p, 0x08, pl->bytesPerRow);
++		/* j0123: IOSurface.framework reads a plane's row bytes at +0x10 (0 before: CoreVideo
++		 * refused every planar surface it did not make itself, so HEIC decoded to nothing) */
+ 		put32(p, 0x0c, pl->offset);
++		put32(p, 0x10, pl->bytesPerRow);
+ 		put32(p, 0x14, pl->size);
+ 		memcpy(p + 0x18, &pl->bytesPerElement, 2);
+ 		p[0x1a] = pl->elementWidth;
