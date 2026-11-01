@@ -1,3 +1,18 @@
+### 2026-11-01: Settings Wallpaper diagnosis (read-only; no renderer/boot change)
+
+Report: mesa/WALLPAPER-METAL-DIAGNOSIS.md. Current console: 4,227 ASTC no-copy upload refusals
+(144/224/828-pixel widths); bgmtl.m rwaTexture divides memory length by pixel height instead of compressed
+block rows. 144px matches the gallery's 72pt icons at scale2; strongest cause of black/corrupt gallery images.
+36 AegirPoster SIGABRTs this boot: compositor Metal is only registered in backboardd, NOT the Astronomy
+extension. Older saved Oct27 crash enters NUNIAegirRenderer uniform-buffer creation -> NSArray insertion;
+nil Metal buffer is a hypothesis, current exception reason not recovered. IMPORTANT: Oct27 "no selected
+configuration" explanation is superseded: current PosterBoard DOES have a selected/active Collections
+configuration. Gray CURRENT cards still need retesting after ASTC fix; do not reset the poster database.
+Console: 0 SMMU faults/backboardd crashes; final ticket samples fallback/stale/error/timeout all0. Raw ignored
+logs research/wallpaper-metal/. No build/CI/reboot/flash/UI selection. Phone unchanged installed Metal boot_b.
+NEXT: format-aware no-copy ASTC layout + focused GPU probe, VM build, gallery verification; then isolated
+Astronomy Metal registration/API testing. Diagnosis committed locally (see git log).
+
 ### 2026-11-01 01:30: METAL IS THE INSTALLED DEFAULT (user: "set up Metal to be the default on boot ... done with GL")
 
 Report mesa/METAL-STEP7.md "Installed". boot_b = shim/out/shim-boot-j0120on-metal-slotb.img (c5e8f056...; the GL
