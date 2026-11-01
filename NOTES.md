@@ -1,3 +1,64 @@
+### 2026-11-01: Astronomy Metal WORKS; final image verified, boot_b flash awaiting confirmation
+
+Report mesa/WALLPAPER-METAL-ENABLEMENT.md. Chlorophyll 8e54e39+97234d5 committed locally/not pushed.
+Final VM wallpaper-aegir5: runtime same as aegir4 (27/27 GPU checks plain+--bb, P5 releases all bound
+resources before draw); injector scoped Aegir+SDR maps layer/texture/PSO XR to BGRA8, no fake HDR capability.
+Live Earth/Moon/Solar System PASS. Exact final image temporary boot PASS (send+boot OKAY, SweetGPU16s),
+quiet live Earth Detail PASS (research/wallpaper-metal/aegir/quiet-editor.png). Final console-final.txt:
+0 Aegir/SpringBoard/backboardd crashes,0 SMMU faults/queue fallback/no-copy errors; ticket7412/7412/0,
+stale/error/timeout0/0/0. One PosterBoard SIGABRT remains; CURRENT cards gray with separate nil-object
+snapshot-builder error. No wallpaper added/applied/cache reset. Phone LEFT in Earth Detail editor on
+temporary final candidate, tracing OFF (poster env SDR1 only, global marker removed). Production
+compositor libs+installed boot_b unchanged. Plain reboot returns installed ASTC-only/no-Aegir-Metal.
+READY image shim/out/shim-boot-j0120on-wallpaper-metal-slotb.img,17498112bytes,
+SHA fd966e00844e391f4804040e92d7c497541c18ffe4c6cd4940287f44e03be42b; kernel/ADT unchanged,
+payload validation PASS. Aegir side /usr/local/p: libbgair176d9a11,libbgmtla7e526cf,injectorb2c3f1b3,
+exact readbacks PASS. Existing shim/out/shim-boot-j0120on-metal-slotb.img preserved for rollback.
+NEXT: user confirmation before fastboot flash boot_b of this concrete image (AGENTS.md each-destructive-
+step rule); do NOT flash until confirmed. Then fastboot reboot, verify Aegir gallery/editor and update
+handoff. Separately diagnose CURRENT cards; not proved to need Metal. Parent commit records report/submodule.
+
+### 2026-11-01: Astronomy live Earth/Moon/Solar System work; final candidate boot check pending
+
+Report mesa/WALLPAPER-METAL-ENABLEMENT.md. Chlorophyll 8e54e39 (retain render bindings, bound diagnostic
+reads; GPU27/27 plain + --bb with release-after-bind P5) +97234d5 (Aegir registration + scoped SDR layer/
+texture/PSO setters), local not pushed. VM wallpaper-aegir5 PASS, runtime identical to tested aegir4; live
+Earth/Moon/Solar System editors render (aegir/top.png,moon.png,solar.png), no wallpaper added/applied.
+CURRENT still gray; separate PosterBoard buildView nil NSDictionary object, not proved Metal-related.
+Candidate shim/out/shim-boot-j0120on-wallpaper-metal-slotb.img SHA fd966e00844e391f4804040e92d7c497541c18ffe4c6cd4940287f44e03be42b,
+17498112bytes, payload/readback checks PASS. Temp fastboot boot started; SweetGPU up16s. Only boot args
+differ, kernel/ADT identical. Aegir /usr/local/p/ uses libbgair176d9a11,libbgmtla7e526cf,injector aegir5.
+Poster env now SDR=1 only, global TRACE marker removed. Installed boot_b and compositor libs untouched.
+NEXT: exact-image quiet verification + final report/parent commit, then ask explicit confirmation before
+flashing boot_b (AGENTS.md requires each destructive step confirmed). Do not flash yet. Current phone
+temporary final candidate, plain reboot would return installed ASTC-only boot. Raw artifacts in research/wallpaper-metal/aegir/.
+
+### 2026-11-01: Astronomy previews now visible on temporary Metal test; more verification pending
+
+VM wallpaper-aegir1 registered Aegir Metal (rwa_device_open FD512) but CAMetalLayerInvalid "unsupported
+extended range format": device truthfully says supportsExtendedXR10Formats=NO. Injector's scoped opt-in
+BGMTL_POSTER_SDR=1 maps CAMetalLayer XR550..555 requests to actual BGRA8/(sRGB) format (not fake XR capability).
+VM wallpaper-aegir2 reached starfield pipeline/textures but TRACE diagnostic in bgmtl replaceRegion read
+bpr*(pixel height-1) on ASTC -> SIGSEGV. Removed unsafe memory-peek logging, VM wallpaper-aegir3 PASS;
+side /usr/local/p/libbgmtl now trace-safe runtime, injector from aegir2. Aegir602 survived until deliberately
+restarted; gallery Earth/Moon previews visible (research/wallpaper-metal/aegir/top.png,gal4.png). Current
+editor test pending. Current-card issue separately: ReportCrash records PosterBoard PBFHomeScreenPreviewViewBuilder
+buildView -> nil object in NSDictionary. Not proved to need Metal. No production libs/boot changes this task;
+phone remains temporary wallpaper-aegir boot. NEXT: live editor, GPU regression/health, scope other providers,
+prepare permanent mechanism only after verification. Raw scripts/logs all under research/wallpaper-metal/aegir/.
+
+### 2026-11-01: Astronomy Metal registration test in progress (temporary boot only)
+
+User requested Metal for wallpaper renderers, suggested CURRENT cards may need it. Injector adds exact
+AegirPoster allowlist entry gated by BGMTL_ENABLE=1, uses separate /private/var/tmp/bgmtl-poster.env. VM
+wallpaper-aegir1 PASS; libbgair/libbgmtl byte-identical to installed wallpaper-astc3, only injector changed.
+Side directory /usr/local/p/{i.dylib,libbgair.dylib,libbgmtl.dylib}; poster env enables TRACE + AIR dump under
+/private/var/tmp/aegir-air. Temporary shim-boot-j0120on-wallpaper-aegir.img sent/booted OKAY, SweetGPU up18s;
+compositor still /usr/local/w tested ASTC libs. NO production changes/flash. Logs research/wallpaper-metal/aegir/
+and research/metal-step7/netlog-wallpaper-aegir1.txt. First gallery navigation ran before lock screen ready;
+no Aegir launch yet. NEXT: settled unlock/gallery -> observe actual extension registration and failures,
+check CURRENT cards separately. Plain reboot returns installed ASTC boot (Aegir Metal off).
+
 ### 2026-11-01: Wallpaper ASTC fix INSTALLED and verified after normal reboot
 
 Chlorophyll b5bfde9 (local, not pushed); report mesa/WALLPAPER-METAL-DIAGNOSIS.md. VM wallpaper-astc3 PASS,
