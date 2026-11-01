@@ -1,3 +1,18 @@
+### 2026-11-01 04:05: @2x variants of iOS 16 / Clownfish / Stripe wallpapers ADDED to the root (installed boot)
+
+Cause of the blank Collections tile (offline, WallpaperKit 16.7 disassembly): the variant key is
+"%.0fw-%.0fh@%@x~%@" = Display Zoom size (375x812) + live UIScreen scale + MG DeviceClass. Our 828x1792 @2x
+canvas asks for 375w-812h@2x~iphone (log: WKDefaultWallpaperManager "Looking for default wallpaper based on
+deviceProductType 'iPhone10,3'; logicalScreenClass: '375w-812h@2x~iphone'"); Apple ships only @3x (plus
+393/430 classes). wk_ignoreLogicalScreenClassForWallpaperBundle only works on internal installs.
+Fix (user chose): research/wallpaper-metal/at2x/make_at2x.py made 9 new folders `...-375w-812h@2x~iphone.wallpaper`
+(7400 WWDC_2022, 7420 Clownfish, 7365..7395 Stripe): byte copies of the @3x folders by new ios/sweet_cp
+(on-device copy + verify; file server cannot handle paths with spaces, e.g. "Head Mask.HEIC") and only
+Wallpaper.plist logicalScreenClass changed (read back exact). Nothing existing edited; undo = delete the 9
+@2x folders (needs an on-device rm -r; netfs RM is files only). First attempt left an empty mode-0 file
+"assets/Head" from the space bug: removed. Originals of the plists in research/wallpaper-metal/at2x/data.
+/usr/local/bin/sweet_cp installed. CollectionsPoster restarted once. NEXT: user checks Collections.
+
 ### 2026-11-01 03:31: Pride MPS work HUNG the GPU on pool1; rebooted to installed boot (no flash)
 
 User: pool1 no freeze at first, Astronomy + pre-Metal wallpapers fine, "a few" still blank (names not given).
