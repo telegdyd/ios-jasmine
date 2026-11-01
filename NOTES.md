@@ -1,3 +1,43 @@
+### 2026-11-01: Control Center missing-varying claim DISPROVEN by paired capture + installed-runtime test
+
+Supersedes the 16:04 diagnosis below. The dash symptom is still unresolved. Do NOT replace
+_spc with _gen or zero texcoord1A based on the old dumps. BGMTL_DUMP wrote files by function
+name, independently overwriting vertex/fragment specializations. Those two final files
+were not evidence of a real pipeline pairing. Both have valid generated(...) link names;
+the suggested !in/!name skip is not supported. Apple zero-fill behavior is not established.
+
+Completed: Chlorophyll commit f57522e (src/bgmtl.m) assigns a UUID to each dump pair, logs
+stage names + both save statuses and linked pipeline pointer. Build on local macOS VM:
+tools/vm-mesa.sh mesa ccpairs PASS, reported 12 s, xnu/out-mesa-ccpairs; no CI run.
+Live capture: 81 matched pairs / 162 AIR modules, all translate, ZERO missing named inputs.
+42 fixed_vert_lph_spc + fixed_frag_lph_cph pairs: seven fragments read texcoord1A, and all
+seven paired vertices output it and read attribute2. The other 35 fragment variants don't
+read that varying. The saved unpaired _spc air.arg_unused metadata was faithful, but came
+from a different specialization. The names alone do not identify specialized shaders.
+
+Decisive installed-runtime pipeline-only test (no draws): original mismatched dumps ->
+REFUSED: fixed_frag_lph_cph reads the varying generated(10texcoord1ADv2_f), which
+fixed_vert_lph_spc does not output: Metal refuses a pipeline whose stages do not link.
+Actual pair 0E36B09D-5759-4DDE-9675-2E767F927AB1 -> LINKED. Both checks exit 0.
+Evidence + helpers + original dumps + pairs-summary.json: ignored research/cc-varying/;
+Mac /tmp/cc-pairs and /tmp/cc-pairs-summary.json. Apple artifacts remain out of git.
+
+Device restored: backboardd 3838 / SpringBoard 3840. BOTH installed libraries and env
+read back byte-for-byte equal to backups: libbgair SHA256 176d9a119148fe3bf59f19f5cd0b31bc141651f76ebdb3672bc94312468c889a;
+libbgmtl SHA256 090b6f6cff59977129732adaafc1d398085a08f20050e851993eed3315669395;
+bgmtl-bb.env only CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. Temporary helpers/dumps removed;
+empty /private/var/tmp/cc-pairs directory remains. No flash, partition changes, UI navigation
+or screenshots. Diagnostic first restart failed: new libbgmtl needed _rwa_texture_resolve
+absent from old installed libbgair. Installed matching new libbgair for capture, then restored
+both originals. Second capture initially couldn't write root-owned directory; chmod fixed it.
+No claim of physical UI health from ps alone; user visual check wasn't performed.
+
+Next concrete action: use a matched edge pair to compare AIR/NIR/GPU coverage (derivatives,
+interpolation, rasterization and blend state), reproduce with an isolated pixel-checked draw.
+For example 0E36... fragment uses dot(texcoord1A,texcoord1A) and fwidth(dot), unlike the old
+unpaired fragment's per-axis abs equation. Preserve the per-pipeline pairing in all analysis.
+The current work changes diagnostics only and does NOT fix the photographed dashes.
+
 ### 2026-11-01 16:04: Control Center's 1px rounded-edge dashes: Metal corner shader runs with the wrong vertex stage
 
 Symptom: the user's photo of Control Center (installed Metal boot, boot_b slot b, kernel j0126, runtime in
