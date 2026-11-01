@@ -204,6 +204,32 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(cats['render-cache-maintenance-CPU'], 2)
         self.assertNotIn('render-Mesa-CPU', cats)
 
+    def test_metal_replay_is_not_assigned_to_its_quartzcore_caller(self):
+        import prof
+        (self.root / 'profile.meta').write_text('period_us 2000\ncensus_us 5000\ntask 7 backboardd\nthread 9 7 com.apple.coreanimation.display.primary\nend\n')
+        class Symbols:
+            def __init__(self, *args): pass
+            def user(self, pid, address):
+                return {1: ('libbgair.dylib', 'util_copy_box'),
+                        2: ('libbgmtl.dylib', 'bgReplayFrom'),
+                        3: ('QuartzCore', 'render_for_time')}[address]
+            def name(self, name): return name
+            def finish(self): pass
+        # Return addresses are adjusted by one by the symbolizer's caller.
+        for frames in ((1, 4), (2, 4), (3,)):
+            with self.subTest(frames=frames):
+                stack = (0, 0, len(frames)) + frames + (0,) * (48-len(frames))
+                with mock.patch.object(prof, 'Sym', Symbols), mock.patch.object(fb.os, 'name', 'posix'):
+                    cpu = fb.cpu_report([(1000, 0, 9, 7, 0, 5, 0, 0, 0)], [stack], self.root, 'kernel-symbols', [])
+                cats = cpu['phases']['home-a']['categories_estimated_ms']
+                expected = 'render-CA-CPU' if frames == (3,) else 'render-Metal-CPU'
+                self.assertEqual(cats, {expected: 2})
+
+    def test_metal_cpu_is_an_optimization_candidate(self):
+        summary = {'manifest': {'mode': 'standard'}, 'memory': {},
+                   'cpu': {'phases': {'home-a': {'categories_estimated_ms': {'render-Metal-CPU': 1000}}}}}
+        self.assertIn('Metal replay', fb.rank(summary)[0]['task'])
+
 
 class SocketStub:
     def __init__(self, chunks):
@@ -296,7 +322,7 @@ class OwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             args = argparse.Namespace(out=root / 'out', kernel=None, lib=[], manual=False,
-                ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1)
+                ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1, sample_b=False)
             with mock.patch.object(fb, 'discover', side_effect=RuntimeError('unsupported')):
                 self.assertEqual(fb.collect(args), 1)
             s = json.loads((args.out / 'summary.json').read_text())
@@ -316,7 +342,7 @@ class OwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             args = argparse.Namespace(out=root / 'out', kernel=None, lib=[], manual=False,
-                ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1)
+                ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1, sample_b=False)
             calls = []
             def request(command, **kwargs):
                 calls.append(command)
@@ -347,7 +373,7 @@ class OwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             args = argparse.Namespace(out=root / 'out', kernel=None, lib=[], manual=False,
-                ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1)
+                ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1, sample_b=False)
             calls = []
             def request(command, **kwargs):
                 calls.append(command)

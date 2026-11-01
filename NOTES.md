@@ -1,3 +1,45 @@
+### 2026-11-01: Installed Metal CPU/GPU performance measured; uploads are the first target
+
+User requested fresh CPU/GPU tests after Metal felt slower. Report:
+mesa/METAL-PERF-20261101.md. Two completed standard framebench runs on the current
+settled j0126 boot / ccfix runtime: Home B 36.19/36.20 swap arrivals/s, CC A
+30.88/30.82, CC B 32.35/31.37. These are swap arrivals, not physically validated FPS.
+Baseline1 --sample-b hit capacity (13,707 CPU records lost; zero events lost);
+baseline2 A-only had 42,797 samples / 30,716 events, ZERO losses. Use baseline2 CPU.
+
+Measured: primary render thread ~25 ms/update Home, ~29 CC (sample/grid estimate);
+our user CPU ~13/15 ms. CPU texture upload rwaTexture -> rwa_texture_write ->
+util_copy_box ~24% Home /17% CC of render CPU (~5-6 ms/update opportunity, not a
+proven removable saving). State emission ~7%/11%, resource tracking ~4%/6%.
+Repeated pixel-format-500 refusals cost bg_log ~3%/2%; format meaning and largest
+texture identities remain UNKNOWN. Do not guess a format mapping or skip mutable
+memory refreshes. Fresh whole-GPU counters: Home/CC busy 409/326 Mcyc/s at 588 MHz,
+RAM-starved 215/168 (53%/52% of busy); ~20 ms busy per swap, approximate and ALL
+clients included. Counter windows clamp to 10 s, sampler occupies a CPU, TSENS max
+61.1 C at end. Separate counter workload is not a renderer A/B or baseline FPS.
+
+Fixed a diagnostic bug: framebench had charged Metal replay stacks to QuartzCore.
+Now render-Metal-CPU is separate and ranked; framecrit accepts both Metal libs.
+34/34 framebench tests PASS; both offline reports regenerated, framecrit PASS on
+loss-free baseline2. No renderer change or performance gain claimed. No build or
+CI run; ssh mac true succeeds. Evidence ignored: research/metal-perf-20261101/.
+
+Phone unchanged: no reboot/flash/runtime replacement/partition writes. Both installed
+libraries read back with hashes matching the ccfix handoff below. Env readback before
+and after byte-identical, only CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. GPU idle collapse
+temporarily disabled for counters, RESTORED mode 1 (on), HWCG on, read back. Final
+bench active=0 busy=0 / prof idle, own phone.lock released. Baselines: zero latch
+timeouts, zero ticket wait errors (1667/1619), no DROP/CANCEL/ABORT events. Low RAM
+had no page waiters; second backboardd footprint stable (-0.3 MiB), no leak proof.
+No physical UI validation inferred. backboardd 7302 / SpringBoard 7304 persisted.
+
+Next concrete action: bounded aggregate texture-upload diagnostics (source kind,
+format, size, bytes/count, identity), then a correctness-preserving buffer alias or
+dirty-generation design. Next: deduplicate refusal logs; per-pass GPU traffic.
+Async replay still off; old stale-ticket boot fallback remains a safety blocker to
+blindly re-enabling it. Measurements alone do not establish a regression from the
+helper-lane fix. Commit recording follows after the completed measurement commit.
+
 ### 2026-11-01: Control Center dashes FIXED, installed, USER CONFIRMS edges clean
 
 User confirmed "Edges are clean" after activating the clean fixed runtime, including

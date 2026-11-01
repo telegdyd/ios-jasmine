@@ -1,5 +1,5 @@
 """Per-frame critical path from one framebench capture (WSL, repo root: needs prof.py's symbolizer).
-    python3 tools/g2/framecrit.py research/framebench/NAME xnu/out-jasmine-K/kernel.development.sweet LIB
+    python3 tools/g2/framecrit.py research/framebench/NAME xnu/out-jasmine-K/kernel.development.sweet LIB [LIB...]
 For every swap interval inside the CPU-sampled motion windows: GPU occupancy (union of
 submit..completion-observed, an upper bound), the CoreAnimation render thread's state, SpringBoard's
 main thread, the GPU driver thread and (task 26) Mesa's glthread worker "gl0", on a 0.5 ms grid."""
@@ -12,14 +12,14 @@ sys.path.insert(0, 'tools/g2')
 import framebench as fb
 import prof
 
-out, K, L = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-LIBNAME = Path(L).name  # test libraries under other names (task 26: t26.dylib) count as Mesa too
+out, K, libs = Path(sys.argv[1]), sys.argv[2], sys.argv[3:]
+LIBNAMES = {Path(lib).name for lib in libs}  # Include both Metal libraries or a renamed test renderer.
 events = sorted(fb.unpack_file(out / 'events.bin', fb.EVENT), key=lambda e: e[0])
 samples = fb.unpack_file(out / 'samples.bin', fb.SAMPLE)
 stacks = fb.unpack_file(out / 'stacks.bin', fb.STACK)
 summary = json.loads((out / 'summary.json').read_text())
 meta = prof.Meta(str(out / 'profile.meta'))
-sym = prof.Sym(meta, K, [L])
+sym = prof.Sym(meta, K, libs)
 print('meta vals', meta.vals)
 P = meta.vals.get('period_us', 2000)
 C = meta.vals.get('census_us', 5000)
@@ -68,7 +68,7 @@ def classify_render(kind, fr):
         if 'AppleCLCD' in trace or 'sweet_fb' in trace:
             return 'cpu-k-display'
         return 'cpu-k-other'
-    if any(i.startswith('libsweetca') or i == LIBNAME for i in images):
+    if any(i.startswith('libsweetca') or i in LIBNAMES for i in images):
         return 'cpu-mesa'
     if 'QuartzCore' in images:
         return 'cpu-CA'

@@ -497,6 +497,8 @@ def cpu_report(samples, stacks, out, kernel=None, libs=()):
                             categories['render-display-driver-CPU'] += weight
                         else:
                             categories['render-other-kernel-CPU'] += weight
+                    elif any(i in ('libbgair.dylib', 'libbgmtl.dylib') for i in images):
+                        categories['render-Metal-CPU'] += weight
                     elif any(i.startswith('libsweetca') and i.endswith('.dylib') for i in images):
                         categories['render-Mesa-CPU'] += weight
                     elif 'QuartzCore' in images:
@@ -585,6 +587,7 @@ def rank(summary):
     rules = [('render-buffer-free-wait', '14', 'Identify the blocked free/unmap operation with the captured stacks.'),
              ('render-buffer-free-CPU', '14 investigation', 'Inspect free/unmap stacks and free-inflight counts; CPU cost alone is not proof of the freeze cause.'),
              ('render-Mesa-CPU', '5', 'Split the hottest validation/emission/batch path and test one focused optimization.'),
+             ('render-Metal-CPU', 'Metal replay investigation', 'Split texture uploads, replay/state emission and resource tracking using matching libbgair/libbgmtl symbols.'),
              ('render-cache-maintenance-CPU', '20 / driver cache-maintenance investigation', 'Relate maintenance to actual live allocations; cumulative cleaned bytes are not resident RAM.'),
              ('render-GPU-driver-CPU', '20 / GPU-driver investigation', 'Split allocation, mapping and submission CPU work before choosing a renderer optimization.'),
              ('render-display-driver-CPU', '18 / display-path investigation', 'Check CPU composition/copy fallback and presentation waits on slow updates.'),
