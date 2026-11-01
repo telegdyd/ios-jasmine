@@ -38,7 +38,7 @@ format, size, bytes/count, identity), then a correctness-preserving buffer alias
 dirty-generation design. Next: deduplicate refusal logs; per-pass GPU traffic.
 Async replay still off; old stale-ticket boot fallback remains a safety blocker to
 blindly re-enabling it. Measurements alone do not establish a regression from the
-helper-lane fix. Commit recording follows after the completed measurement commit.
+helper-lane fix. Completed measurement/tooling commit: b5cefb0 (jasmine).
 
 ### 2026-11-01: Control Center dashes FIXED, installed, USER CONFIRMS edges clean
 
