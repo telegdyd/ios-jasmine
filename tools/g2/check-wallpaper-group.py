@@ -20,7 +20,9 @@ members = set(re.findall(r'"([A-Za-z]+)"', helper))
 injector = (root / 'mesa/metal/inject/bgmtl_sweet_inject.m').read_text()
 section = injector.split('wallpaper_process(const char *name)', 1)[1].split('return NO;', 1)[0]
 assert members == expected
-assert set(re.findall(r'"([A-Za-z]+)"', section)) == expected
+# The injector withholds the device from members whose GPU work is known to hang (Pride, pool1 2026-11-01).
+withheld = {'PridePosterExtension'}
+assert set(re.findall(r'"([A-Za-z]+)"', section)) == expected - withheld
 
 checks = []
 for name in sorted(expected):
@@ -47,4 +49,4 @@ with tempfile.TemporaryDirectory(prefix='wallpaper-group-') as temp:
     subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
                     str(path / 'check.c'), '-o', str(path / 'check')], check=True)
     subprocess.run([str(path / 'check')], check=True)
-print(f'PASS: {len(expected)} exact wallpaper members, {len(checks)} process-boundary checks; injector matches kernel')
+print(f'PASS: {len(expected)} exact wallpaper members, {len(checks)} process-boundary checks; injector = kernel minus {sorted(withheld)}')
