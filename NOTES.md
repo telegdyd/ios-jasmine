@@ -1,3 +1,48 @@
+### 2026-11-01: Control Center dashes FIXED, installed, USER CONFIRMS edges clean
+
+User confirmed "Edges are clean" after activating the clean fixed runtime, including
+checking the small diagonal hairs. Kernel j0126 / installed boot_b unchanged; no boot,
+flash or partition writes this session. backboardd 7302, SpringBoard 7304 after restart.
+
+Root cause proven with the actual failing draw, not the unpaired shader dumps:
+- Focused capture draw039 first introduces dashes/hairs on the connectivity module;
+  draw038 output is clean. Pair BE9734C8-D0E4-4AF0-A7BF-0C4ADAFE86B4 is a squircle
+  distance + fwidth + framebuffer-fetch shader, not the initially inspected texture
+  variant. It reads no distance-pair varying and samples no ordinary texture.
+- Exact captured geometry/uniform replay on white framebuffer: original output top
+  edge alternated 128..190. Diagnostic variants showed uniform interpolated coordinate
+  and SDF distance (127..127), but corrupted fwidth (131..255).
+- AIR frontend never gathered fragment shader info. ir3 consumes
+  fs.needs_coarse_quad_helper_invocations to set need_pixlod, which enables a5xx
+  SP_FS_CTRL_REG0.PIXLODENABLE. It gathers info itself only for binning variants,
+  so these derivative-only shaders ran without neighboring helper lanes. fwidth
+  read inactive lanes at primitive boundaries, corrupting rounded-edge coverage.
+- Fix: nir_shader_gather_info for fragments at end of air_to_nir, while frontend
+  I/O variables remain. Includes implicit-LOD and full-quad helper requirements.
+  Exact original replay becomes uniform128..128, derivative131..131, coverage251..251.
+
+Commits: Chlorophyll 6bb7571 (fix + P15 regression); preceding f57522e retains matched
+AIR specialization dumping (main repo preceding handoff 28b3bc6). Temporary capture
+instrumentation removed from source; saved only in ignored research/cc-varying/.
+VM build tools/vm-mesa.sh mesa ccfix PASS (16 s), xnu/out-mesa-ccfix; no CI runs.
+GPU suite: 28/28 normal AND 28/28 --bb, including synthetic derivative-only circle
+pixel checks (all128x128 pixels, 388 edge pixels). Negative control isolated P15:
+original installed runtime 88 wrong pixels; fixed runtime zero. The whole new suite
+on original old runtime stopped before P15; use helper-old.txt for the valid control.
+
+Installed in /usr/local/bin, byte-for-byte readback verified:
+libbgair.dylib SHA256 1a8aa7b67142bd858feccd5a7c8277b923ec73f60ba9b85ddbf7aad9a3206f46
+libbgmtl.dylib SHA256 d816ccec0c066d620b9815070c5d618c74afa5d98288ae0a3c9a2292d7324b3d
+bgmtl-bb.env restored exactly: CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 only. No tracing,
+dump flags, source instrumentation or altered compositor scheduling in the active fix.
+Original runtime backups remain locally at research/cc-varying/installed-libbg{air,mtl}.dylib.
+Generated remote captures, test libraries and helpers cleaned; empty diagnostic dirs
+may remain. Local evidence (ignored, Apple AIR not in git): focus/draw-038/039 output
+crops + input buffers, modulecheck.c, variants.py, suite-fixed{,-bb}.txt, helper-{old,new}.txt,
+final readbacks and cleanup-final-list.txt. No further work needed for the photographed
+dashes; user has verified the result. Wallpaper provider side runtime /usr/local/p was
+not changed; this fix is installed for the compositor runtime in /usr/local/bin.
+
 ### 2026-11-01: Control Center missing-varying claim DISPROVEN by paired capture + installed-runtime test
 
 Supersedes the 16:04 diagnosis below. The dash symptom is still unresolved. Do NOT replace
