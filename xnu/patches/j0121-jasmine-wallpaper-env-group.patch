@@ -14,7 +14,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +{
 +	if (n == 10 && strncmp(entry, "@wallpaper", n) == 0) {
 +		static const char *const names[] = {
-+			"PosterBoard", "AegirPoster", "CollectionsPoster", "GradientPosterExtension",
++			"AegirPoster", "CollectionsPoster", "GradientPosterExtension",
 +			"PridePosterExtension", "LegacyPoster", "PhotosPosterProvider",
 +			"UnityPosterExtension", "EmojiPosterExtension", "ExtragalacticPoster"
 +		};

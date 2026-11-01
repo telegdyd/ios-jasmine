@@ -12,7 +12,7 @@ added = '\n'.join(line[1:] for line in patch.splitlines()
 start = added.index('static int\nsweet_env_name_matches(')
 helper = added[start:added.index('\n}', start) + 2]
 expected = {
-    'PosterBoard', 'AegirPoster', 'CollectionsPoster', 'GradientPosterExtension',
+    'AegirPoster', 'CollectionsPoster', 'GradientPosterExtension',
     'PridePosterExtension', 'LegacyPoster', 'PhotosPosterProvider',
     'UnityPosterExtension', 'EmojiPosterExtension', 'ExtragalacticPoster',
 }
@@ -26,12 +26,12 @@ checks = []
 for name in sorted(expected):
     # The selector is a bounded prefix of the actual boot entry, not a separate string.
     checks.append(f'if (!sweet_env_name_matches("@wallpaper:BGMTL_ENABLE=1", 10, "{name}")) return 1;')
-for name in ['xpcproxy', 'launchd', 'backboardd', 'SpringBoard', 'Preferences',
+for name in ['PosterBoard', 'xpcproxy', 'launchd', 'backboardd', 'SpringBoard', 'Preferences',
              'PosterBoardHelper', 'AegirPosterHelper', 'NotAegirPoster',
              'posterboard', 'Photos', '/Applications/PosterBoard.app/PosterBoard', '']:
     checks.append(f'if (sweet_env_name_matches("@wallpaper", 10, "{name}")) return 2;')
 for selector in ['@wallpape', '@wallpaperX', 'wallpaper', '@Wallpaper']:
-    checks.append(f'if (sweet_env_name_matches("{selector}", {len(selector)}, "PosterBoard")) return 3;')
+    checks.append(f'if (sweet_env_name_matches("{selector}", {len(selector)}, "AegirPoster")) return 3;')
 checks += [
     'if (!sweet_env_name_matches("backboardd:BGMTL_ENABLE=1", 10, "backboardd")) return 4;',
     'if (sweet_env_name_matches("backboardd", 10, "backboarddHelper")) return 5;',

@@ -90,6 +90,14 @@ if [ -f "$TREE/xnu/patches/j0121-jasmine-wallpaper-env-group.patch" ]; then
 		exit 1
 	}
 fi
+if [ -f "$TREE/xnu/patches/j0122-jasmine-gpu-pool-compositor-share.patch" ]; then
+	grep -q 'sweet_pool_alloc_for' dxb/xnu/iokit/Kernel/arm/SweetGPU.cpp &&
+	grep -q 'topaz_gpu_pool_alloc_in' dxb/xnu/iokit/Kernel/arm/TopazAdreno.cpp &&
+	grep -q '@wallpaper' dxb/xnu/bsd/dev/sweet_sample.c || {
+		echo 'GPU pool share patch was not applied; refusing this kernel' >&2
+		exit 1
+	}
+fi
 
 rm -rf out && mkdir -p out
 cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true

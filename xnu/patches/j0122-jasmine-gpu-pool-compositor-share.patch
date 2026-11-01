@@ -1,0 +1,425 @@
+Subject: [PATCH] jasmine-j0122: GPU pool share for backboardd, per-process pool log, wallpaper sampler
+
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -3,7 +3,8 @@
+  *
+  * The phone has no debugger and daemons log nowhere readable. Every
+  * interval a kernel thread prints, for each process named in boot-arg
+- * sweetsample (comma separated, default "SpringBoard,backboardd"; "-" = off)
++ * sweetsample (comma separated, default "SpringBoard,backboardd,@wallpaper"; "-" = off;
++ * j0122: @wallpaper = PosterBoard and every *Poster, *PosterExtension, *PosterProvider)
+  * and for each of its threads, the user pc/lr/sp and a frame-pointer
+  * backtrace as "SMP name[pid] tN pc ... lr ... bt ..." (header line with the
+  * shared region slide and the main binary's mach header, to symbolicate
+@@ -35,6 +36,13 @@ static char sweet_sample_names[128];
+ static volatile bool sweet_sample_off;          /* j0097: a reboot runs */
+ static bool sweet_sample_force;                 /* j0097: sdw_sample=1 test pass */
+ 
++static bool
++sweet_sample_ends(const char *name, size_t n, const char *tail)
++{
++	size_t tn = strlen(tail);
++	return n > tn && strcmp(name + n - tn, tail) == 0;
++}
++
+ static bool
+ sweet_sample_wanted(const char *name)
+ {
+@@ -45,6 +53,11 @@ sweet_sample_wanted(const char *name)
+ 		if (tl == n && n > 0 && strncmp(t, name, n) == 0) {
+ 			return true;
+ 		}
++		if (tl == 10 && strncmp(t, "@wallpaper", 10) == 0 && (strcmp(name, "PosterBoard") == 0 ||
++		    sweet_sample_ends(name, n, "Poster") || sweet_sample_ends(name, n, "PosterExtension") ||
++		    sweet_sample_ends(name, n, "PosterProvider"))) {
++			return true;
++		}
+ 		if (!end) {
+ 			break;
+ 		}
+@@ -77,7 +90,7 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+ 	static int chan;
+ 	if (!PE_parse_boot_argn("sweetsample", sweet_sample_names, sizeof(sweet_sample_names))) {
+-		strlcpy(sweet_sample_names, "SpringBoard,backboardd", sizeof(sweet_sample_names));
++		strlcpy(sweet_sample_names, "SpringBoard,backboardd,@wallpaper", sizeof(sweet_sample_names));
+ 	}
+ 	if (sweet_sample_names[0] == '-') {
+ 		return;
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -85,6 +85,9 @@ uint64_t sweet_gpu_bulk_bytes(void);
+ void sweet_gpu_flush_all(void);
+ int sweet_board_is(const char *compat);
+ uint64_t topaz_gpu_pool_alloc(uint64_t size, void **va);
++uint64_t topaz_gpu_pool_alloc_in(uint64_t size, void **va, unsigned first, unsigned end);
++void topaz_gpu_pool_info(unsigned first, unsigned end, unsigned *chunks, uint64_t *free,
++    uint64_t *largest, unsigned *ranges, uint64_t *lost);
+ void topaz_gpu_pool_free(uint64_t pa, uint64_t size);
+ bool topaz_gpu_pool_place(uint64_t base, uint64_t size);
+ IOMemoryDescriptor *topaz_gpu_pool_md(uint64_t pa, uint64_t size);
+@@ -146,6 +149,114 @@ static uint32_t sweet_gpu_lazy = 1;     /* surface upkeep at the CPU's and GPU's
+ static bool sweet_gpu_pool;             /* jasmine: buffers from the write-combined GPU pool */
+ static IOLock *sweet_gpu_pool_lock;
+ 
++/*
++ * j0122: the pool is shared first-fit by every Metal process. With all wallpaper
++ * providers on Metal at once it ran out ("pool has no 12582912 bytes left") and
++ * the window server, whose display frames must come from it (MDP scaling),
++ * competed with them. The last sweetpool_bb chunks (64 MB each, default 4) are
++ * backboardd's alone; backboardd takes those first, then the shared ones like
++ * everyone else. Other processes fall back to cacheable memory when the shared
++ * part is full, as before. sweetpool_bb=0: one shared pool (the old behaviour).
++ * Pool bytes are accounted per process for the log (fLock-free: pool lock).
++ */
++#define SWEET_POOL_OWNERS 24
++static struct { int pid; char name[20]; uint64_t bytes, peak; uint32_t fails; } sweet_pool_owner[SWEET_POOL_OWNERS];
++static uint64_t sweet_pool_frames;      /* backboardd's display frames (SweetSurface) */
++static uint32_t sweet_pool_fails;
++static unsigned sweet_pool_chunks, sweet_pool_bb_first;
++
++static bool
++sweet_pool_is_compositor(const char *name)
++{
++	return strcmp(name, "backboardd") == 0;
++}
++
++/* the owner slot for this process (pool lock held): -1 when the table is full */
++static int
++sweet_pool_owner_slot(int pid, const char *name)
++{
++	int empty = -1;
++	for (int i = 0; i < SWEET_POOL_OWNERS; i++) {
++		if (sweet_pool_owner[i].pid == pid && strcmp(sweet_pool_owner[i].name, name) == 0) {
++			return i;
++		}
++		if (empty < 0 && sweet_pool_owner[i].bytes == 0 && sweet_pool_owner[i].fails == 0) {
++			empty = i;
++		}
++	}
++	if (empty < 0) {
++		/* reuse a gone process's slot that only counted failures */
++		for (int i = 0; i < SWEET_POOL_OWNERS && empty < 0; i++) {
++			if (sweet_pool_owner[i].bytes == 0) {
++				empty = i;
++			}
++		}
++	}
++	if (empty >= 0) {
++		sweet_pool_owner[empty].pid = pid;
++		strlcpy(sweet_pool_owner[empty].name, name, sizeof(sweet_pool_owner[empty].name));
++		sweet_pool_owner[empty].bytes = sweet_pool_owner[empty].peak = 0;
++		sweet_pool_owner[empty].fails = 0;
++	}
++	return empty;
++}
++
++/* pool memory for a process (pool lock held): the compositor's own chunks first */
++static uint64_t
++sweet_pool_alloc_for(uint64_t size, void **va, bool compositor)
++{
++	uint64_t pa = 0;
++	if (compositor && sweet_pool_bb_first < sweet_pool_chunks) {
++		pa = topaz_gpu_pool_alloc_in(size, va, sweet_pool_bb_first, sweet_pool_chunks);
++	}
++	if (pa == 0) {
++		pa = topaz_gpu_pool_alloc_in(size, va, 0, sweet_pool_bb_first);
++	}
++	return pa;
++}
++
++/* one line: shared and reserved free space, fragmentation, the biggest owners (pool lock held) */
++static void
++sweet_pool_log(const char *why)
++{
++	unsigned chunks, ranges;
++	uint64_t sfree, slargest, rfree, rlargest, lost;
++	topaz_gpu_pool_info(0, sweet_pool_bb_first, &chunks, &sfree, &slargest, &ranges, &lost);
++	topaz_gpu_pool_info(sweet_pool_bb_first, sweet_pool_chunks, &chunks, &rfree, &rlargest, &ranges, &lost);
++	char top[200];
++	size_t at = 0;
++	top[0] = 0;
++	bool used[SWEET_POOL_OWNERS] = {};
++	for (int n = 0; n < 6; n++) {
++		int best = -1;
++		for (int i = 0; i < SWEET_POOL_OWNERS; i++) {
++			if (!used[i] && (sweet_pool_owner[i].bytes != 0 || sweet_pool_owner[i].fails != 0) &&
++			    (best < 0 || sweet_pool_owner[i].bytes > sweet_pool_owner[best].bytes)) {
++				best = i;
++			}
++		}
++		if (best < 0 || at >= sizeof(top) - 1) {
++			break;
++		}
++		used[best] = true;
++		/* name[pid] now/peak MB, then the fallbacks it had */
++		int w = snprintf(top + at, sizeof(top) - at, " %s[%d] %llu/%llu MB", sweet_pool_owner[best].name,
++		    sweet_pool_owner[best].pid, sweet_pool_owner[best].bytes >> 20, sweet_pool_owner[best].peak >> 20);
++		if (w > 0 && (size_t)w < sizeof(top) - at && sweet_pool_owner[best].fails) {
++			at += (size_t)w;
++			w = snprintf(top + at, sizeof(top) - at, " (%u fallbacks)", sweet_pool_owner[best].fails);
++		}
++		if (w <= 0 || (size_t)w >= sizeof(top) - at) {
++			break;
++		}
++		at += (size_t)w;
++	}
++	IOLog("SWEET POOL: %s: shared %llu MB free (largest %llu) of %u chunks, backboardd's %llu MB free (largest %llu) "
++	    "of %u; frames %llu MB; %u free ranges, %llu MB lost; %u fallbacks; by owner:%s\n", why,
++	    sfree >> 20, slargest >> 20, sweet_pool_bb_first, rfree >> 20, rlargest >> 20,
++	    sweet_pool_chunks - sweet_pool_bb_first, sweet_pool_frames >> 20, ranges, lost >> 20, sweet_pool_fails, top);
++}
++
+ /*
+  * j0058: SweetSurface takes jasmine's window-server frames from the pool too (the MDP scans
+  * them), under the lock of Mesa's buffers. topaz has no lock here, as before.
+@@ -163,8 +274,8 @@ sweet_gpu_pool_take(uint64_t size, void **va)
+ 		return topaz_gpu_pool_alloc(size, va);
+ 	}
+ 	IOLockLock(sweet_gpu_pool_lock);
+-	uint64_t pa = topaz_gpu_pool_alloc(size, va);
+-	if (pa != 0) { sweet_bench_alloc(4, (int64_t)size); }
++	uint64_t pa = sweet_pool_alloc_for(size, va, true);     /* backboardd's frames only (sweet_gpu_pool_eligible) */
++	if (pa != 0) { sweet_bench_alloc(4, (int64_t)size); sweet_pool_frames += size; }
+ 	IOLockUnlock(sweet_gpu_pool_lock);
+ 	return pa;
+ }
+@@ -179,6 +290,7 @@ sweet_gpu_pool_give(uint64_t pa, uint64_t size)
+ 	IOLockLock(sweet_gpu_pool_lock);
+ 	topaz_gpu_pool_free(pa, size);
+ 	sweet_bench_alloc(4, -(int64_t)size);
++	sweet_pool_frames -= size;
+ 	IOLockUnlock(sweet_gpu_pool_lock);
+ }
+ 
+@@ -234,8 +346,9 @@ public:
+ 	uint64_t iova, size;
+ 	bool benchCounted = false;
+ 	uint64_t poolPA;                /* from the GPU pool (write-combined), or 0 */
++	int poolOwner = -1;             /* j0122: sweet_pool_owner slot charged for poolPA */
+ 
+-	static SweetGPUBuffer *create(uint64_t size, bool readonly);
++	static SweetGPUBuffer *create(uint64_t size, bool readonly, const char *owner);
+ 	static SweetGPUBuffer *import(SweetSurface *surface, bool readonly);
+ 	bool mapGPU(bool readonly);
+ 	void free() APPLE_KEXT_OVERRIDE;
+@@ -271,7 +384,7 @@ SweetGPUBuffer::mapGPU(bool readonly)
+ }
+ 
+ SweetGPUBuffer *
+-SweetGPUBuffer::create(uint64_t size, bool readonly)
++SweetGPUBuffer::create(uint64_t size, bool readonly, const char *owner)
+ {
+ 	size = (size + SWEET_GPU_UPAGE - 1) & ~(SWEET_GPU_UPAGE - 1);
+ 	if (size == 0 || size > SWEET_GPU_MAX_BUFFER) {
+@@ -287,13 +400,32 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ 	if (sweet_gpu_pool) {
+ 		void *va = NULL;
+ 		IOLockLock(sweet_gpu_pool_lock);
+-		uint64_t pa = topaz_gpu_pool_alloc(size, &va);
++		uint64_t pa = sweet_pool_alloc_for(size, &va, sweet_pool_is_compositor(owner));
++		int slot = sweet_pool_owner_slot(proc_selfpid(), owner);
++		if (pa != 0 && slot >= 0) {
++			sweet_pool_owner[slot].bytes += size;
++			if (sweet_pool_owner[slot].bytes > sweet_pool_owner[slot].peak) {
++				sweet_pool_owner[slot].peak = sweet_pool_owner[slot].bytes;
++			}
++		}
++		if (pa == 0) {
++			sweet_pool_fails++;
++			if (slot >= 0) {
++				sweet_pool_owner[slot].fails++;
++			}
++			if (sweet_pool_fails <= 4 || (sweet_pool_fails & 63) == 0) {
++				char why[64];
++				snprintf(why, sizeof(why), "%s wanted %llu KB", owner, size >> 10);
++				sweet_pool_log(why);
++			}
++		}
+ 		IOLockUnlock(sweet_gpu_pool_lock);
+ 		/* the descriptor carries the cache mode: the client's mapping is write-combined too */
+ 		IOMemoryDescriptor *pm = pa != 0 ? topaz_gpu_pool_md(pa, size) : NULL;
+ 		if (pm != NULL && pm->prepare() == kIOReturnSuccess) {
+ 			b->md = pm;
+ 			b->poolPA = pa;
++			b->poolOwner = slot;
+ 			sweet_bench_alloc(4, (int64_t)size);
+ 			b->kva = (uintptr_t)va;
+ 			b->flush = false;
+@@ -310,6 +442,9 @@ SweetGPUBuffer::create(uint64_t size, bool readonly)
+ 		if (pa != 0) {
+ 			IOLockLock(sweet_gpu_pool_lock);
+ 			topaz_gpu_pool_free(pa, size);
++			if (slot >= 0) {
++				sweet_pool_owner[slot].bytes -= size;
++			}
+ 			IOLockUnlock(sweet_gpu_pool_lock);
+ 		}
+ 		static uint32_t told;
+@@ -413,6 +548,9 @@ SweetGPUBuffer::free()
+ 			IOLockLock(sweet_gpu_pool_lock);
+ 			topaz_gpu_pool_free(poolPA, size);
+ 			sweet_bench_alloc(4, -(int64_t)size);
++			if (poolOwner >= 0) {
++				sweet_pool_owner[poolOwner].bytes -= size;
++			}
+ 			IOLockUnlock(sweet_gpu_pool_lock);
+ 			poolPA = 0;
+ 		}
+@@ -824,6 +962,11 @@ SweetGPUUserClient::account(uint64_t t0, uint64_t bytes, bool submit, uint32_t n
+ 		    fStatBytes >> 20, fStatNs / NSEC_PER_MSEC, fStatBulk, sweet_gpu_held_draws,
+ 		    sweet_gpu_panel_waits, sweet_gpu_panel_us / 1000, sweet_gpu_nbo_zero, sweet_fb_sleep_us(), sweet_fb_spin_us(), sweet_gpu_protected_listings);
+ 		sweet_ticket_gpu_stats();
++		if (sweet_gpu_pool && sweet_pool_is_compositor(fName)) {
++			IOLockLock(sweet_gpu_pool_lock);
++			sweet_pool_log("every 10 s");
++			IOLockUnlock(sweet_gpu_pool_lock);
++		}
+ 		sweet_gpu_held_draws = sweet_gpu_panel_waits = 0;
+ 		sweet_gpu_panel_us = 0;
+ 		fStatT0 = now;
+@@ -888,7 +1031,7 @@ SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		if (nin < 2 || args->scalarOutputCount < 2) {
+ 			return kIOReturnBadArgument;
+ 		}
+-		SweetGPUBuffer *b = SweetGPUBuffer::create(in[0], (in[1] & 1) != 0);
++		SweetGPUBuffer *b = SweetGPUBuffer::create(in[0], (in[1] & 1) != 0, fName);
+ 		if (b == NULL) {
+ 			sweet_bench_alloc(6, 1);
+ 			return kIOReturnNoMemory;
+@@ -1262,6 +1405,18 @@ sweet_gpu_publish(void)
+ 		sweet_gpu_pool = pa != 0;
+ 		if (pa != 0) {
+ 			topaz_gpu_pool_free(pa, 0x10000);
++			unsigned chunks, ranges;
++			uint64_t free, largest, lost;
++			topaz_gpu_pool_info(0, 0, &chunks, &free, &largest, &ranges, &lost);
++			uint32_t bb = 4;
++			(void)PE_parse_boot_argn("sweetpool_bb", &bb, sizeof(bb));
++			sweet_pool_chunks = chunks;
++			sweet_pool_bb_first = bb < chunks ? chunks - bb : 0;
++			if (bb == 0) {
++				sweet_pool_bb_first = chunks;
++			}
++			IOLog("SWEET POOL: %u chunks of 64 MB, the last %u backboardd's alone (sweetpool_bb)\n",
++			    chunks, chunks - sweet_pool_bb_first);
+ 		}
+ 		IOLog("SWEET GPU: pool %#llx-%#llx (shim at %#llx, %#llx bytes): %s\n", lo, hi, shim, shimsz,
+ 		    sweet_gpu_pool ? "buffers write-combined from it" : "NOT usable, cacheable buffers");
+diff --git a/iokit/Kernel/arm/TopazAdreno.cpp b/iokit/Kernel/arm/TopazAdreno.cpp
+--- a/iokit/Kernel/arm/TopazAdreno.cpp
++++ b/iokit/Kernel/arm/TopazAdreno.cpp
+@@ -191,6 +191,8 @@ topaz_gpu_pool_place(uint64_t base, uint64_t size)
+ }
+ static struct { uint64_t start, size; } pool_free[2048];
+ static unsigned pool_free_count;
++/* j0122: bytes range_free could not record (free list full): lost until reboot */
++static uint64_t pool_free_lost;
+ 
+ static void
+ range_free(void *table, unsigned *count, unsigned max, uint64_t address, uint64_t size)
+@@ -214,16 +216,22 @@ range_free(void *table, unsigned *count, unsigned max, uint64_t address, uint64_
+ 		(*count)++;
+ 		f[at].start = address;
+ 		f[at].size = size;
++	} else if (table == (void *)pool_free) {
++		if (pool_free_lost == 0) {
++			IOLog("SWEET GPU: pool free list full (%u ranges): freed memory lost from now on\n", max);
++		}
++		pool_free_lost += size;
+ 	}
+ }
+ 
++/* first fit among the ranges that start in [lo, hi) (pool ranges never cross a chunk) */
+ static uint64_t
+-range_alloc(void *table, unsigned *count, uint64_t size)
++range_alloc_in(void *table, unsigned *count, uint64_t size, uint64_t lo, uint64_t hi)
+ {
+ 	struct r { uint64_t start, size; } *f = (struct r *)table;
+ 
+ 	for (unsigned i = 0; i < *count; i++) {
+-		if (f[i].size >= size) {
++		if (f[i].start >= lo && f[i].start < hi && f[i].size >= size) {
+ 			uint64_t address = f[i].start;
+ 			f[i].start += size;
+ 			f[i].size -= size;
+@@ -236,6 +244,12 @@ range_alloc(void *table, unsigned *count, uint64_t size)
+ 	return 0;
+ }
+ 
++static uint64_t
++range_alloc(void *table, unsigned *count, uint64_t size)
++{
++	return range_alloc_in(table, count, size, 0, ~0ull);
++}
++
+ /*
+  * A descriptor for pool memory. The cache mode goes into the descriptor itself:
+  * for a task other than the kernel, physical memory is mapped through a device
+@@ -261,10 +275,20 @@ topaz_gpu_midmem(void)
+ 	return gpu_midmem != 0;
+ }
+ 
+-/* Contiguous GPU memory below 4 GiB: physical address, kernel address (write-combined). 0: none left. */
++/*
++ * Contiguous GPU memory below 4 GiB: physical address, kernel address (write-combined). 0: none left.
++ * j0122: _in takes it from chunks [first, end) only (SweetGPU keeps some for the window server).
++ */
++extern "C" uint64_t topaz_gpu_pool_alloc_in(uint64_t size, void **va, unsigned first, unsigned end);
+ extern "C" uint64_t topaz_gpu_pool_alloc(uint64_t size, void **va);
+ uint64_t
+ topaz_gpu_pool_alloc(uint64_t size, void **va)
++{
++	return topaz_gpu_pool_alloc_in(size, va, 0, GPU_POOL_MAX_CHUNKS);
++}
++
++uint64_t
++topaz_gpu_pool_alloc_in(uint64_t size, void **va, unsigned first, unsigned end)
+ {
+ 	uint64_t pa;
+ 
+@@ -279,7 +303,8 @@ topaz_gpu_pool_alloc(uint64_t size, void **va)
+ 		}
+ 		gpu_pool_ready = true;
+ 	}
+-	pa = range_alloc(pool_free, &pool_free_count, size);
++	pa = range_alloc_in(pool_free, &pool_free_count, size,
++	    GPU_POOL_BASE + first * GPU_POOL_CHUNK, GPU_POOL_BASE + (uint64_t)end * GPU_POOL_CHUNK);
+ 	if (pa == 0) {
+ 		return 0;
+ 	}
+@@ -304,6 +329,31 @@ topaz_gpu_pool_alloc(uint64_t size, void **va)
+ 	return pa;
+ }
+ 
++/*
++ * j0122: the pool's state for the log. chunks: how many; free/largest: in chunks [first, end);
++ * ranges: free ranges recorded (of 2048); lost: freed bytes the full list dropped.
++ */
++extern "C" void topaz_gpu_pool_info(unsigned first, unsigned end, unsigned *chunks, uint64_t *free,
++    uint64_t *largest, unsigned *ranges, uint64_t *lost);
++void
++topaz_gpu_pool_info(unsigned first, unsigned end, unsigned *chunks, uint64_t *free,
++    uint64_t *largest, unsigned *ranges, uint64_t *lost)
++{
++	uint64_t lo = GPU_POOL_BASE + first * GPU_POOL_CHUNK, hi = GPU_POOL_BASE + (uint64_t)end * GPU_POOL_CHUNK;
++	*chunks = (unsigned)GPU_POOL_CHUNKS;
++	*free = *largest = 0;
++	for (unsigned i = 0; gpu_pool_ready && i < pool_free_count; i++) {
++		if (pool_free[i].start >= lo && pool_free[i].start < hi) {
++			*free += pool_free[i].size;
++			if (pool_free[i].size > *largest) {
++				*largest = pool_free[i].size;
++			}
++		}
++	}
++	*ranges = pool_free_count;
++	*lost = pool_free_lost;
++}
++
+ static void pool_give_back(uint64_t pa, uint64_t size);
+ extern "C" void topaz_gpu_pool_free(uint64_t pa, uint64_t size);
+ void

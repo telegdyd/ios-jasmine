@@ -1,3 +1,31 @@
+### 2026-11-01: pool1 (j0122 pool share, PosterBoard out) booted; USER navigating, no UI automation
+
+Kernel j0122: last sweetpool_bb chunks (default 4 x 64 MB) backboardd-only, per-process pool accounting +
+"SWEET POOL" line every 10 s and on each pool fallback, free-list-full loss counter, sampler default
+SpringBoard,backboardd,@wallpaper. Build guard in build-local.sh. j0121 group and injector no longer include
+PosterBoard (chlorophyll 066d957, local). Audit: free on process exit is correct (clientClose flushes
+buffers, SweetGPUBuffer::free returns poolPA); first-fit with coalescing, no ownership split before.
+VM pool1 kernel 55 s; mesa wallpaper-pool1 12 s, libbgair/libbgmtl identical to aegir5, injector 40b0036f
+(0 PosterBoard strings), staged /usr/local/p/i.dylib exact readback PASS (old wpall injector backed up in
+research/wallpaper-metal/pool1/injector-before.dylib). Image shim/out/shim-boot-pool1.img SHA 668dd072...,
+exact wpall2 cmdline (593 B) + blanket canvas.adt. Temporary boot OK, userland 21 s, battery 63% charging.
+First 3 min: 0 pool fallbacks, 0 QUEUE FALLBACK, tickets 0 stale/error/timeout, backboardd ~330 submits/10 s,
+shared 540 MB free, backboardd 56 MB + frames 17 MB, providers ~4 MB each. assetsd SIGABRTs pre-existing.
+Logger research/wallpaper-metal/pool1/console.txt, 900 s. NEXT: user's report; read SWEET POOL/SMP lines.
+Not installed; plain reboot returns installed ASTC-only boot (injector at /usr/local/p unused there).
+
+### 2026-11-01: Wallpaper-wide failure analysis (logs only, no phone use, no code change)
+
+Observed in blanket/console.txt and retry/console.txt: QUEUE FALLBACK16 fires BEFORE PosterBoard/provider
+injection (line ~1673 vs ~1878), also seen in installed boots (metal-step7/netlog-metal-installed.txt), so it
+is a separate startup flake, not caused by the group. AFTER providers start: 4x "SWEET GPU: pool has no
+12582912 bytes left, cacheable memory instead" per boot; aegir/console-final.txt has 0. backboardd then only
+118 submits in 113 s (Aegir-only: ~800/10 s). SpringBoard+backboardd main threads idle in run loop in SMP
+samples (not deadlocked). Hypothesis (unproven): pool exhaustion/fragmentation/leak by many Metal clients
+starves compositor. Pool allocator range_alloc/free uses fixed pool_free[2048] (0910/j0053), not yet audited.
+NEXT per plan given to user: audit pool, per-process pool accounting, compositor reserve, drop PosterBoard host
+(no demonstrated need), one instrumented all-providers boot. Awaiting user approval.
+
 ### 2026-11-01: Blanket Metal test FAILED (frozen/red rdar bar); restored installed boot
 
 User: phone unresponsive, red top bar "rdar:45025538". Process checks did NOT establish usable UI;
