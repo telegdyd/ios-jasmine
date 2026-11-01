@@ -1,3 +1,17 @@
+### 2026-11-01 01:30: METAL IS THE INSTALLED DEFAULT (user: "set up Metal to be the default on boot ... done with GL")
+
+Report mesa/METAL-STEP7.md "Installed". boot_b = shim/out/shim-boot-j0120on-metal-slotb.img (c5e8f056...; the GL
+j0120on-slotb args with backboardd on bgmtl_inject instead of libsweetca). /usr/local/bin: libbgair 852bf5dd,
+libbgmtl 97dfeff0 (VM metal-s7s), bgmtl_inject fc4d5071; env /private/var/tmp/bgmtl-bb.env =
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. First installed boot showed the black band: a stale render ticket at boot made
+the kernel fall back to untracked presentation for the whole boot (QUEUE FALLBACK reason 16); the async replay
+(r26) widened that window, so it is now opt-in (BGMTL_ASYNC=1). Reboot after: tickets 4206/4206/0, no fallback,
+0 faults. User checked r26 (fine) before this. ROLLBACK: fastboot flash boot_b shim/out/shim-boot-j0120on-slotb.img
+(bf33a55f, GL; libsweetca bb3a7a9e still in /usr/local/bin). Plain reboot = command port -> fastboot -> `fastboot
+reboot` (research/metal-step7/reboot-installed.py). **Phone:** installed Metal boot_b. NEXT: async replay without
+the boot-time ticket fallback (kernel: drop the frame instead of falling back; or open tickets in the replay), then
+what CA waits on between frames, GPU time per frame.
+
 ### 2026-11-01 later: Metal step 7: replay off CoreAnimation's thread (CC +15 %), GL reference measured; user check pending
 
 Report mesa/METAL-STEP7.md "Round 26". GL on a settled installed boot: home 56.5, CC 42.7/43.4 swaps/s; its driver
@@ -6,7 +20,7 @@ in the compositor (BGMTL_ASYNC=0 inline). VM metal-s7r: libbgair 852bf5dd, libbg
 probe 26/26 plain + --bb. r26 (settled): home 37.7, CC 33.9/32.2 (r25b 39.3, 27.9/29.9). backboardd CPU 54-67 %;
 CA now mostly waits for the previous command buffer's completion (CA ~7 + replay ~5 + GPU ~11 ms). round.sh now
 settles 240 s before framebench. **Phone:** temporary s7tk boot (r26); env CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 +
-BGMTL_TIMING=1. NEXT: user's look at the panel; what CA waits on between frames; GPU time per frame.
+BGMTL_TIMING=1. User: r26 fine. NEXT: see the 01:30 entry above.
 
 ### 2026-11-01: Metal step 7: unchanged state no longer re-bound per draw (commit CPU -20 %), user: clean and smooth
 

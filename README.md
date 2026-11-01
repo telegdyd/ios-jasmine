@@ -9,9 +9,9 @@ This is a port of [MakrSas/ios-topaz](https://github.com/MakrSas/ios-topaz) (its
 > by OOSEX GANG (kernel: APSL 2.0, [user space](https://github.com/oosexgang/hackios-xnu-userland): MIT).
 > What comes from it and under which licence: [CREDITS.md](CREDITS.md).
 
-As of **2026-10-31**, the phone boots iOS by itself from slot b to the **lock screen and home screen**. Touch, the power and volume keys, date and time, battery reporting and **Wi-Fi** work, and the backlight turns off when the phone sleeps. **CoreAnimation renders on the Adreno 512 GPU** through OpenGL ES (`libsweetca` and Mesa freedreno), and the display scales and presents the frames in hardware. Settings, Spotlight, the App Library, Control Center and the keyboard work. All eight CPU cores run, with clock speeds that follow the load. USB Ethernet provides live logs, commands and file transfer.
+As of **2026-11-01**, the phone boots iOS by itself from slot b to the **lock screen and home screen**. Touch, the power and volume keys, date and time, battery reporting and **Wi-Fi** work, and the backlight turns off when the phone sleeps. **CoreAnimation renders on the Adreno 512 GPU through Metal** (our port of the [Chlorophyll](https://github.com/telegdyd/Chlorophyll) driver on Mesa freedreno), and the display scales and presents the frames in hardware. Settings, Spotlight, the App Library, Control Center and the keyboard work. All eight CPU cores run, with clock speeds that follow the load. USB Ethernet provides live logs, commands and file transfer.
 
-**Metal works too.** Apple's Metal API runs on the Adreno 512 through our port of the [Chlorophyll](https://github.com/telegdyd/Chlorophyll) driver, and the lock screen, home screen and Control Center can be drawn through Metal without flicker or tearing. It is still slower than OpenGL ES, so OpenGL ES stays the default for now.
+**Metal is the default.** Apple's Metal API runs on the Adreno 512, and CoreAnimation's own Metal renderer draws the system UI without flicker or tearing. It is still slower than the OpenGL ES path (`libsweetca`) this port used before, which remains available by boot argument.
 
 > Experimental bring-up, not a usable phone OS. Many things are missing or stubbed, and Apple's security model is mostly switched off. iOS installs into the `userdata` partition and so **erases Android's user data**, and the standalone boot replaces `boot_b` / `vbmeta_b`. Keep a backup of every partition before you start.
 
@@ -30,15 +30,15 @@ As of **2026-10-31**, the phone boots iOS by itself from slot b to the **lock sc
 | Keys and clock | Power and volume down from the PM660 PON, volume up from PM660L GPIO 7, all over the SPMI arbiter v3; the calendar from the PM660 RTC plus `rtcoffset=` |
 | Battery | Charger and fuel gauge (voltage, current, temperature); percentage shown in iOS. Wall chargers are detected properly and charge at full speed. The PM660L WLED backlight turns off with the display |
 | USB | The phone is a **USB Ethernet gadget** (CDC-NCM; Windows, Linux and macOS have drivers built in) that repairs itself if the PC drops the link. The kernel log streams live over TCP (`tools/sweet-netlog.py`, 192.168.7.2 or 169.254.7.2 port 5140); a command port (5141) reboots into fastboot on request, so `tools/sweet-run.py IMAGE LOG` runs a whole test round (reboot, `fastboot boot`, live log) without touching the phone; `tools/sweet-fs.py` copies files into and out of the iOS root (port 5142). The previous boot's log can be read after a crash |
-| GPU | Adreno 512 through the SweetGPU kernel driver, Mesa freedreno (Gallium/a5xx), sweetgl and `libsweetca.dylib` injected into backboardd. CoreAnimation's OpenGL ES renderer runs on the GPU; the GPU powers down when idle |
-| Metal | Chlorophyll's AIR-to-ir3 shader compiler and Metal runtime on Gallium freedreno; CoreAnimation's own Metal renderer draws the system UI. Not the default yet |
+| GPU | Adreno 512 through the SweetGPU kernel driver and Mesa freedreno (Gallium/a5xx); the GPU powers down when idle |
+| Metal | Chlorophyll's AIR-to-ir3 shader compiler and Metal runtime on Gallium freedreno (`libbgair`, `libbgmtl`, `bgmtl_inject.dylib` injected into backboardd); CoreAnimation's own Metal renderer draws the system UI. The default |
+| OpenGL ES | The previous path: sweetgl and `libsweetca.dylib` injected into backboardd run CoreAnimation's OpenGL ES renderer. Faster for now, no longer the default |
 | Wi-Fi | WCN3990 through the modem DSP and Apple80211: scanning in Settings, WPA2, DHCP, internet, joining a saved network at boot, leaving and rejoining. USB Ethernet keeps working alongside it |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## What does not work (yet)
 
-- **Speed**: the UI runs at roughly 40–55 frames per second on the home screen and less in Control Center. CPU time spent preparing each frame and the GPU are the limits now.
-- **Metal is slower than OpenGL ES**, so it is not switched on by default.
+- **Speed**: through Metal the UI runs at roughly 38 frames per second on the home screen and 28–30 in Control Center (OpenGL ES: about 56 and 43). The driver work per frame and the GPU are the limits now.
 - **Heat**: there is no thermal throttling yet.
 - **Charging from a PC port** is slower than what the phone uses with the screen on. Use a wall charger.
 - **Bluetooth, cellular, audio, camera, motion sensors, fingerprint, GPS and the SEP** are unsupported. Without motion sensors, the home screen's parallax effect is turned off.
@@ -91,17 +91,21 @@ The steps below outline the build and installation flow. [NOTES.md](NOTES.md) an
    ```sh
    python3 tools/mkadt.py shim/out/jasmine.adt --highmem --amp --canvas 828x1792 --scale 2
    python3 tools/mkpayload.py xnu/out-jasmine/kernel.development.sweet shim/out/jasmine.adt shim/out/payload.bin \
-       --cmdline 'debug=0xc serial=3 cpus=8 -noprogress rd=ufsroot0 ufsroot=userdata unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 panicwait=60 sweetfb_hz=30 ufsrw=1 rootrw=1 rtcoffset=SECONDS sweetgpu=4 gpumhz=588 sweetddr=1804 sweetcmd=1 gpudelay=1 gpupause=0 sweetfb_sync=1 sweetfb_sleep=1 sweetfb_queue=1 sweetgpu_tickets=1 sweetfb_lw=828 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib,SWEETCA_PIPELINE=2;SpringBoard:DYLD_INSERT_LIBRARIES=/s.dylib'
+       --cmdline 'debug=0xc serial=3 cpus=8 -noprogress rd=ufsroot0 ufsroot=userdata unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 panicwait=60 sweetfb_hz=30 ufsrw=1 rootrw=1 rtcoffset=SECONDS sweetgpu=4 gpumhz=588 sweetddr=1804 sweetcmd=1 gpudelay=1 gpupause=0 sweetfb_sync=1 sweetfb_sleep=1 sweetfb_queue=1 sweetgpu_tickets=1 sweetfb_lw=828 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/bgmtl_inject.dylib,BGMTL_ENABLE=1;SpringBoard:DYLD_INSERT_LIBRARIES=/s.dylib'
    bash shim/build.sh shim/out/payload.bin      # -> shim/out/shim-boot.img
    ```
    `rtcoffset` is the Unix time minus the PMIC RTC's raw seconds (read once from Linux). The GPU firmware (`a530_pm4.fw`, `a530_pfp.fw`, `a512_zap.*` from the stock `vendor` partition's `/firmware`) goes into `research/gpu-fw`. The command line has room for about 608 bytes. `tools/g2/mkimg.sh` wraps this recipe but has local WSL paths and an RTC offset for one phone; adapt those first.
 4. **Root and first boot**: `fastboot -S 512M flash userdata WORKDIR/ios16-root.simg`, then `fastboot boot shim/out/shim-boot.img`. The first boot sits on the Apple logo for a few minutes while LaunchServices builds its database.
-5. **GPU rendering and the smaller frame**: build the Mesa bridge and the SpringBoard helper from the same source revision, by CI (`-f build=mesa`, artifact `mesa-ios`; the iOS tools are artifact `ios-tools`) or on your Mac (`tools/vm-mesa.sh mesa TAG`, `tools/vm-mesa.sh ios TAG`), put the outputs in `xnu/out-mesa` and `xnu/out-ios`, then copy them onto the phone:
+5. **GPU rendering and the smaller frame**: build the Metal driver, the Mesa bridge and the SpringBoard helper from the same source revision, by CI (`-f build=mesa`, artifact `mesa-ios`; the iOS tools are artifact `ios-tools`) or on your Mac (`tools/vm-mesa.sh mesa TAG`, `tools/vm-mesa.sh ios TAG`), put the outputs in `xnu/out-mesa` and `xnu/out-ios`, then copy them onto the phone:
    ```sh
-   python3 tools/sweet-fs.py put xnu/out-mesa/libsweetca.dylib /usr/local/bin/libsweetca.dylib --mode 0755
+   for f in libbgair.dylib libbgmtl.dylib bgmtl_inject.dylib; do
+     python3 tools/sweet-fs.py put xnu/out-mesa/$f /usr/local/bin/$f --mode 0755
+   done
+   printf 'CA_DISABLE_FRAMEBUFFER_COMPRESSION=1\n' > bgmtl-bb.env
+   python3 tools/sweet-fs.py put bgmtl-bb.env /private/var/tmp/bgmtl-bb.env --mode 0644
    python3 tools/sweet-fs.py put xnu/out-ios/sweet_sbshape.dylib /s.dylib --mode 0755
    ```
-   `sweet_sbshape` gives SpringBoard the status bar and notch layout of the 828×1792 frame. Back up an existing library before replacing it, and reboot to load the new one. See [GPU history](jasmine/GPU.md) and [Mesa sources](mesa/README.md).
+   The injector reads `KEY=VALUE` lines from `/private/var/tmp/bgmtl-bb.env` into backboardd's environment. For OpenGL ES instead, copy `xnu/out-mesa/libsweetca.dylib` to `/usr/local/bin` and use `sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/bin/libsweetca.dylib,SWEETCA_PIPELINE=2;...`. `sweet_sbshape` gives SpringBoard the status bar and notch layout of the 828×1792 frame. Back up an existing library before replacing it, and reboot to load the new one. See [GPU history](jasmine/GPU.md) and [Mesa sources](mesa/README.md).
 6. **Standalone**: once a temporary boot works, add `abmark=b` to the command line, write the image to `boot_b`, use a `vbmeta_b` with verification disabled, and select slot b.
 
 | Boot-arg | Effect |
@@ -112,7 +116,7 @@ The steps below outline the build and installation flow. [NOTES.md](NOTES.md) an
 | `sweetgold=` | Gold clock in MHz at boot (0 = leave XBL's) |
 | `sweetddr=1804`, `sweetddrgov=0` | Memory clock under load; `sweetddrgov=0` keeps it fixed instead of following the load |
 | `sweetgpu=4`, `gpumhz=588` | GPU rendering and the GPU clock |
-| `sweetenv=PROCESS:VAR=VALUE,...;PROCESS:...` | Environment variables for named processes; used to inject `libsweetca` into backboardd and `/s.dylib` into SpringBoard |
+| `sweetenv=PROCESS:VAR=VALUE,...;PROCESS:...` | Environment variables for named processes; used to inject the Metal driver (or `libsweetca`) into backboardd and `/s.dylib` into SpringBoard |
 | `sweetfb_lw=`, `sweetfb_lh=` | Size of the frame iOS draws (must match `mkadt.py --canvas`) |
 | `sweetfb_sync=1`, `sweetfb_queue=1`, `sweetfb_sleep=1`, `sweetgpu_tickets=1` | Paced, queued presentation that waits for the GPU to finish each frame |
 | `sweetfb_scale=0`, `sweetfb_fit=0`, `sweetmdp=0` | Fallbacks: no hardware scaling, crop instead of fit, old CPU copy into the boot framebuffer |
@@ -124,15 +128,14 @@ The steps below outline the build and installation flow. [NOTES.md](NOTES.md) an
 | `sweetwdt=SECS` | Hardware watchdog: a hang resets into fastboot |
 | `ufslogsecs=` | Persistent log flush interval (default 10 s) |
 
-`libsweetca` reads a few environment switches (set through `sweetenv=`): `SWEETCA_PIPELINE=2` pipelines frame submission, and `SWEETCA_GLTHREAD=0` and `SWEETCA_SYS_BARRIER=0` turn off its worker thread and its batch merging for comparison.
+The Metal driver reads switches from `/private/var/tmp/bgmtl-bb.env`: `BGMTL_TIMING=1` logs a once-a-second commit timeline, `BGMTL_ASYNC=1` replays command buffers on a worker thread (faster in Control Center, but it can turn off the display's render tickets at boot; see [step 7](mesa/METAL-STEP7.md)), and `RWA_STATE_CACHE=0`, `RWA_FB_BARRIER=0` turn off state caching and the in-batch framebuffer-fetch barrier for comparison. `libsweetca` reads `SWEETCA_PIPELINE=2` (pipelined frame submission), `SWEETCA_GLTHREAD=0` and `SWEETCA_SYS_BARRIER=0` through `sweetenv=`.
 
 ## Roadmap
 
-1. **Speed**: cut the CPU and driver time per frame, then the GPU time.
-2. **Metal**: make it at least as fast as OpenGL ES, then make it the default.
-3. **Heat and battery**: thermal limits, then further idle power savings.
-4. **Stability**: the GPU freeze, the reboot stall and power-off, crashing apps and panels, wallpaper drawing.
-5. **Hardware coverage**: brightness control, audio and the other unsupported parts.
+1. **Speed**: bring Metal up to the OpenGL ES path's frame rate: driver work off CoreAnimation's thread without losing render tickets, then the GPU time per frame.
+2. **Heat and battery**: thermal limits, then further idle power savings.
+3. **Stability**: the GPU freeze, the reboot stall and power-off, crashing apps and panels, wallpaper drawing.
+4. **Hardware coverage**: brightness control, audio and the other unsupported parts.
 
 Detailed status and measurements: [performance tasks](jasmine/PERF-TASKS.md), [power plan](jasmine/POWER-PLAN-20261029.md), [Metal port](mesa/METAL-HANDOFF.md), [Wi-Fi](jasmine/WIFI.md), and the running notes in [NOTES.md](NOTES.md) and [jasmine/NOTES.md](jasmine/NOTES.md).
 

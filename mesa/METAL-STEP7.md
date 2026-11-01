@@ -212,7 +212,7 @@ Control Center; texture refresh on home 0.37 -> 0.16, `check_bindings` 0.06 -> 0
 control-a, per unit of CA time): `fd_draw_vbo` 0.85 (state emit 0.42, resource tracking 0.23), batch flush and
 submit 0.20 (the kernel submit call itself is most of it, same path as GL), command buffer dealloc 0.13.
 
-## Round 26: GL reference, and the replay off CoreAnimation's thread (r26 not yet checked by the user)
+## Round 26: GL reference, and the replay off CoreAnimation's thread (user checked r26: fine)
 
 **GL reference** (installed boot_b, production libsweetca `bb3a7a9e`, framebench `fb-gl1` after a 4-minute settle):
 spotlight-repeat 40.9, home-b **56.5**, control-a / -b **42.7 / 43.4** swaps/s (the old "40-47" was an early-boot
@@ -241,6 +241,29 @@ one completed; CA + replay + GPU ≈ 7 + 5 + 11 ms does not fit one refresh. (Gu
 CA's Metal renderer that GL's path does not have, or that GL's shorter chain fits.) GL renders in sysmem too
 (`FD_MESA_DEBUG=sysmem` in sweetca.c), so that is not the difference.
 
+## Installed: Metal is the default boot (user, 2026-11-01: "set up Metal to be the default on boot ... I'm done with GL")
+
+`boot_b` = `shim/out/shim-boot-j0120on-metal-slotb.img` (SHA256 `c5e8f056...`), built by
+`research/metal-step7/mkimg-mtl-slotb.sh` (ignored): the s7tk recipe plus `abmark=b`. Its payload differs from the GL
+`shim-boot-j0120on-slotb.img` only in `sweetenv=backboardd:...` (`bgmtl_inject.dylib,BGMTL_ENABLE=1` instead of
+`libsweetca.dylib,SWEETCA_PIPELINE=2`) and the build's 64-byte random seed; same kernel j0120on, same ADT, 598-byte
+command line. `fastboot flash boot_b` OKAY, then `fastboot reboot` (slot b). In `/usr/local/bin`: libbgair `852bf5dd`,
+libbgmtl `97dfeff0` (`metal-s7s`), bgmtl_inject `fc4d5071`; `/private/var/tmp/bgmtl-bb.env` =
+`CA_DISABLE_FRAMEBUFFER_COMPRESSION=1`. libsweetca (`bb3a7a9e`) stays in `/usr/local/bin` for the GL image.
+**Rollback:** `fastboot flash boot_b shim/out/shim-boot-j0120on-slotb.img` (`bf33a55f`, GL).
+
+**First installed boot: the black band again** (user). Cause, from that boot's log (`netlog-metal-installed.txt`):
+early in boot one render ticket went stale (the display epoch moved between its begin at encode and its seal), the
+next swap of that surface was refused (`sweet_surface_cpu_access` -> `sweet_ticket_wait` not ready ->
+`rejectFrame(..., 16, ...)`), and the kernel fell back to synchronous presentation **without tickets for the rest of
+the boot** ("QUEUE FALLBACK reason 16", tickets begin/seal/abort 4/3/1, stale 1). With the async replay (r26) a ticket
+stays open until the worker submits, milliseconds instead of microseconds, so the window is wider; r26 did not hit it.
+Fix for the default: the async replay is now opt-in (`BGMTL_ASYNC=1`, libbgmtl `97dfeff0`). Plain reboot after that
+(`netlog-metal-installed2.txt`): tickets 4206/4206/0, stale/error/timeout 0/0/0, no fallback, 0 drew into a surface
+the display holds, 0 faults/crashes/command buffer failures; render probe 26/26 `--bb`. Speed is r25's (home ~39,
+Control Center ~28-30). To bring the async replay back safely: the kernel should drop one frame instead of falling
+back for the whole boot on a stale ticket, or the ticket's begin should move to the replay.
+
 ## Open (next)
 
 - More CPU off the commit: state emission per new batch (each render-target switch re-emits everything), resource
@@ -248,7 +271,7 @@ CA's Metal renderer that GL's path does not have, or that GL's shorter chain fit
   needed for passes with no framebuffer fetch (GPU time).
 - Benchmark only a few minutes after boot (background services). home-a of framebench comes out with no swaps on
   some boots, GL included (fb-gl1): a benchmark problem, not a renderer one.
-- What CoreAnimation waits on between frames (completion handler, scheduled handler, drawable/ticket), and the GPU
+- Async replay without losing tickets (above), then what CoreAnimation waits on between frames (completion handler, scheduled handler, drawable/ticket), and the GPU
   time per frame (~11 ms submit to completion).
 - Drop `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` (last env line; added in r10 without effect).
 - `RWA_CB_DELTA` on a5xx (above).
