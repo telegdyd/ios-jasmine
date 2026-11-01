@@ -1,0 +1,70 @@
+Subject: [PATCH] jasmine-j0126: sandbox extensions are issued and consumed (a token that grants nothing; Pride particles)
+
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -32,6 +32,7 @@
+ #include <sys/priv.h>
+ #include <sys/proc.h>
+ #include <sys/systm.h>
++#include <os/atomic_private.h>
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode.h>
+ #include <security/mac_policy.h>
+@@ -310,6 +311,46 @@ sweet_sandbox_container_path(__unused user_addr_t arg)
+ 	return ENOENT;
+ }
+ 
++/*
++ * j0126: sandbox extensions. There is no sandbox to extend, so an extension is
++ * a token that grants nothing: issuing one writes a token, consuming one gives
++ * a handle. Both used to fail with ENOENT, and a caller that wants one before it
++ * reads a file it could read anyway gave up: Pride's particle wallpaper (its
++ * particle.usdc) logged "Unable to issue extension" and drew nothing.
++ *
++ * libsystem_sandbox (iOS 16.7) passes, for op 5 (_sandbox_extension_issue):
++ * { class, type, path, flags, char out[2048], pid, extra } as 64-bit words, the
++ * token written NUL-terminated into out; for op 6 (sandbox_extension_consume):
++ * { token, strlen + 1, int64_t *handle }.
++ */
++static uint64_t sweet_sandbox_extensions;
++
++static int
++sweet_sandbox_extension_issue(user_addr_t arg)
++{
++	uint64_t a[7];
++	int error = copyin(arg, a, sizeof(a));
++	if (error != 0) {
++		return error;
++	}
++	char token[48];
++	snprintf(token, sizeof(token), "sweet-extension;%llu",
++	    (unsigned long long)os_atomic_inc(&sweet_sandbox_extensions, relaxed));
++	return copyout(token, (user_addr_t)a[4], strlen(token) + 1);
++}
++
++static int
++sweet_sandbox_extension_consume(user_addr_t arg)
++{
++	uint64_t a[3];
++	int error = copyin(arg, a, sizeof(a));
++	if (error != 0) {
++		return error;
++	}
++	int64_t handle = (int64_t)os_atomic_inc(&sweet_sandbox_extensions, relaxed);
++	return copyout(&handle, (user_addr_t)a[2], sizeof(handle));
++}
++
+ static int
+ sweet_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ {
+@@ -323,7 +364,9 @@ sweet_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ 	case 4:         /* container path (audit token / pid) */
+ 		return sweet_sandbox_container_path(arg);
+ 	case 5:         /* extension issue */
++		return sweet_sandbox_extension_issue(arg);
+ 	case 6:         /* extension consume */
++		return sweet_sandbox_extension_consume(arg);
+ 	case 0x43:      /* container expected */
+ 		return ENOENT;
+ 	default:

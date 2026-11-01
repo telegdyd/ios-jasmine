@@ -20,8 +20,8 @@ members = set(re.findall(r'"([A-Za-z]+)"', helper))
 injector = (root / 'mesa/metal/inject/bgmtl_sweet_inject.m').read_text()
 section = injector.split('wallpaper_process(const char *name)', 1)[1].split('return NO;', 1)[0]
 assert members == expected
-# The injector withholds the device from members whose GPU work is known to hang (Pride, pool1 2026-11-01).
-withheld = {'PridePosterExtension'}
+# Members the injector withholds the device from (empty: Pride's blurs compile since pride1, 2026-11-01).
+withheld = set()
 assert set(re.findall(r'"([A-Za-z]+)"', section)) == expected - withheld
 
 checks = []

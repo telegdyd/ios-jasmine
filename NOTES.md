@@ -1,3 +1,33 @@
+### 2026-11-01 15:42: Pride on Metal, every wallpaper draws; slot-b image FLASHED to boot_b (user: "Flash it")
+
+User: both Pride wallpapers draw (ribbons and particles), no freeze. Causes, each confirmed from the shell with
+mesa/metal/test/bgmtl_mps_probe (MPS Gaussian blur, 4x MSAA pass with resolve) before the user looked:
+1. Compute border colour (the GPU hang, SMMU fault FAR 41a680 on every boot): a5xx compute reads its border-colour
+   base from an undocumented register, 0xe762 (after TPL1_CS_TEX_CONST, as a6xx has TPL1_CS_BORDER_COLOR_BASE),
+   never programmed -> fixed reset value. MPS blurs sample clamp-to-zero. mesa/patches/0023 writes it with the
+   compute samplers' own entries. Probe: zero-edge blur 0 faults (was a fault every run), clamp never faulted.
+2. AIR frontend (chlorophyll 2ae8919): one-pointer struct locals (all 48 MPS blur kernels compile), air.arg_unused
+   buffers need no binding (ribbonFragment), constant tables in nir constant_data, scratch store->load forwarding
+   and write-only scratch dropped: no MPS or Pride shader uses private memory.
+3. MSAA resolve (chlorophyll 7ec85d9): MultisampleResolve store actions were ignored (black drawable); now a
+   u_blitter resolve at endEncoding; multisample textures set nr_storage_samples (left 0, every resolve blit was
+   dropped by util_blitter_is_blit_supported, silently). mesa/patches/0024: multisample batches render through
+   GMEM even with sysmem forced (backboardd-type processes). Probe: 4x 828x1792 resolve correct, ~18 ms/frame.
+4. Particle Pride: "Unable to issue extension for path .../particle.usdc": the sandbox stand-in answered extension
+   issue/consume (ops 5/6) ENOENT. j0126 issues a token / returns a handle (layout from libsystem_sandbox 16.7).
+Diagnostic j0125: an SMMU fault prints IB1/IB2, the last 16 submits with process names, and dumps the pending
+job's IBs (decoder research/wallpaper-metal/pride6/decode.py). A first version also swept GPU registers 0x0e00-
+0xefff and PANICKED (SError on unreadable registers): removed.
+Wallpaper runtime in /usr/local/p = clean build out-mesa-pridefinal (libbgair 0d9fb5a2..., libbgmtl eaf44cde...,
+injector d8555cf6..., Pride no longer withheld); poster env back to BGMTL_POSTER_SDR=1 only. backboardd still runs
+its previous libbgair (/usr/local/bin); the new one passed the GPU suite 27/27 plain and --bb.
+Flashed shim/out/shim-boot-pride-slotb.img (SHA dffb0f95...): kernel j0121-j0126 (out-jasmine-pride16), heic2
+command line + abmark=b, canvas ADT. First boot research/wallpaper-metal/slotb2/netlog-first-boot.txt: 0 SMMU
+faults, 0 fence timeouts / QUEUE FALLBACK, 0 pool fallbacks; usual boot kills (driverkitd, LockScreenPeople,
+widget check-in timeouts) + one PridePosterExtension SIGKILL (same reason code as driverkitd's). Other daemons now
+get sandbox extensions too (nsurlsessiond op 5, donotdisturbd op 6). Rollback: shim/out/shim-boot-heic2-slotb.img.
+Open: backboardd onto the new libbgair; j0124 leak check (deferred by the user); hardware HEVC.
+
 ### 2026-11-01 05:08: heic2 slot-b image FLASHED to boot_b (user: "Flash it") and booted
 
 tools/g2/flash-slotb.sh shim/out/shim-boot-heic2-slotb.img (SHA 4bbf6adb...): lock taken 05:04:19, slot b, write

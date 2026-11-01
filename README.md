@@ -46,7 +46,7 @@ As of **2026-11-01**, the phone boots iOS by itself from slot b to the **lock sc
 - **Brightness**: the backlight is only switched on and off.
 - **Hardware video decoding and encoding**: HEVC is decoded in software only; the Snapdragon 660's video block (Venus) is not used yet.
 - **Stability**: a rare GPU freeze is still unsolved. A reboot sometimes stalls for a while, and the phone sometimes powers off instead of restarting.
-- **Some apps and panels crash**, for example some Settings panels and Photos. The wallpaper does not draw correctly. Safari has not been rechecked since GPU rendering arrived.
+- **Some apps and panels crash**, for example some Settings panels and Photos. Safari has not been rechecked since GPU rendering arrived.
 - **Security is off**: permissive AMFI and sandbox, stub AppleKeyStore, no data protection.
 
 ## How jasmine differs from topaz
@@ -136,7 +136,7 @@ The Metal driver reads switches from `/private/var/tmp/bgmtl-bb.env`: `BGMTL_TIM
 
 1. **Speed**: bring Metal up to the OpenGL ES path's frame rate: driver work off CoreAnimation's thread without losing render tickets, then the GPU time per frame.
 2. **Heat and battery**: thermal limits, then further idle power savings.
-3. **Stability**: the GPU freeze, the reboot stall and power-off, crashing apps and panels, wallpaper drawing.
+3. **Stability**: the GPU freeze, the reboot stall and power-off, crashing apps and panels.
 4. **Hardware coverage**: brightness control, audio and the other unsupported parts.
 5. **Hardware HEVC**: a kernel driver for the Venus video block (firmware through TrustZone, its HFI message queues; the Linux msm-4.4 `vidc` driver is the reference) and a VideoToolbox decoder plugin that uses it. Measure software playback first; camera recording will need Venus's encoder.
 

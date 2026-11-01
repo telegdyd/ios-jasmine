@@ -1,0 +1,19 @@
+jasmine: multisample batches render through GMEM even with sysmem forced
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -1118,6 +1118,13 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+    if (FD_DBG(SYSMEM) && !ctx->sweet_gmem_select)
+       sysmem = true;
+ 
++   /* jasmine: multisample renders through GMEM only, as fd_autotune_use_bypass has it (a5xx
++    * writes no samples to memory in bypass): with sysmem forced (FD_DBG(SYSMEM), the GMEM
++    * select rule calling multisample ineligible) a 4x pass drew nothing, and Pride's
++    * MSAA ribbons resolved into a black drawable. */
++   if (pfb->samples > 1 && !batch->nondraw && (batch->cleared || batch->num_draws))
++      sysmem = false;
++
+    /* Layered rendering always needs bypass. */
+    for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
+       struct pipe_surface *psurf = &pfb->cbufs[i];

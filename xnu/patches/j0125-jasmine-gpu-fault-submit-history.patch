@@ -1,0 +1,117 @@
+Subject: [PATCH] jasmine-j0125: an SMMU fault names the jobs in flight (IB1/IB2, last 16 submits and their processes) and dumps the pending job's IBs
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -64,6 +64,7 @@
+ #include <libkern/libkern.h>
+ #include <kern/locks.h>
+ #include <stdbool.h>
++#include <sys/proc.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
+@@ -1260,6 +1261,76 @@ sweet_gpu_vm_unmap(uint64_t iova, uint32_t npages)
+ 	lck_mtx_unlock(gpu_lock);
+ }
+ 
++/*
++ * j0125: the last jobs submitted and by whom, so an SMMU fault can be laid at a
++ * job: the fault is only seen at the next submit, by when the faulting job may
++ * be anyone's (Pride's wallpaper faulted at FAR 41a680, outside the GPU VA).
++ */
++#define SUBMIT_HISTORY 16
++#define SUBMIT_HISTORY_IBS 4
++static struct {
++	uint32_t seqno, n, dwords[SUBMIT_HISTORY_IBS];
++	uint64_t iova[SUBMIT_HISTORY_IBS];
++	char who[20];
++} submit_history[SUBMIT_HISTORY];
++static uint32_t submit_history_next;
++uint32_t sweet_gpu_completed(void);
++
++/* Print GPU memory at va, through the GPU's own page table, eight dwords a line. */
++static void
++gpu_dump_va(const char *tag, uint64_t va, uint32_t dwords)
++{
++	for (uint32_t d = 0; d < dwords; d += 8) {
++		uint32_t w[8];
++		for (uint32_t k = 0; k < 8; k++) {
++			uint64_t a = va + 4ull * (d + k);
++			uint64_t *l3 = pt_l3(a, false);
++			uint64_t pte = l3 != NULL ? l3[(a >> 12) & 511] : 0;
++			w[k] = (pte & 3) == 3 ? ml_phys_read_word_64((pte & 0xffffffff000ull) | (a & 0xfff)) : 0xdeaddead;
++		}
++		printf("SWEET GPU: %s +%04x: %08x %08x %08x %08x %08x %08x %08x %08x\n", tag, d,
++		    w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++	}
++}
++
++/* gpu_lock held. */
++static void
++submit_history_note(void)
++{
++	uint32_t done = sweet_gpu_completed();
++	uint64_t ib2 = ((uint64_t)gpu_rd(0x0b23) << 32) | gpu_rd(0x0b22);
++	printf("SWEET GPU: fault state: IB1 %08x%08x size %u, IB2 %llx size %u, rptr %u wptr %u, completed %u\n",
++	    gpu_rd(0x0b20), gpu_rd(0x0b1f), gpu_rd(0x0b21), ib2, gpu_rd(0x0b24),
++	    gpu_rd(CP_RB_RPTR), sg.wptr, done);
++	/* the texture unit's own state addresses: border colour, and the per-stage sampler and constant tables */
++	printf("SWEET GPU: TP: border %08x%08x, FS samp %08x%08x const %08x%08x, CS samp %08x%08x const %08x%08x, "
++	    "VS samp %08x%08x const %08x%08x\n", gpu_rd(0xe707), gpu_rd(0xe706), gpu_rd(0xe75b), gpu_rd(0xe75a),
++	    gpu_rd(0xe75f), gpu_rd(0xe75e), gpu_rd(0xe75d), gpu_rd(0xe75c), gpu_rd(0xe761), gpu_rd(0xe760),
++	    gpu_rd(0xe723), gpu_rd(0xe722), gpu_rd(0xe72b), gpu_rd(0xe72a));
++	for (uint32_t k = 0; k < SUBMIT_HISTORY; k++) {
++		uint32_t i = (submit_history_next + k) % SUBMIT_HISTORY;
++		if (submit_history[i].seqno == 0) {
++			continue;
++		}
++		bool pending = (int32_t)(submit_history[i].seqno - done) > 0;
++		printf("SWEET GPU:   job %u%s by %s: %u IBs, first %llx (%u dwords)\n", submit_history[i].seqno,
++		    pending ? " PENDING" : "", submit_history[i].who,
++		    submit_history[i].n, submit_history[i].iova[0], submit_history[i].dwords[0]);
++		static bool dumped;
++		if (pending && !dumped) {
++			dumped = true;
++			for (uint32_t b = 0; b < submit_history[i].n && b < SUBMIT_HISTORY_IBS; b++) {
++				char tag[16];
++				snprintf(tag, sizeof(tag), "ib%u", b);
++				gpu_dump_va(tag, submit_history[i].iova[b], MIN(submit_history[i].dwords[b], 2048));
++			}
++			if (ib2 != 0) {
++				gpu_dump_va("ib2", ib2, 512);
++			}
++		}
++	}
++}
++
+ /*
+  * Log what CB0's FSR recorded since the last look (the first 32 faults of a
+  * boot; FSR format bits 9-10 are not a fault) and clear it. gpu_lock held.
+@@ -1280,6 +1351,9 @@ smmu_fault_note(const char *when)
+ 		uint64_t *l3 = far >= GPU_VA_BASE && far < GPU_VA_END ? pt_l3(far, false) : NULL;
+ 		printf("SWEET GPU: SMMU fault before %s: CB0 FSR %08x FSYNR0 %08x FAR %llx, %s\n", when, fsr,
+ 		    cb[0x68 / 4], far, l3 == NULL ? "no client table" : l3[(far >> 12) & 511] != 0 ? "page mapped" : "page unmapped");
++		if (logged <= 4) {
++			submit_history_note();
++		}
+ 	}
+ 	smmu_wr(cb, 0x058, fsr);
+ }
+@@ -1335,6 +1409,16 @@ sweet_gpu_submit(const uint64_t *iova, const uint32_t *dwords, uint32_t n, uint3
+ 	uint64_t fence = sg.mem_pa + FENCE_OFF;
+ 	*seqno = ++gpu_seqno;
+ 	if (*seqno == 0 && sweet_fb_queue_boot()) { *seqno = ++gpu_seqno; } /* gpuSeqno uses 0 for no work */
++	{
++		uint32_t h = submit_history_next++ % SUBMIT_HISTORY;
++		submit_history[h].seqno = *seqno;
++		submit_history[h].n = n;
++		for (uint32_t b = 0; b < SUBMIT_HISTORY_IBS; b++) {
++			submit_history[h].iova[b] = b < n ? iova[b] : 0;
++			submit_history[h].dwords[b] = b < n ? dwords[b] : 0;
++		}
++		proc_selfname(submit_history[h].who, sizeof(submit_history[h].who));
++	}
+ 	ring_pkt7(CP_EVENT_WRITE, 4);
+ 	ring_out(CACHE_FLUSH_TS);
+ 	ring_out((uint32_t)fence);

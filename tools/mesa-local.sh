@@ -137,6 +137,11 @@ mesa)
 			-Wl,-rpath,@executable_path -o "$OUT/$probe"
 		codesign -f -s - --entitlements ios/entitlements.plist "$OUT/$probe"
 	done
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
+		-Wno-deprecated-declarations mesa/metal/test/bgmtl_mps_probe.m -L"$OUT" -lbgmtl \
+		-framework Foundation -framework Metal -framework MetalPerformanceShaders \
+		-Wl,-rpath,@executable_path -o "$OUT/bgmtl_mps_probe"
+	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgmtl_mps_probe"
 	for shader in bg_quad bg_render; do
 		xcrun --sdk iphoneos metal -mios-version-min=16.0 -std=ios-metal2.4 -c \
 			"mesa/metal/test/$shader.metal" -o "$OUT/$shader.air"
