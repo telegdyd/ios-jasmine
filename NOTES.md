@@ -1,3 +1,11 @@
+### 2026-11-01 05:05: USER CONFIRMS Clownfish + iOS 16 (WWDC_2022) render in Collections on heic2
+
+heic2 (shim/out/shim-boot-heic2.img, kernel j0122+j0123+j0124, pool1 cmdline + canvas.adt) verified in this
+boot's log: @wallpaper sweetenv for all providers, SWEET POOL lines, side injector 9a96858 (Pride withheld) +
+heap4 runtime byte-exact in /usr/local/p, @2x variants in /Library/Wallpaper/Collections. User: "They show".
+Not installed: boot_b still the old ASTC-only image. Open: Pride (MPS GPU hang, device withheld); permanent
+install needs a slot-b image (installed-style cmdline + abmark=b + @wallpaper entry) and the user's OK to flash.
+
 ### 2026-11-01 04:55: HEIC decodes system-wide: two SweetSurface bugs fixed (j0123, j0124); temporary boot only
 
 Cause, found with ios/sweet_imgtest -c (CMPhoto decode + a brk trap on every CVReturn constant in
