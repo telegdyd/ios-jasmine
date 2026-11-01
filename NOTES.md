@@ -1,3 +1,15 @@
+### 2026-11-01: Detailed Metal performance task list prepared
+
+User clarified the requested deliverable: a list with detailed task explanations.
+Created mesa/METAL-PERFORMANCE-TASKS.md: M1 upload attribution/reduction; M2 refusal
+log deduplication; M3 state/resource CPU; M4 flush/submission CPU; M5 GPU pass/client
+attribution; M6 GPU traffic reduction; M7 safe async replay; M8 completion/presentation
+stalls. Each includes evidence, concrete work, source locations, risks and acceptance
+criteria; priorities/dependencies and secondary uniform/allocation/threading leads
+are explicit. Measurements are from b5cefb0; proposed savings are not claimed as
+proven. No new tests, builds, device actions or optimization implementations in this
+documentation milestone. Next action remains M1's bounded upload inventory.
+
 ### 2026-11-01: Installed Metal CPU/GPU performance measured; uploads are the first target
 
 User requested fresh CPU/GPU tests after Metal felt slower. Report:

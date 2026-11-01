@@ -119,6 +119,9 @@ is implausible and is not used; retain the GPU counter measurements above.
 
 ## What to optimize next
 
+The actionable backlog, with dependencies, implementation boundaries and acceptance
+criteria, is in [Metal performance tasks](METAL-PERFORMANCE-TASKS.md).
+
 1. **Identify the repeatedly uploaded textures and eliminate safe copies.** Start
    at `rwaTexture`'s `_linSrc` / `_ncBytes` branches. Capture dimensions, format,
    byte count, source identity and upload count with bounded aggregate diagnostics.
