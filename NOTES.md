@@ -1,3 +1,29 @@
+### 2026-11-01 16:04: Control Center's 1px rounded-edge dashes: Metal corner shader runs with the wrong vertex stage
+
+Symptom: the user's photo of Control Center (installed Metal boot, boot_b slot b, kernel j0126, runtime in
+/usr/local/bin) shows 1px light dashes around every rounded platter and button. Diagnosed read-only on the phone;
+nothing installed, flashed or reset. Evidence:
+- `sweet_shot -s /private/var/tmp/cc-now.raw 828 1792` (its raw is half size, point-sampled) shows the left
+  module's top edge as one row whose coverage alternates 50% (168,168,168 = background/fill blend) and 100%
+  (116,116,119): the dashes are the shape's outer 1px edge, not a border colour, blur or texture.
+- `bgmtl.trace` on backboardd (temporary; restarted twice): the lock screen's rounded-layer edges are
+  `fixed_vert_lph_spc + fixed_frag_lph_cph` pipelines writing color0/color1. The fragment computes its 1px edge
+  coverage from `texcoord1A` (`sat((1 - |t|)/fwidth(t) + 0.5)` per axis) and writes DATA1.
+- AIR dumped from the live process: `fixed_frag_lph_cph` inputs `texcoord0A` (VAR0), `texcoord1A` (VAR1),
+  `color` (VAR2), writes DATA1. The paired `fixed_vert_lph_spc` outputs only `position`, `texcoord0A` (VAR0) and
+  `color` (VAR1); it reads vertex attributes GENERIC0/1/3, not GENERIC2 (the per-vertex `a2` values the trace
+  shows as the edge distance), and never writes `texcoord1A`. So the fragment's `texcoord1A` reads the vertex's
+  `color` slot and the fragment's `color` (VAR2) is unwritten: the edge coverage does not come from the edge.
+- The general `fixed_vert_lph_gen` (5 constants, reads GENERIC0..3) is the stage that carries `texcoord1A`; the
+  trace uses the `_spc` specialization. The dash is the 1px edge coverage computed from the wrong/unwritten
+  varying, not from the per-vertex edge distance.
+Next: pair `fixed_frag_lph_cph` with `fixed_vert_lph_gen` (or make the `_spc` specialization read GENERIC2 and
+write `texcoord1A` + `color`), rebuild the runtime and re-capture Control Center. The `_gen` currently fails ir3
+validation on a half `ldgb` (`research/metal-corpus/quartzcore-20H392/function-00064.txt`), so that may need fixing
+first. No production file changed. Phone left clean: env back to `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` only,
+trace/dump/AIR files removed, backboardd 1674, SpringBoard 1676. The temporary `sweet_kill` helper used for the
+backboardd restarts was removed from /usr/local/bin.
+
 ### 2026-11-01 15:42: Pride on Metal, every wallpaper draws; slot-b image FLASHED to boot_b (user: "Flash it")
 
 User: both Pride wallpapers draw (ribbons and particles), no freeze. Causes, each confirmed from the shell with
