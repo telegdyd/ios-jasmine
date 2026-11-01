@@ -1,7 +1,10 @@
 # Metal performance tasks
 
-Status: proposed work, based on the installed-runtime measurements of 2026-11-01.
-No optimization below has been implemented or validated by this task list.
+Status (2026-11-01): M1 has an opt-in implementation with correctness and upload
+reduction verified, but its render-CPU acceptance gate is NOT met. It remains
+disabled by default and the original runtime is restored. See
+[M1 results and decision](METAL-M1-UPLOADS.md). M2-M8 remain proposed work, based
+on the installed-runtime measurements of 2026-11-01.
 Evidence: [fresh profile](METAL-PERF-20261101.md). Earlier experiments and known
 failure cases: [speed ideas](METAL-SPEED-IDEAS.md), [step 7](METAL-STEP7.md).
 

@@ -1,3 +1,57 @@
+### 2026-11-01: M1 opt-in candidate retained; performance gate unmet; original runtime restored and phone parked
+
+Metal commits: 306908b (inventory), 83058de (exact cache and post-copy state fix),
+471afde (default OFF pending CPU validation). BGMTL_NOCOPY_CACHE=1 enables it;
+GPU probe --upload-cache exercises it explicitly. Main milestones: 0cd9ea2 and
+45e7211. Results: mesa/METAL-M1-UPLOADS.md. M2-M8 were not started.
+
+Enabled implementation: VM m1ready PASS (12 s), GPU 29/29 normal AND --bb. P16
+checks RGBA/ASTC initial and inter-commit mutations, two draws, CPU AND GPU copies
+and replacement: zero wrong /4096 values. P14: zero /1099392 values including mips
+and partial blocks. Derivative circle: zero wrong including 388 edge pixels.
+Final default/option-only revision: tools/vm-mesa.sh mesa m1optin PASS (13 s),
+xnu/out-mesa-m1optin. Host ASan/UBSan compare, budgets/release, opt-in/opt-out and
+unset-default tests PASS. No CI. Early timeouts were the Metal queue's 64 retained
+command-buffer objects, NOT an ASTC-copy fault. Per-round autoreleasepools fix the
+test; speculative copy fallback/omission changes are absent. Full ASTC copies pass.
+
+Optimized inventory: 35 reuses of the full-screen 828x1792 ASTC image avoided
+51,932,160 bytes; one initial 1,483,776-byte upload remains. This is byte reduction,
+not proof of lower CPU. During the credit break the user parked in charge-shell.
+The first perf attempt (research/metal-m1/optimized) failed preflight: NO workload.
+Then booted INSTALLED slot b using fastboot reboot from 99% charge, without flash.
+Candidate libraries and environment read back byte-exact. Exactly ONE standard
+A-only capture: research/metal-m1/optimized-run/, 21:39-21:41 local; 23,191 events,
+41,066 CPU samples, ZERO losses. Offline framecrit PASS (optimized-framecrit.txt).
+Existing baseline2 reused; no new baseline or performance reruns.
+
+Candidate vs baseline2: Home B 34.22 vs36.20 arrivals/s, CC A 29.97 vs30.82,
+CC B 28.79 vs31.37. CC A render CPU 30.23 vs28.54 ms/update, Metal CPU 16.22
+vs14.70, GPU-outstanding proxy 21.33 vs20.86. NO speedup claimed. Home A had only
+5 sampled frame intervals (baseline138) and 2.65 arrivals/s: unsuitable CPU
+comparison. Fresh-boot trustd/accessoryupdater consumed 33.1% of sampled nonidle
+CPU; causality is unproven. Boot age/temperature differ: candidate max TSENS
+49.8 to52.4 C, baseline roughly50-54 to54-57 C. GPU588/DDR1804 unchanged. One run
+cannot isolate the differences. M1 render-CPU acceptance is UNMET; cache default OFF.
+
+Capture: zero latch fallback, 1,246 presentation and two CPU ticket waits all with
+zero errors; no DROP/CANCEL/ABORT, final queue0/high-water1, no page waiters. No
+leak or physical-panel claim. Bench/profiler idle, GPU jobs complete before parking.
+Original /usr/local/bin pair and bgmtl-bb.env RESTORED with exact readbacks:
+libbgair 1a8aa7b67142bd858feccd5a7c8277b923ec73f60ba9b85ddbf7aad9a3206f46
+libbgmtl d816ccec0c066d620b9815070c5d618c74afa5d98288ae0a3c9a2292d7324b3d
+env only CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. No flash/GPT/partition changes.
+Own temporary remote binaries/CSVs/screenshots/trigger cleaned; empty metal-m1
+dir may remain. Backups and evidence stay ignored under research/metal-m1.
+Parked via temporary fastboot boot shim/out/charge-shell.img: 99%, backlight0,
+charger Full; fuel gauge says Discharging but measured current is positive.
+See final-charging-settled.txt. Shared phone.lock released. Next iOS boot loads ccfix.
+
+Next M1 action: OFFLINE attribution of remaining linear-buffer upload CPU using
+existing loss-free stacks, not more baseline runs. A later matched settled
+candidate capture is required for acceptance/default enablement. Do not mark M1
+complete or assume avoided bytes imply lower CPU. No optimization promoted.
+
 ### 2026-11-01: M1 exact cache passes GPU gates; 35 full-screen uploads avoided; one CPU capture pending
 
 Chlorophyll 83058de (inventory 306908b): exact-byte packed no-copy cache, bounded

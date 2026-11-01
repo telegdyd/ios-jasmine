@@ -39,7 +39,8 @@ upload. Mutations still upload and replace the snapshot. Allocation padding is n
 compared; mip offsets and compressed block rows use the upload path's format
 helpers. It does not infer unchanged contents from pointers or hashes.
 
-Memory is bounded to 2 MiB per texture and 8 MiB per process. Oversized images,
+The final cache is **disabled by default**; `BGMTL_NOCOPY_CACHE=1` explicitly
+enables it. Memory is bounded to 2 MiB per texture and 8 MiB per process. Oversized images,
 allocation failures and exhausted budget retain the original upload path. Texture
 destruction returns the budget. `BGMTL_NOCOPY_CACHE=0` disables the optimization.
 This adds a read/compare pass and can add a snapshot copy for changing images;
@@ -111,6 +112,65 @@ before restarting without profiling. Binary identities:
 - libbgair: `326eaa30dcc1ccea1955b45383f5f97bdb25ec3cb83a18cf2a54fad2c0561074`
 - libbgmtl: `185941370b1b67eb7256e19e1d3ab0182619e23b25c731eae74d4fbd07d3f4f4`
 
-Performance decision pending the one optimized capture. The first attempt after
+The first attempt after
 the credit interruption failed preflight because the user had parked in the
 charging shell; it collected no device workload and is not a performance result.
+
+## Single optimized capture and decision
+
+**Do not promote by default: the render-CPU acceptance gate is unmet.** Byte
+reduction and pixel correctness are proven; a speedup is not. Final Metal commit
+`471afde` makes the cache opt-in; GPU probe `--upload-cache` explicitly enables it.
+The enabled implementation passed 29/29 gates on `83058de` / `m1ready`. The final
+default/option-only revision builds as `m1optin` (13 seconds), with enabled,
+disabled and unset-default paths passing host ASan/UBSan tests. No further device
+benchmark followed the single optimized capture.
+
+After the user parked the phone during the credit break, booted the existing
+installed slot b using `fastboot reboot` from 99% battery. Verified both candidate
+libraries and the restored environment byte-for-byte. Exactly one standard A-only
+capture at 21:39-21:41 local time: `research/metal-m1/optimized-run/`, 23,191 events,
+41,066 CPU samples, **zero losses**; offline framecrit succeeded. Existing loss-free
+baseline2 remains the reference. No new baseline was collected.
+
+| Measure | Existing baseline2 | Candidate |
+| --- | ---: | ---: |
+| Home B swap arrivals/s | 36.20 | 34.22 |
+| Control Center A swap arrivals/s | 30.82 | 29.97 |
+| Control Center B swap arrivals/s | 31.37 | 28.79 |
+| CC A render CPU, estimated ms/update | 28.54 | 30.23 |
+| CC A CPU under Metal libraries, estimated ms/update | 14.70 | 16.22 |
+| CC A GPU-outstanding proxy, estimated ms/update | 20.86 | 21.33 |
+
+These are swap arrivals and sampling/grid estimates, not validated physical FPS.
+Outstanding work includes queue/observation latency, not just GPU execution.
+Home A is unsuitable for a CPU comparison: five sampled frame intervals versus
+138 in baseline2; the full motion window recorded only 2.65 arrivals/s.
+Fresh-boot `trustd` and `accessoryupdater` together accounted for 33.1% of sampled
+non-idle CPU; their causal contribution to Home A is not proven. Boot age and
+thermal state differ: candidate TSENS max 49.8 to 52.4 C, reference roughly
+50-54 to 54-57 C. GPU selection remains 588 MHz, DDR 1804 MHz. One run cannot
+isolate cache cost, scene/resource mix, boot activity or other factors. It does
+not establish lower render CPU.
+
+Present queue ended at zero, high-water one. All 1,246 presentation waits and two
+CPU ticket waits had zero errors; no latch timeout fallback or DROP/CANCEL/ABORT.
+Memory snapshots had no page waiters. Short fresh-boot footprint growth is not
+leak evidence. No physical panel validation was inferred.
+
+## Final state and next work
+
+Restored original ccfix libraries and compositor environment byte-for-byte; only
+`CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` remains. Removed this task's temporary
+binaries, CSVs, screenshots and trigger; the empty temporary directory may remain.
+Boot partitions, GPT and clock policy were unchanged. Returned with temporary
+`fastboot boot shim/out/charge-shell.img`: 99%, backlight 0, charger reports Full
+(fuel-gauge status says Discharging; measured current is positive). Shared phone
+lock released; profiler/benchmark idle before parking. Raw evidence stays ignored.
+
+M1 is **partially implemented, not accepted as a performance win**. Before another
+device run, use existing loss-free stacks to distinguish packed-image and
+linear-buffer upload CPU: highest byte volume did not select a proven CPU win.
+Remaining buffer-backed refreshes are still prominent. A later matched, settled
+candidate capture is required before default enablement; do not repeat baselines
+or run an unbounded benchmark loop.
