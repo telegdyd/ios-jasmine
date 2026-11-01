@@ -1,3 +1,46 @@
+### 2026-11-01: M1 exact cache passes GPU gates; 35 full-screen uploads avoided; one CPU capture pending
+
+Chlorophyll 83058de (inventory 306908b): exact-byte packed no-copy cache, bounded
+2 MiB/texture and 8 MiB/process; BGMTL_NOCOPY_CACHE=0 opt-out. Render sampling only;
+compute, attachments and blits preserve old uploads. CPU/GPU writes invalidate the
+snapshot. Pointer identity and hashes never skip uploads. Also invalidate graphics
+state after texture copies (post-copy raster edges failed without rebind).
+Final VM tools/vm-mesa.sh mesa m1ready PASS (12 s), xnu/out-mesa-m1ready; no CI.
+GPU correctness 29/29 plain AND --bb, P14 0/1099392 wrong values, P16 0/4096 wrong
+values (initial/inter-commit mutation, two draws, CPU AND GPU copies for RGBA/ASTC),
+derivative circle 0 wrong incl.388 edge pixels. Host ASan/UBSan cache/opt-out and
+inventory accounting/bounds tests PASS. Report: mesa/METAL-M1-UPLOADS.md.
+
+CORRECTION to exploratory stall diagnoses: targeted 2-second wait-stack capture
+research/metal-m1/stall-stacks.txt identified Apple _MTLCommandBuffer initWithQueue
+semaphore exhaustion, NOT a proven ASTC-copy fault. 51 prior completed objects
++13 P16 objects hit the queue's 64 slots in the outer autoreleasepool. Per-round
+pools release completed objects. Speculative compressed-copy fallback and omitted
+cases were REMOVED; full ASTC GPU-copy cases now PASS. Earlier candidate builds
+m1cache/m1cache2/m1cache3/m1cache4/m1final built PASS but tests hit that harness cap.
+
+Optimized bounded inventory: research/metal-m1/cache-inventory.csv, backboardd12865,
+120 command buffers, no overflow/failures. Full-screen 828x1792 ASTC204 one mip:
+1 initial upload (1483776 bytes), 35 exact content reuses, 51932160 bytes avoided.
+Total actual uploads45575075 bytes, 662 writes; 1155 epoch reuses. Mixed workload
+composition differs from the earlier inventory; do not compare raw totals as FPS
+or matched frame cost. Profile env restored byte-exact and restarted12926 without
+instrumentation. Candidate pair installed /usr/local/bin with byte-exact readback:
+libbgair SHA256 326eaa30dcc1ccea1955b45383f5f97bdb25ec3cb83a18cf2a54fad2c0561074
+libbgmtl SHA256 185941370b1b67eb7256e19e1d3ab0182619e23b25c731eae74d4fbd07d3f4f4
+Original ccfix backups: research/metal-m1/before-libbg{air,mtl}.dylib, before.env.
+
+Credit interruption: install preparation finished at18:25; handoff write was rejected
+by approval-review service due to credit limit, so this is the first saved correction.
+User resumed21:33 and confirmed they had parked in the charging shell. Attempted
+optimized capture directory research/metal-m1/optimized is PREFLIGHT-FAILED only,
+zero device workload; do not treat it as measurements. No new baseline collected.
+Charging99%: now rebooting from shell via fastboot reboot into INSTALLED slot b,
+no flash; research/metal-m1/boot-installed.py owns phone lock during preparation.
+Next: ONE optimized standard A-only framebench capture vs existing baseline2, then
+return to charge-shell.img. No performance speedup claimed yet. Clock settings and
+kernel/boot partitions unchanged; this resumed step boots the installed kernel.
+
 ### 2026-11-01: M1 upload inventory complete; dominant source is a full-screen ASTC no-copy texture
 
 User requested task 1 and reuse of the existing baseline (no new baseline run).
