@@ -75,8 +75,10 @@ color 1 clears, color 0 preserves contents, and both are stored. In these
 single-sample batches the driver's `resolve` mask means attachment writeback,
 not an MSAA resolve. Encoded descriptors agree: two `BGRA8Unorm` attachments,
 load actions Load/Clear, store actions Store/Store, no resolve targets.
-Driver pipe format 105 is `B8G8R8A8_UNORM`. No depth attachment or feedback
-barrier is recorded in this class.
+Driver pipe format 105 is `B8G8R8A8_UNORM`. No depth attachment is recorded.
+The original zero feedback fields were missing Metal frontend metadata, not
+proof of fetch-free batches: the M6 audit corrected this and found substantial
+required attachment feedback in this class. See [M6 audit](METAL-M6-TRAFFIC.md).
 
 Linked shader labels are predominantly
 `fixed_vert_lph_spc+fixed_frag_lph_cph`, plus `luma_boost_lph` and attachment

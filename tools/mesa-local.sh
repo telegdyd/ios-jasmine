@@ -130,7 +130,7 @@ mesa)
 		-framework Foundation -framework Metal -framework IOSurface \
 		-install_name @rpath/libbgmtl.dylib -Wl,-rpath,@loader_path -o "$OUT/libbgmtl.dylib"
 	codesign -f -s - "$OUT/libbgmtl.dylib"
-	for probe in bgmtl_probe bgmtl_quad_probe bgmtl_render_probe; do
+	for probe in bgmtl_probe bgmtl_quad_probe bgmtl_render_probe bgmtl_traffic_probe; do
 		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
 			-Wno-deprecated-declarations "mesa/metal/test/$probe.m" -L"$OUT" -lbgmtl \
 			-framework Foundation -framework Metal -framework IOSurface \

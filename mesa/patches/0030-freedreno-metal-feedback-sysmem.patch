@@ -1,0 +1,40 @@
+Subject: [PATCH] a5xx: carry Metal's memory-fetch constraint through draw tracking
+
+Metal lowers framebuffer fetch to ordinary attachment texture reads. A retained
+barrier and the eventual fetching draw can belong to different batches: resource
+tracking may flush the first one. Constrain the batch at actual draw emission,
+after tracking, including draws following an empty-batch barrier fallback.
+GL's experimental GMEM tile descriptors do not apply to Metal's descriptors.
+No new barriers, flushes, resolves or GMEM policy are introduced.
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_context.h b/src/gallium/drivers/freedreno/freedreno_context.h
+--- a/src/gallium/drivers/freedreno/freedreno_context.h
++++ b/src/gallium/drivers/freedreno/freedreno_context.h
+@@ -552,6 +552,9 @@
+    /* Task 24 stage 3: with forced sysmem, a per-batch rule may pick GMEM (true). */
+    bool (*sweet_gmem_select)(struct fd_batch *batch) dt;
+ 
++   /* Metal attachment texture reads require sysmem in the emitting batch. */
++   bool sweet_metal_sysmem_draw;
++
+    /* draw: */
+    void (*draw_vbos)(struct fd_context *ctx, const struct pipe_draw_info *info,
+                      unsigned drawid_offset,
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -277,6 +277,14 @@
+              const struct pipe_draw_start_count_bias *draw,
+              unsigned index_offset) in_dt
+ {
++   /* Tracking has selected the actual emitting batch. Never point Metal's
++    * ordinary attachment texture descriptors at a GMEM render, even when
++    * GL's separate tile-fetch probe is enabled. Sticky until batch disposal. */
++   if (ctx->sweet_metal_sysmem_draw) {
++      ctx->batch->a5xx_sysmem_barrier = true;
++      ctx->batch->a5xx_fbread = false;
++   }
++
+    struct fd5_emit emit = {
+       .debug = &ctx->debug,
+       .vtx = &ctx->vtx,

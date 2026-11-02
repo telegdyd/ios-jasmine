@@ -16,7 +16,11 @@ on the same recorded batch stream; final normal/compositor/opt-out suites pass
 M5 instrumentation and compositor attribution are implemented; full-screen
 two-attachment passes supply an M6 candidate. Wallpaper GPU-time/traffic
 attribution remains open, so M5 is partially complete. See
-[M5 evidence and remaining client gap](METAL-M5-PASSES.md). M6-M8 remain proposed.
+[M5 evidence and remaining client gap](METAL-M5-PASSES.md).
+M6 is partially investigated: corrected Metal feedback eligibility, validated
+sysmem/GMEM selection, and rejected unproven attachment removal/global GMEM.
+No traffic optimization promoted; see [M6 audit and remaining work](METAL-M6-TRAFFIC.md).
+M7-M8 remain proposed.
 
 User clarification: optimize unnecessary work, not benchmark scores. A verified
 work reduction with preserved correctness does not require an aggregate FPS or
