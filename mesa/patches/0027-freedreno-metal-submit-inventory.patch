@@ -1,0 +1,178 @@
+Subject: [PATCH] freedreno: bounded Metal dependency and submission inventory
+
+diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
+--- a/src/util/sweet_profile.h
++++ b/src/util/sweet_profile.h
+@@ -9,6 +9,7 @@
+ #define SWEET_PROFILE_H
+ 
+ #include "sweet_state_profile.h"
++#include "sweet_submit_profile.h"
+ #include <stdbool.h>
+ #include <stdint.h>
+ 
+diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
+--- a/src/freedreno/drm/darwin/sweet_profile.c
++++ b/src/freedreno/drm/darwin/sweet_profile.c
+@@ -6,6 +6,7 @@
+ #include <string.h>
+ #include "sweet_batch_trace.inc"
+ #include "sweet_state_profile.inc"
++#include "sweet_submit_profile.inc"
+ 
+ static bool enabled;
+ static __thread struct sweet_profile_scope *current;
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch_trace.h b/src/gallium/drivers/freedreno/freedreno_batch_trace.h
+--- a/src/gallium/drivers/freedreno/freedreno_batch_trace.h
++++ b/src/gallium/drivers/freedreno/freedreno_batch_trace.h
+@@ -15,6 +15,9 @@
+ fd_bt_batch(struct fd_batch *batch, const char *event,
+             struct fd_batch *other, struct fd_resource *resource, unsigned detail)
+ {
++   sweet_m4_record(event, batch->seqno, other ? other->seqno : 0,
++                   (uintptr_t)resource, batch->num_draws, batch->dependents_mask,
++                   detail, batch->framebuffer.width, batch->framebuffer.height);
+    if (!sweet_batch_trace_active())
+       return;
+    struct pipe_framebuffer_state *fb = &batch->framebuffer;
+diff --git a/src/freedreno/drm/freedreno_ringbuffer_sp.c b/src/freedreno/drm/freedreno_ringbuffer_sp.c
+--- a/src/freedreno/drm/freedreno_ringbuffer_sp.c
++++ b/src/freedreno/drm/freedreno_ringbuffer_sp.c
+@@ -16,6 +16,7 @@
+ #include "util/slab.h"
+ 
+ #include "freedreno_ringbuffer_sp.h"
++#include "util/sweet_submit_profile.h"
+ 
+ /* A "softpin" implementation of submit/ringbuffer, which lowers CPU overhead
+  * by avoiding the additional tracking necessary to build cmds/relocs tables
+@@ -263,6 +264,7 @@
+ 
+    if (list_is_empty(&dev->deferred_submits))
+       return;
++   sweet_m4_record("drain", 0, 0, dev->deferred_cmds, 0, 0, 0, 0, 0);
+ 
+    struct fd_submit *submit = last_submit(&dev->deferred_submits);
+    struct fd_submit_sp *fd_submit = to_fd_submit_sp(submit);
+@@ -378,6 +380,9 @@
+     * reference to the fd, and merged all the in-fence-fd's when we flush the
+     * deferred submits
+     */
++   sweet_m4_record("enqueue", submit->fence, 0,
++                   to_fd_submit_sp(submit)->nr_bos, fd_ringbuffer_cmd_count(submit->primary),
++                   dev->deferred_cmds, use_fence_fd, has_shared, should_defer(submit));
+    if (!use_fence_fd && !has_shared && should_defer(submit)) {
+       DEBUG_MSG("defer: %u", submit->fence);
+       dev->deferred_cmds += fd_ringbuffer_cmd_count(submit->primary);
+diff --git a/src/freedreno/drm/darwin/darwin_pipe.c b/src/freedreno/drm/darwin/darwin_pipe.c
+--- a/src/freedreno/drm/darwin/darwin_pipe.c
++++ b/src/freedreno/drm/darwin/darwin_pipe.c
+@@ -132,10 +132,12 @@
+    SWEET_SCOPE(sp_submit, SP_SUBMIT);
+    struct fd_submit_sp *fd_submit = to_fd_submit_sp(last_submit(submit_list));
+    struct fd_pipe *pipe = fd_submit->base.pipe;
+-   unsigned nr_cmds = 0;
+-
+-   foreach_submit (submit, submit_list)
++   unsigned nr_cmds = 0, nr_submits = 0;
++
++   foreach_submit (submit, submit_list) {
++      nr_submits++;
+       nr_cmds += to_fd_ringbuffer_sp(submit->primary)->u.nr_cmds;
++   }
+ 
+    size_t len = 8 + nr_cmds * sizeof(struct darwin_ib);
+    uint8_t *req = calloc(1, 4096 > len ? 4096 : len);
+@@ -212,12 +214,15 @@
+    }
+    if (hook == 2)
+       ((uint32_t *)req)[1] = 0;
++   sweet_m4_record("kernel", fd_submit->base.fence, nr_submits, fd_submit->nr_bos,
++                   nr_cmds, len, 0, 0, 0);
+    uint32_t nout = 1;
+    uint64_t t0 = mach_absolute_time();
+    IOReturn ret = IOConnectCallMethod(to_darwin_device(pipe->dev)->conn, SWEETGPU_SUBMIT, NULL, 0,
+                                       req, len, &seqno, &nout, NULL, NULL);
+    __atomic_add_fetch(&darwin_submit_ticks, mach_absolute_time() - t0, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&darwin_submits, 1, __ATOMIC_RELAXED);
++   sweet_m4_record("kernel-result", fd_submit->base.fence, seqno, ret, 0, 0, 0, 0, 0);
+    free(req);
+    if (ret) {
+       darwin_submit_failed(pipe, ret);
+diff --git a/src/util/sweet_submit_profile.h b/src/util/sweet_submit_profile.h
+new file mode 100644
+--- /dev/null
++++ b/src/util/sweet_submit_profile.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef SWEET_SUBMIT_PROFILE_H
++#define SWEET_SUBMIT_PROFILE_H
++#include <stdint.h>
++#ifdef __APPLE__
++extern __thread int sweet_m4_active;
++void sweet_m4_begin(unsigned passes);
++void sweet_m4_end(void);
++void sweet_m4_store(const char *, uint64_t, uint64_t, uint64_t, uint64_t,
++                    uint64_t, uint64_t, uint64_t, uint64_t);
++#define sweet_m4_record(...) do { if (sweet_m4_active) sweet_m4_store(__VA_ARGS__); } while (0)
++#else
++#define sweet_m4_record(...) ((void)0)
++#endif
++#endif
+diff --git a/src/freedreno/drm/darwin/sweet_submit_profile.inc b/src/freedreno/drm/darwin/sweet_submit_profile.inc
+new file mode 100644
+--- /dev/null
++++ b/src/freedreno/drm/darwin/sweet_submit_profile.inc
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: MIT */
++/* Inline replay only, serialized by bg_lock. No per-event I/O or clocks.
++ * TLS excludes completion workers; kernel submissions are synchronous here.
++ * A dropped event makes graph/count conclusions invalid, reported explicitly. */
++#define M4_EVENTS 16384
++static struct { const char *event; unsigned cb; uint64_t v[8]; } m4_rows[M4_EVENTS];
++static unsigned m4_count, m4_cb, m4_dropped;
++static int m4_enabled;
++static uint64_t m4_deadline;
++__thread int sweet_m4_active;
++void sweet_m4_store(const char *event, uint64_t a, uint64_t b, uint64_t c, uint64_t d,
++                    uint64_t e, uint64_t f, uint64_t g, uint64_t h)
++{
++   if (m4_count == M4_EVENTS) { m4_dropped++; return; }
++   unsigned i = m4_count++;
++   m4_rows[i].event = event; m4_rows[i].cb = m4_cb;
++   uint64_t values[8] = {a,b,c,d,e,f,g,h};
++   memcpy(m4_rows[i].v, values, sizeof(values));
++}
++void sweet_m4_begin(unsigned passes)
++{
++   if (!m4_enabled) m4_enabled = getenv("BGMTL_SUBMIT_PROFILE") &&
++      !strcmp(getenv("BGMTL_SUBMIT_PROFILE"), "1") ? 1 : -1;
++   if (m4_enabled != 1) return;
++   if (!m4_deadline) {
++      if (access("/private/var/tmp/bgmtl-submit-start", F_OK)) return;
++      m4_deadline = clock_gettime_nsec_np(CLOCK_MONOTONIC) + 8000000000ull;
++   }
++   ++m4_cb; sweet_m4_active = 1;
++   sweet_m4_record("begin", passes, 0, 0, 0, 0, 0, 0, 0);
++}
++void sweet_m4_end(void)
++{
++   if (!sweet_m4_active) return;
++   sweet_m4_record("end", 0, 0, 0, 0, 0, 0, 0, 0);
++   sweet_m4_active = 0;
++   if (m4_cb < 120 && clock_gettime_nsec_np(CLOCK_MONOTONIC) < m4_deadline) return;
++   char path[128];
++   snprintf(path, sizeof(path), "/private/var/tmp/bgmtl-submit-%d.csv", getpid());
++   FILE *f = fopen(path, "w");
++   if (f) {
++      fprintf(f,"# commits=%u dropped=%u; CPU operation graph, not GPU/display timing\n",m4_cb,m4_dropped);
++      fprintf(f,"cb,event,a,b,c,d,e,f,g,h\n");
++      for (unsigned i=0;i<m4_count;i++) {
++         fprintf(f,"%u,%s",m4_rows[i].cb,m4_rows[i].event);
++         for (unsigned j=0;j<8;j++) fprintf(f,",%llu",(unsigned long long)m4_rows[i].v[j]);
++         fputc('\n',f);
++      }
++      fclose(f);
++   }
++   m4_enabled = -1;
++}

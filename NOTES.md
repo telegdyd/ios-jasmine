@@ -1,3 +1,54 @@
+### 2026-11-02: M4 final 512-reference candidate passes; 121 observed kernel calls
+
+Final VM tools/vm-mesa.sh mesa m4bounded PASS14s, xnu/out-mesa-m4bounded; no CI.
+Final 32/32 normal, 32/32 --bb, 32/32 opt-out. P19 zero wrong/40960 values.
+MSAA three iterations each ON/OFF exact; GL sysmem AND forced-GMEM PASS: all.
+Inventory ASan/UBSan bounds tests and three analyzer tests PASS.
+First 256-reference candidate was too conservative (156 actual calls vs140
+legacy-policy projection on same batch stream), NOT installed. Final512 capture:
+120 CB,1388 passes,1473 batches,121 kernel calls, zero loss/failures; one capacity
+drain, all1473 enqueues defer; max133 kernel BOs/40 IBs. Old policy projection
+on SAME recorded stream yields157 calls, 36 more (22.9%). Original-policy
+capture reproduces164/164 projected calls. Projection is a call-count model,
+not measured CPU or latency. Mixed windows cannot establish FPS/CPU speedups.
+No new baseline/benchmark; no tail-latency or physical-panel claim.
+Current diagnostic capture is restoring original M3 pair/env; final activation
+pending byte-exact restore verification. Research/metal-m4 holds all evidence.
+No reboot/flash/partition/kernel/clock changes.
+
+### 2026-11-02: M4 bounded submission groups pass final Metal suites
+
+Baseline inventory m4inventory: 120 CB, 957 batches, 164 kernel calls, zero dropped
+events; 64 early drains from the >30-BO heuristic. 745 read dependencies, 168 write
+dependencies, 170 dependency flushes; graph does not establish GPU execution time.
+Original installed M3 pair/env restored byte-exact after capture (backboardd13797).
+Candidate patch0028 replaces the per-batch heuristic with pre-append conservative
+group limits (256 BO references / 128 commands), FIFO streams and fence/ticket
+drains unchanged. Single oversized batches retain immediate behavior. Opt-out
+SWEET_SUBMIT_BATCH=0. No batch merge, barrier removal or async replay change.
+VM m4groups PASS13s, m4ready PASS12s, m4final PASS12s; m4verify PASS12s final
+poisoned-intermediate P19 regression. One intermediate m4ready staging attempt
+failed because a generated patch used the already-patched base; fixed before build.
+Final GPU32/32 normal AND --bb, P19 zero wrong/40960 values each. No CI.
+Extras/opt-out validation and optimized inventory pending, no installation yet.
+Phone running installed M3 runtime. Evidence/backups ignored research/metal-m4.
+No reboot/flash/partition/kernel/clock changes.
+
+### 2026-11-02: M4 submission inventory built; correctness and capture pending
+
+Task 4 requested. Read-only audit: Metal already uses Darwin no_implicit_sync=true,
+so shared IOSurfaces can use the same deferred-submit merging as GL. Existing
+should_defer limits >30 BOs or >128 queued commands; required dependency flushes
+remain separate from kernel submissions. No submission policy change yet.
+New opt-in BGMTL_SUBMIT_PROFILE fixed 16384-event graph, 120 CB / 8s, no per-event
+I/O or clocks; captures batch edges/reasons, enqueue decisions and kernel sizes.
+VM tools/vm-mesa.sh mesa m4inventory PASS (17 s), xnu/out-mesa-m4inventory; no CI.
+Normal/compositor GPU suites in progress, isolated /private/var/tmp/metal-m4.
+Phone ALREADY running iOS; installed M3 libraries/environment unchanged so far.
+Evidence/scripts ignored research/metal-m4. No reboot/flash/partition/clock changes.
+Next: finish suites, bounded graph capture with byte-exact runtime/env restoration,
+then choose one evidence-supported overhead reduction and validate it.
+
 ### 2026-11-02: M3 COMPLETE and INSTALLED; unused binning emission eliminated
 
 Main source commit 10d4922; Metal hooks/tests ccb3cc7. Final VM m3final PASS

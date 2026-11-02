@@ -1,0 +1,71 @@
+Subject: [PATCH] freedreno/darwin: bound deferred groups instead of individual BO counts
+
+diff --git a/src/freedreno/drm/freedreno_ringbuffer_sp.c b/src/freedreno/drm/freedreno_ringbuffer_sp.c
+--- a/src/freedreno/drm/freedreno_ringbuffer_sp.c
++++ b/src/freedreno/drm/freedreno_ringbuffer_sp.c
+@@ -307,10 +307,36 @@
+    }
+ }
+ 
++#ifdef __APPLE__
++DEBUG_GET_ONCE_BOOL_OPTION(sweet_submit_batch, "SWEET_SUBMIT_BATCH", true)
++#endif
++
+ static bool
+ should_defer(struct fd_submit *submit)
+ {
+    struct fd_submit_sp *fd_submit = to_fd_submit_sp(submit);
++
++#ifdef __APPLE__
++   if (debug_get_option_sweet_submit_batch()) {
++      /* SweetGPU has explicit fences and a 1024-BO / 240-IB kernel ABI.
++       * Count conservatively, including duplicate BOs and each unfinished
++       * primary's extra command. No additional deferral past a fence/ticket
++       * drain. Keep FIFO streams and all batch/cache barriers intact.
++       * This replaces msm's per-batch 30-BO CPU-cost heuristic, not a hazard
++       * check. The full pending list already includes this submit.
++       */
++      unsigned bos = 0, cmds = 0;
++      foreach_submit (pending, &submit->pipe->dev->deferred_submits) {
++         unsigned nb = to_fd_submit_sp(pending)->nr_bos;
++         unsigned nc = fd_ringbuffer_cmd_count(pending->primary);
++         if (nb > 512 - bos || nc > 128 - cmds)
++            return false;
++         bos += nb;
++         cmds += nc;
++      }
++      return true;
++   }
++#endif
+ 
+    /* if too many bo's, it may not be worth the CPU cost of submit merging: */
+    if (fd_submit->nr_bos > 30)
+@@ -348,6 +374,28 @@
+        (last_submit(&dev->deferred_submits)->pipe != submit->pipe)) {
+       flush_deferred_submits(dev);
+    }
++
++#ifdef __APPLE__
++   if (debug_get_option_sweet_submit_batch()) {
++      /* Reserve this primary's not-yet-appended ring BOs conservatively.
++       * Drain BEFORE adding it: the backend receives the complete list even
++       * when should_defer() rejects the newest submit. A single oversized
++       * submit keeps the original immediate-submit behavior.
++       */
++      uint64_t cmds = fd_ringbuffer_cmd_count(submit->primary);
++      uint64_t bos = to_fd_submit_sp(submit)->nr_bos + cmds;
++      foreach_submit (pending, &dev->deferred_submits) {
++         bos += to_fd_submit_sp(pending)->nr_bos;
++         cmds += fd_ringbuffer_cmd_count(pending->primary);
++         if (bos > 512 || cmds > 128)
++            break;
++      }
++      if (bos > 512 || cmds > 128) {
++         sweet_m4_record("group-capacity", submit->fence, 0, bos, cmds, 0, 0, 0, 0);
++         flush_deferred_submits(dev);
++      }
++   }
++#endif
+ 
+    list_addtail(&fd_submit_ref(submit)->node, &dev->deferred_submits);
+ 
