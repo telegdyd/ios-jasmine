@@ -1,4 +1,4 @@
-# M7 — cancellation recovery and replay ownership (partial)
+# M7 â€” cancellation recovery and replay ownership (partial)
 
 Follow-up: [callback delivery readiness](METAL-M7-CALLBACKS.md) fixes the later
 review's late-registration bug. It remains a tested, uninstalled source change;
@@ -8,6 +8,11 @@ the admission and compositor validation work below is still outstanding.
 deterministic reproducer and a tested recovery fix. Async compositor replay is
 still opt-in and has not been installed or promoted. Admission/refusal coverage
 and an async compositor/panel trial remain necessary. No speedup is claimed.
+
+Follow-ups: [late callback readiness fixed](METAL-M7-CALLBACKS.md) and
+[bounded imported-write admission implemented/tested](METAL-M7-ADMISSION.md).
+The admission gaps listed in this original milestone are historical; actual
+compositor async/panel and broader fault-recovery validation remain open.
 
 ## Established failure and implemented recovery
 
@@ -66,7 +71,7 @@ in its tests. P20 queues 32 command buffers, releases encoding autorelease pools
 injects a deliberate oversized-buffer draw error in the middle, and checks
 scheduled/completed ordering and status plus exact final target pixels.
 
-M1–M4 implementation and M6's sticky feedback/sysmem constraint are retained.
+M1â€“M4 implementation and M6's sticky feedback/sysmem constraint are retained.
 FIFO GPU submissions, group limits and required drains are unchanged. Holding
 the context across replay removes one known profile-scope interleaving hazard;
 it does not establish complete worker-thread attribution. No worker profile is
@@ -91,7 +96,7 @@ corrected and the image was built before any boot attempt. One temporary
 - Actual-source host harness: old source reproduces the retained-backing failure;
   patched source passes ASan/UBSan. Covers normal incomplete/completed fences,
   epoch changes before/after submit, query/BEGIN stale epoch, suspension and closed
-  owner, wrong owner/epoch/proof, pending reuse, display states 1–4, repeated ACK,
+  owner, wrong owner/epoch/proof, pending reuse, display states 1â€“4, repeated ACK,
   next generation and actual reason-16 rejection policy. Host display-state stubs
   are not physical panel evidence.
 - Runtime retirement helper ASan/UBSan: successful SEAL, refused SEAL followed by
@@ -102,7 +107,7 @@ corrected and the image was built before any boot attempt. One temporary
   zero order/status errors and zero wrong final values in each run.
 - Isolated hardware backend probe on M7 kernel: normal submission, display epoch
   cancellation before replay/submit, and cancellation after submit/before SEAL.
-  Generations 1–6, epochs 2–4, seqnos 28–33; every SEAL and fence wait succeeds.
+  Generations 1â€“6, epochs 2â€“4, seqnos 28â€“33; every SEAL and fence wait succeeds.
   Each cancellation recovers on the **same backing**, then a fresh generation
   produces exact green/alpha pixels. A second BEGIN while pending is refused.
   The probe submits no display record and does not exercise compositor admission.
@@ -116,7 +121,7 @@ corrected and the image was built before any boot attempt. One temporary
 - New-kernel MSAA 4x colour/depth/resolve, three iterations each selector off/on:
   exact red centre/blue corner. Shared GL sysmem and forced-GMEM: `PASS: all`.
 
-## Remaining admission audit — do not enable compositor async yet
+## Remaining admission audit â€” do not enable compositor async yet
 
 `bgTicketFor:` still logs BEGIN refusal and proceeds, and silently stops collecting
 after eight tickets. Render encoding covers colour/resolve attachments, but
@@ -141,8 +146,8 @@ True-fault fallback/quarantine beyond reason 16 remains unaudited for async.
 ## Final device state
 
 All four installed libraries and both environment files read back byte-exact to
-preflight. Compositor remains M4 (`95cea7f9…` / `3d91c9f6…`); wallpaper remains
-`0d9fb5a2…` / `eaf44cde…`. Environment files contain only
+preflight. Compositor remains M4 (`95cea7f9â€¦` / `3d91c9f6â€¦`); wallpaper remains
+`0d9fb5a2â€¦` / `eaf44cdeâ€¦`. Environment files contain only
 `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` and `BGMTL_POSTER_SDR=1`, respectively.
 No async or profiling flag was added to either process. No compositor/wallpaper
 library replacement took place. Isolated binaries were removed and the remote

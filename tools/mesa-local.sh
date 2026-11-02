@@ -132,7 +132,7 @@ mesa)
 	codesign -f -s - "$OUT/libbgmtl.dylib"
 	for probe in bgmtl_probe bgmtl_quad_probe bgmtl_render_probe bgmtl_traffic_probe; do
 		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
-			-Wno-deprecated-declarations "mesa/metal/test/$probe.m" -L"$OUT" -lbgmtl \
+			-Wno-deprecated-declarations "mesa/metal/test/$probe.m" -L"$OUT" -lbgmtl -lbgair \
 			-framework Foundation -framework Metal -framework IOSurface \
 			-Wl,-rpath,@executable_path -o "$OUT/$probe"
 		codesign -f -s - --entitlements ios/entitlements.plist "$OUT/$probe"

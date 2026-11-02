@@ -1,3 +1,57 @@
+### 2026-11-02: M7 imported-write admission implemented/tested; not installed
+
+Metal implementation/tests ef74183. Report mesa/METAL-M7-ADMISSION.md; active queue
+and original M7 report updated. Encode-time tickets retained;32 destinations/CB,
+1024 process registry entries replace silent8 cutoff. Duplicate surface IDs reuse
+one generation. Registry retains standalone completion/state tokens, not CBs or
+non-retained pointers; group enters precede committed publication. Known committed
+producer gets ONE1s completion wait outside context/monitor, then kernel recheck.
+Uncommitted/unknown/quarantined/replay-time owner, cap, timeout or refused BEGIN
+fail whole CB explicitly before ANY recorded replay; no dependent op skipping.
+No-write preflight refusal ABORTs directly; partial replay errors still real-drain.
+Unresolved retirement retains/quarantines protection without dangling pointers.
+
+No-side-effect AIR/Metal destination collection covers recorded color/resolve/
+depth/stencil, copy/buffer-to-texture/mipmap and actual shader writable images,
+including argbuf members. Replay preflight resolves records again before work,
+admitting a changed destination or failing whole CB. Read-only shader textures
+get no write tickets. Separate depth/stencil textures explicitly unsupported;
+existing unsupported vertex-image binding/API behavior not extended. Standalone
+CPU texture APIs outside CB retain existing contract. Callback fix, M1-M4 and
+M6 sticky feedback/sysmem guard preserved. No default async or installation.
+
+Host actual-method admission ASan/UBSan PASS:32cap/dedup,uncommitted refusal,
+known producer retry needing same context lock, external kernel refusal,1s timeout,
+quarantine/process bound. Callback host sanitizer PASS. Final VM m7admissiondone
+PASS13s -> xnu/out-mesa-m7admissiondone. Final GPU47/47 EACH normal,bb sysmem,
+eligible-GMEM,async,async+defer,sync. P20/P21 remain; sync P21 skip unchanged.
+P22:32 imported writes,33rd whole-CB refusal/private dependent sentinel,unknown/
+uncommitted owner refusal,original producer preserved,blit/compute exact pixels,
+arg-record mutation and pending-target preflight refusal prevent earlier work.
+MSAA4x memoryless color/depth/resolve3iterations OFF/ON exact red/blue,0failures.
+No CI/kernel build/boot trial/shared GL driver change or performance claim.
+
+Initial probe link missed libbgair;fixed recipe. Shell CRLF build failure fixed.
+First device attempt found display OFF/suspended (BEGIN failed closed); test-only
+Apple function argument-encoder reflection asserted; raw AIR record API used.
+Earlier readbacks of aborted generations were rejected by kernel; final probes
+use private dependent sentinels and poison read buffers. Those failed attempts
+are not accepted pixel evidence. Preliminary builds/captures saved ignored.
+
+FINAL four installed libs + both envs read back BYTE-EXACT after suites AND extras:
+compositor M4 pair95cea7f9/3d91c9f6,wallpaper0d9fb5a2/eaf44cde; env only original
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 / BGMTL_POSTER_SDR=1. Isolated directory
+/private/var/tmp/metal-m7admission verified EMPTY; shared lock absent. Display
+woken temporarily for protected admission tests, initial OFF state restored in
+finally. Bench active0/busy0,prof idle,GPU17873/17873,pc1/HWCGon,maxfinalTSENS44.0C.
+No production runtime/env/boot/flash/partition/kernel/clock changes; temporary
+m7ack kernel retained. Candidate hashes93064701/d9cfc18b; full in report.
+Evidence/backups/readbacks ignored research/metal-m7-admission.
+
+M7 still PARTIAL overall: review admission policy then bounded actual compositor
+async reuse/sleep/wake, real presentation admission and fault/quarantine checks,
+user panel acceptance, later installation decision. No activation pending.
+
 ### 2026-11-02: M7 late-callback readiness bug FIXED in source, tested, not installed
 
 Main implementation/report e656c90; Metal commit b595b76.

@@ -1,6 +1,6 @@
 # Metal performance tasks
 
-Reviewed 2026-11-02 against the M1–M6 reports, implementation patches and active
+Reviewed 2026-11-02 against the M1â€“M6 reports, implementation patches and active
 NOTES.md handoff. This is the current queue; the original task descriptions and
 November 1 profile remain historical evidence, not an instruction to repeat work.
 
@@ -20,11 +20,11 @@ it must not become a reason to undo correct, proven work elimination.
 
 These are closed implementation milestones. Do not reopen them to obtain a new
 benchmark score. Further work needs a specific remaining unnecessary operation.
-The original [baseline](METAL-PERF-20261101.md) predates M1–M4: its CPU shares and
-36 Home / 31–32 CC swap arrivals/s are not current installed-runtime measurements.
+The original [baseline](METAL-PERF-20261101.md) predates M1â€“M4: its CPU shares and
+36 Home / 31â€“32 CC swap arrivals/s are not current installed-runtime measurements.
 
-Last verified installed compositor pair is M4: libbgair `95cea7f9…`, libbgmtl
-`3d91c9f6…`. Wallpaper still uses `/usr/local/p/` pair `0d9fb5a2…` / `eaf44cde…`.
+Last verified installed compositor pair is M4: libbgair `95cea7f9â€¦`, libbgmtl
+`3d91c9f6â€¦`. Wallpaper still uses `/usr/local/p/` pair `0d9fb5a2â€¦` / `eaf44cdeâ€¦`.
 M5 diagnostics and M6 feedback-safety changes are committed and tested in source,
 but are **not installed**. No activation is pending from those experiments.
 M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
@@ -35,7 +35,7 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
 | M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
-| M7 | Partial | Cancellation ACK/retirement and late callback readiness fixed/tested in source; finish write admission/refusal, then compositor stress | [Recovery report](METAL-M7-ASYNC.md), [callback fix](METAL-M7-CALLBACKS.md); async remains opt-in/off |
+| M7 | Partial | ACK/retirement, callback readiness and bounded imported-write admission implemented/tested in source; review refusal policy, then actual compositor reuse/sleep/wake/fault trials | [Recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, compositor async off |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
 Recommended next implementation investigation: **M7 asynchronous replay safety**.
@@ -45,7 +45,7 @@ proof strategy. M5's wallpaper gap remains a separate targeted diagnostic task.
 M8 should evaluate M4's unmeasured latency implications when relevant.
 This queue does not authorize concurrent device workloads or VM builds.
 
-## M5 — Resolve the wallpaper attribution gap
+## M5 â€” Resolve the wallpaper attribution gap
 
 **Already established:** The compositor collector/analyzer exists, rejects
 lost/pending captures and ranks its passes. M6 corrected missing feedback markers:
@@ -79,7 +79,7 @@ instrumentation limitation remains. Whole-GPU rankings require actual client
 coverage; compositor-only findings may proceed independently. Restore all four
 libraries and both environment files after temporary diagnostics.
 
-## M6 — Prove attachment deadness or smaller scratch coverage
+## M6 â€” Prove attachment deadness or smaller scratch coverage
 
 **Already established:** Color1 is live within the rounded-corner save/restore
 sequence. Color0 Load preserves partial redraws; the independent color1 clear can
@@ -132,7 +132,7 @@ established; label logical footprint estimates separately from bus traffic.
 GPU/end-to-end timing is context, not a mandatory aggregate-speedup gate.
 A lifetime audit or safety fix alone leaves traffic elimination partial.
 
-## M7 — Make asynchronous replay safe
+## M7 â€” Make asynchronous replay safe
 
 **Callback review finding resolved in source:** Metal `b595b76` separates scheduled/
 completed delivery flags from Error status. Shared-method host sanitizer tests cover
@@ -146,22 +146,32 @@ cancelled-ticket backing retain, fixes proof-backed cancellation acknowledgement
 without resurrecting the frame, and keeps the protected queue on reason-16 drops.
 Metal checks retirement/drains, serializes replay scope, and preserves error
 completion FIFO. Host sanitizer tests, isolated hardware epoch/same-backing
-recovery, async GPU36/36, MSAA and shared GL pass. This is partial: BEGIN refusal/
-eight-ticket capacity and all writable imported destinations still lack a complete
-admission policy. No compositor async activation or panel acceptance is claimed.
+recovery, async GPU36/36, MSAA and shared GL pass. That milestone left admission open; the subsequent isolated implementation is
+recorded below. No compositor async activation or panel acceptance is claimed.
 
-**Why still needed:** M1–M4 reduce work; they do not move replay off CA's thread.
+**Admission follow-up implemented:** [M7 imported-write admission](METAL-M7-ADMISSION.md)
+keeps encode-time tickets, covers recorded render/resolve/blit/mipmap and actual
+writable shader-image destinations (including argument records), and revalidates
+before replay. The 32-per-CB/1024-process bounds, unknown/uncommitted ownership,
+timeouts and refused BEGIN fail the entire CB before recorded writes. Known
+committed producers get one bounded wait outside locks, followed by authoritative
+kernel recheck. Host admission/callback sanitizers and all six isolated GPU modes
+pass47/47; focused MSAA4x resolve checks pass. This closes the known silent-eight/
+log-and-proceed gap within implemented command-buffer paths, not full M7.
+
+**Why still needed:** M1â€“M4 reduce work; they do not move replay off CA's thread.
 Async remains opt-in/off in the installed environment. Historical r26 improved CC
 throughput but exposed an encode-to-submit ticket/epoch race, persistent fallback
 and visible corruption. That result is not a new gain on the M4 runtime.
 
-**Remaining work:** Build a bounded, targeted reproducer for display epoch changes
-and surface reuse between ticket begin, replay, submit and seal. Trace ownership,
-invalidations and admission. Design recovery that retains the last valid displayed
-frame and rejects an invalid frame without exposing in-flight writes or disabling
-protection for the rest of the boot. Consider moving ticket begin only after
-proving it still protects all writes. Preserve ordered callback and resource
-lifetimes, FIFO submissions and M4's group limits/drain requirements.
+**Remaining work:** Review the bounded admission policy and explicit Error behavior
+against actual compositor reuse. Then exercise a bounded actual compositor async
+trial across same-surface reuse and display sleep/wake, checking real display
+admission rejection, protected recovery and fault/quarantine beyond reason16.
+Preserve ordered callbacks, resource lifetimes, M4 grouping/drains and M6's sticky
+fetch restriction. Existing host/backend race cases and isolated GPU destination
+regressions are completed evidence; do not repeat them as a substitute for the
+compositor/panel gap. No default enablement or installation follows automatically.
 
 Existing M3/M5 diagnostics assume serialized inline replay/TLS scope. Audit their
 thread ownership and coverage before interpreting worker-thread profiles; missing
@@ -178,9 +188,9 @@ and the user's panel check. No arbitrary ten-boot quota or aggregate FPS thresho
 is required. Document which race scenarios were exercised and why the evidence
 covers them. Permanent partition flashing still requires user confirmation.
 
-## M8 — Attribute waits, callback delay and long gaps
+## M8 â€” Attribute waits, callback delay and long gaps
 
-**Why still needed:** Completion/presentation behavior was not changed by M1–M4.
+**Why still needed:** Completion/presentation behavior was not changed by M1â€“M4.
 M4's explicit drains remain, but its tail-latency effect was not measured. The
 November 1 gaps and old async completion patterns are historical leads, not a
 current diagnosed failure. No new whole-system baseline is required to begin.
@@ -202,7 +212,7 @@ Never report scheduled/completed earlier than its contract allows. No lower
 whole-frame score is required for verified redundant-wait removal. Any explicit
 claim about reduced latency or tail gaps requires matching timing evidence.
 
-## Conditional follow-ups — do not reopen completed milestones
+## Conditional follow-ups â€” do not reopen completed milestones
 
 - **F1: Linear-buffer uploads.** M1's smaller A8 source and other linear uploads
   remain. Use existing inventory before designing buffer aliasing/coherency or
@@ -236,7 +246,7 @@ ignored. Use matched instrumentation/source when making a timing comparison;
 pipeline-draining timestamp sums, unions, fence latency and bus bytes are distinct.
 
 A same-stream projection (M4) and exact pixel-checked eliminated operations are
-valid work-reduction evidence within their documented assumptions. Preserve M1–M4
+valid work-reduction evidence within their documented assumptions. Preserve M1â€“M4
 without repeatedly benchmarking them. When timing is needed, use bounded workloads
 and comparable scene/temperature, retain baseline2 as historical reference, and
 make no current FPS claim from its old numbers. Restore exact libraries/envs,
