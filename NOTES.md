@@ -1,3 +1,66 @@
+### 2026-11-02: M2 COMPLETE and INSTALLED; repeated refusal logs eliminated
+
+Metal 8c82bae: exact (path, full reason) bounded 16-entry refusal table, first
+error intact, five-second activity-driven suppressed summaries, eviction flush.
+No format support/fallback/rendering changes. BGMTL_REFUSAL_CALLERS=1 optionally
+captures one format500 caller stack; DISABLED in final environment. Results and
+limits: mesa/METAL-M2-REFUSALS.md; M3-M8 remain unstarted.
+
+Host ASan/UBSan PASS (100000 repeats, distinct reasons/paths, periodic summary,
+eviction, long keys, saturation). Final VM tools/vm-mesa.sh mesa m2final PASS
+12 s; xnu/out-mesa-m2final. Earlier m2refusal/m2ready PASS 13/11 s. No CI.
+Final GPU 30/30 normal AND 30/30 --bb, including derivative edges and M1 mutable
+no-copy cases. P17: 1000 fmt500 requests all nil, ONE error line; fmt501 remains
+visible; supported texture creation succeeds. No new baseline/performance run.
+Verified avoided logging accepted per user preference; no CPU/FPS gain claimed.
+
+Settled compositor diagnostic: backboardd11258, QuartzCore offsets 0x9ae60,
+0xa9e48, 0xa3448 requests 1105x1160 type2 sampled usage1 storage0 IOSurface fmt500.
+Five summaries replace 433 repeated errors (2+87+132+135+77). Repeated requests
+continue; unsupported-format check precedes Gallium allocation. Private layout
+and downstream fallback cost UNKNOWN: separate follow-up, no guessed support.
+First short window had no format500 request; historical console-ring entries
+are not candidate output. Both windows restored M1 runtime/env byte-for-byte.
+
+Final M2 libbgmtl INSTALLED /usr/local/bin, byte-exact readback, backboardd11426:
+0487f224f3bb87d6d224f9c104710e84e92d4bfd29901e55b8276acc676b4a5c.
+Unchanged M1 libbgair read back byte-exact:
+326eaa30dcc1ccea1955b45383f5f97bdb25ec3cb83a18cf2a54fad2c0561074.
+Env restored byte-exact, CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 only; no profiling
+or caller flags. Original M1 backups and captures ignored in research/metal-m2.
+Temporary M2 device binaries removed; empty directory may remain. Shared phone
+lock released. Phone was ALREADY running iOS on arrival and remains there.
+No reboot/flash/partition/kernel/clock-policy changes. See installed-state.txt
+for idle profiler/bench and final completed GPU jobs. No physical UI claim.
+Next work: M3 inventory or M5 pass/client attribution per task list; private
+format500 support requires separate evidence.
+
+### 2026-11-02: M2 final candidate passes GPU correctness and bounded refusal output
+
+VM tools/vm-mesa.sh mesa m2final PASS (12 s), xnu/out-mesa-m2final; no CI.
+Final candidate GPU 30/30 normal AND 30/30 --bb, including P17: 1000 unsupported
+format-500 creations still nil with ONE refusal line; distinct format501 prints,
+and supported creation succeeds. Derivative edges and mutable no-copy tests pass.
+Evidence research/metal-m2/final-suite-{normal,bb}.txt. Source not committed yet.
+First short compositor caller window did not reproduce format500. Original M1
+libbgmtl and environment restored byte-exact; libbgair never replaced. One settled
+bounded retry is in progress, then restoration; no benchmark baseline or clock
+changes. Current phone remains running iOS. Attribution is not established yet.
+
+### 2026-11-02: M2 refusal diagnostic deduplication implemented; validation in progress
+
+Exact (path, reason) 16-entry / 512-byte-key table, serialized separately from
+bg_lock; first error intact, five-second activity-driven suppressed summaries,
+eviction flush and saturating counters. No format/fallback changes. Optional
+BGMTL_REFUSAL_CALLERS=1 records one bounded format-500 descriptor/caller stack.
+Host ASan/UBSan refusal_log_test PASS (100000 repeats, distinct reasons/paths,
+eviction, periodic summaries, long keys, saturation). VM m2refusal PASS 13 s;
+VM m2ready PASS 11 s including P17 unsupported-texture regression. No CI.
+Build artifacts xnu/out-mesa-m2ready. GPU correctness and caller attribution pending.
+Phone is ALREADY running iOS (192.168.7.2 command/log reachable), superseding
+previous parked-state assumption. No phone writes/reboot/runtime changes yet.
+Unrelated untracked checkout artifacts left untouched. Evidence research/metal-m2.
+
 ### 2026-11-01: User corrected acceptance criterion; M1 default ON and INSTALLED, phone parked
 
 USER PREFERENCE: optimize verified unnecessary work, not benchmark scores. If a

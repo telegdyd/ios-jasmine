@@ -1,8 +1,11 @@
 # Metal performance tasks
 
-Status (2026-11-01): M1's packed-image upload elimination is accepted and enabled
+Status (2026-11-02): M1's packed-image upload elimination is accepted and enabled
 by default: verified unnecessary uploads are removed with pixel correctness
-preserved. See [M1 results and decision](METAL-M1-UPLOADS.md). M2-M8 remain proposed.
+preserved. See [M1 results and decision](METAL-M1-UPLOADS.md).
+M2 is implemented and validated (2026-11-02): exact repeated refusal output is
+removed, with 30/30 normal and compositor GPU checks. See
+[M2 results and remaining format question](METAL-M2-REFUSALS.md). M3-M8 remain proposed.
 
 User clarification: optimize unnecessary work, not benchmark scores. A verified
 work reduction with preserved correctness does not require an aggregate FPS or
@@ -91,8 +94,10 @@ considering support; format support is a separate follow-up if justified.
 or accidentally altering fallback behavior while changing logging.
 
 **Done when:** Repeated failures produce bounded output; new reasons remain visible;
-the renderer returns the same result for unsupported textures; matched profiles
-show lower logging/console cost. Any gain from format support requires its own
+the renderer returns the same result for unsupported textures. Verified skipped
+log/console operations establish work reduction; matched profiles can supply CPU
+context but are not a promotion gate under the user's clarification above.
+Any gain from format support requires its own
 correctness evidence and measurement.
 
 ## M3 — Reduce batch state emission and resource tracking
