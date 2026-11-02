@@ -35,7 +35,7 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
 | M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
-| M7 | Partial | ACK/retirement, callback readiness and bounded imported-write admission implemented/tested in source; review refusal policy, then actual compositor reuse/sleep/wake/fault trials | [Recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, compositor async off |
+| M7 | Partial | First bounded compositor trial done; display-off admission refusal found. Decide/implement display-off policy, rerun with working screenshots, user panel check inline+async, then j0127/fault cases | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
 Recommended next implementation investigation: **M7 asynchronous replay safety**.
@@ -164,14 +164,24 @@ Async remains opt-in/off in the installed environment. Historical r26 improved C
 throughput but exposed an encode-to-submit ticket/epoch race, persistent fallback
 and visible corruption. That result is not a new gain on the M4 runtime.
 
-**Remaining work:** Review the bounded admission policy and explicit Error behavior
-against actual compositor reuse. Then exercise a bounded actual compositor async
-trial across same-surface reuse and display sleep/wake, checking real display
-admission rejection, protected recovery and fault/quarantine beyond reason16.
-Preserve ordered callbacks, resource lifetimes, M4 grouping/drains and M6's sticky
-fetch restriction. Existing host/backend race cases and isolated GPU destination
-regressions are completed evidence; do not repeat them as a substitute for the
-compositor/panel gap. No default enablement or installation follows automatically.
+**First bounded compositor trial:** [M7 trial](METAL-M7-TRIAL.md) completed
+P0/P1/P2 on the m7ack kernel. P1/P2 each produced 9 display-off
+`BEGIN refused (-45)` whole-CB failures (three surfaces x three sleep intervals);
+these happen before any kernel ticket, so ticket counters did not move. Async was
+configured but not thread-observed; held-surface draws rose to 820/842 in P2.
+Restore was byte-exact; no fault/crash/panic. Not installed.
+
+**Remaining work:** Decide and implement the display-off admission policy
+(suspended capability versus real ownership refusal) with wake-epoch/presentation
+proof; the current refusal protects nothing scannable while asleep and risks stale
+surfaces exposed by later Load redraws. Then rerun with working screenshots
+(`sweet_shot -s OUT 828 1792`) and obtain a user panel check after wake in
+candidate-inline and candidate-async phases. Follow with j0127 cancelled-SEAL,
+true fault/quarantine and same-surface pending-reuse cases. Preserve ordered
+callbacks, resource lifetimes, M4 grouping/drains and M6's sticky fetch restriction.
+Existing host/backend race cases and isolated GPU destination regressions are
+completed evidence; do not repeat them as a substitute for the compositor/panel
+gap. No default enablement or installation follows automatically.
 
 Existing M3/M5 diagnostics assume serialized inline replay/TLS scope. Audit their
 thread ownership and coverage before interpreting worker-thread profiles; missing

@@ -1,3 +1,21 @@
+### 2026-11-02: M7 first compositor trial complete; display-off admission refusal found; not installed
+
+Runs1-5 aborted on harness bugs;run6 completed P0 installed M4, P1 candidate
+inline, P2 candidate+`BGMTL_ASYNC=1` on temporary m7ack (j0127). Active/paused:
+84.62/0,77.38/5.72,75.48/11.08s; cooldowns5.11/70.38/75.36s; 3 sleep/wakes each.
+Tickets +1046/+1047/0,+1086/+1087/0,+724/+724/0; epochs25-28/28-32/33-36;
+abort457/error231 unchanged,reason16/QUEUE FALLBACK0;0 faults/crash/panic.
+Finding:9 P1+9 P2 whole-CB `BEGIN refused (-45)` (3 surfaces x3 display-off
+intervals),-ENOTSUP from the capability query before any kernel ticket;P0 M4
+logged3 old `begin failed -45` and wrote. Risk is stale surface exposed by later
+Load after wake;not observed. Async env/BGMTL_BB configured;worker thread not
+observed;held-surface draws820/842 vs~20 is inference. Screenshots all failed
+wrong1125x2436 vs presented828x1792;no panel check.
+Restore byte-exact four libs+two envs;compositor95cea7f9/3d91c9f6,wallpaper
+0d9fb5a2/eaf44cde,envs original. Remote dir empty;display ON(was off before run1);
+phone still m7ack;shared lock released;evidence ignored research/metal-m7-trial.
+Report mesa/METAL-M7-TRIAL.md;queue updated;DeepSeek did harness/analysis. No installation.
+
 ### 2026-11-02: M7 imported-write admission implemented/tested; not installed
 
 Main implementation/report cba89e2; Metal implementation/tests ef74183.
