@@ -1,3 +1,21 @@
+### 2026-11-02: M6 partial status clarified; defer until a concrete proof strategy
+
+Reviewed latest lifetime report and a8b9bf3 / Metal e7e33fc after user noted M6
+remains partial again. Logical graph/masks are implemented; no operation was
+proved unnecessary. All twenty observed target transitions cross CB boundaries;
+physical backing aliases, out-of-replay observers and sampled ranges remain
+unknown. Store intent is not a separate per-resource sysmem hardware store.
+
+Updated active task queue: M6 PARTIAL/DEFERRED, not complete or cancelled. Removed
+stale instructions to implement the existing collector. Reopen only for a named
+clear/copy/attachment/scratch operation, an actual memory operation to eliminate,
+and a scoped strategy covering the missing backing/observers. No repeated generic
+UI capture or unlimited global tracer. M7 remains next active implementation route;
+M5 targeted wallpaper diagnostics remain independent. Preserve tested feedback
+constraint in subsequent builds. No renderer/device/build/CI actions this review;
+last phone state remains preceding handoff, not freshly checked. Documentation
+links and diff checked; source implementation outcomes unchanged.
+
 ### 2026-11-02: M6 logical lifetime graph validated; no safe traffic removal
 
 User requested active M6. Added Metal opt-in BGMTL_LIFETIME_PROFILE alongside

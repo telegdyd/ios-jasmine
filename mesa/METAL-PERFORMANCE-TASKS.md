@@ -34,7 +34,7 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | ID | Status | Revised work | Dependency |
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
-| M6 | Partial | Logical graph captured; physical aliases and out-of-replay observers still unknown; no safe removal | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
+| M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
 | M7 | Open | Reproduce ticket race and make asynchronous replay safe | Independent of completing M5/M6; preserve M1–M4 and M6 safety boundaries |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
@@ -94,14 +94,6 @@ operation or traffic benefit. Broad GMEM enablement and attachment deletion are
 therefore removed as immediate implementation tasks. This decision does not reject
 proven work elimination on the basis of noisy frame scores.
 
-**Remaining work:** Extend the bounded collector with stable resource/backing and
-alias identities, subresource/mip/layer identity, actual pipeline write/fetch masks,
-clear/draw regions and accesses in execution order. Include every intervening
-consumer: later pass loads/samples, copies, resolves, CPU access and external
-IOSurface exposure. Slots zero/one and truncated shader labels are not a complete
-resource-access record. If aliases, consumers or final lifetime are unknown, mark
-them unknown; do not call a store dead at the capture boundary.
-
 The [logical lifetime follow-up](METAL-M6-LIFETIMES.md) implements bounded texture
 generation/resource/surface IDs, masks, regions and in-replay accesses. Its 12-CB
 window has 144 accesses/17 lifetimes and twenty target reuse transitions, all
@@ -112,16 +104,25 @@ unknown. This negative result does not close M6 or authorize attachment removal;
 prefer the independent M7 route over repeating whole-UI captures without a new
 specific proof strategy.
 
-Use that graph to select one concrete operation: a store before a complete
-replacement with no intervening observer, an intermediate with no consumer, or a
-scratch region whose smaller bounds preserve every clear/fetch requirement.
-Any clear/store removal needs a proof covering the affected pixels and lifetime.
-If no such operation exists, record the negative result and move to M7 rather
-than forcing a traffic change. Fetching-pass GMEM would require a separate valid
-fetch implementation and pixel proof; it is not an environment-switch task.
+**Reopening condition:** Name one actual clear/copy/attachment operation or scratch
+region and explain how to establish its backing/alias identity, sampled subresource
+ranges and all possible observers over the relevant interval. The existing logical
+graph and write/fetch masks are completed work, not the next task. Cover CPU and
+external/IOSurface access outside replay where the proposed removal requires it;
+mark unknown coverage explicitly. A scoped proof for one operation is sufficient;
+building an unlimited global tracer is not an objective.
+
+For the clear-only color1 candidate, all observed reuse crossed CB boundaries.
+In sysmem, clear/draw commands write memory directly: dropping requested Store
+alone does not remove a distinct hardware store. Identify the command or memory
+access that would actually disappear before collecting more evidence. Otherwise
+retain the negative result and proceed with M7. Do not repeat general UI captures
+to seek a favorable scene. Fetching-pass GMEM requires a separate valid fetch
+implementation and pixel proof; it is not an environment-switch task.
 
 **Where:** Metal pass/replay/texture code, `air_metal.c` attachment/feedback paths,
-patch0029 collector and patch0030 constraint, `tools/g2/metalpasses.py`.
+patch0029/0031 collectors and patch0030 constraint, `tools/g2/metalpasses.py` and
+`tools/g2/metallifetimes.py`.
 
 **Done when:** One proven unnecessary operation is removed, with exact pixel
 coverage for rounded corners, later color1-only clears, partial redraw/Load,
