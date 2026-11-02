@@ -96,3 +96,21 @@ after CSV retrieval; restoration still completed byte-exact. The optimized
 inventory completed successfully and also restored the original libraries and
 environment byte-exact. Neither failure nor diagnostic timings are performance
 measurements.
+
+## Activation
+
+Main implementation commit `10d4922`, Metal hooks/tests `ccb3cc7`. Final artifacts
+are in `xnu/out-mesa-m3final`. Both libraries are installed in `/usr/local/bin`
+and verified byte-for-byte after installation:
+
+- libbgair SHA256: `6d0bb8b734d17d8ff6c0287416614630d04c7b5fe1238f7b6f26dd47524a95d9`
+- libbgmtl SHA256: `50f19ef956ddd97d70ef04bcb70aed3246ee389ee9f9d0252f6b65263f927a57`
+
+Backboardd restarted as 12954. The environment is byte-identical to the original:
+`CA_DISABLE_FRAMEBUFFER_COMPRESSION=1` only, with profiling disabled and no
+binning override. Benchmark and profiler are idle; GPU jobs completed 8903/8903.
+Final TSENS maximum was 73.4 C after the diagnostic GPU workloads; their timings
+are not used for performance conclusions. The phone remains running iOS, with
+no reboot, flash, partition, kernel or clock-policy changes. Temporary M3 device
+files and inventory CSVs were removed and the shared phone lock released.
+Original M2 backups and all evidence remain ignored under `research/metal-m3/`.

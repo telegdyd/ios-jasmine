@@ -1,3 +1,63 @@
+### 2026-11-02: M3 COMPLETE and INSTALLED; unused binning emission eliminated
+
+Main source commit 10d4922; Metal hooks/tests ccb3cc7. Final VM m3final PASS
+(19 s), xnu/out-mesa-m3final; no CI. Final GPU 31/31 normal AND --bb, including
+P18 target/pipeline/rebind/recreation/new-CB test (zero wrong /4992 values each).
+Final MSAA 4x color/depth/resolve: three iterations ON and OFF pass with exact
+red center/blue corner. Final GL sysmem AND --gmem-force PASS: all.
+
+Verified state emissions per draw reduced from TWO to ONE; 6885 unused emissions
+avoided in the optimized 120-CB window. Mixed draw counts prevent raw total or
+CPU/FPS comparisons. Existing baseline2 retained; no new performance run. Accepted
+under user's unnecessary-work criterion. Resource tracking, actual draw state,
+MSAA resolves, barriers and presentation unchanged. BGMTL_STATE_PROFILE disabled;
+SWEET_A5XX_SKIP_BINNING=0 available as opt-out. M4-M8 remain separate future tasks.
+
+Both final libraries INSTALLED /usr/local/bin and verified byte-for-byte:
+libbgair SHA256 6d0bb8b734d17d8ff6c0287416614630d04c7b5fe1238f7b6f26dd47524a95d9
+libbgmtl SHA256 50f19ef956ddd97d70ef04bcb70aed3246ee389ee9f9d0252f6b65263f927a57
+backboardd12954; env restored/verified byte-exact, only
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1. Installed bench active=0 busy=0, profiler
+idle, GPU completed8903/8903. TSENS max73.4C after diagnostic GPU suites; no timing
+claim from those heated windows. No reboot/flash/partition/kernel/clock changes.
+Phone remains running iOS. Temporary M3 device files/CSVs removed; phone lock
+released. Original M2 backups, exact readbacks and evidence ignored under
+research/metal-m3. Report mesa/METAL-M3-STATE.md. No remaining M3 activation work.
+Next: M4 submit/dependency inventory or M5 GPU pass/client attribution.
+
+### 2026-11-02: M3 unused binning emission removed; final GPU suites pass
+
+Final VM tools/vm-mesa.sh mesa m3final PASS (19 s), xnu/out-mesa-m3final; no CI.
+Final GPU suites 31/31 normal AND --bb. New P18 target/pipeline/rebind/recreation/
+new-command-buffer test: zero wrong /4992 values in each mode. Existing feedback,
+derivative edges, mutable/compressed no-copy cases pass. Earlier m3ready also
+passes MSAA on/off (three 4x resolves each), GL sysmem AND --gmem-force PASS: all;
+matching final extras are running. No installation yet. Phone running original
+M2 runtime, restored byte-exact after both diagnostic captures. No clock changes.
+
+Inventory: 120 CB,1089 passes,10064 draws,20128 state emissions before; optimized
+120 CB,1089 passes,6885 draws,6885 state emissions. ONE vs TWO emissions per draw:
+6885 unused binning-side emissions avoided. Mixed workloads, not matched frame
+timings; no FPS/CPU gain claimed. Repeated resource reads/writes already have
+fast paths, unchanged. Actual draw state/dependencies unchanged. Sticky per-batch
+flag prevents selecting GMEM with missing binning; MSAA and optional GMEM retain
+binning, streamout commands retain emission. SWEET_A5XX_SKIP_BINNING=0 opt-out.
+Report mesa/METAL-M3-STATE.md; evidence/backups ignored research/metal-m3.
+Source not committed yet; activate final paired libs after final extras, verify
+readback/env, clean temporary device files, commit Metal and parent handoff.
+
+### 2026-11-02: M3 bounded state/resource inventory milestone
+
+Task 3 requested. New opt-in BGMTL_STATE_PROFILE inventory: passes, batches, draws,
+dirty bits and repeated resource references, 120 command buffers / 8 s. VM
+tools/vm-mesa.sh mesa m3inventory PASS (16 s), xnu/out-mesa-m3inventory. No CI.
+GPU suites PASS 30/30 normal AND --bb. No optimization yet. Ignored evidence
+research/metal-m3. Candidate pair/env were temporarily installed, backboardd12021;
+capture and byte-exact restoration completed. CSV retrieved; an optional bench
+snapshot request then returned empty. No reboot/flash/partition/clock changes.
+Candidate under investigation: unused a5xx binning emission on forced-sysmem
+single-sample batches; MSAA and optional GMEM must retain full streams.
+
 ### 2026-11-02: M2 COMPLETE and INSTALLED; repeated refusal logs eliminated
 
 Metal 8c82bae: exact (path, full reason) bounded 16-entry refusal table, first
