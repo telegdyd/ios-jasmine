@@ -1,3 +1,39 @@
+### 2026-11-02: M4 IMPLEMENTED and INSTALLED; bounded submission groups
+
+Main source/report commit be18737; Metal hooks/P19 regression 91d1aa9. Final VM
+tools/vm-mesa.sh mesa m4bounded PASS14s, xnu/out-mesa-m4bounded; no CI.
+Final GPU32/32 normal AND --bb AND opt-out. P19 80-pass RAW chain: zero wrong
+/40960 values each. MSAA4x color/depth/resolve three iterations ON/OFF exact;
+GL sysmem AND forced-GMEM PASS: all. Inventory ASan/UBSan and analyzer tests PASS.
+
+Patch0028 default ON; SWEET_SUBMIT_BATCH=0 restores old policy. Pre-append group
+budget512 conservative BO references /128 commands, single oversized batches
+immediate. FIFO streams, dependencies, barriers, fence drains/ticket seals intact.
+Metal already shared GL's backend no_implicit_sync handling. No GPU batch merge.
+BGMTL_SUBMIT_PROFILE inventory opt-in, fixed16384 events,120 CB/8s, default OFF.
+Final loss-free capture120 CB,1388 passes,1473 batches,121 kernel calls, zero
+submission failures; one capacity drain, max133 BOs/40 IBs. Old-policy projection
+on SAME batch stream157 calls (36 more,22.9%). Original-policy capture projection
+matches164/164 observed calls. Projection is an operation-count model, NOT measured
+CPU/latency. Mixed windows differ; no raw-total frame comparison or FPS gain.
+256-reference intermediate rejected as over-conservative (156 actual vs140
+projected old calls). No new baseline/frame benchmark; baseline2 retained.
+No end-to-end tail-gap/latency or physical-panel claim. See mesa/METAL-M4-SUBMITS.md.
+
+Both final libraries INSTALLED /usr/local/bin, exact readbacks:
+libbgair SHA256 95cea7f9af4fb68dafe552e28216209afdd763113cb46bd07834cbcebc928189
+libbgmtl SHA256 3d91c9f625140fc79be442ae087449a3636f3ce363bafe1fa9720d58967c9666
+Backboardd14945; env byte-exact original, CA_DISABLE_FRAMEBUFFER_COMPRESSION=1
+only. Bench active=0 busy=0; profiler idle; GPU13973/13973; TSENS max69.6C after
+correctness workloads, not timing evidence. Original M3 runtime/env restored
+byte-exact after ALL three diagnostic windows before activation. Backups, captures
+and readbacks ignored research/metal-m4. Temporary files/three CSVs removed;
+remote metal-m4 directory verified empty. Cleanup's last unlink got ENOENT for
+the trigger already removed by restoration; activation/readback had succeeded.
+Shared phone lock released. Phone remains running iOS. No reboot/flash/partition/
+kernel/clock changes. No remaining M4 activation work. Next: M5 pass/client
+attribution; M7/M8 safety/timing remain separate tasks.
+
 ### 2026-11-02: M4 final 512-reference candidate passes; 121 observed kernel calls
 
 Final VM tools/vm-mesa.sh mesa m4bounded PASS14s, xnu/out-mesa-m4bounded; no CI.
