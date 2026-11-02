@@ -1,6 +1,7 @@
 ### 2026-11-02: M7 PARTIAL - cancelled tickets recover; admission audit remains
 
-Metal source/tests 6bfd22c. Report mesa/METAL-M7-ASYNC.md. M7 is NOT complete;
+Main implementation/report 81f714f; Metal source/tests 6bfd22c.
+Report mesa/METAL-M7-ASYNC.md. M7 is NOT complete;
 compositor async remains opt-in/off and no new runtime libraries are installed.
 Actual-kernel-function harness reproduces BEGIN -> display cancellation -> submit
 -> SEAL: old source returns Aborted and retains backing. Patch j0127 accepts a
