@@ -5,7 +5,10 @@ by default: verified unnecessary uploads are removed with pixel correctness
 preserved. See [M1 results and decision](METAL-M1-UPLOADS.md).
 M2 is implemented and validated (2026-11-02): exact repeated refusal output is
 removed, with 30/30 normal and compositor GPU checks. See
-[M2 results and remaining format question](METAL-M2-REFUSALS.md). M3-M8 remain proposed.
+[M2 results and remaining format question](METAL-M2-REFUSALS.md).
+M3 removes unused binning state emission for forced-system-memory batches;
+the inventory measures one state emission per draw instead of two. See
+[M3 results and safety boundary](METAL-M3-STATE.md). M4-M8 remain proposed.
 
 User clarification: optimize unnecessary work, not benchmark scores. A verified
 work reduction with preserved correctness does not require an aggregate FPS or
@@ -121,10 +124,12 @@ patches synchronized with any edits to the build tree.
 resources used by a later submission. State can be unchanged in the application
 and still need re-emission in a new GPU batch.
 
-**Done when:** Fewer measured state/tracking operations yield lower CPU per matched
-frame, with unchanged draw results across target switches, resource rebinding,
+**Done when:** Fewer measured state/tracking operations preserve draw results
+across target switches, resource rebinding,
 feedback, destruction/recreation and new command buffers. Report overlapping
-costs as inclusive rather than adding their percentages.
+costs as inclusive rather than adding their percentages. CPU per matched frame
+provides context; verified unnecessary-work elimination is sufficient under the
+user's acceptance criterion above.
 
 ## M4 — Reduce batch flush and kernel submission overhead
 

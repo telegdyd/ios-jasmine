@@ -1,0 +1,194 @@
+Subject: [PATCH] freedreno: bounded opt-in Metal state and resource inventory
+
+diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
+--- a/src/util/sweet_profile.h
++++ b/src/util/sweet_profile.h
+@@ -8,6 +8,7 @@
+ #ifndef SWEET_PROFILE_H
+ #define SWEET_PROFILE_H
+ 
++#include "sweet_state_profile.h"
+ #include <stdbool.h>
+ #include <stdint.h>
+ 
+diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
+--- a/src/freedreno/drm/darwin/sweet_profile.c
++++ b/src/freedreno/drm/darwin/sweet_profile.c
+@@ -5,6 +5,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include "sweet_batch_trace.inc"
++#include "sweet_state_profile.inc"
+ 
+ static bool enabled;
+ static __thread struct sweet_profile_scope *current;
+@@ -55,6 +56,7 @@
+ void
+ sweet_profile_enter(struct sweet_profile_scope *s, enum sweet_profile_id id)
+ {
++   if (sweet_m3_active) sweet_m3_active->scope[id]++;
+    s->active = enabled;
+    if (!s->active)
+       return;
+@@ -90,6 +92,11 @@
+ void
+ sweet_profile_batch(unsigned draws)
+ {
++   if (sweet_m3_active) {
++      sweet_m3_active->batches++;
++      sweet_m3_active->batch_draws += draws;
++      sweet_m3_active->hist[draws < 8 ? draws : 8]++;
++   }
+    if (!enabled)
+       return;
+    enum sweet_profile_event reason = SPE_FLUSH_OTHER;
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch.c b/src/gallium/drivers/freedreno/freedreno_batch.c
+--- a/src/gallium/drivers/freedreno/freedreno_batch.c
++++ b/src/gallium/drivers/freedreno/freedreno_batch.c
+@@ -509,6 +509,7 @@
+ 
+    assert(!_mesa_set_search(batch->resources, rsc));
+ 
++   SWEET_M3(insertions, 1);
+    _mesa_set_add_pre_hashed(batch->resources, rsc->hash, rsc);
+    rsc->track->batch_mask |= (1 << batch->idx);
+ 
+@@ -535,8 +536,11 @@
+     */
+    rsc->valid = true;
+ 
+-   if (track->write_batch == batch)
+-      return;
++   SWEET_M3(writes, 1);
++   if (track->write_batch == batch) {
++      SWEET_M3(write_repeats, 1);
++      return;
++   }
+ 
+    if (rsc->stencil)
+       fd_batch_resource_write(batch, rsc->stencil);
+diff --git a/src/gallium/drivers/freedreno/freedreno_draw.c b/src/gallium/drivers/freedreno/freedreno_draw.c
+--- a/src/gallium/drivers/freedreno/freedreno_draw.c
++++ b/src/gallium/drivers/freedreno/freedreno_draw.c
+@@ -38,6 +38,8 @@
+ {
+    if (!prsc)
+       return;
++   SWEET_M3(reads, 1);
++   SWEET_M3(read_repeats, fd_batch_references_resource(batch, fd_resource(prsc)));
+    fd_batch_resource_read(batch, fd_resource(prsc));
+ }
+ 
+@@ -222,6 +224,10 @@
+    SWEET_SCOPE(sp_diag, SP_DRAW_TRACKING);
+    struct fd_context *ctx = batch->ctx;
+ 
++   if (sweet_m3_active) {
++      for (unsigned i = 0; i < 32; i++)
++         sweet_m3_active->resource_dirty[i] += !!(ctx->dirty_resource & (1u << i));
++   }
+    if (!needs_draw_tracking(batch, info, indirect))
+       goto out;
+ 
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
+@@ -595,6 +595,10 @@
+                struct fd5_emit *emit)
+ {
+    SWEET_SCOPE(sp_diag, SP_EMIT_STATE);
++   if (sweet_m3_active) {
++      for (unsigned i = 0; i < 32; i++)
++         sweet_m3_active->dirty[i] += !!(emit->dirty & (1u << i));
++   }
+    struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
+    const struct ir3_shader_variant *vp = fd5_emit_get_vp(emit);
+    const struct ir3_shader_variant *fp = fd5_emit_get_fp(emit);
+diff --git a/src/util/sweet_state_profile.h b/src/util/sweet_state_profile.h
+new file mode 100644
+--- /dev/null
++++ b/src/util/sweet_state_profile.h
+@@ -0,0 +1,19 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef SWEET_STATE_PROFILE_H
++#define SWEET_STATE_PROFILE_H
++#include <stdint.h>
++/* M3: caller serializes replay. TLS excludes unrelated completion/GL threads. */
++struct sweet_m3_counts {
++   uint64_t scope[64], dirty[32], resource_dirty[32], hist[9];
++   uint64_t passes, batches, batch_draws, reads, read_repeats, writes, write_repeats, insertions;
++};
++#ifdef __APPLE__
++extern __thread struct sweet_m3_counts *sweet_m3_active;
++void sweet_m3_begin(unsigned passes);
++void sweet_m3_end(void);
++#define SWEET_M3(field, n) do { if (sweet_m3_active) sweet_m3_active->field += (n); } while (0)
++#else
++#define sweet_m3_active ((struct sweet_m3_counts *)0)
++#define SWEET_M3(field, n) ((void)0)
++#endif
++#endif
+diff --git a/src/freedreno/drm/darwin/sweet_state_profile.inc b/src/freedreno/drm/darwin/sweet_state_profile.inc
+new file mode 100644
+--- /dev/null
++++ b/src/freedreno/drm/darwin/sweet_state_profile.inc
+@@ -0,0 +1,59 @@
++/* SPDX-License-Identifier: MIT */
++#include <stdio.h>
++#include <unistd.h>
++#include <time.h>
++#define M3_COMMITS 120
++_Static_assert(SP_COUNT <= 64, "M3 scope storage");
++__thread struct sweet_m3_counts *sweet_m3_active;
++static struct sweet_m3_counts m3_rows[M3_COMMITS];
++static unsigned m3_count;
++static int m3_enabled;
++static uint64_t m3_deadline;
++void sweet_m3_begin(unsigned passes)
++{
++   if (!m3_enabled) m3_enabled = getenv("BGMTL_STATE_PROFILE") &&
++      !strcmp(getenv("BGMTL_STATE_PROFILE"), "1") ? 1 : -1;
++   if (m3_enabled != 1 || m3_count == M3_COMMITS) return;
++   if (!m3_deadline) {
++      if (access("/private/var/tmp/bgmtl-state-start", F_OK)) return;
++      m3_deadline = clock_gettime_nsec_np(CLOCK_MONOTONIC) + 8000000000ull;
++   }
++   sweet_m3_active = &m3_rows[m3_count];
++   sweet_m3_active->passes = passes;
++}
++void sweet_m3_end(void)
++{
++   if (!sweet_m3_active) return;
++   sweet_m3_active = NULL;
++   if (++m3_count < M3_COMMITS && clock_gettime_nsec_np(CLOCK_MONOTONIC) < m3_deadline) return;
++   char path[128];
++   snprintf(path, sizeof(path), "/private/var/tmp/bgmtl-state-%d.csv", getpid());
++   FILE *f = fopen(path, "w");
++   if (f) {
++      fprintf(f, "# diagnostic operations; command buffers are not display frames\n");
++      fprintf(f, "commit,passes,draws,created,flushed,batch_draws,emit_state,emit_program,tracking,reads,read_repeats,writes,write_repeats,insertions\n");
++      for (unsigned i = 0; i < m3_count; i++) {
++         struct sweet_m3_counts *v = &m3_rows[i];
++         fprintf(f, "%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", i+1,
++            (unsigned long long)v->passes, (unsigned long long)v->scope[SP_FD_DRAW],
++            (unsigned long long)v->scope[SP_BATCH_CREATE], (unsigned long long)v->batches,
++            (unsigned long long)v->batch_draws, (unsigned long long)v->scope[SP_EMIT_STATE],
++            (unsigned long long)v->scope[SP_EMIT_PROGRAM], (unsigned long long)v->scope[SP_DRAW_TRACKING],
++            (unsigned long long)v->reads, (unsigned long long)v->read_repeats,
++            (unsigned long long)v->writes, (unsigned long long)v->write_repeats,
++            (unsigned long long)v->insertions);
++      }
++      fprintf(f, "kind,bit_or_draws,count\n");
++      for (unsigned b = 0; b < 32; b++) {
++         uint64_t d=0, r=0;
++         for (unsigned i=0; i<m3_count; i++) { d+=m3_rows[i].dirty[b]; r+=m3_rows[i].resource_dirty[b]; }
++         fprintf(f, "dirty,%u,%llu\nresource_dirty,%u,%llu\n", b,(unsigned long long)d,b,(unsigned long long)r);
++      }
++      for (unsigned b=0; b<9; b++) {
++         uint64_t n=0; for (unsigned i=0; i<m3_count; i++) n+=m3_rows[i].hist[b];
++         fprintf(f,"batch_draws%s,%u,%llu\n", b==8 ? "_at_least" : "",b,(unsigned long long)n);
++      }
++      fclose(f);
++   }
++   m3_enabled = -1; /* one bounded capture, including failed file creation */
++}

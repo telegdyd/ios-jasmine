@@ -1,0 +1,76 @@
+Subject: [PATCH] a5xx: omit unused binning stream for forced bypass batches
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch.h b/src/gallium/drivers/freedreno/freedreno_batch.h
+--- a/src/gallium/drivers/freedreno/freedreno_batch.h
++++ b/src/gallium/drivers/freedreno/freedreno_batch.h
+@@ -317,6 +317,10 @@
+     */
+    struct set *resources;
+ 
++   /* a5xx: no binning stream was encoded. This batch MUST use bypass.
++    * Sticky until batch destruction; framebuffer/sample count is batch-owned. */
++   bool a5xx_skip_binning;
++
+    /** key in batch-cache (if not null): */
+    struct fd_batch_key *key;
+    uint32_t hash;
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -23,6 +23,8 @@
+ #include "fd5_gmem.h"
+ #include "fd5_program.h"
+ #include "fd5_zsa.h"
++
++DEBUG_GET_ONCE_BOOL_OPTION(sweet_skip_binning, "SWEET_A5XX_SKIP_BINNING", true)
+ 
+ static void
+ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
+@@ -367,12 +369,24 @@
+       gd_stamp(ctx->batch, gd_slot, 1);
+ #endif
+ 
+-   /* and now binning pass: */
+-   emit.binning_pass = true;
+-   emit.dirty = dirty & ~(FD_DIRTY_BLEND);
+-   emit.vs = NULL; /* we changed key so need to refetch vp */
+-   emit.fs = NULL;
+-   draw_impl(ctx, ctx->batch->binning, &emit, index_offset);
++   /* Forced bypass never executes the binning stream. Avoid building it,
++    * but retain it for multisample (GMEM required), optional per-batch GMEM
++    * selection, and streamout. Commit the decision to the batch so a later
++    * debug-policy change cannot select GMEM with an incomplete stream.
++    * Real draw state and all resource/dependency tracking are unchanged.
++    */
++   if (FD_DBG(SYSMEM) && !ctx->sweet_gmem_select &&
++       ctx->batch->framebuffer.samples <= 1 && !ctx->streamout.num_targets &&
++       debug_get_option_sweet_skip_binning())
++      ctx->batch->a5xx_skip_binning = true;
++
++   if (!ctx->batch->a5xx_skip_binning || ctx->streamout.num_targets) {
++      emit.binning_pass = true;
++      emit.dirty = dirty & ~(FD_DIRTY_BLEND);
++      emit.vs = NULL; /* we changed key so need to refetch vp */
++      emit.fs = NULL;
++      draw_impl(ctx, ctx->batch->binning, &emit, index_offset);
++   }
+ 
+    if (emit.streamout_mask) {
+       struct fd_ringbuffer *ring = ctx->batch->draw;
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -1158,6 +1158,13 @@
+       fd_screen_lock(ctx->screen);
+       fd_gmem_reference(&g, NULL);
+       fd_screen_unlock(ctx->screen);
++   }
++
++   /* No binning stream exists for this single-sample a5xx batch. Never
++    * reconsider it for GMEM, even if global debug policy changed later. */
++   if (batch->a5xx_skip_binning) {
++      assert(ctx->screen->gen == 5 && pfb->samples <= 1);
++      sysmem = true;
+    }
+ 
+    fd_bt_batch(batch, batch->nondraw ? "select-nondraw" : sysmem ? "select-sysmem" : "select-gmem", NULL, NULL, FD_DBG(SYSMEM));
