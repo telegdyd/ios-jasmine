@@ -1,5 +1,9 @@
 # M6 - intermediate traffic audit and GMEM eligibility
 
+Follow-up: [bounded logical lifetime graph](METAL-M6-LIFETIMES.md). Twelve final
+source CBs expose attachment identities/masks and cross-CB observer gaps; no
+dead store or smaller scratch region is proven. M6 remains partial.
+
 **Partially complete; no traffic optimization promoted.** The largest M5 class
 contains required attachment feedback that the original frontend failed to mark
 in the batch metadata. Its second attachment cannot safely be removed from the

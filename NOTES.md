@@ -1,3 +1,50 @@
+### 2026-11-02: M6 logical lifetime graph validated; no safe traffic removal
+
+User requested active M6. Added Metal opt-in BGMTL_LIFETIME_PROFILE alongside
+BGMTL_PASS_PROFILE, patch0031 bounded access rows (12CB vs ordinary M5 120CB),
+logical texture generations/resource addresses/IOSurface IDs, load/store intent,
+actual pipeline write/fetch/output masks, scissors and texture access hooks.
+Preserves patch0030 sticky sysmem constraint. Analyzer tools/g2/metallifetimes.py
+keeps ordered accesses/alias hazards and rejects incomplete/out-of-scope evidence.
+Physical backing identity/renaming, out-of-replay CPU/external consumers and
+sample mip/layer ranges remain UNKNOWN. No complete lifetime proof is claimed.
+
+Final VM m6lifefinal PASS14s, xnu/out-mesa-m6lifefinal; earlier m6life PASS17s.
+No CI. Initial generated patch CRLF staging failure and C-header bool declaration
+failure corrected before final validation. Final GPU35/35 normal, --bb sysmem,
+--bb eligible-GMEM; MSAA4x color/depth/resolve3 iterations OFF/ON exact; shared GL
+sysmem/forced-GMEM PASS:all. Analyzer12/12; collector ASan/UBSan copied-access,
+12CB/trigger/capacity/deadline/pending PASS. Metal source commit e7e33fc;
+parent source/report commit recorded in final handoff.
+
+One final-source compositor capture:12CB/12 passes/12 batches, dropped0/pending0,
+144 accesses/17 lifetimes. 24 attachment intents,12 clears,72 attachment-draw
+records (36 calls),24 sample bindings,12 CPU upload intents. Four alternating
+828x1792 target lifetimes each used6 times. Color0 Load/Store writesRGBA and
+fetches once of3 draws/pass; color1 Clear/Store write mask0 and NO draw fetch in
+THIS window. Scene not sufficiently established to call Home/rounded-corner.
+Twenty repeated-use transitions ALL cross CB boundaries. No in-scope copy,
+resolve,CPU read/external sync/mipmap/destroy or observed alias/reuse; absence
+outside replay is unknown. Diagnostic timestamp sum/union8.78ms, no comparison.
+
+Negative result: no safe clear/store/intermediate/scratch removal proved. Color1
+clear-only shape is not global deadness; inter-CB observers unknown. Requested
+Store is not a distinct per-resource sysmem hardware operation. No traffic or
+speed gain, no rendering policy promoted; M6 remains PARTIAL. Report
+mesa/METAL-M6-LIFETIMES.md; active queue updated. Next independent route M7;
+M6 needs a specific backing/global-observer proof strategy, not more generic UI.
+
+FINAL all four original libraries + both envs read back byte-exact. Compositor
+M4 pair95cea7f9/3d91c9f6, wallpaper0d9fb5a2/eaf44cde; env bb only
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1; poster BGMTL_POSTER_SDR=1. Wallpaper never
+replaced. Bench active=0 busy=0,profiler idle,GPU46386/46386,pc mode1, maxTSENS64C.
+Task CSV/trigger/binaries removed; remote metal-m6life directory verified EMPTY;
+shared phone lock released. Phone remains iOS. Cleanup's first local script had
+a path-expression error AFTER library restoration/readback; corrected and final
+all-four/both-env verification/cleanup completed successfully. No activation
+pending. No boot/flash/partition/kernel/clock changes. Evidence ignored
+research/metal-m6life.
+
 ### 2026-11-02: Performance backlog reviewed against completed M1-M6 work
 
 User requested review of progress and revision of remaining tasks. Reviewed all

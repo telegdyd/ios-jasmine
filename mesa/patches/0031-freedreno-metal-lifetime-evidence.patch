@@ -1,0 +1,37 @@
+Subject: [PATCH] bounded M6 logical texture access evidence
+
+diff --git a/src/util/sweet_pass_profile.h b/src/util/sweet_pass_profile.h
+--- a/src/util/sweet_pass_profile.h
++++ b/src/util/sweet_pass_profile.h
+@@ -8,6 +8,7 @@
+ bool sweet_m5_collecting(void);
+ void sweet_m5_begin(void);
+ void sweet_m5_end(void);
++void sweet_m5_access(const uint64_t *v);
+ void sweet_m5_pass(const uint64_t *v);
+ void sweet_m5_work(unsigned kind);
+ void sweet_m5_shader(const char *name, const uint64_t *textures);
+diff --git a/src/freedreno/drm/darwin/sweet_pass_profile.inc b/src/freedreno/drm/darwin/sweet_pass_profile.inc
+--- a/src/freedreno/drm/darwin/sweet_pass_profile.inc
++++ b/src/freedreno/drm/darwin/sweet_pass_profile.inc
+@@ -26,6 +26,11 @@
+    unsigned i = ++m5_count;
+    m5_rows[i-1].event=event; m5_rows[i-1].cb=m5_cb; m5_rows[i-1].pass=m5_pass;
+    return i;
++}
++void sweet_m5_access(const uint64_t *v)
++{
++   unsigned i=m5_row("access");
++   if(i) memcpy(m5_rows[i-1].v,v,20*sizeof(uint64_t));
+ }
+ void sweet_m5_pass(const uint64_t *v)
+ {
+@@ -98,7 +103,7 @@
+    if(!m5_inline) return;
+    if(m5_state==1) {
+       m5_row("end");
+-      if(m5_cb>=120 || clock_gettime_nsec_np(CLOCK_MONOTONIC)>=m5_deadline) m5_state=2;
++      if((getenv("BGMTL_LIFETIME_PROFILE") && !strcmp(getenv("BGMTL_LIFETIME_PROFILE"),"1") ? m5_cb>=12 : m5_cb>=120) || clock_gettime_nsec_np(CLOCK_MONOTONIC)>=m5_deadline) m5_state=2;
+    }
+    m5_inline=false;
+    sweet_m5_poll();

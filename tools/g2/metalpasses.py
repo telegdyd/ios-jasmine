@@ -63,6 +63,10 @@ def analyze(text):
             label = b''.join(x.to_bytes(8, 'little') for x in v[:12]).split(b'\0', 1)[0].decode('utf-8', 'replace')
             shaders[cb, p][label] += v[12]
             sampled[cb, p].add(tuple(v[13:20]))
+        elif event == 'access':
+            # M6 logical lifetime evidence has its own conservative analyzer.
+            # It is not a timestamp and must never add GPU time to a pass.
+            pass
         else:
             raise ValueError('unknown event: ' + event)
     if begun != ended or begun != list(range(1, values['commits'] + 1)):

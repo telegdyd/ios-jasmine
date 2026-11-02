@@ -34,14 +34,15 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | ID | Status | Revised work | Dependency |
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
-| M6 | Partial | Prove attachment lifetime/coverage, then eliminate a specific dead operation | Use corrected M6 feedback metadata and actual resource/alias identities |
+| M6 | Partial | Logical graph captured; physical aliases and out-of-replay observers still unknown; no safe removal | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
 | M7 | Open | Reproduce ticket race and make asynchronous replay safe | Independent of completing M5/M6; preserve M1–M4 and M6 safety boundaries |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
-Recommended next implementation investigation: **M6 attachment-lifetime evidence**.
-M5's wallpaper gap is a separate, targeted diagnostic task; it does not block
-compositor-only M6 work. M7 is another substantive route if M6 finds no removable
-operation. M8 should evaluate M4's unmeasured latency implications when relevant.
+Recommended next implementation investigation: **M7 asynchronous replay safety**.
+The bounded M6 logical lifetime audit found no safely removable operation within
+its observer coverage. Revisit M6 with a specific physical-backing/global-observer
+proof strategy. M5's wallpaper gap remains a separate targeted diagnostic task.
+M8 should evaluate M4's unmeasured latency implications when relevant.
 This queue does not authorize concurrent device workloads or VM builds.
 
 ## M5 — Resolve the wallpaper attribution gap
@@ -100,6 +101,16 @@ consumer: later pass loads/samples, copies, resolves, CPU access and external
 IOSurface exposure. Slots zero/one and truncated shader labels are not a complete
 resource-access record. If aliases, consumers or final lifetime are unknown, mark
 them unknown; do not call a store dead at the capture boundary.
+
+The [logical lifetime follow-up](METAL-M6-LIFETIMES.md) implements bounded texture
+generation/resource/surface IDs, masks, regions and in-replay accesses. Its 12-CB
+window has 144 accesses/17 lifetimes and twenty target reuse transitions, all
+crossing CB boundaries. Color1 has no draw writes/fetches in that window, but
+unobserved inter-CB consumers prevent clear/store removal. Physical backing
+renaming/aliases, global observer coverage and sample mip/layer ranges remain
+unknown. This negative result does not close M6 or authorize attachment removal;
+prefer the independent M7 route over repeating whole-UI captures without a new
+specific proof strategy.
 
 Use that graph to select one concrete operation: a store before a complete
 replacement with no intervening observer, an intermediate with no consumer, or a
