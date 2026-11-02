@@ -191,8 +191,8 @@ end-to-end latency improvement or optimization benefit is claimed by M5.
 
 Final cleanup verified all four original libraries and both environment files
 byte-for-byte again. The compositor retains the installed M4 pair
-(`95cea7f9…` / `3d91c9f6…`); wallpaper retains its original pair
-(`0d9fb5a2…` / `eaf44cde…`). The injector is unchanged. Benchmark/profiler are
+(`95cea7f9â€¦` / `3d91c9f6â€¦`); wallpaper retains its original pair
+(`0d9fb5a2â€¦` / `eaf44cdeâ€¦`). The injector is unchanged. Benchmark/profiler are
 idle, GPU jobs completed 22,520/22,520, power collapse mode 1, final maximum
 TSENS 54.3 C. Task-specific binaries, CSVs, empty precreated outputs and
 trigger are removed; the remote diagnostic directory is empty and the shared

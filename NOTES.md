@@ -1,4 +1,4 @@
-### 2026-11-02: M5 PARTIAL — compositor ranked; wallpaper export remains unresolved
+### 2026-11-02: M5 PARTIAL â€” compositor ranked; wallpaper export remains unresolved
 
 Main collector/analyzer/report commit d07f64a; Metal hooks 3b880d7. Report
 mesa/METAL-M5-PASSES.md. This is NOT complete whole-GPU/client attribution.
@@ -51,22 +51,6 @@ CSVs (including empty mobile-owned outputs) and trigger removed; remote metal-m5
 directory verified EMPTY. Evidence/backups/readbacks ignored research/metal-m5.
 No reboot/flash/partition/kernel/clock changes; no physical-panel/FPS claim.
 
-### 2026-11-02: M5 bounded pass/client attribution built; captures in progress
-
-Task 5 requested. New opt-in BGMTL_PASS_PROFILE descriptor markers, draw-to-batch
-edges and bounded GPU batch stamps (existing RB_DONE_TS, 19.2MHz). No batch split,
-extra fence wait, rendering policy or async change. Pipeline drains perturb timing;
-not production execution-time evidence without overhead qualification.
-VM tools/vm-mesa.sh mesa m5inventory PASS14s, xnu/out-mesa-m5inventory; no CI.
-Initial build missed diagnostic header declarations; corrected before validation.
-GPU normal AND compositor suites32/32 PASS. VM ASan/UBSan bounded collector PASS;
-analyzer tests3/3 PASS. Evidence/scripts ignored research/metal-m5.
-Home/CC profiling-disabled references complete, zero event/sample loss. Temporary
-candidate pair and bb/poster profiling environments active DURING capture script;
-finally restores exact original M4 pair/both env files and restarts clients.
-Capture process owns shared phone lock; do not start concurrent device workloads.
-No reboot/flash/partition/kernel/clock changes. Inventory analysis, overhead/client
-coverage, whole-GPU counters, restoration verification and commits still pending.
 ### 2026-11-02: M4 IMPLEMENTED and INSTALLED; bounded submission groups
 
 Main source/report commit be18737; Metal hooks/P19 regression 91d1aa9. Final VM
