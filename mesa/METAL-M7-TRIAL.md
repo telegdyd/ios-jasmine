@@ -1,6 +1,6 @@
 # M7 compositor trial - 2026-11-02
 
-First bounded trial of the M7 candidate on the real compositor. Run 6 completed
+First bounded trial of the M7 candidate on the real compositor. Runs 6-7 completed
 P0/P1/P2; runs 1-5 aborted on harness bugs, not on the candidate. **Not installed.**
 The compositor remains the M4 pair; async was trial-only. The trial script is
 ignored at `research/metal-m7-trial/trial.py`; its `results.json`, `netlog.txt`
@@ -61,12 +61,54 @@ Error. The refused surfaces can therefore keep stale content, and a later partia
 redraw using Load (the M6 feedback case) could expose it after wake. This was not
 seen: screenshots failed for an unrelated size reason (below) and there is no
 panel check yet. Display-off writes cannot scan out, so refusing them protects
-nothing on the panel. A candidate policy direction, **not implemented**, is to
-distinguish "capability suspended/display off" from a real ownership refusal
-without weakening protection on wake. That would need proof that no unsealed
+nothing on the panel. **Resolved in source after run 6 (next section):** the fix
+distinguishes suspended capability from real ownership refusal and admits a
+still-suspended destination unticketed. It still needs proof that no unsealed
 generation is presented after wake and an explicit epoch semantics argument; it
 must not turn a real pending/unknown owner into a silent write.
-## Async P2
+## Display-suspended admission fix and run 7
+**Resolved in source.** Metal `9ff68e9` makes encode-time admission defer when
+`darwin_ticket_begin` returns `-EAGAIN`; replay retries BEGIN once; a still-suspended
+destination is admitted as **unticketed**. Main `fc90f81` returns `-EAGAIN` from
+`darwin_ticket_begin` when tickets are on but presenter bit 3 is clear, makes
+libsweetca GL treat `-EAGAIN` like `-ENOTSUP`, regenerates patch0001 and updates
+the mesa/metal gitlink. New build `xnu/out-mesa-m7suspend`: libbgair
+`5501bbfe...bea79`, libbgmtl `e13d1174...d4de2`. **Not installed.**
+
+**Host and isolated.** Host write-admission ASan/UBSan PASS, with the deferred
+cases listed in `mesa/metal/test/README-display-off-admission.md`. On-device
+attempt 3: six modes 47/47 each (P23 SKIP); P23 display-off native+async 39/39
+(P22 skipped, needs display on); P23 encode-off/commit-after-wake native+async
+42/42. Attempts 1-2 were runner issues (P22 display-off preconditions; a background
+helper not detached from sweetd), not product failures.
+
+**Run 7.** P0 M4 logged the old `begin failed -45` three times; P1/P2 candidate
+logged **zero** `BEGIN refused` (run 6: 9 each). Each candidate phase logged one
+`display suspended: 1 deferred, 0 ticketed at replay, 0 unticketed` line. The
+logger emits the first and every 100th event, so that is **not** the total event
+count. No `QUEUE FALLBACK`, reason-16, fault, crash, panic or pid change; max
+TSENS 74.1 C. Twelve screenshot labels each returned three 828x1792 surfaces;
+none was uniform or black. The P1-wake1 and P2-wake3 main surfaces were viewed
+and showed a clean home screen with no stale content.
+
+| Phase | active/paused s | cooldown s | admission |
+| --- | --- | ---: | --- |
+| P0 M4 | 88.67/25.7 | 0.02 | 3 old `begin failed -45` |
+| P1 inline | 90.23/5.7 | 20.11 | 0 `BEGIN refused`; 1 suspended diagnostic |
+| P2 async | 86.53/10.66 | 70.3 | 0 `BEGIN refused`; 1 suspended diagnostic |
+
+Async env was seen in P2; the worker thread was not directly identified (the
+existing tooling limitation). Kernel was established via the kernel-ref fallback:
+bench epoch `1330637038` matches run 6. Restore was byte-exact for the four
+libraries and both env files. This resolves the policy finding for display-off
+capability suspension; protection against real ownership/stale generations remains.
+
+**Remaining M7:** user panel check after wake in async mode (installed async
+activation needs the user); ticketed-at-replay path not observed in the compositor
+(only P23); j0127 cancelled-SEAL; true fault/quarantine; same-surface pending
+reuse; installation decision.
+
+## Async P2 (run 6)
 **Observation.** `BGMTL registration: BGMTL_ASYNC=1` was read from
 `bgmtl-bb.env`; `BGMTL_BB` is set by `bgmtl_sweet_inject.m:113`; no trace or
 sync mode was used. The worker queue is named `chlorophyll.replay` in
@@ -81,14 +123,14 @@ This is consistent with replay completing on a worker after display hand-off.
 It is not thread-level proof. Ticket live/high was similar between phases
 (P2 live=1 in 7/8 samples vs P1 6/10).
 ## Not established
-- Panel correctness and visual acceptance; screenshots were all
-  `sweet_shot: 0 surfaces of 1125x2436` because the compositor presents 828x1792.
-  The right invocation is `sweet_shot -s OUT 828 1792`; this is a tooling fix,
-  not evidence from run 6.
+- User panel acceptance. Run 7 produced 12 labels x three non-uniform/non-black
+  828x1792 surfaces; P1-wake1 and P2-wake3 were viewed clean, but the user has not
+  accepted the panel.
+- Ticketed-at-replay admission in the compositor; only P23 exercised it.
 - The j0127 cancelled-SEAL acknowledgement path (no cancellation ACK case occurred).
 - True GPU fault/quarantine behavior; no fault, hang, panic or `CRASH backboardd`.
 - Same-surface pending-reuse refusals; none occurred.
-- That the 9 display-off refusals are harmless to later loads/panel content.
+- Installation decision; no default async enablement follows.
 
 ## Harness issues fixed in runs 1-5
 
@@ -101,10 +143,8 @@ It is not thread-level proof. Ticket live/high was similar between phases
 
 ## Next
 
-1. Decide the display-off admission policy: suspended capability versus real
-   ownership refusal, with wake-epoch/presentation proof.
-2. Rerun with `sweet_shot -s OUT 828 1792`; obtain panel/user checks after wake
-   in both candidate-inline and candidate-async phases.
-3. Exercise j0127 cancelled-SEAL, true fault/quarantine, and same-surface
-   pending-reuse refusals.
-4. Only then consider installation; no default async enablement follows.
+1. Obtain a user panel check after wake in candidate-inline and candidate-async
+   modes; installed async activation needs the user.
+2. Exercise ticketed-at-replay in the compositor, then j0127 cancelled-SEAL,
+   true fault/quarantine, and same-surface pending-reuse refusals.
+3. Decide installation; no default async enablement follows.

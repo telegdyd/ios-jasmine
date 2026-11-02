@@ -1,3 +1,21 @@
+### 2026-11-02: M7 display-suspended admission fixed; trial run 7 clean; not installed
+
+Metal9ff68e9/mainfc90f81:encode-time -EAGAIN deferred,replay retries BEGIN once,
+still-suspended admitted unticketed;darwin_ticket_begin -EAGAIN,GL treats it like
+-ENOTSUP;patch0001/gitlink updated. Build xnu/out-mesa-m7suspend libbgair
+5501bbfe...bea79,libbgmtl e13d1174...d4de2. Host ASan/UBSan PASS;isolated six
+modes47/47(P23 SKIP),P23 display-off39/39(P22 SKIP),encode-off/commit-after-wake
+42/42. Attempts1-2 runner issues,not product.
+Run7:P0 3 old begin failed -45;P1/P2 zero BEGIN refused(run6 9 each);one
+display suspended diagnostic per phase:1 deferred,0 ticketed at replay,0
+unticketed;logger first/every100th so not a total. Async env seen;zero fault/
+crash/panic/QUEUE FALLBACK/reason16;no pid changes;max TSENS74.1;12 labels x3
+surfaces none uniform/black;P1-wake1/P2-wake3 viewed clean;kernel-ref epoch
+1330637038;restore byte-exact four libs+two envs.
+Phone still m7ack;display ON;lock released;evidence research/metal-m7-suspend
+and research/metal-m7-trial/run7. DeepSeek did implementation/tests/runners in
+parallel jobs. No installation.
+
 ### 2026-11-02: M7 first compositor trial complete; display-off admission refusal found; not installed
 
 Runs1-5 aborted on harness bugs;run6 completed P0 installed M4, P1 candidate
