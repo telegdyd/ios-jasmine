@@ -1,3 +1,72 @@
+### 2026-11-02: M5 PARTIAL — compositor ranked; wallpaper export remains unresolved
+
+Main collector/analyzer/report commit d07f64a; Metal hooks 3b880d7. Report
+mesa/METAL-M5-PASSES.md. This is NOT complete whole-GPU/client attribution.
+Final VM tools/vm-mesa.sh mesa m5safe PASS13s, xnu/out-mesa-m5safe; no CI.
+Earlier m5inventory14s, m5final17s, m5ready16s, m5bounded12s PASS. Initial
+inventory build missed a header include; corrected before device validation.
+Final-source GPU32/32 normal AND --bb. Collector ASan/UBSan PASS; analyzer4/4.
+No rendering-policy optimization installed; M1-M4 runtime remains installed.
+
+BGMTL_PASS_PROFILE opt-in default OFF, 65536 rows,120 CB/8s plus activity-driven
+tail harvest; existing 19.2MHz RB_DONE_TS drains pipeline. No new batch splits,
+fence waits, barriers, ticket/async/attachment changes. GPU execution envelopes
+are distinct from queue/fence observation latency. Reject lost/pending captures.
+Initial16384-row richer captures OVERFLOWED and were rejected, not cost evidence.
+Final-source loss-free Home120 CB/3502 encoded passes/3654 batches; GPU sum3088.59ms,
+union2085.66ms. CC120/2491/2521; sum2556.21ms, union1740.13ms. Full-screen828x1792
+single-sample two-BGRA8 sysmem class:2503.96/1732.20ms (81.1/67.8% summed envelopes).
+Color1 clears, color0 preserves, both store. Fixed CA shaders dominate; blur
+classes smaller. M6 candidate: audit second attachment's clear/store/consumer
+lifetime, then assess elimination or eligible per-pass GMEM. No guessed removal.
+Logical attachment footprints are NOT bus-byte measurements or proven savings.
+
+Final-source 4-second job windows: backboardd86 calls/2417 IBs Home,95/1701 CC;
+Collections wallpaper12 calls/12 IBs each. All submit TIDs attributed, zero
+CPU/event loss. Wallpaper uses /usr/local/p pair, verified from loaded images;
+compositor /usr/local/bin. Both pairs/both envs temporarily profiled. No nonempty
+wallpaper timestamp CSV obtained, even with12s motion and mobile-owned precreated
+outputs. Cause UNKNOWN: do not infer GPU cost from its job count or loaded libs.
+Next concrete M5 action: inspect effective wallpaper config and entry into
+bgReplayFrom/sweet_m5_begin; distinguish unarmed collection from failed export.
+Framebench user-stack/map whitelist excludes wallpaper renderers: targeted
+wallpaper-only stacks/read-only inspection preferred to repeated UI benchmarks.
+Per-pass hardware traffic counters also unavailable. M5 remains partial.
+
+Same-pair deterministic40-CB207x448 R8 blur OFF/ON/ON/OFF, discard5 startup CBs:
+mean3.767/3.784ms OFF,4.014/3.987ms ON (~6% overhead on this workload only).
+All sampled pixels exact:231/113/0 center/edge/corner; max TSENS~52C. Mixed UI
+reference/profiling windows differ thermally/client-wise: no overhead/FPS claim.
+Existing baseline2 retained. Counter attempt requested12s, kernelclamped10000ms;
+command-port timeout stopped input~7s, inadmissible comparison. No counter retry.
+GPU pc temporarily off, restored/verified mode1 on in finally; HWCG/clocks intact.
+
+FINAL all four libs + BOTH envs restored byte-exact and verified AGAIN after
+all diagnostics. Original /bin pair hashes match M4 (95cea7f9 /3d91c9f6).
+Original /p pair0d9fb5a2 /eaf44cde, injector unchanged. Env exact original:
+bb CA_DISABLE_FRAMEBUFFER_COMPRESSION=1; poster BGMTL_POSTER_SDR=1. No profiling
+flags. Bench active=0 busy=0, profiler idle, GPU22520/22520, pc mode1, TSENS max
+54.3C. Shared phone lock released; phone remains iOS. Temporary binaries,
+CSVs (including empty mobile-owned outputs) and trigger removed; remote metal-m5
+directory verified EMPTY. Evidence/backups/readbacks ignored research/metal-m5.
+No reboot/flash/partition/kernel/clock changes; no physical-panel/FPS claim.
+
+### 2026-11-02: M5 bounded pass/client attribution built; captures in progress
+
+Task 5 requested. New opt-in BGMTL_PASS_PROFILE descriptor markers, draw-to-batch
+edges and bounded GPU batch stamps (existing RB_DONE_TS, 19.2MHz). No batch split,
+extra fence wait, rendering policy or async change. Pipeline drains perturb timing;
+not production execution-time evidence without overhead qualification.
+VM tools/vm-mesa.sh mesa m5inventory PASS14s, xnu/out-mesa-m5inventory; no CI.
+Initial build missed diagnostic header declarations; corrected before validation.
+GPU normal AND compositor suites32/32 PASS. VM ASan/UBSan bounded collector PASS;
+analyzer tests3/3 PASS. Evidence/scripts ignored research/metal-m5.
+Home/CC profiling-disabled references complete, zero event/sample loss. Temporary
+candidate pair and bb/poster profiling environments active DURING capture script;
+finally restores exact original M4 pair/both env files and restarts clients.
+Capture process owns shared phone lock; do not start concurrent device workloads.
+No reboot/flash/partition/kernel/clock changes. Inventory analysis, overhead/client
+coverage, whole-GPU counters, restoration verification and commits still pending.
 ### 2026-11-02: M4 IMPLEMENTED and INSTALLED; bounded submission groups
 
 Main source/report commit be18737; Metal hooks/P19 regression 91d1aa9. Final VM
