@@ -643,7 +643,10 @@ ticket_write(struct sca_ctx *c, GLuint tex)
          }
          return true;
       }
-      if (error != -ENOMEM && error != -E2BIG && error != -ENOTSUP && error != -EBUSY) {
+      /* -EAGAIN (presenter suspended) falls back to the same synchronous
+       * unticketed write as -ENOTSUP; the display may have woken meanwhile. */
+      if (error != -ENOMEM && error != -E2BIG && error != -ENOTSUP && error != -EBUSY &&
+          error != -EAGAIN) {
          (void)ticket_resolve(c);
          ticket_failed(c, error);
          return false;

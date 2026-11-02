@@ -62,8 +62,14 @@ int
 darwin_ticket_begin(struct fd_device *dev, const uint32_t *handles, unsigned count,
                    uint64_t *generation, uint64_t *epoch)
 {
-   if (!count || count > 32 || (darwin_ticket_query(dev, epoch) & 15) != 15)
+   if (!count || count > 32)
       return -ENOTSUP;
+   /* Bit 3 is "queue presenter usable": cleared while the display sleeps, and on
+    * queue fallback/power-off/terminal. Tickets are still on and the presenter is
+    * only temporarily unavailable, so ask the caller to defer rather than fail. */
+   uint64_t flags = darwin_ticket_query(dev, epoch);
+   if ((flags & 15) != 15)
+      return (flags & 3) == 3 && !(flags & 8) ? -EAGAIN : -ENOTSUP;
    uint32_t req[34] = {count, 0};
    memcpy(req + 2, handles, count * sizeof(*handles));
    uint64_t in[3] = {1, 1, *epoch}, out[2] = {0};

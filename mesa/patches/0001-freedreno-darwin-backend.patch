@@ -1,6 +1,6 @@
-From ca8095362d51eb4778ce06d43774e2d18cde49e1 Mon Sep 17 00:00:00 2001
+From 35ac500cc9f4c096d220749198c6670699c7f566 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
-Date: Wed, 28 Oct 2026 15:20:52 +0100
+Date: Mon, 2 Nov 2026 21:47:04 +0100
 Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  (ios-jasmine)
 
@@ -8,7 +8,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  include/darwin-drm/xf86drm.h                  |   87 +
  meson.build                                   |    5 +
  src/freedreno/drm/darwin/darwin_bo.c          |  215 ++
- src/freedreno/drm/darwin/darwin_device.c      |  237 ++
+ src/freedreno/drm/darwin/darwin_device.c      |  243 ++
  src/freedreno/drm/darwin/darwin_pipe.c        |  313 ++
  src/freedreno/drm/darwin/darwin_priv.h        |  146 +
  .../drm/darwin/sweet_batch_trace.inc          |  139 +
@@ -23,7 +23,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  src/gallium/drivers/freedreno/meson.build     |   32 +
  .../drivers/freedreno/sweetgpu_fdtest.c       |  307 ++
  src/gallium/frontends/sweetgl/meson.build     |   90 +
- src/gallium/frontends/sweetgl/sweetca.c       | 3121 +++++++++++++++++
+ src/gallium/frontends/sweetgl/sweetca.c       | 3124 +++++++++++++++++
  .../frontends/sweetgl/sweetca_pass_trace.inc  |  222 ++
  .../frontends/sweetgl/sweetca_slots.inc       | 1453 ++++++++
  src/gallium/frontends/sweetgl/sweetgl.c       |  696 ++++
@@ -35,7 +35,7 @@ Subject: [PATCH] freedreno: darwin backend for the SweetGPU IOKit driver
  .../frontends/sweetgl/sweetgpu_gmem_test.inc  |  363 ++
  src/gallium/meson.build                       |    5 +
  src/util/sweet_profile.h                      |   89 +
- 30 files changed, 9101 insertions(+), 6 deletions(-)
+ 30 files changed, 9110 insertions(+), 6 deletions(-)
  create mode 100644 include/darwin-drm/xf86drm.h
  create mode 100644 src/freedreno/drm/darwin/darwin_bo.c
  create mode 100644 src/freedreno/drm/darwin/darwin_device.c
@@ -396,10 +396,10 @@ index 0000000..09fb9e5
 +}
 diff --git a/src/freedreno/drm/darwin/darwin_device.c b/src/freedreno/drm/darwin/darwin_device.c
 new file mode 100644
-index 0000000..f6a504d
+index 0000000..6fb37c4
 --- /dev/null
 +++ b/src/freedreno/drm/darwin/darwin_device.c
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,243 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -464,8 +464,14 @@ index 0000000..f6a504d
 +darwin_ticket_begin(struct fd_device *dev, const uint32_t *handles, unsigned count,
 +                   uint64_t *generation, uint64_t *epoch)
 +{
-+   if (!count || count > 32 || (darwin_ticket_query(dev, epoch) & 15) != 15)
++   if (!count || count > 32)
 +      return -ENOTSUP;
++   /* Bit 3 is "queue presenter usable": cleared while the display sleeps, and on
++    * queue fallback/power-off/terminal. Tickets are still on and the presenter is
++    * only temporarily unavailable, so ask the caller to defer rather than fail. */
++   uint64_t flags = darwin_ticket_query(dev, epoch);
++   if ((flags & 15) != 15)
++      return (flags & 3) == 3 && !(flags & 8) ? -EAGAIN : -ENOTSUP;
 +   uint32_t req[34] = {count, 0};
 +   memcpy(req + 2, handles, count * sizeof(*handles));
 +   uint64_t in[3] = {1, 1, *epoch}, out[2] = {0};
@@ -2098,10 +2104,10 @@ index 0000000..ee052db
 +endif
 diff --git a/src/gallium/frontends/sweetgl/sweetca.c b/src/gallium/frontends/sweetgl/sweetca.c
 new file mode 100644
-index 0000000..353054f
+index 0000000..cd45e3f
 --- /dev/null
 +++ b/src/gallium/frontends/sweetgl/sweetca.c
-@@ -0,0 +1,3121 @@
+@@ -0,0 +1,3124 @@
 +/*
 + * Copyright © 2026 ios-jasmine
 + * SPDX-License-Identifier: MIT
@@ -2747,7 +2753,10 @@ index 0000000..353054f
 +         }
 +         return true;
 +      }
-+      if (error != -ENOMEM && error != -E2BIG && error != -ENOTSUP && error != -EBUSY) {
++      /* -EAGAIN (presenter suspended) falls back to the same synchronous
++       * unticketed write as -ENOTSUP; the display may have woken meanwhile. */
++      if (error != -ENOMEM && error != -E2BIG && error != -ENOTSUP && error != -EBUSY &&
++          error != -EAGAIN) {
 +         (void)ticket_resolve(c);
 +         ticket_failed(c, error);
 +         return false;
@@ -9462,5 +9471,5 @@ index 0000000..148980b
 +#endif
 +#endif
 -- 
-2.47.3
+2.39.5 (Apple Git-154)
 
