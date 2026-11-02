@@ -15,7 +15,7 @@ failure corrected before final validation. Final GPU35/35 normal, --bb sysmem,
 --bb eligible-GMEM; MSAA4x color/depth/resolve3 iterations OFF/ON exact; shared GL
 sysmem/forced-GMEM PASS:all. Analyzer12/12; collector ASan/UBSan copied-access,
 12CB/trigger/capacity/deadline/pending PASS. Metal source commit e7e33fc;
-parent source/report commit recorded in final handoff.
+parent source/report commit a8b9bf3. No CI run or boot trial for this task.
 
 One final-source compositor capture:12CB/12 passes/12 batches, dropped0/pending0,
 144 accesses/17 lifetimes. 24 attachment intents,12 clears,72 attachment-draw
