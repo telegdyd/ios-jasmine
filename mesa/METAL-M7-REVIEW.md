@@ -1,5 +1,10 @@
 # M7 recovery review — 2026-11-02
 
+**Resolved in source:** Metal `b595b76` fixes the callback-readiness finding with
+shared actual-method host tests and P21 GPU coverage. See
+[fix and validation](METAL-M7-CALLBACKS.md). The review below describes `6bfd22c`;
+the fixed runtime remains uninstalled and the other M7 admission gaps stay open.
+
 Reviewed parent implementation `81f714f` and Metal implementation `6bfd22c`,
 including patch j0127, ticket retirement, replay/completion changes and new tests.
 This is a source/host-test review; no device inspection, reboot, installation or

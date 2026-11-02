@@ -1,3 +1,42 @@
+### 2026-11-02: M7 late-callback readiness bug FIXED in source, tested, not installed
+
+Metal commit b595b76. Report mesa/METAL-M7-CALLBACKS.md; review and active task
+queue updated. Scheduled/completed delivery now use separate flags instead of
+public Error status. Under one monitor, registrations append until FIFO snapshot
+draining has returned every queued/reentrant/concurrent handler; then readiness
+is published. External callbacks run outside monitor. Error stays Error. No
+admission/M6/context/fence policy changes and no compositor async enablement.
+
+Actual-method Foundation host ASan/UBSan PASS via checked-in
+sh mesa/metal/test/run-callback-delivery.sh. Covers before failure/behind earlier
+pending CB/own pending fence/after-delivery, reentrant and cross-thread drain FIFO,
+monitor not held by callback, independent scheduled readiness,50x64 concurrent
+publication exactly-once. Negative control restoring status>=3/4 shortcuts FAILS
+expected empty-log assertion. New GPU P21 holds earlier completion, registers
+after later CB Error, checks held/nested/after delivery exactly-once and status.
+
+VM m7callbacks PASS13s, m7callbacksfinal PASS14s, final m7callbackverify PASS13s,
+xnu/out-mesa-m7callbackverify. No CI/kernel build. Final GPU37/37 EACH normal,
+--bb sysmem, eligible-GMEM --bb, async --bb, async+deferred-scheduled --bb, sync--bb.
+P20 each32/32 callbacks,0 order/status errors,0 wrong final pixels. P21 passes
+all async-completion modes; queue-blocking P21 deliberately SKIPPED for BGMTL_SYNC
+(the setup would block its calling thread); P20 still exercises inline sync.
+Host readiness coverage independent of that skip. No new performance/FPS claim.
+
+Isolated test runtime only in /private/var/tmp/metal-m7callbacks; task files
+removed and directory EMPTY. All four installed libs and both envs pre/post read
+back BYTE-EXACT. No installed replacements/settings changed. Compositor remains
+M4 pair95cea7f9/3d91c9f6; wallpaper0d9fb5a2/eaf44cde; envs original only
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 and BGMTL_POSTER_SDR=1. Final bench active0/
+busy0,profiler idle,GPU1208/1208,pc mode1/HWCGon/displayon,maxTSENS49.8C. Shared
+phone lock released. No boot/flash/partition/kernel/clock changes; preceding
+temporary m7ack kernel retained. Evidence ignored research/metal-m7-callback.
+
+M7 still PARTIAL: next is ownership-aware refusal/retry,8-ticket bound and all
+imported destinations, then actual async compositor sleep/wake/reuse/panel checks.
+This fix is complete but not activated. Root source review found no additional
+actionable issue in helper/runtime/P21; six-mode/cleanup evidence reviewed.
+
 ### 2026-11-02: M7 review - late error callbacks bypass completion queue
 
 Reviewed parent81f714f / Metal6bfd22c. New review mesa/METAL-M7-REVIEW.md.

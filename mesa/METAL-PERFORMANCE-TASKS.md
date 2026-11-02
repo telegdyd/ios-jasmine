@@ -35,7 +35,7 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
 | M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
-| M7 | Partial | Cancellation ACK/retirement and pre-registered callback FIFO tested; fix late callback readiness, write admission/refusal, then compositor stress | [Recovery report](METAL-M7-ASYNC.md), [review](METAL-M7-REVIEW.md); async remains opt-in/off |
+| M7 | Partial | Cancellation ACK/retirement and late callback readiness fixed/tested in source; finish write admission/refusal, then compositor stress | [Recovery report](METAL-M7-ASYNC.md), [callback fix](METAL-M7-CALLBACKS.md); async remains opt-in/off |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
 Recommended next implementation investigation: **M7 asynchronous replay safety**.
@@ -134,11 +134,12 @@ A lifetime audit or safety fix alone leaves traffic elimination partial.
 
 ## M7 — Make asynchronous replay safe
 
-**Review finding:** Error status is published before queued fence completion, but
-late `addCompletedHandler:` registration treats it as completed and runs inline.
-Separate callback-delivery readiness from Error status and add deterministic late
-registration coverage; P20 currently covers pre-registered handlers only. The
-same status shortcut affects scheduled handlers. See [M7 review](METAL-M7-REVIEW.md).
+**Callback review finding resolved in source:** Metal `b595b76` separates scheduled/
+completed delivery flags from Error status. Shared-method host sanitizer tests cover
+late, reentrant and concurrent registrations; P21 exercises delayed error retirement
+on the GPU. All six isolated modes pass37/37, with the queue-specific P21 case
+explicitly skipped for synchronous completion. No installed runtime changes.
+See [fix and validation](METAL-M7-CALLBACKS.md).
 
 **Implemented follow-up:** [M7 recovery audit](METAL-M7-ASYNC.md) reproduces the
 cancelled-ticket backing retain, fixes proof-backed cancellation acknowledgement

@@ -1,5 +1,9 @@
 # M7 — cancellation recovery and replay ownership (partial)
 
+Follow-up: [callback delivery readiness](METAL-M7-CALLBACKS.md) fixes the later
+review's late-registration bug. It remains a tested, uninstalled source change;
+the admission and compositor validation work below is still outstanding.
+
 2026-11-02. **M7 remains partial.** The cancellation/submit race now has a
 deterministic reproducer and a tested recovery fix. Async compositor replay is
 still opt-in and has not been installed or promoted. Admission/refusal coverage
