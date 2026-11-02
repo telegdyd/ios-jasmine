@@ -1,6 +1,7 @@
 ### 2026-11-02: M7 late-callback readiness bug FIXED in source, tested, not installed
 
-Metal commit b595b76. Report mesa/METAL-M7-CALLBACKS.md; review and active task
+Main implementation/report e656c90; Metal commit b595b76.
+Report mesa/METAL-M7-CALLBACKS.md; review and active task
 queue updated. Scheduled/completed delivery now use separate flags instead of
 public Error status. Under one monitor, registrations append until FIFO snapshot
 draining has returned every queued/reentrant/concurrent handler; then readiness
