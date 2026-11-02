@@ -1,6 +1,7 @@
 ### 2026-11-02: M7 imported-write admission implemented/tested; not installed
 
-Metal implementation/tests ef74183. Report mesa/METAL-M7-ADMISSION.md; active queue
+Main implementation/report cba89e2; Metal implementation/tests ef74183.
+Report mesa/METAL-M7-ADMISSION.md; active queue
 and original M7 report updated. Encode-time tickets retained;32 destinations/CB,
 1024 process registry entries replace silent8 cutoff. Duplicate surface IDs reuse
 one generation. Registry retains standalone completion/state tokens, not CBs or

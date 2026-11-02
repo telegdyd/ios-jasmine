@@ -1,6 +1,6 @@
 # M7 imported-write admission â€” 2026-11-02
 
-Metal implementation/tests commit `ef74183`.
+Main implementation/report commit `cba89e2`; Metal implementation/tests `ef74183`.
 Implemented and validated in isolated processes; **not installed**. This closes
 the known log-and-proceed BEGIN refusal and silent eight-ticket limit for the
 implemented command-buffer texture-write paths. M7 as a whole remains partial:
