@@ -1,10 +1,14 @@
-### 2026-11-02: TEMPORARY M7 async panel check ACTIVE on the phone (user approved); restore pending
+### 2026-11-02: M7 async panel check PASSED (user: "Looks right"); original M4 runtime RESTORED
 
-User: "Yes, set it up". Compositor /usr/local/bin now m7suspend pair libbgair5501bbfe/libbgmtl e13d1174,
-bgmtl-bb.env = original + BGMTL_ASYNC=1; backboardd 30161 -> 30665; registration shows BGMTL_ASYNC=1.
-Wallpaper pair/poster env untouched. Backups research/metal-m7-panel/backup (M4 95cea7f9/3d91c9f6).
-RESTORE: python research/metal-m7-panel/panel.py restore (byte-exact readback; then normal M4 runtime).
-A reboot does NOT restore (files persist): run restore. Phone on temporary m7ack; lock released.
+Temporary install (4bbeccf entry): m7suspend pair libbgair5501bbfe/libbgmtl e13d1174 + BGMTL_ASYNC=1 in
+backboardd 30665; registration showed BGMTL_ASYNC=1. User used the phone, reported "Looks right".
+Session log slice (after the install registration): 0 command buffer failed, 0 guard q/s/r drops,
+0 QUEUE FALLBACK/reason16/CRASH/panic; tickets begin/seal 16749/15641 -> 19319/18211 (+2570 each),
+abort 1107 unchanged, error 231 unchanged; 1 display off/2 on. Earlier ring lines (18 failures) are run 6.
+RESTORED: panel.py restore, backboardd -> 30921, four libs + two envs byte-exact to the M4 backups,
+remote dir empty. Compositor M4 95cea7f9/3d91c9f6, envs original. Phone on temporary m7ack; lock released.
+Evidence research/metal-m7-panel. Still not installed; remaining M7: ticketed-at-replay in compositor,
+j0127 cancelled-SEAL, true fault/quarantine, same-surface pending reuse, installation decision.
 
 ### 2026-11-02: M7 display-suspended admission fixed; trial run 7 clean; not installed
 

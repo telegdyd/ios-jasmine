@@ -35,7 +35,7 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
 | M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
-| M7 | Partial | Display-suspended admission fixed; run 7 clean (zero `BEGIN refused`). User panel check inline+async; ticketed-at-replay/j0127/fault cases; installation decision | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
+| M7 | Partial | Display-suspended admission fixed; run 7 clean (zero `BEGIN refused`); user async panel check passed 2026-11-02 (temporary install, restored). ticketed-at-replay/j0127/fault cases; installation decision | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
 Recommended next implementation investigation: **M7 asynchronous replay safety**.
