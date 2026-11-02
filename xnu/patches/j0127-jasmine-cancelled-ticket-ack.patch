@@ -1,0 +1,46 @@
+Subject: [PATCH] jasmine: acknowledge cancelled submits without admitting their frames
+
+M7: a display cancellation retains imports until the producer acknowledges its
+writes. Accept a valid post-BEGIN submit proof as that acknowledgement, while
+keeping status=aborted. Never resurrect the cancelled generation. Readiness and
+presenter GPU/quiescence checks remain in force. Non-candidate ticket rejection
+(reason 16) drops the frame without permanently disabling protected admission.
+
+diff --git a/iokit/Kernel/arm/SweetRenderTickets.inc b/iokit/Kernel/arm/SweetRenderTickets.inc
+--- a/iokit/Kernel/arm/SweetRenderTickets.inc
++++ b/iokit/Kernel/arm/SweetRenderTickets.inc
+@@ -146,6 +146,20 @@
+ 	IOReturn ret = kIOReturnSuccess;
+ 	if (t->owner != owner || t->epoch != epoch) {
+ 		sweet_ticket_stale++; ret = kIOReturnAborted;
++	} else if (t->status == 2 && t->cancelled && !abort && seqno &&
++	    ((!t->backing && t->seqno == seqno) ||
++	    (t->backing && sweet_ticket_proof(owner, t, seqno) == kIOReturnSuccess))) {
++		/* A display epoch cancelled this frame while userspace still owned writes.
++		 * SEAL acknowledges their proven submit without making the frame displayable.
++		 * Job retains/gpuSeqno cover execution; the presenter still rejects status 2
++		 * and waits for backing AND GPU completion before releasing its snapshot. */
++		t->seqno = seqno;
++		backing = t->backing; t->backing = NULL;
++		sweet_ticket_unlink(t);
++		sweet_ticket_metadata(t);
++		sweet_bench_event(37, (uint32_t)t->generation,
++		    (uint32_t)(t->generation >> 32), seqno, 3); /* cancelled submit ACK */
++		IOLockWakeup(fb->fLock, fb->fQueueRec, false);
+ 	} else if (t->status) {
+ 		if (!(abort && t->status == 2) && !(t->status == 1 && !abort && t->seqno == seqno)) {
+ 			sweet_ticket_stale++; ret = t->status == 2 ? kIOReturnAborted : kIOReturnBusy;
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1585,7 +1585,9 @@
+ 	fDrops++;
+ 	if (reason < 16) { fDropReason[reason]++; }
+ 	sweet_bench_event(34, id, fEpoch, reason, 0);
+-	queueFallback(reason);
++	/* Ticket readiness/epoch rejection is a dropped transaction, not permission
++	 * to scan a frame still being written. Keep the previous frame and queue. */
++	if (!(sweet_tickets_enabled() && reason == 16)) { queueFallback(reason); }
+ 	IOLockUnlock(fLock);
+ 	return error;
+ }

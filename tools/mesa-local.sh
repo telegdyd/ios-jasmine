@@ -138,6 +138,11 @@ mesa)
 		codesign -f -s - --entitlements ios/entitlements.plist "$OUT/$probe"
 	done
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
+		mesa/metal/test/bgmtl_ticket_probe.m -L"$OUT" -lbgmtl -lbgair \
+		-framework Foundation -framework Metal -framework IOSurface -framework IOKit \
+		-Wl,-rpath,@executable_path -o "$OUT/bgmtl_ticket_probe"
+	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgmtl_ticket_probe"
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
 		-Wno-deprecated-declarations mesa/metal/test/bgmtl_mps_probe.m -L"$OUT" -lbgmtl \
 		-framework Foundation -framework Metal -framework MetalPerformanceShaders \
 		-Wl,-rpath,@executable_path -o "$OUT/bgmtl_mps_probe"

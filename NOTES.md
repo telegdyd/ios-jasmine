@@ -1,3 +1,57 @@
+### 2026-11-02: M7 PARTIAL - cancelled tickets recover; admission audit remains
+
+Metal source/tests 6bfd22c. Report mesa/METAL-M7-ASYNC.md. M7 is NOT complete;
+compositor async remains opt-in/off and no new runtime libraries are installed.
+Actual-kernel-function harness reproduces BEGIN -> display cancellation -> submit
+-> SEAL: old source returns Aborted and retains backing. Patch j0127 accepts a
+valid submit proof as cancellation ACK, detaches backing, leaves status=aborted;
+readiness never resurrects that frame. Reason16 rejection now drops without
+boot-long protected-queue fallback. Other fallback reasons unchanged.
+
+Metal checks ticket retirement, waits before failed-SEAL/missing-seqno ABORT,
+retains unknown-drain protection, flushes partial replay on errors, preserves
+success/error completion FIFO and bounds completion autoreleases. Whole-CB
+context ownership replaces per-work unlocks (shared refresh epoch/profile scope).
+M1-M4 and M6 sticky feedback/sysmem guard preserved. No performance/work-reduction
+claim or interpretation of incomplete worker profiles.
+
+VM kernel m7ack PASS55s -> xnu/out-jasmine-m7ack. Mesa m7retire PASS14s,
+m7fifo PASS13s, m7epoch PASS14s -> xnu/out-mesa-m7epoch. Final two library pairs
+byte-identical. No CI. Initial image helper failed on CRLF argument before boot;
+corrected. ONE temporary fastboot boot shim/out/shim-boot-m7ack-m7ack.img PASS.
+No flash or partition change. Device now remains on temporary m7ack with original
+M4 userland; normal reboot returns to installed boot image. No activation pending.
+
+Host ASan/UBSan actual-source race/refusal/reuse/proof/idempotence tests PASS;
+old source assertion FAIL reproduced. Runtime retirement helper sanitizer PASS.
+Final-source GPU36/36 normal, --bb sysmem, eligible-GMEM, async on pre-existing
+kernel; async36/36 again on new m7ack kernel. P20 queues32CB with middle deliberate
+oversized-buffer error:32/32 callbacks,0 order/status/pixel errors each path.
+New-kernel MSAA4x color/depth/resolve3 iterations OFF/ON exact; shared GL sysmem
+and forced-GMEM PASS:all. Hardware backend epoch probe normal/pre-submit/post-
+submit cancellation PASS, same backing new-generation pixels exact; pending reuse
+refused. Generations1-6,epochs2-4,seqnos28-33. Bounded57event capture dropped0:
+two cancel events followed by ACKs(seq30/32). Event35 client-close notification
+is NOT a queue fallback. No QUEUE FALLBACK/panic/GPU-fault diagnostic in bounded
+boot log. Hardware reason16 admission rejection and async compositor panel NOT
+exercised; the backend probe never submits a display record.
+
+Outstanding M7: bgTicketFor still logs BEGIN refusal and proceeds;8-ticket cap
+silently stops collection; full imported write admission for blit/compute/depth/
+stencil is missing. These are source gaps, not observed CA uses of every path.
+Next: bounded actual-destination set + ownership-aware pending-reuse/refusal/retry
+that protects all writes and preserves callback/resource order. Do not move BEGIN
+or silently discard dependent work without a proof. Then actual compositor async
+sleep/wake/surface reuse trials and user's panel check. True-fault fallback beyond
+reason16 still unaudited for async. No default async enablement authorized by tests.
+
+FINAL all four installed libraries + both envs read back byte-exact: compositor
+M4 pair95cea7f9/3d91c9f6, wallpaper0d9fb5a2/eaf44cde. Env only
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 and BGMTL_POSTER_SDR=1 respectively. Neither
+process's files/env were replaced. Isolated test binaries removed; remote metal-m7
+directory EMPTY. Bench active0/busy0,profiler idle,GPU337/337,pc mode1,on display,
+maxTSENS51.4C. Shared phone lock confirmed absent. Evidence ignored research/metal-m7.
+
 ### 2026-11-02: M6 partial status clarified; defer until a concrete proof strategy
 
 Reviewed latest lifetime report and a8b9bf3 / Metal e7e33fc after user noted M6

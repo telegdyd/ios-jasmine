@@ -99,6 +99,14 @@ if [ -f "$TREE/xnu/patches/j0122-jasmine-gpu-pool-compositor-share.patch" ]; the
 	}
 fi
 
+if [ -f "$TREE/xnu/patches/j0127-jasmine-cancelled-ticket-ack.patch" ]; then
+	grep -q 'cancelled submit ACK' dxb/xnu/iokit/Kernel/arm/SweetRenderTickets.inc &&
+	grep -q 'sweet_tickets_enabled() && reason == 16' dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp || {
+		echo 'M7 cancelled-ticket recovery patch was not applied; refusing this kernel' >&2
+		exit 1
+	}
+fi
+
 rm -rf out && mkdir -p out
 cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
 test -s out/kernel.development.sweet || { echo "no kernel: see build.log" >&2; grep -E " error:" build.log | head -20 >&2; exit 1; }
