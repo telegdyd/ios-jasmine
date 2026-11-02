@@ -1,3 +1,27 @@
+### 2026-11-02: M7 review - late error callbacks bypass completion queue
+
+Reviewed parent81f714f / Metal6bfd22c. New review mesa/METAL-M7-REVIEW.md.
+One P1 finding: bgFailWith publishes status5 before queued fence drain, while
+addCompletedHandler uses status>=4 and runs a late handler immediately. Can
+signal reuse before partial GPU work finishes/overtake queued completions.
+addScheduledHandler similarly conflates error with scheduled. Shortcut predates
+M7, but the modified deferred error-completion path still bypasses FIFO for late
+registrations. P20 pre-registers all handlers and does not cover this case.
+
+Actual-method Foundation host reproducer on mac VM confirms immediate late
+handler invocation before any completion delivery. Actual-source kernel ticket/
+reason16 harness and runtime retirement tests PASS under WSL GCC ASan/UBSan;
+WSL clang absent, GCC used. No kernel/Mesa build, CI or device actions. Evidence
+ignored research/metal-m7-review. No runtime fix implemented in this review.
+
+Active M7 queue updated: distinct scheduling/completion delivery readiness and
+late-registration regression, alongside known BEGIN refusal/eight-ticket cap/
+all-imported-destination admission. Keep async off. No additional kernel ACK
+issue established; host stubs are not full presenter/hardware coverage. Last
+device state remains preceding temporary m7ack/M4-userland handoff, not freshly
+checked. Next: admission/refusal and callback-readiness fixes before compositor
+async sleep/wake/reuse/panel trials. M7 remains PARTIAL.
+
 ### 2026-11-02: M7 PARTIAL - cancelled tickets recover; admission audit remains
 
 Main implementation/report 81f714f; Metal source/tests 6bfd22c.
