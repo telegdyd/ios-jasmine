@@ -1,3 +1,58 @@
+### 2026-11-02: M6 PARTIAL - feedback safety fixed; no traffic optimization promoted
+
+Source/report commit 8e64b9c; Metal implementation/tests 587e6b8. Report
+mesa/METAL-M6-TRAFFIC.md. M6 is NOT complete: lower GPU bytes/busy time and
+end-to-end cost are unestablished. Existing installed M1-M4 runtime retained.
+
+Found Metal's retained texture-fetch barrier omitted the sticky sysmem batch
+constraint and M5 feedback counters. M5's zero feedback fields did NOT establish
+GMEM eligibility. Fixed retained markers/pre-draw counts; patch0030 carries the
+fetching-draw constraint across dependency tracking to the actual emitting batch,
+including empty-batch fallback. GL tile-fetch experiment cannot override Metal's
+memory descriptors. Existing clear order/batching/barriers/tickets/MSAA intact.
+No attachment/copy removal, blur-quality change or default GMEM enablement.
+
+VM m6guard PASS14s, m6retained PASS12s, m6tracked PASS21s, m6final PASS12s;
+final m6traffic PASS13s. No CI or boot trials. First traffic-probe link used a
+wrong factory symbol, fixed before execution; diagnostic/write-mask revisions
+built too. Final traffic pair is byte-identical to m6final. Final GPU35/35 native,
+forced-sysmem --bb AND forced-eligible-GMEM --bb. Expanded P10: retained and empty
+fallback, later color1-only clear, partial redraw/Load preservation;5624 exact
+values each path. MSAA4x color/depth/resolve3 iterations selectorOFF/ON exact.
+Shared GL sysmem/forced-GMEM PASS:all; M5 analyzer4/4.
+
+Corrected loss-free Home120CB/2619 passes/2682 batches,sum1950.96ms,
+union1374.66ms. Fullscreen dual-BGRA:301 fetching batches/3466 draws/1209.27ms
+(62.0% total sum);168 nonfetch batches/168 draws/359.06ms. Final-source forced
+GMEM Home120CB/3085 passes/3178 batches,sum2648.61ms,union2601.47ms;fullscreen
+fetch310 batches/3874 draws/1470.61ms stay sysmem;nonfetch229/239/676.21ms tile.
+Different source/window/workload mixes: NO before/after speed claim or bus bytes.
+Second attachment live within fetching batches; post-pass consumer lifetime UNKNOWN.
+
+Same-pair deterministic828x1792 dualBGRA Load/Clear,Store/Store,one scissored draw,
+40CB each OFF/ON/ON/OFF,discard5 startup:means2.362/3.576/3.500/1.760ms;
+all0wrong/2967552 pixels,maxTSENS56.6C. Wall time includes CPU/queue/GPU/observation.
+No verified unnecessary traffic eliminated; forced GMEM not promoted. This is not
+rolling back proven work elimination because of noisy frame scores. Initial
+exploratory probe left absent color1 output writable and changed half its alpha
+values to0; rejected timing/pixel evidence. Final probe explicitly write-masks
+color1. General absent-output semantics remain a separate unresolved question.
+
+FINAL four original libraries + both envs read back byte-exact; compositor retains
+M4 pair95cea7f9/3d91c9f6; wallpaper original0d9fb5a2/eaf44cde untouched throughout.
+Env exact:bb CA_DISABLE_FRAMEBUFFER_COMPRESSION=1;poster BGMTL_POSTER_SDR=1.
+Bench active=0 busy=0,profiler idle,GPU27156/27156,pc mode1,maxTSENS56.3C.
+Task CSVs/trigger/binaries removed;remote metal-m6 directory verified EMPTY;
+shared phone lock released. Phone remains iOS. No reboot/flash/partition/kernel/
+clock changes, new baseline or physical-panel/FPS claim. Evidence ignored
+research/metal-m6. No activation pending.
+
+Next concrete M6 action: bounded attachment resource/alias identities and ALL
+intervening consumers (next-pass loads/sampling,copies,resolves,CPU/external
+exposure), plus actual pipeline write/fetch masks. Prove post-pass deadness or
+region-safe scratch usage before removing a store/intermediate/clear. Fetching
+batches cannot use current GMEM texture descriptors. Wallpaper M5 gap remains open.
+
 ### 2026-11-02: M5 PARTIAL — compositor ranked; wallpaper export remains unresolved
 
 Main collector/analyzer/report commit d07f64a; Metal hooks 3b880d7. Report
