@@ -1,3 +1,11 @@
+### 2026-11-02: TEMPORARY M7 async panel check ACTIVE on the phone (user approved); restore pending
+
+User: "Yes, set it up". Compositor /usr/local/bin now m7suspend pair libbgair5501bbfe/libbgmtl e13d1174,
+bgmtl-bb.env = original + BGMTL_ASYNC=1; backboardd 30161 -> 30665; registration shows BGMTL_ASYNC=1.
+Wallpaper pair/poster env untouched. Backups research/metal-m7-panel/backup (M4 95cea7f9/3d91c9f6).
+RESTORE: python research/metal-m7-panel/panel.py restore (byte-exact readback; then normal M4 runtime).
+A reboot does NOT restore (files persist): run restore. Phone on temporary m7ack; lock released.
+
 ### 2026-11-02: M7 display-suspended admission fixed; trial run 7 clean; not installed
 
 Metal9ff68e9/mainfc90f81:encode-time -EAGAIN deferred,replay retries BEGIN once,
