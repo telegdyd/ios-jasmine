@@ -1,3 +1,38 @@
+### 2026-11-02: Performance backlog reviewed against completed M1-M6 work
+
+User requested review of progress and revision of remaining tasks. Reviewed all
+six result reports, recent parent commits and source/patch boundaries. Rewrote
+mesa/METAL-PERFORMANCE-TASKS.md as the active queue. M1-M4 closed as accepted and
+installed; no repeated score-based acceptance work. Main implementation commits:
+M1 7e5e11b (Metal default c121e6a), M2 b5fdc8e (8c82bae), M3 10d4922 (ccb3cc7),
+M4 be18737 (91d1aa9). Original baseline2 is historical, not current M4 performance.
+
+M5 narrowed to wallpaper effective config/replay arming/harvest/export, using
+bounded targeted inspection rather than another whole-UI attempt. Compositor
+ranking already exists; whole-GPU client ranking remains incomplete. M6 narrowed
+to resource/alias/subresource identities, ALL intervening consumers, write/fetch
+masks and region-safe lifetime proof. Required color1 feedback/clear/preservation
+cannot be deleted; broad GMEM is not an immediate task. M6 safety patch0030 and
+Metal 587e6b8 remain source-tested, NOT installed (main 8e64b9c / handoff232284c).
+Keep the constraint in subsequent candidate builds. No M6 activation pending.
+
+M7 remains open independently of finishing M5/M6: targeted ticket/epoch race,
+protected recovery and worker lifetime/drain ownership. Existing M3/M5 profiling
+assumes inline/TLS ownership; audit before worker profiles. M8 inline wait/drain
+attribution can start independently; async conclusions require safe M7. Removed
+arbitrary ten-boot quota and mandatory aggregate CPU/FPS gains as acceptance gates;
+require scenario coverage and exact correctness-preserving work reduction instead.
+Explicit latency or traffic claims still require appropriate evidence.
+
+Added conditional follow-ups for remaining linear uploads, format500 retries,
+M6 absent-MRT-output/write-mask correctness, uniform offsets and residual allocation/
+threading. No active compositor bug inferred from rejected M6 probe. Marked older
+METAL-SPEED-IDEAS.md historical and linked active queue. Documentation/link/diff
+validation only; no builds/CI/device contact/runtime changes/new measurements.
+Last device state remains the preceding M6 handoff, not freshly inspected here.
+Next concrete optimization investigation: M6 bounded attachment lifetime graph;
+M5 wallpaper diagnostics are independent and do not block compositor-only work.
+
 ### 2026-11-02: M6 PARTIAL - feedback safety fixed; no traffic optimization promoted
 
 Source/report commit 8e64b9c; Metal implementation/tests 587e6b8. Report

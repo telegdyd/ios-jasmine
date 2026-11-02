@@ -1,5 +1,10 @@
 # Metal speed: ideas to get back to (and past) the GL path
 
+Historical experiments as of 2026-11-01. M1–M4 have since been implemented and
+installed; M5/M6 established narrower remaining work. Use the
+[current task queue](METAL-PERFORMANCE-TASKS.md) for status and next actions.
+The "installed now" figures and priorities below describe the earlier runtime.
+
 Written 2026-11-01, after Metal became the installed default (see [METAL-STEP7.md](METAL-STEP7.md) for the rounds
 behind every number here). Each idea says what we saw, what it might give, the risk, how to test it and where to
 start. They are ordered by expected gain per effort. **Observations** are measured; **guesses** are marked.

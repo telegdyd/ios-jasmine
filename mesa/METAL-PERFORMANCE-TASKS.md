@@ -1,301 +1,217 @@
 # Metal performance tasks
 
-Status (2026-11-02): M1's packed-image upload elimination is accepted and enabled
-by default: verified unnecessary uploads are removed with pixel correctness
-preserved. See [M1 results and decision](METAL-M1-UPLOADS.md).
-M2 is implemented and validated (2026-11-02): exact repeated refusal output is
-removed, with 30/30 normal and compositor GPU checks. See
-[M2 results and remaining format question](METAL-M2-REFUSALS.md).
-M3 removes unused binning state emission for forced-system-memory batches;
-the inventory measures one state emission per draw instead of two. See
-[M3 results and safety boundary](METAL-M3-STATE.md).
-M4 now bounds deferred submission groups instead of rejecting individual
-30-BO batches: 121 observed kernel calls, versus 157 projected by the old policy
-on the same recorded batch stream; final normal/compositor/opt-out suites pass
-32/32. See [M4 results and measurement limits](METAL-M4-SUBMITS.md).
-M5 instrumentation and compositor attribution are implemented; full-screen
-two-attachment passes supply an M6 candidate. Wallpaper GPU-time/traffic
-attribution remains open, so M5 is partially complete. See
-[M5 evidence and remaining client gap](METAL-M5-PASSES.md).
-M6 is partially investigated: corrected Metal feedback eligibility, validated
-sysmem/GMEM selection, and rejected unproven attachment removal/global GMEM.
-No traffic optimization promoted; see [M6 audit and remaining work](METAL-M6-TRAFFIC.md).
-M7-M8 remain proposed.
+Reviewed 2026-11-02 against the M1–M6 reports, implementation patches and active
+NOTES.md handoff. This is the current queue; the original task descriptions and
+November 1 profile remain historical evidence, not an instruction to repeat work.
 
-User clarification: optimize unnecessary work, not benchmark scores. A verified
-work reduction with preserved correctness does not require an aggregate FPS or
-CPU-time speedup for acceptance. Reuse recorded baselines and keep validation
-bounded; do not roll back useful optimizations merely because a noisy whole-frame
-capture shows no speedup.
+**Acceptance:** remove verified unnecessary work while preserving correctness.
+An aggregate FPS/CPU gain is not required to accept a demonstrated work reduction.
+Reuse existing captures and keep validation bounded. Timing can supply context;
+it must not become a reason to undo correct, proven work elimination.
 
-Evidence: [fresh profile](METAL-PERF-20261101.md). Earlier experiments and known
-failure cases: [speed ideas](METAL-SPEED-IDEAS.md), [step 7](METAL-STEP7.md).
+## Completed and installed
 
-The recorded baseline is j0126 with the clean ccfix libraries: roughly 36 Home and
-31–32 Control Center swap arrivals/s. Render CPU is approximately 25/29 ms per
-update; whole-GPU busy work is approximately 20 ms per swap in separate counter
-windows. These estimates overlap, use different windows, and cannot be added.
-60 updates/s provides a 16.7 ms budget: CPU and GPU both need improvement.
+| ID | Accepted result | Evidence / boundary |
+| --- | --- | --- |
+| M1 | Exact-content reuse avoids repeated packed-image uploads; default on | 35 uploads / 51,932,160 bytes avoided in a bounded window; mutable data and GPU/CPU invalidation covered. Linear-buffer uploads remain a possible follow-up. [Report](METAL-M1-UPLOADS.md), main `7e5e11b`, Metal default `c121e6a`. |
+| M2 | Repeated identical texture-refusal output is aggregated | 433 repeats replaced by five summaries after the initial error; unsupported requests still return nil. Format 500 and downstream retry cost remain unresolved. [Report](METAL-M2-REFUSALS.md), main `b5fdc8e`, Metal `8c82bae`. |
+| M3 | Unused binning-state emission omitted for eligible forced-sysmem batches | One emission per draw instead of two. Actual draw state, resource tracking, MSAA/GMEM binning and streamout remain protected. Repeated-reference fast paths already exist; no further tracking removal is justified yet. [Report](METAL-M3-STATE.md), main `10d4922`, Metal `ccb3cc7`. |
+| M4 | Bounded deferred submission groups replace the individual 30-BO heuristic | 121 observed calls vs 157 old-policy projected calls on the same batch stream. Limits: 512 conservative BO references / 128 commands, pre-append drain. No GPU batch merge or latency/FPS claim. [Report](METAL-M4-SUBMITS.md), main `be18737`, Metal `91d1aa9`. |
 
-## Order and dependencies
+These are closed implementation milestones. Do not reopen them to obtain a new
+benchmark score. Further work needs a specific remaining unnecessary operation.
+The original [baseline](METAL-PERF-20261101.md) predates M1–M4: its CPU shares and
+36 Home / 31–32 CC swap arrivals/s are not current installed-runtime measurements.
 
-| ID | Task | Priority | Dependency | Main outcome |
-| --- | --- | --- | --- | --- |
-| M1 | Attribute and reduce CPU texture uploads | First | Upload inventory before implementation | Less CPU copying and upload traffic |
-| M2 | Deduplicate repeated refusal diagnostics | Early, contained change | None | Less logging on the render thread |
-| M3 | Reduce state emission and resource tracking | Next | Batch/draw inventory | Less CPU work per draw/batch |
-| M4 | Reduce flush and submission overhead | Next | Dependency graph and submit inventory | Fewer unnecessary batch/submit operations |
-| M5 | Attribute GPU time and traffic by pass/client | Early investigation | None | Identify the real GPU traffic sources |
-| M6 | Reduce GPU intermediate/copy traffic | After M5 | M5 attribution | Less RAM traffic and GPU busy time |
-| M7 | Make asynchronous replay safe | Larger change | Reproduce and fix ticket race first | Overlap CA work with driver replay |
-| M8 | Identify remaining completion/presentation stalls | After earlier savings; record timeline earlier if useful | Safe M7 for async conclusions | Shorter frame chain and fewer long gaps |
+Last verified installed compositor pair is M4: libbgair `95cea7f9…`, libbgmtl
+`3d91c9f6…`. Wallpaper still uses `/usr/local/p/` pair `0d9fb5a2…` / `eaf44cde…`.
+M5 diagnostics and M6 feedback-safety changes are committed and tested in source,
+but are **not installed**. No activation is pending from those experiments.
+M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 
-M1 and M5 supply the most useful missing evidence. M2 is a small independent
-candidate. M3/M4 overlap: one successful batch change can affect both, so measure
-them separately before claiming combined savings. This ordering does not authorize
-simultaneous device workloads or concurrent VM builds.
+## Remaining queue
 
-## M1 — Attribute and reduce CPU texture uploads
+| ID | Status | Revised work | Dependency |
+| --- | --- | --- | --- |
+| M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
+| M6 | Partial | Prove attachment lifetime/coverage, then eliminate a specific dead operation | Use corrected M6 feedback metadata and actual resource/alias identities |
+| M7 | Open | Reproduce ticket race and make asynchronous replay safe | Independent of completing M5/M6; preserve M1–M4 and M6 safety boundaries |
+| M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
-**Why:** `rwaTexture -> rwa_texture_write -> util_copy_box -> memmove` accounts for
-approximately 24% of render CPU on Home and 17% in Control Center. That is roughly
-5–6 ms per sampled update: the largest directly measured target in our code.
+Recommended next implementation investigation: **M6 attachment-lifetime evidence**.
+M5's wallpaper gap is a separate, targeted diagnostic task; it does not block
+compositor-only M6 work. M7 is another substantive route if M6 finds no removable
+operation. M8 should evaluate M4's unmeasured latency implications when relevant.
+This queue does not authorize concurrent device workloads or VM builds.
 
-**Work:** Add opt-in, bounded aggregate diagnostics for refreshed textures. Record
-source kind (`_linSrc`, `_ncBytes`, copied IOSurface), dimensions, pixel format,
-mip count, source/resource identity, bytes uploaded and upload count per frame.
-Separate first upload, content update and repeated unchanged content. Attribute the
-largest sources before choosing an implementation. Investigate a GPU-readable alias
-of buffer-backed linear textures where layout, alignment, lifetime and cache
-coherency permit it. Otherwise use an existing producer modification generation if
-one is valid, or retain a copy path for mutable sources. Diagnostics must not dump
-pixel payloads or print one line per draw in the performance build.
+## M5 — Resolve the wallpaper attribution gap
 
-**Where:** `mesa/metal/src/bgmtl.m`, especially `rwaTexture`, `rwaTextureSampledLocked`,
-`newLinearTextureWithDescriptor:...` and `newTextureWithBytesNoCopy:...`;
-`mesa/metal/air/air_metal.c`, texture creation/import/write paths.
+**Already established:** The compositor collector/analyzer exists, rejects
+lost/pending captures and ranks its passes. M6 corrected missing feedback markers:
+the original M5 zero-feedback fields do not prove GMEM eligibility. In corrected
+M6 Home evidence, fullscreen fetching batches account for 62% of summed compositor
+execution envelopes. These are pipeline-draining timestamp envelopes, not bus-byte
+measurements or isolated shader timings. See [M5](METAL-M5-PASSES.md) and
+[M6](METAL-M6-TRAFFIC.md).
 
-**Risks:** Caller memory can change between commits without our knowledge; pointer
-identity does not establish unchanged contents. Sharing backing memory changes
-synchronization and ownership. Respect mip/block pitches, unaligned rows, CPU cache
-cleaning, CPU blits and resource destruction. A hash/memcmp pass may cost as much as
-the upload. `RWA_LINEAR_SAMPLED` already exists; enabling it alone is not proof of
-zero-copy aliasing of caller memory.
+**Remaining work:** Inspect the active wallpaper process's effective profiling
+configuration and entry into `bgReplayFrom:` / `sweet_m5_begin`. Distinguish failure
+to arm, absent replay hooks, unfinished activity-driven collection, timestamp
+harvesting and export failure. Loaded libraries and precreated writable files did
+not establish successful collection. Use bounded stage counters or targeted
+wallpaper-only stacks; the current framebench user-stack/map whitelist excludes
+wallpaper renderers. Do not repeat whole UI/counter runs to guess which stage failed.
 
-**Done when:** The largest upload sources and their lifecycle are documented; one
-safe path demonstrably avoids unnecessary uploads while preserving mutable
-contents. CPU/frame measurements provide context, not an aggregate-speedup gate.
-Pixel tests cover initial data, mutation after creation and between commits,
-multiple draws per commit, CPU blits, and relevant mip/compressed formats. The
-normal and compositor GPU correctness suites pass, including derivative edges.
-The full 5–6 ms is an opportunity bound, not a promised saving.
+Once the path is understood, obtain one complete bounded wallpaper capture or
+document and instrument its actual alternate submission path. Keep process/context
+identities and missing timing coverage explicit. Do not assign compositor average
+cost to wallpaper jobs: twelve wallpaper calls/IBs do not establish their GPU time.
+Per-pass hardware byte attribution remains optional instrumentation work, not a
+reason to invent bytes from attachment dimensions.
 
-## M2 — Deduplicate repeated refusal diagnostics
+**Where:** `mesa/metal/src/bgmtl.m`, `mesa/metal/air/air_metal.c`, M5 collector in
+patch0029, `tools/g2/metalpasses.py`, targeted profiler task selection.
 
-**Why:** Rejected pixel-format-500 sampled textures generate repeated messages with
-tracing off. `bg_log` takes about 3%/2% of render CPU on Home/CC; kernel console
-transmission also appears in the profile.
+**Done when:** Wallpaper collection behavior has an established cause and relevant
+client work is attributed with complete records, or a precisely documented
+instrumentation limitation remains. Whole-GPU rankings require actual client
+coverage; compositor-only findings may proceed independently. Restore all four
+libraries and both environment files after temporary diagnostics.
 
-**Work:** Retain the first useful error and aggregate identical repeats with a
-bounded key/count table or rate limit. Emit a periodic suppressed-count summary;
-keep distinct failure reasons visible. Separately record which caller requests
-format 500 and whether refusal causes repeated allocation attempts or a costly
-fallback. Establish the private format's meaning from local evidence before
-considering support; format support is a separate follow-up if justified.
+## M6 — Prove attachment deadness or smaller scratch coverage
 
-**Where:** `bg_log` and texture-creation refusal paths in `bgmtl.m`.
+**Already established:** Color1 is live within the rounded-corner save/restore
+sequence. Color0 Load preserves partial redraws; the independent color1 clear can
+supply pixels read by later fetches. Store/Store has no proven dead store. Current
+Metal attachment texture-fetch descriptors require sysmem; GL's experimental
+tile-fetch option does not make them GMEM-safe. The corrected constraint follows
+the fetching draw through dependency tracking and empty-batch fallback (Metal
+`587e6b8`, patch0030; main `8e64b9c`). Keep this safety fix in subsequent candidates.
 
-**Risks:** Hiding new failures, unbounded diagnostic state, synchronization overhead,
-or accidentally altering fallback behavior while changing logging.
+The deterministic eligible-GMEM trial passed pixels but established no eliminated
+operation or traffic benefit. Broad GMEM enablement and attachment deletion are
+therefore removed as immediate implementation tasks. This decision does not reject
+proven work elimination on the basis of noisy frame scores.
 
-**Done when:** Repeated failures produce bounded output; new reasons remain visible;
-the renderer returns the same result for unsupported textures. Verified skipped
-log/console operations establish work reduction; matched profiles can supply CPU
-context but are not a promotion gate under the user's clarification above.
-Any gain from format support requires its own
-correctness evidence and measurement.
+**Remaining work:** Extend the bounded collector with stable resource/backing and
+alias identities, subresource/mip/layer identity, actual pipeline write/fetch masks,
+clear/draw regions and accesses in execution order. Include every intervening
+consumer: later pass loads/samples, copies, resolves, CPU access and external
+IOSurface exposure. Slots zero/one and truncated shader labels are not a complete
+resource-access record. If aliases, consumers or final lifetime are unknown, mark
+them unknown; do not call a store dead at the capture boundary.
 
-## M3 — Reduce batch state emission and resource tracking
+Use that graph to select one concrete operation: a store before a complete
+replacement with no intervening observer, an intermediate with no consumer, or a
+scratch region whose smaller bounds preserve every clear/fetch requirement.
+Any clear/store removal needs a proof covering the affected pixels and lifetime.
+If no such operation exists, record the negative result and move to M7 rather
+than forcing a traffic change. Fetching-pass GMEM would require a separate valid
+fetch implementation and pixel proof; it is not an environment-switch task.
 
-**Why:** CC spends about 11% of render CPU under `fd5_emit_state` and 6% under
-`batch_draw_tracking` (Home: roughly 7% and 4%). Existing equal-bind caching already
-removes some per-draw work; remaining cost includes new-batch re-emission.
+**Where:** Metal pass/replay/texture code, `air_metal.c` attachment/feedback paths,
+patch0029 collector and patch0030 constraint, `tools/g2/metalpasses.py`.
 
-**Work:** Count render passes, batches, draws per batch, dirty-state transitions and
-resource insertions per command buffer. Identify repeated tracking of the same
-resource and full state emission after target changes. Then make one focused
-change: deduplicate a proven repeated reference, narrow invalidation where valid,
-or avoid a redundant pass/batch transition. Preserve the driver state that must be
-restored for each independently executable command stream.
+**Done when:** One proven unnecessary operation is removed, with exact pixel
+coverage for rounded corners, later color1-only clears, partial redraw/Load,
+resource reuse/aliases, blur borders and MSAA. Validate affected normal/compositor
+and shared GL paths. Count the actual removed operation/region/bytes where
+established; label logical footprint estimates separately from bus traffic.
+GPU/end-to-end timing is context, not a mandatory aggregate-speedup gate.
+A lifetime audit or safety fix alone leaves traffic elimination partial.
 
-**Where:** `air_metal.c` state cache/binding paths and the patched Mesa a5xx
-`fd5_emit_state`, `fd5_program_emit`, batch resource-tracking code. Keep repository
-patches synchronized with any edits to the build tree.
+## M7 — Make asynchronous replay safe
 
-**Risks:** Missing dependencies, stale constants/samplers/attachments, or freed
-resources used by a later submission. State can be unchanged in the application
-and still need re-emission in a new GPU batch.
+**Why still needed:** M1–M4 reduce work; they do not move replay off CA's thread.
+Async remains opt-in/off in the installed environment. Historical r26 improved CC
+throughput but exposed an encode-to-submit ticket/epoch race, persistent fallback
+and visible corruption. That result is not a new gain on the M4 runtime.
 
-**Done when:** Fewer measured state/tracking operations preserve draw results
-across target switches, resource rebinding,
-feedback, destruction/recreation and new command buffers. Report overlapping
-costs as inclusive rather than adding their percentages. CPU per matched frame
-provides context; verified unnecessary-work elimination is sufficient under the
-user's acceptance criterion above.
+**Remaining work:** Build a bounded, targeted reproducer for display epoch changes
+and surface reuse between ticket begin, replay, submit and seal. Trace ownership,
+invalidations and admission. Design recovery that retains the last valid displayed
+frame and rejects an invalid frame without exposing in-flight writes or disabling
+protection for the rest of the boot. Consider moving ticket begin only after
+proving it still protects all writes. Preserve ordered callback and resource
+lifetimes, FIFO submissions and M4's group limits/drain requirements.
 
-## M4 — Reduce batch flush and kernel submission overhead
+Existing M3/M5 diagnostics assume serialized inline replay/TLS scope. Audit their
+thread ownership and coverage before interpreting worker-thread profiles; missing
+records must not look like reduced work. Retain M6's sticky sysmem restriction
+across worker/context handoffs and any refreshed build.
 
-**Why:** `flush_submit_list` accounts for around 3% Home / 5% CC render CPU. The
-sampled timeline averages roughly 2 Home and 3–4 CC jobs per update. Some batches
-are dependencies between offscreen passes; fewer submissions may also reduce
-state/allocation churn.
+**Where:** `bgmtl.m` commit/replay/tickets/completion paths; kernel render tickets,
+presentation rejection and fallback, starting with patch j0110 and later changes.
 
-**Work:** Record a bounded graph of batches, resource read/write dependencies,
-flush reasons, kernel submissions and buffer counts. Distinguish required GPU
-ordering from an avoidable CPU flush or kernel call. Check whether Metal gets the
-same applicable bounded dependency handling as the existing GL path. Evaluate
-deferred submission or aggregation without changing draw order or dropping
-framebuffer-fetch barriers. A multi-batch submission and a merged GPU batch are
-different changes and should be tested independently.
+**Done when:** The race reproducer, surface reuse and display sleep/wake stress
+preserve display protection and recover correctly. Use a bounded set of temporary
+boot trials when boot-time epoch coverage requires it, plus affected GPU suites
+and the user's panel check. No arbitrary ten-boot quota or aggregate FPS threshold
+is required. Document which race scenarios were exercised and why the evidence
+covers them. Permanent partition flashing still requires user confirmation.
 
-**Where:** `air_metal.c` render/flush paths, Mesa batch dependency handling,
-`flush_deferred_submits` and `flush_submit_list`, relevant `mesa/patches`.
+## M8 — Attribute waits, callback delay and long gaps
 
-**Risks:** Dependency cycles, longer queue latency, early ticket sealing, missing
-cache barriers and hangs when a texture transitions from render target to sample.
+**Why still needed:** Completion/presentation behavior was not changed by M1–M4.
+M4's explicit drains remain, but its tail-latency effect was not measured. The
+November 1 gaps and old async completion patterns are historical leads, not a
+current diagnosed failure. No new whole-system baseline is required to begin.
 
-**Done when:** Submits or avoidable flushes per matched update decrease, with lower
-submission CPU and no increase in long gaps/queue latency. Read-after-write,
-framebuffer fetch, MSAA resolve and present-ticket correctness remain intact.
+**Remaining work:** Correlate CB creation/encode, replay start/end, submit-group
+drains, scheduled handlers, actual fence completion, completed handlers, ticket
+admission and presentation. Use bounded events plus off-CPU stacks. Distinguish
+waiting for real GPU work from queue handoff delay, missing producer transactions
+or required display protection. Inspect inline behavior now; only interpret async
+behavior after M7 is safe. Investigate long gaps only if a current bounded capture
+reproduces them or existing evidence establishes their cause.
 
-## M5 — Attribute GPU time and traffic by pass and client
+**Where:** `bg_tm`, command queues and completion code in `bgmtl.m`, framebench and
+presentation events, M4 drain instrumentation and targeted scheduler stacks.
 
-**Why:** Whole-GPU counters show roughly 52% RAM-starved/busy cycles and about
-20 ms GPU busy per swap in separate counter windows. They include wallpaper and
-other clients, so they do not identify which compositor pass is responsible.
+**Done when:** A concrete unnecessary handoff/wait has been removed or a suspected
+one is shown necessary, with ownership/callback ordering and presentation intact.
+Never report scheduled/completed earlier than its contract allows. No lower
+whole-frame score is required for verified redundant-wait removal. Any explicit
+claim about reduced latency or tail gaps requires matching timing evidence.
 
-**Work:** Collect bounded per-client and per-pass timing/traffic evidence. Group
-passes by target dimensions, format, sample count, attachment count, load/store
-actions, clears, copies, resolves and feedback. Correlate these with GPU timestamps
-where supported and job events. Separate compositor from wallpaper work while
-preserving the visible workload. Measure instrumentation overhead and obtain an
-uninstrumented reference. Record actual counter duration (currently clamped to
-10 seconds), power-state handling and temperatures.
+## Conditional follow-ups — do not reopen completed milestones
 
-**Where:** `bgReplayFrom:` pass boundaries, `air_metal.c`, existing Mesa GPU profiling
-patches and kernel counter/event tools.
+- **F1: Linear-buffer uploads.** M1's smaller A8 source and other linear uploads
+  remain. Use existing inventory before designing buffer aliasing/coherency or
+  dirty tracking. Do not replace the accepted packed-image exact comparison or
+  re-run its acceptance decision. Conditional on evidence of another safe saving.
+- **F2: Format-500 retry/fallback.** M2 identifies a sampled 1105x1160 IOSurface
+  request from QuartzCore; deduplicating output did not remove caller retries or
+  wrapper allocation. Establish the format/layout and downstream fallback before
+  adding support or negative caching. Keep the proven log reduction.
+- **F3: Absent fragment output on MRT (correctness investigation).** M6's rejected
+  probe wrote unexpected color1 alpha when the shader omitted color1 but its write
+  mask remained enabled. The final probe explicitly masks it off. Create an
+  isolated shader/output/write-mask regression and establish required semantics
+  from local framework/reference evidence before changing the renderer. No active
+  compositor defect or CA mask behavior is established by that probe.
+- **F4: Uniform offsets / RWA_CB_DELTA.** Preserve the disabled a5xx path until the
+  earlier wrong-shape case has a pixel reproducer and an established cause. Do not
+  repeat the already unhelpful uniform-content comparison as a generic fix.
+- **F5: Recorded-work allocation or further driver threading.** Only pursue a
+  demonstrated residual allocation or serialized-replay cost. M3 already removed
+  unused binning and found repeated-resource fast paths; weakening those checks is
+  not a task. Further Gallium threading depends on M7's ownership/fence audit.
 
-**Risks:** Profiling can serialize work or alter batch selection; submit-to-fence
-latency includes queueing and observation delay. Whole-GPU counter ratios alone
-do not prove a pass is bandwidth-bound or that all stalled cycles are removable.
+## Validation and handoff
 
-**Done when:** A ranked pass/client inventory explains the major GPU cost and
-identifies a concrete M6 candidate. Report execution timing separately from fence
-latency and avoid attributing wallpaper cycles to backboardd.
+Build on the local macOS VM, one build at a time; no CI unless the VM is
+unreachable or requested. Check the existing regression coverage and add tests
+for the actual changed behavior. Reject lost/pending attribution data. Capture
+identities/operations without pixel payloads and keep Apple artifacts/device dumps
+ignored. Use matched instrumentation/source when making a timing comparison;
+pipeline-draining timestamp sums, unions, fence latency and bus bytes are distinct.
 
-## M6 — Reduce intermediate, copy and sysmem GPU traffic
-
-**Why:** CPU savings alone do not remove the measured GPU work exceeding one
-16.7 ms period. Full-screen intermediates, blur chains, copies and attachment
-traffic are candidates; M5 must establish their actual contribution.
-
-**Work:** For the largest measured candidate, eliminate redundant copies or
-intermediates where the consumer can safely use the existing resource. Audit
-attachment load/store actions and resolve requirements. Evaluate GMEM for passes
-without the framebuffer-fetch restrictions that require sysmem. If batching policy
-is global, investigate safe per-pass selection instead of assuming all passes
-need the same policy. Treat MSAA resolves and derivative helper lanes as required
-correctness behavior; they cannot be removed to improve timings.
-
-**Where:** Metal pass recording/replay, `air_metal.c` attachment and feedback paths,
-a5xx GMEM/sysmem selection and the existing MSAA/feedback Mesa patches.
-
-**Risks:** Lost preserved pixels, invalid partial redraws, feedback corruption,
-unsupported GMEM combinations and silent missing resolves.
-
-**Done when:** Matching pixels and UI behavior accompany lower GPU bytes/busy time
-on the target pass and lower end-to-end frame cost. Cover partial redraws,
-rounded edges, blur borders, multiple attachments, MSAA and wallpaper rendering.
-Do not change visible blur quality or resolution merely to make a benchmark faster.
-
-## M7 — Make asynchronous command replay safe
-
-**Why:** Earlier r26 experiments improved CC swap throughput by about 15% by
-moving replay off the CA render thread. That is historical evidence, not a gain
-reproduced on the current runtime. A boot-time stale render ticket caused permanent
-presentation fallback and visible corruption; async therefore remains disabled.
-
-**Work:** Reproduce the encode-to-submit ticket/epoch race with bounded diagnostics.
-Document ticket ownership, begin/seal/abort and display-epoch changes. Design a
-recovery that preserves display protection—for example, reject/drop an invalid
-frame while retaining the last valid displayed frame, then recover on a valid
-ticket. Evaluate beginning tickets later only if it still protects all writes.
-Check surface reuse, context-lock contention, command-buffer lifetime and scheduled/
-completed callback ordering before enabling worker replay experimentally.
-
-**Where:** `bgmtl.m` ticket helpers, commit/replay worker and completion handling;
-kernel render tickets / `rejectFrame` / presentation fallback logic, beginning
-with `xnu/patches/j0110-jasmine-render-tickets.patch` and later patches.
-
-**Risks:** Drawing into displayed memory, tearing/black bands, stale-ticket loops,
-deadlocks and reporting command completion before GPU work is finished. Never
-present an untracked in-flight surface as a performance workaround.
-
-**Done when:** A targeted race reproducer passes, approximately ten temporary boot
-trials and display sleep/wake/reuse stress show no persistent fallback or exposed
-in-flight drawing, and normal/compositor GPU suites pass. Obtain the user's visual
-panel check before promotion; quantify fresh inline/async differences on matched
-settled runs. Kernel builds use the VM; permanent flashing still needs confirmation.
-
-## M8 — Identify remaining completion and presentation stalls
-
-**Why:** Earlier async traces suggested CA often starts a frame after the previous
-command buffer completes. Current runs show isolated 170–200 ms CC gaps and longer
-Spotlight boundary gaps, but do not establish their cause. Current render-runnable
-time is tiny, so scheduler placement is not the first optimization.
-
-**Work:** Correlate frame/command-buffer creation, encode, commit, replay, submit,
-scheduled handlers, actual fence completion, completed handlers, swap admission
-and presentation. Include off-CPU stacks and producer activity. Separate CPU/GPU
-work from unnecessary queue handoffs, delayed notifications, display protection
-and missing new transactions. Investigate repeatable long gaps separately from
-steady-state throughput. If a callback or handoff adds avoidable delay, shorten
-that path while preserving Metal completion semantics and render-ticket protection.
-
-**Where:** `bg_tm`/command queues/completion handlers in `bgmtl.m`, framebench events,
-presentation/ticket diagnostics and scheduler stack samples.
-
-**Risks:** Declaring completion prematurely, reordering callbacks, allowing excess
-frames in flight or increasing touch latency while improving throughput.
-
-**Done when:** The slow frame chain has an attributed cause; any change removes
-the measured delay, preserves callback order and protection, and improves either
-tail gaps or end-to-end latency without harming the other. CPU samples alone are
-insufficient proof of what a sleeping thread waits for.
-
-## Follow-up tasks if the next profiles justify them
-
-- **Uniform uploads / `RWA_CB_DELTA`:** Reproduce the earlier wrong-shape result
-  with offset uniform blocks, establish a5xx addressing/cache behavior, and build
-  a pixel regression before enabling the optimization. Its present benefit has
-  not been quantified separately; do not repeat the expensive uniform memcmp
-  experiment that already lost performance.
-- **Recorded-work allocation/lifetime:** Command-buffer deallocation currently
-  costs around 2% of render CPU. Profile BGWork allocation, retains and frees;
-  consider an arena/C record array if those costs remain material. Preserve retained
-  resources, blocks, error exits and asynchronous lifetimes. This is smaller than M1.
-- **Threaded Gallium context:** After safe async replay, evaluate a further driver
-  worker only if replay remains serially critical. Audit context ownership,
-  transfers, readbacks and fences first; another queue can add latency or copies.
-
-## Shared validation and handoff
-
-Each implementation needs its own matching build and correctness gate before a
-performance decision. Build on the macOS VM, one build at a time. Compare repeated,
-settled workloads with matching wallpaper/UI/clocks and comparable temperature;
-record exact binaries and environment. Prefer loss-free A-only CPU sampling to a
-full buffer from A+B sampling. Validate uninstrumented builds and report CPU per
-update, upload/submit counts, GPU work and tail gaps alongside swap arrivals/s.
-These measures are not physically validated displayed FPS, and percentages from
-inclusive stacks must not be summed. Verify settings restoration and update
-NOTES.md after each milestone. Keep device dumps and Apple artifacts ignored.
+A same-stream projection (M4) and exact pixel-checked eliminated operations are
+valid work-reduction evidence within their documented assumptions. Preserve M1–M4
+without repeatedly benchmarking them. When timing is needed, use bounded workloads
+and comparable scene/temperature, retain baseline2 as historical reference, and
+make no current FPS claim from its old numbers. Restore exact libraries/envs,
+verify idle diagnostics and release the shared phone lock after device work.
+Update NOTES.md and commit completed milestones, distinguishing source/tested
+candidates from the installed runtime.
