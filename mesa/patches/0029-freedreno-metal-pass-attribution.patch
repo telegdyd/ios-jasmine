@@ -1,0 +1,267 @@
+Subject: [PATCH] freedreno: bounded opt-in Metal pass/batch GPU attribution
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -724,6 +724,7 @@
+  * libsweetca's 100-flush report harvests what the GPU has finished. The end
+  * stamp drains the pipeline, so batches do not overlap while this is on.
+  */
++#include "util/sweet_pass_profile.h"
+ #define GP_SLOTS 4096
+ #define GP_TOP   12
+ #define GP_GAP   (100 * 19200)   /* longer gaps are the UI standing still */
+@@ -734,6 +735,7 @@
+    uint8_t mode;                 /* 0 nondraw, 1 sysmem, 2 gmem, 3 sysmem with retained feedback barriers */
+    uint8_t trace;                /* task 28: listed by SWEETCA_GPUTRACE */
+    uint32_t seqno, ctxid, clears;
++   unsigned m5_slot;
+    uint64_t t, gap;
+ };
+ 
+@@ -805,6 +807,7 @@
+       }
+       gp.tail++;
+       struct gp_pass *p = &gp.pass[i];
++      sweet_m5_stamps(p->m5_slot, s, e);
+       if (e < s || e - s > 19200000)
+          gp.bad++;
+       else if (gp.niv < GP_IV) {
+@@ -1007,6 +1010,13 @@
+    simple_mtx_unlock(&gp.lock);
+ }
+ 
++void sweet_m5_poll(void)
++{
++   simple_mtx_lock(&gp.lock);
++   if (gp.ts) gp_harvest();
++   simple_mtx_unlock(&gp.lock);
++}
++
+ static void
+ gp_stamp(struct fd_ringbuffer *ring, int slot, unsigned which)
+ {
+@@ -1024,7 +1034,7 @@
+    simple_mtx_lock(&gp.lock);
+    if (gp.enabled < 0) {
+       const char *v = getenv("SWEETCA_GPUPROF");
+-      gp.enabled = v && strcmp(v, "0") && is_a5xx(batch->ctx->screen);
++      gp.enabled = ((v && strcmp(v, "0")) || sweet_m5_enabled()) && is_a5xx(batch->ctx->screen);
+       if (gp.enabled) {
+          gp.bo = fd_bo_new(batch->ctx->screen->dev, 2 * 8 * GP_SLOTS, 0, "gpuprof");
+          gp.ts = gp.bo ? fd_bo_map(gp.bo) : NULL;
+@@ -1034,7 +1044,7 @@
+       }
+    }
+    int slot = -1;
+-   if (gp.enabled) {
++   if (gp.enabled && (sweet_m5_collecting() || (getenv("SWEETCA_GPUPROF") && strcmp(getenv("SWEETCA_GPUPROF"), "0")))) {
+       gp_harvest();
+       if (gp.head - gp.tail < GP_SLOTS) {
+          slot = gp.head++ % GP_SLOTS;
+@@ -1048,6 +1058,11 @@
+             .seqno = batch->seqno, .ctxid = (uint32_t)(((uintptr_t)batch->ctx >> 4) & 0xfff),
+             .clears = batch->sweet_clears,
+          };
++         gp.pass[slot].m5_slot = sweet_m5_batch((uintptr_t)batch->ctx, batch->seqno,
++            pfb->width, pfb->height, pfb->samples, pfb->nr_cbufs,
++            gp.pass[slot].fmt, pfb->zsbuf.texture ? pfb->zsbuf.format : 0,
++            gp.pass[slot].mode, batch->num_draws, batch->cleared, batch->restore,
++            batch->resolve, batch->sweet_fb_barriers, batch->sweet_fb_pre);
+          if (gt.left) {
+             gp.pass[slot].trace = 1;
+             if (!--gt.left)
+@@ -1055,6 +1070,7 @@
+          }
+       } else {
+          gp.dropped++;
++         sweet_m5_drop();
+       }
+    }
+    simple_mtx_unlock(&gp.lock);
+diff --git a/src/util/sweet_profile.h b/src/util/sweet_profile.h
+--- a/src/util/sweet_profile.h
++++ b/src/util/sweet_profile.h
+@@ -10,6 +10,7 @@
+ 
+ #include "sweet_state_profile.h"
+ #include "sweet_submit_profile.h"
++#include "sweet_pass_profile.h"
+ #include <stdbool.h>
+ #include <stdint.h>
+ 
+diff --git a/src/freedreno/drm/darwin/sweet_profile.c b/src/freedreno/drm/darwin/sweet_profile.c
+--- a/src/freedreno/drm/darwin/sweet_profile.c
++++ b/src/freedreno/drm/darwin/sweet_profile.c
+@@ -7,6 +7,7 @@
+ #include "sweet_batch_trace.inc"
+ #include "sweet_state_profile.inc"
+ #include "sweet_submit_profile.inc"
++#include "sweet_pass_profile.inc"
+ 
+ static bool enabled;
+ static __thread struct sweet_profile_scope *current;
+diff --git a/src/gallium/drivers/freedreno/freedreno_batch_trace.h b/src/gallium/drivers/freedreno/freedreno_batch_trace.h
+--- a/src/gallium/drivers/freedreno/freedreno_batch_trace.h
++++ b/src/gallium/drivers/freedreno/freedreno_batch_trace.h
+@@ -42,6 +42,7 @@
+ static inline void
+ fd_bt_draw(struct fd_batch *batch) assert_dt
+ {
++   if (sweet_m5_collecting()) sweet_m5_link((uintptr_t)batch->ctx, batch->seqno);
+    if (!sweet_batch_trace_active())
+       return;
+    struct fd_context *ctx = batch->ctx;
+diff --git a/src/util/sweet_pass_profile.h b/src/util/sweet_pass_profile.h
+new file mode 100644
+--- /dev/null
++++ b/src/util/sweet_pass_profile.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef SWEET_PASS_PROFILE_H
++#define SWEET_PASS_PROFILE_H
++#include <stdint.h>
++#include <stdbool.h>
++#ifdef __APPLE__
++bool sweet_m5_enabled(void);
++bool sweet_m5_collecting(void);
++void sweet_m5_begin(void);
++void sweet_m5_end(void);
++void sweet_m5_pass(const uint64_t *v);
++void sweet_m5_work(unsigned kind);
++void sweet_m5_shader(const char *name, const uint64_t *textures);
++void sweet_m5_link(uintptr_t ctx, unsigned seq);
++unsigned sweet_m5_batch(uintptr_t ctx, unsigned seq, unsigned w, unsigned h,
++   unsigned samples, unsigned colors, unsigned fmt, unsigned zs, unsigned mode,
++   unsigned draws, unsigned clear, unsigned restore, unsigned resolve, unsigned fbk, unsigned pre);
++void sweet_m5_stamps(unsigned slot, uint64_t start, uint64_t end);
++void sweet_m5_drop(void);
++void sweet_m5_poll(void);
++#else
++#define sweet_m5_collecting() false
++#endif
++#endif
+diff --git a/src/freedreno/drm/darwin/sweet_pass_profile.inc b/src/freedreno/drm/darwin/sweet_pass_profile.inc
+new file mode 100644
+--- /dev/null
++++ b/src/freedreno/drm/darwin/sweet_pass_profile.inc
+@@ -0,0 +1,119 @@
++/* SPDX-License-Identifier: MIT */
++/* Inline Metal replay only, serialized by bg_lock. No fence wait, per-draw I/O,
++ * allocation or clock read. GPU stamps drain the pipeline; diagnostic only.
++ * One capture per process. Tail harvesting occurs on subsequent CB boundaries.
++ * Rows and timestamps are never recycled during a capture. */
++#define M5_ROWS 65536
++static struct { const char *event; unsigned cb, pass; uint64_t v[20]; } m5_rows[M5_ROWS];
++static unsigned m5_count, m5_cb, m5_pass, m5_lost, m5_pending;
++static int m5_enabled, m5_state;
++static uint64_t m5_deadline;
++static __thread bool m5_inline;
++bool sweet_m5_enabled(void)
++{
++   if (!m5_enabled) {
++      const char *v = getenv("BGMTL_PASS_PROFILE");
++      m5_enabled = v && !strcmp(v,"1") ? 1 : -1;
++   }
++   return m5_enabled == 1;
++}
++bool sweet_m5_collecting(void) { return m5_inline && m5_state == 1; }
++void sweet_m5_drop(void) { if (sweet_m5_collecting()) ++m5_lost; }
++static unsigned m5_row(const char *event)
++{
++   if (!sweet_m5_collecting()) return 0;
++   if (m5_count == M5_ROWS) { m5_lost++; return 0; }
++   unsigned i = ++m5_count;
++   m5_rows[i-1].event=event; m5_rows[i-1].cb=m5_cb; m5_rows[i-1].pass=m5_pass;
++   return i;
++}
++void sweet_m5_pass(const uint64_t *v)
++{
++   if (!sweet_m5_collecting()) return;
++   ++m5_pass;
++   unsigned i=m5_row("pass");
++   if(i) memcpy(m5_rows[i-1].v,v,20*sizeof(uint64_t));
++}
++void sweet_m5_work(unsigned kind)
++{
++   unsigned i=m5_row("work"); if(i) m5_rows[i-1].v[0]=kind;
++}
++void sweet_m5_shader(const char *name, const uint64_t *textures)
++{
++   if (!sweet_m5_collecting()) return;
++   /* Labels are diagnostic classes, not stable shader identities. Keep each
++    * distinct consecutive name/texture signature within the encoded pass. */
++   static unsigned last;
++   char label[96]={0}; snprintf(label,sizeof(label),"%s",name);
++   if(last && m5_rows[last-1].cb==m5_cb && m5_rows[last-1].pass==m5_pass &&
++      !memcmp(m5_rows[last-1].v,label,96) && !memcmp(m5_rows[last-1].v+13,textures,7*sizeof(uint64_t))) {
++      ++m5_rows[last-1].v[12]; return;
++   }
++   last=m5_row("shader");
++   if(last) {
++      memcpy(m5_rows[last-1].v,label,96); m5_rows[last-1].v[12]=1;
++      memcpy(m5_rows[last-1].v+13,textures,7*sizeof(uint64_t));
++   }
++}
++void sweet_m5_link(uintptr_t ctx, unsigned seq)
++{
++   /* One edge per distinct adjacent (CB, pass, context, batch), not per draw. */
++   if(m5_count) {
++      unsigned k=m5_count-1;
++      if(!strcmp(m5_rows[k].event,"link") && m5_rows[k].cb==m5_cb &&
++         m5_rows[k].pass==m5_pass && m5_rows[k].v[0]==ctx && m5_rows[k].v[1]==seq) return;
++   }
++   unsigned i=m5_row("link"); if(i) { m5_rows[i-1].v[0]=ctx; m5_rows[i-1].v[1]=seq; }
++}
++unsigned sweet_m5_batch(uintptr_t ctx, unsigned seq, unsigned w, unsigned h,
++   unsigned samples, unsigned colors, unsigned fmt, unsigned zs, unsigned mode,
++   unsigned draws, unsigned clear, unsigned restore, unsigned resolve, unsigned fbk, unsigned pre)
++{
++   unsigned i=m5_row("batch");
++   if(i) {
++      uint64_t v[20]={ctx,seq,w,h,samples,colors,fmt,zs,mode,draws,clear,restore,resolve,fbk,pre};
++      memcpy(m5_rows[i-1].v,v,sizeof(v)); ++m5_pending;
++   }
++   return i;
++}
++void sweet_m5_stamps(unsigned slot, uint64_t start, uint64_t end)
++{
++   if(!slot || slot>m5_count) return;
++   if(!m5_rows[slot-1].v[15]) {
++      m5_rows[slot-1].v[15]=start; m5_rows[slot-1].v[16]=end; --m5_pending;
++   }
++}
++void sweet_m5_begin(void)
++{
++   if(!sweet_m5_enabled() || m5_state==3) return;
++   if(!m5_state) {
++      if(access("/private/var/tmp/bgmtl-pass-start",F_OK)) return;
++      m5_state=1; m5_deadline=clock_gettime_nsec_np(CLOCK_MONOTONIC)+8000000000ull;
++   }
++   m5_inline=true;
++   if(m5_state==1) { ++m5_cb; m5_pass=0; m5_row("begin"); }
++}
++void sweet_m5_end(void)
++{
++   if(!m5_inline) return;
++   if(m5_state==1) {
++      m5_row("end");
++      if(m5_cb>=120 || clock_gettime_nsec_np(CLOCK_MONOTONIC)>=m5_deadline) m5_state=2;
++   }
++   m5_inline=false;
++   sweet_m5_poll();
++   if(m5_state!=2 || (m5_pending && clock_gettime_nsec_np(CLOCK_MONOTONIC)<m5_deadline+2000000000ull)) return;
++   char path[128]; snprintf(path,sizeof(path),"/private/var/tmp/bgmtl-pass-%d.csv",getpid());
++   FILE *f=fopen(path,"w");
++   if(f) {
++      fprintf(f,"# commits=%u dropped=%u pending=%u pid=%d; RB_DONE_TS 19200000 Hz; serialized diagnostic\n",m5_cb,m5_lost,m5_pending,getpid());
++      fprintf(f,"cb,pass,event"); for(unsigned j=0;j<20;j++) fprintf(f,",v%u",j); fputc('\n',f);
++      for(unsigned k=0;k<m5_count;k++) {
++         fprintf(f,"%u,%u,%s",m5_rows[k].cb,m5_rows[k].pass,m5_rows[k].event);
++         for(unsigned j=0;j<20;j++) fprintf(f,",%llu",(unsigned long long)m5_rows[k].v[j]);
++         fputc('\n',f);
++      }
++      fclose(f);
++   }
++   m5_state=3;
++}

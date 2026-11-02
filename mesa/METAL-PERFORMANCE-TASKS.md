@@ -13,7 +13,10 @@ M4 now bounds deferred submission groups instead of rejecting individual
 30-BO batches: 121 observed kernel calls, versus 157 projected by the old policy
 on the same recorded batch stream; final normal/compositor/opt-out suites pass
 32/32. See [M4 results and measurement limits](METAL-M4-SUBMITS.md).
-M5-M8 remain proposed.
+M5 instrumentation and compositor attribution are implemented; full-screen
+two-attachment passes supply an M6 candidate. Wallpaper GPU-time/traffic
+attribution remains open, so M5 is partially complete. See
+[M5 evidence and remaining client gap](METAL-M5-PASSES.md). M6-M8 remain proposed.
 
 User clarification: optimize unnecessary work, not benchmark scores. A verified
 work reduction with preserved correctness does not require an aggregate FPS or
