@@ -1,3 +1,17 @@
+### 2026-11-03 ~19:00: severe flicker/tearing after the rp1+rf1 captures; cleared by reboot. INSTALLED NOW: m8cw1
+
+User saw "real bad flicker and tearing" after the two back-to-back timeline captures (rp1, rf1). Device files were
+byte-exact m8tc1 + normal env, no faults in netlog. A backboardd restart did not help; `install.py restore` to m8cw1
+(backboardd 75471) did not help either -> not the compositor code. Rebooted (command-port reboot -> fastboot
+getvar current-slot b -> fastboot reboot, no flash): async replay on, no faults (logs/netlog-glitch-reboot.txt),
+user: flicker "Gone". Observation: something that survives backboardd restarts but not a reboot. Suspects (guesses):
+kernel bench state left by the captures (stack sampling at 2 ms, phase 5/6) or the 6-7 backboardd restarts in a few
+minutes (display/GPU driver state). The user believes the captures caused it. BEFORE THE NEXT capture.py run: after
+restore, compare kernel-side state (bench stat, gpu state, ddr state, display/vsync) to pre-capture and let the user
+eyeball the panel; space captures out. Phone now on m8cw1 (backup-m8cw1 consumed -> backup-m8cw1-restored);
+capture.py/install.py expect m8cw1 installed, install.py default cand m8tc1 (next backup dir backup-m8cw1b).
+m8tc1 is not suspected but is not re-installed pending the user's call.
+
 ### 2026-11-03: M8 replay-cost attribution (m8rp1, m8rf1 captured, NOT installed; m8tc1 stays installed)
 
 DeepSeek analysed the tc1 stacks (research/metal-m8/replay-attribution.md, gitignored). Replay thread inside
