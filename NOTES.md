@@ -1,3 +1,55 @@
+### 2026-11-03: fd5 UBWC WORKS in the compositor (m9ubwc9, BGMTL_UBWC=1): GPU wait p50 23.9 -> 9.5 ms
+
+Codex wrote 0032 + air/bgmtl + probe (mesa/metal 45edcb3, root da15f29; local-only, its sandbox cannot reach VM/WSL:
+Claude copied the VM stage freedreno subset to research/metal-m9-fbc/mesa-stage, a git repo at 45d644c, and
+regenerates mesa/patches/0032-freedreno-a5xx-ubwc.patch from it). Claude's bring-up fixes (probe =
+research/metal-m9-fbc/ubwc_probe.py, logs/ubwc-probe*.txt):
+- air: the linear-sampled branch replaced (leaked) the UBWC texture -> nothing compressed (m9ubwc2).
+- freedreno: a5xx tiling is FD_MESA_DEBUG=ttile only (screen->tile_mode unset), so get_best_layout returned LINEAR
+  before the UBWC branch; explicit a5xx UBWC now decided first (m9ubwc4). NOTE: all a5xx private textures are linear.
+- realloc_bo: tiled BOs are FD_BO_NOMAP, flag clear could not map -> UBWC BOs stay mappable (m9ubwc5; first real UBWC).
+- Tiled RB writes ignore the colour swap: BGRA8 read R/B swapped, RGBA8 exact -> tiled BGRA views swizzle as RGBA
+  (m9ubwc6). Probe then: all render/sample/blit/getBytes checks pass, BGRA8+RGBA8, sysmem and GMEM; texbase=flags
+  confirmed (color fails); MRTS2 and TILE_ALL make no difference. Only the Metal-illegal partial CPU write fails.
+- bgmtl: UBWC only for MTLStorageModePrivate (m9ubwc7) + Memoryless (m9ubwc9): CA's 828x1792 intermediates are
+  memoryless (capture ubwc2 device log "BGMTL UBWC rt ... storage 3").
+validate.py parts 1-7 on m9ubwc7 (UBWC off): 2x39, 2x42, 6x47, p24 9/9 both, p25 3/3 both, p26 3/3, 4 UBO limit,
+6 BEGIN refused - all as expected (an earlier run was killed when Claude Code quit; phone verified intact, stale
+lock removed). Capture ubwc3 (m9ubwc9, BGMTL_UBWC=1; logs/capture-ubwc3.txt, logs/netlog-ubwc3.txt): private RT
+writes 34.3 -> 0 MiB/CB, UBWC writes 28.2 MiB/CB; GPU wait p50/p90/p99 23.9/32.1/37.0 (bw2) -> 9.5/24.1/25.6 ms;
+no faults/hangs. Restore byte-exact each time. Phone: m8pe1 installed, env BGMTL_ASYNC=1. Builds: m9ubwc9 libbgmtl
+94cfe61f, libbgair 9cc14f1a. Panel during UBWC captures NOT yet confirmed by the user. Next: user panel check,
+then temporary install + framebench A/B.
+
+### 2026-11-03: M9 UBWC local implementation delivered; coordinator build/probe next
+
+Read the authoritative m9-ubwc-codex.md follow-up. Stage repo research/metal-m9-fbc/mesa-stage committed
+741dc85f (baseline 45d644c); exact diff exported to mesa/patches/0032-freedreno-a5xx-ubwc.patch.
+Implements cpp4 flags-first layout, explicit-modifier-only fd5 eligibility, MRT/render/resolve flags, sampler
+flags/base and surviving-view refresh, 2D blitter refusal, draw clears, CPU migration to linear, and GMEM knob.
+Metal implementation commit 8db042cb (documentation tip 9c3ec345) is in research/metal-m9-fbc/commit-artifacts/metal.git
+and metal-ubwc-final.bundle: BGMTL_UBWC
+(default 0), candidate gate, counters/timeline class, pool exclusions, six-pattern BGRA8/RGBA8 probe + host tests.
+Root .git and submodule metadata writes were denied (index.lock/object permission denied); original branch refs
+remain unchanged. Root implementation commit 99512d39 plus final handoff/tooling are exported as root-ubwc-final.bundle;
+the final root tip is that bundle's HEAD. Coordinator import
+commands and complete file/line map are in mesa/METAL-M9-UBWC.md. No push. All commit messages have Claude trailer.
+
+Observed local checks: 61 G2 Python unit tests PASS (CPython 3.12.13), Python syntax PASS, probe --dry-run PASS,
+summary validation PASS (off 498/on 534, rejects wrong totals/exits/FAIL lines), diff whitespace PASS, exported
+patch forward/reverse application checks PASS. VM SSH preflight FAILED: mac alias cannot resolve; direct documented
+VM SSH is permission denied; WSL returns E_ACCESSDENIED. Logs: logs/vm-mesa-m9ubwc1.txt,
+logs/m9ubwc-vm-host-tests.txt, logs/m9ubwc-g2-tests.txt. No C/Metal build, CI run, device/boot/install/test performed.
+No m9ubwc1 dylibs or hashes are available. tools/m9-ubwc-host-tests.sh syncs src/air/test to /tmp/m8tl and runs all scripts.
+Kernel unchanged as specified. Hardware behavior and byte-for-byte off regression are NOT validated.
+
+Next coordinator: tools/vm-mesa.sh mesa m9ubwc1 (log logs/vm-mesa-m9ubwc1.txt); all Metal run-*.sh with
+MESA_STAGE pointing at patched source, native fd5_layout + G2 tests, then python research/metal-m9-fbc/ubwc_probe.py
+--binary-dir xnu/out-mesa-m9ubwc1 --out research/metal-m9-fbc/probe1. Runner is included in the root commit artifact. Sweep off,
+defaults, MRTS2=0, SYSMEM=0, TEXBASE=color, TILEALL=0; temporary dir only, finally verifies installed libs/env.
+Unfinished: generated-register compilation, actual flags/cache/GMEM/sysmem/sampling/CPU migration validation.
+Phone and installed m8pe1 pair/env remain untouched by this task. See prior entries for installed state.
+
 ### 2026-11-03: fd5 UBWC build (user: "Build UBWC") - DeepSeek refused 3x; spec ready, not started
 
 DeepSeek (brief ~/.dsh/dispatch-logs/briefs/m9-ubwc.md + 2 follow-ups) wrote no code each time ("will not commit
