@@ -130,7 +130,7 @@ mesa)
 		-framework Foundation -framework Metal -framework IOSurface \
 		-install_name @rpath/libbgmtl.dylib -Wl,-rpath,@loader_path -o "$OUT/libbgmtl.dylib"
 	codesign -f -s - "$OUT/libbgmtl.dylib"
-	for probe in bgmtl_probe bgmtl_quad_probe bgmtl_render_probe bgmtl_traffic_probe; do
+	for probe in bgmtl_probe bgmtl_quad_probe bgmtl_render_probe bgmtl_traffic_probe bgmtl_ubwc_probe; do
 		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 -fno-objc-arc \
 			-Wno-deprecated-declarations "mesa/metal/test/$probe.m" -L"$OUT" -lbgmtl -lbgair \
 			-framework Foundation -framework Metal -framework IOSurface \
@@ -147,7 +147,7 @@ mesa)
 		-framework Foundation -framework Metal -framework MetalPerformanceShaders \
 		-Wl,-rpath,@executable_path -o "$OUT/bgmtl_mps_probe"
 	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgmtl_mps_probe"
-	for shader in bg_quad bg_render; do
+	for shader in bg_quad bg_render bg_ubwc; do
 		xcrun --sdk iphoneos metal -mios-version-min=16.0 -std=ios-metal2.4 -c \
 			"mesa/metal/test/$shader.metal" -o "$OUT/$shader.air"
 		xcrun --sdk iphoneos metallib "$OUT/$shader.air" -o "$OUT/$shader.metallib"
@@ -166,6 +166,9 @@ mesa)
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O2 -Wall -Werror \
 		mesa/metal/test/bgmtl_exec.c -o "$OUT/bgmtl_exec"
 	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgmtl_exec"
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O2 -Wall -Werror \
+		mesa/metal/test/bgmtl_ubwc_exec.c -o "$OUT/bgmtl_ubwc_exec"
+	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/bgmtl_ubwc_exec"
 	# screenshot through the render server (G2 step 3)
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -O1 mesa/darwin/sweetgl/sweet_shot.m -o "$OUT/sweet_shot" -framework Foundation -framework IOSurface
 	codesign -f -s - --entitlements ios/entitlements.plist "$OUT/sweet_shot"

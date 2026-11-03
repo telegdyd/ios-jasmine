@@ -431,7 +431,7 @@ def report(path, events=(), epoch=None, out=sys.stdout):
 
     dram = [r for r in capture['records'] if r['kind'] in (18, 19, 20, 21)]
     if dram:
-        classes = {1: 'surface', 2: 'private', 3: 'other'}
+        classes = {0: 'ubwc', 1: 'surface', 2: 'private', 3: 'other'}
         per_cb = collections.defaultdict(lambda: collections.Counter())
         passes = collections.Counter()
         top = []
@@ -447,8 +447,10 @@ def report(path, events=(), epoch=None, out=sys.stdout):
                 sc = classes.get((r['a'] >> 4) & 3, 'other')
                 dc = classes.get((r['a'] >> 6) & 3, 'other')
                 per_cb[cb]['blit'] += r['b']
-                if sc == 'private' or dc == 'private':
+                if sc in ('private', 'ubwc') or dc in ('private', 'ubwc'):
                     per_cb[cb]['blit_private'] += r['b']
+                if sc == 'ubwc' or dc == 'ubwc':
+                    per_cb[cb]['blit_ubwc'] += r['b']
                 top.append((r['b'], f'blit k{kind} {sc}->{dc}'))
                 continue
             p = _dram_parts(r['a'])
@@ -484,7 +486,7 @@ def report(path, events=(), epoch=None, out=sys.stdout):
              f"attach_load {mib(sums['attach_load'])/secs:.2f} MiB/s, "
              f"sampled {mib(sums['sampled'])/secs:.2f} MiB/s, "
              f"blit {mib(sums['blit'])/secs:.2f} MiB/s")
-        for cls in ('surface', 'private', 'other'):
+        for cls in ('surface', 'private', 'other', 'ubwc'):
             total = sum(sums[f'{k}_{cls}'] for k in ('attach_write', 'attach_load', 'sampled'))
             emit(f"    {cls}: attach_write {mib(sums['attach_write_'+cls])/ncbs:.2f} MiB/CB, "
                  f"attach_load {mib(sums['attach_load_'+cls])/ncbs:.2f} MiB/CB, "
@@ -492,6 +494,7 @@ def report(path, events=(), epoch=None, out=sys.stdout):
                  f"blit_private_share {mib(sums['blit_private'] if cls == 'private' else 0)/ncbs:.2f} MiB/CB")
         total_bytes = sums['attach_write'] + sums['attach_load'] + sums['sampled'] + sums['blit']
         private_bytes = sums['attach_write_private'] + sums['attach_load_private'] + sums['sampled_private'] + sums['blit_private']
+        private_bytes += sum(sums[f'{k}_ubwc'] for k in ('attach_write', 'attach_load', 'sampled'))
         emit(f"    passes {sum(passes.values())} ({sum(passes.values())/ncbs:.2f}/CB); "
              f"GPU-private UBWC-eligible share {100.0*private_bytes/max(1,total_bytes):.1f}%")
         emit('    top 10 contributors:')

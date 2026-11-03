@@ -1,0 +1,573 @@
+diff --git a/src/freedreno/fdl/fd5_layout.c b/src/freedreno/fdl/fd5_layout.c
+index aaf4a1c..bb5125f 100644
+--- a/src/freedreno/fdl/fd5_layout.c
++++ b/src/freedreno/fdl/fd5_layout.c
+@@ -10,6 +10,10 @@
+ #include <stdio.h>
+ 
+ #include "freedreno_layout.h"
++#include "fd5_ubwc_layout.h"
++#include "util/u_debug.h"
++
++DEBUG_GET_ONCE_NUM_OPTION(fd5_ubwc_flag_align, "FD5_UBWC_FLAG_ALIGN", 4096)
+ 
+ void
+ fdl5_layout_image(struct fdl_layout *layout, const struct fdl_image_params *params)
+@@ -17,7 +21,10 @@ fdl5_layout_image(struct fdl_layout *layout, const struct fdl_image_params *para
+    memset(layout, 0, sizeof(*layout));
+ 
+    assert(params->nr_samples > 0);
+-   assert(!params->ubwc && !params->force_ubwc);
++   assert(!params->ubwc || (params->mip_levels == 1 && params->array_size == 1 &&
++                           params->depth0 == 1 && !params->is_3d &&
++                           params->nr_samples == 1 &&
++                           util_format_get_blocksize(params->format) == 4));
+ 
+    layout->width0 = params->width0;
+    layout->height0 = params->height0;
+@@ -32,6 +39,8 @@ fdl5_layout_image(struct fdl_layout *layout, const struct fdl_image_params *para
+    layout->layer_first = !params->is_3d;
+ 
+    layout->tile_mode = params->tile_mode;
++   layout->ubwc = params->ubwc;
++   layout->tile_all = params->ubwc;
+    layout->linear_fallback_threshold_texels = FDL_LINEAR_FALLBACK_THRESHOLD;
+ 
+    uint32_t heightalign = layout->cpp == 1 ? 32 : 16;
+@@ -46,6 +55,20 @@ fdl5_layout_image(struct fdl_layout *layout, const struct fdl_image_params *para
+    else
+       fdl_set_pitchalign(layout, fdl_cpp_shift(layout) + 6);
+ 
++   if (params->ubwc) {
++      layout->base_align = 4096;
++      unsigned alignment = debug_get_option_fd5_ubwc_flag_align();
++      /* Only page-sized powers of two are meaningful/safe. */
++      if (alignment < 4096 || alignment > 1048576 || (alignment & (alignment - 1)))
++         alignment = 4096;
++      layout->ubwc_width0 = fd5_ubwc_meta_pitch(params->width0);
++      layout->ubwc_slices[0].offset = 0;
++      layout->ubwc_slices[0].size0 =
++         fd5_ubwc_meta_size(params->width0, params->height0, alignment);
++      layout->ubwc_layer_size = layout->ubwc_slices[0].size0;
++      layout->size = layout->ubwc_layer_size;
++   }
++
+    for (uint32_t level = 0; level < params->mip_levels; level++) {
+       uint32_t depth = u_minify(params->depth0, level);
+       struct fdl_slice *slice = &layout->slices[level];
+diff --git a/src/freedreno/fdl/fd5_layout_test.c b/src/freedreno/fdl/fd5_layout_test.c
+index 7df3b4f..ec5bc35 100644
+--- a/src/freedreno/fdl/fd5_layout_test.c
++++ b/src/freedreno/fdl/fd5_layout_test.c
+@@ -13,6 +13,15 @@
+  * on a Pixel 2
+  */
+ static const struct testcase testcases[] = {
++   /* a5xx.xml blob: cpp4 100x2000, flags=64x512, color starts at +0x8000. */
++   {
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++      .layout = {
++         .tile_mode = TILE5_3, .ubwc = true, .width0 = 100, .height0 = 2000,
++         .slices = {{.offset = 0x8000, .pitch = 512}},
++         .ubwc_slices = {{.offset = 0, .pitch = 64}},
++      },
++   },
+    /* Basic POT, non-UBWC layout test */
+    {
+       .format = PIPE_FORMAT_R9G9B9E5_FLOAT,
+@@ -85,6 +94,21 @@ main(int argc, char **argv)
+ {
+    int ret = 0;
+ 
++   const struct fdl_image_params ubwc = {
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM, .nr_samples = 1,
++      .width0 = 100, .height0 = 2000, .depth0 = 1, .mip_levels = 1,
++      .array_size = 1, .tile_mode = TILE5_3, .ubwc = true,
++   };
++   struct fdl_layout layout;
++   fdl5_layout_image(&layout, &ubwc);
++   if (layout.ubwc_slices[0].size0 != 0x8000 ||
++       layout.slices[0].offset != 0x8000 || layout.size != 0x102000 ||
++       layout.layer_size != layout.size || !layout.tile_all ||
++       !fdl_ubwc_enabled(&layout, 0)) {
++      fprintf(stderr, "fd5 UBWC blob allocation mismatch\n");
++      ret = 1;
++   }
++
+    struct fd_dev_id a540_dev_id = {
+       .gpu_id = 540,
+    };
+diff --git a/src/freedreno/fdl/fd5_ubwc_layout.h b/src/freedreno/fdl/fd5_ubwc_layout.h
+new file mode 100644
+index 0000000..d831630
+--- /dev/null
++++ b/src/freedreno/fdl/fd5_ubwc_layout.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef FD5_UBWC_LAYOUT_H
++#define FD5_UBWC_LAYOUT_H
++#include <stdint.h>
++
++/* cpp=4, single level/layer. a5xx.xml's 100x2000 blob trace has
++ * pitch=64, height=512, size=0x8000. Keep this helper host-testable. */
++static inline uint32_t
++fd5_ubwc_meta_pitch(uint32_t width)
++{
++   return ((width + 15) / 16 + 63) & ~63u;
++}
++
++static inline uint32_t
++fd5_ubwc_meta_height(uint32_t height)
++{
++   return ((height + 3) / 4 + 15) & ~15u;
++}
++
++static inline uint32_t
++fd5_ubwc_meta_size(uint32_t width, uint32_t height, uint32_t alignment)
++{
++   uint32_t size = fd5_ubwc_meta_pitch(width) * fd5_ubwc_meta_height(height);
++   return (size + alignment - 1) & ~(alignment - 1);
++}
++#endif
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_blitter.c b/src/gallium/drivers/freedreno/a5xx/fd5_blitter.c
+index 4539760..76fb905 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_blitter.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_blitter.c
+@@ -458,6 +458,13 @@ fd5_blitter_blit(struct fd_context *ctx,
+ {
+    struct fd_batch *batch;
+ 
++   /* Use u_blitter's draw path: it samples through the UBWC descriptor.
++    * The 2D engine has flags registers, but is intentionally not enabled
++    * until its separate cache/flag protocol has been validated. */
++   if (fd_resource(info->src.resource)->layout.ubwc ||
++       fd_resource(info->dst.resource)->layout.ubwc)
++      return false;
++
+    if (!can_do_blit(info)) {
+       return false;
+    }
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+index 5771394..0ed2ed9 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_draw.c
+@@ -383,7 +383,9 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
+     * debug-policy change cannot select GMEM with an incomplete stream.
+     * Real draw state and all resource/dependency tracking are unchanged.
+     */
+-   if (FD_DBG(SYSMEM) && !ctx->sweet_gmem_select &&
++   if ((debug_get_option_fd5_ubwc_sysmem() ||
++        !fd5_ubwc_mask(&ctx->batch->framebuffer)) &&
++       FD_DBG(SYSMEM) && !ctx->sweet_gmem_select &&
+        ctx->batch->framebuffer.samples <= 1 && !ctx->streamout.num_targets &&
+        debug_get_option_sweet_skip_binning())
+       ctx->batch->a5xx_skip_binning = true;
+@@ -502,6 +504,10 @@ fd5_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
+    struct fd_ringbuffer *ring = ctx->batch->draw;
+    struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
+ 
++   /* Draw clears update compressed color and its flag plane together. */
++   if (fd5_ubwc_mask(pfb))
++      return false;
++
+    if ((buffers & (FD_BUFFER_DEPTH | FD_BUFFER_STENCIL)) &&
+        is_z32(pfb->zsbuf.format))
+       return false;
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
+index 573354f..8fecb99 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_emit.c
+@@ -359,12 +359,15 @@ emit_fbread_slots(struct fd_context *ctx, struct fd_ringbuffer *ring, enum a4xx_
+    struct fd5_context *fd5_ctx = fd5_context(ctx);
+    struct fd_batch *batch = ctx->batch;
+    u_foreach_bit (i, mask) {
++      fd5_sampler_view_update(fd5_pipe_sampler_view(tex->textures[i]));
+       const struct fd5_pipe_sampler_view *view = fd5_pipe_sampler_view(tex->textures[i]);
+       struct fd_resource *rsc = fd_resource(view->base.texture);
+-      uint64_t iova = fd_bo_get_iova(rsc->bo) + view->offset;
++      uint64_t iova = fd_bo_get_iova(rsc->bo) +
++         fd5_ubwc_tex_offset(rsc, view->offset);
+       uint32_t d[12] = {
+          view->texconst0 | A5XX_TEX_CONST_0_TILE_MODE(rsc->layout.tile_mode), view->texconst1,
+-         view->texconst2, view->texconst3, (uint32_t)iova, (uint32_t)(iova >> 32) | view->texconst5,
++         view->texconst2, view->texconst3 | fd5_ubwc_tex_flags(rsc),
++         (uint32_t)iova, (uint32_t)(iova >> 32) | view->texconst5,
+          view->texconst6, view->texconst7, view->texconst8, view->texconst9, view->texconst10,
+          view->texconst11,
+       };
+@@ -450,6 +453,9 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
+                              : &dummy_view;
+          enum a5xx_tile_mode tile_mode = TILE5_LINEAR;
+ 
++         if (tex->textures[i])
++            fd5_sampler_view_update(fd5_pipe_sampler_view(tex->textures[i]));
++
+          if (view->base.texture)
+             tile_mode = fd_resource(view->base.texture)->layout.tile_mode;
+ 
+@@ -464,12 +470,15 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
+                   view->texconst0 | A5XX_TEX_CONST_0_TILE_MODE(tile_mode));
+          OUT_RING(ring, view->texconst1);
+          OUT_RING(ring, view->texconst2);
+-         OUT_RING(ring, view->texconst3);
++         struct fd_resource *tex_rsc = view->base.texture ?
++            fd_resource(view->base.texture) : NULL;
++         OUT_RING(ring, view->texconst3 |
++                  (tex_rsc ? fd5_ubwc_tex_flags(tex_rsc) : 0));
+          if (view->base.texture) {
+             struct fd_resource *rsc = fd_resource(view->base.texture);
+             if (view->base.format == PIPE_FORMAT_X32_S8X24_UINT)
+                rsc = rsc->stencil;
+-            OUT_RELOC(ring, rsc->bo, view->offset,
++            OUT_RELOC(ring, rsc->bo, fd5_ubwc_tex_offset(rsc, view->offset),
+                       (uint64_t)view->texconst5 << 32, 0);
+          } else {
+             OUT_RING(ring, 0x00000000);
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_emit.h b/src/gallium/drivers/freedreno/a5xx/fd5_emit.h
+index 7add21a..d38402a 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_emit.h
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_emit.h
+@@ -18,6 +18,7 @@
+ #include "freedreno_batch.h"
+ #include "freedreno_context.h"
+ #include "ir3_gallium.h"
++#include "fd5_ubwc.h"
+ 
+ struct fd_ringbuffer;
+ 
+@@ -146,17 +147,10 @@ fd5_emit_render_cntl(struct fd_context *ctx, bool blit, bool binning) assert_dt
+    struct fd_ringbuffer *ring =
+       binning ? ctx->batch->binning : ctx->batch->draw;
+ 
+-   /* TODO eventually this partially depends on the pfb state, ie.
+-    * which of the cbuf(s)/zsbuf has an UBWC flag buffer.. that part
+-    * we could probably cache and just regenerate if framebuffer
+-    * state is dirty (or something like that)..
+-    *
+-    * Other bits seem to depend on query state, like if samples-passed
+-    * query is active.
+-    */
++   /* Both draw and binning copies must agree about flag buffers. */
+    bool samples_passed = (ctx->occlusion_queries_active > 0);
+    OUT_PKT4(ring, REG_A5XX_RB_RENDER_CNTL, 1);
+-   OUT_RING(ring, 0x00000000 | /* RB_RENDER_CNTL */
++   OUT_RING(ring, fd5_ubwc_render_flags(&ctx->batch->framebuffer) |
+                      COND(binning, A5XX_RB_RENDER_CNTL_BINNING_PASS) |
+                      COND(binning, A5XX_RB_RENDER_CNTL_DISABLE_COLOR_PIPE) |
+                      COND(samples_passed, A5XX_RB_RENDER_CNTL_SAMPLES_PASSED) |
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
+index 4ad37dd..100bace 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_gmem.c
+@@ -176,14 +176,18 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
+                         COND(uint, A5XX_SP_FS_MRT_REG_COLOR_UINT) |
+                         COND(srgb, A5XX_SP_FS_MRT_REG_COLOR_SRGB));
+ 
+-      /* when we support UBWC, these would be the system memory
+-       * addr/pitch/etc:
+-       */
++      bool ubwc = rsc && fd_resource_ubwc_enabled(rsc, bufs[i].level);
+       OUT_PKT4(ring, REG_A5XX_RB_MRT_FLAG_BUFFER(i), 4);
+-      OUT_RING(ring, 0x00000000); /* RB_MRT_FLAG_BUFFER[i].ADDR_LO */
+-      OUT_RING(ring, 0x00000000); /* RB_MRT_FLAG_BUFFER[i].ADDR_HI */
+-      OUT_RING(ring, A5XX_RB_MRT_FLAG_BUFFER_PITCH(0));
+-      OUT_RING(ring, A5XX_RB_MRT_FLAG_BUFFER_ARRAY_PITCH(0));
++      if (ubwc) {
++         OUT_RELOC(ring, rsc->bo, fd_resource_ubwc_offset(rsc, 0, 0), 0, 0);
++      } else {
++         OUT_RING(ring, 0);
++         OUT_RING(ring, 0);
++      }
++      OUT_RING(ring, A5XX_RB_MRT_FLAG_BUFFER_PITCH(
++         ubwc ? fdl_ubwc_pitch(&rsc->layout, 0) : 0));
++      OUT_RING(ring, A5XX_RB_MRT_FLAG_BUFFER_ARRAY_PITCH(
++         ubwc ? rsc->layout.layer_size : 0));
+    }
+ }
+ 
+@@ -635,6 +639,10 @@ fd5_emit_tile_mem2gmem(struct fd_batch *batch, const struct fd_tile *tile)
+     */
+ 
+    emit_mrt(ring, pfb->nr_cbufs, pfb->cbufs, NULL);
++   if (fd5_ubwc_mask(pfb)) {
++      OUT_PKT4(ring, REG_A5XX_RB_RENDER_CNTL, 1);
++      OUT_RING(ring, fd5_ubwc_render_flags(pfb));
++   }
+    //	emit_zs(ring, &pfb->zsbuf, NULL);
+ 
+    OUT_PKT4(ring, REG_A5XX_RB_CNTL, 1);
+@@ -709,15 +717,24 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
+    assert(psurf->first_layer == psurf->last_layer);
+ 
+    OUT_PKT4(ring, REG_A5XX_RB_BLIT_FLAG_DST, 4);
+-   OUT_RING(ring, 0x00000000); /* RB_BLIT_FLAG_DST_LO */
+-   OUT_RING(ring, 0x00000000); /* RB_BLIT_FLAG_DST_HI */
+-   OUT_RING(ring, 0x00000000); /* RB_BLIT_FLAG_DST_PITCH */
+-   OUT_RING(ring, 0x00000000); /* RB_BLIT_FLAG_DST_ARRAY_PITCH */
++   bool ubwc = fd_resource_ubwc_enabled(rsc, psurf->level);
++   if (ubwc) {
++      OUT_RELOC(ring, rsc->bo, fd_resource_ubwc_offset(rsc, 0, 0), 0, 0);
++   } else {
++      OUT_RING(ring, 0);
++      OUT_RING(ring, 0);
++   }
++   OUT_RING(ring, A5XX_RB_BLIT_FLAG_DST_PITCH(
++      ubwc ? fdl_ubwc_pitch(&rsc->layout, 0) : 0));
++   OUT_RING(ring, A5XX_RB_BLIT_FLAG_DST_ARRAY_PITCH(
++      ubwc ? rsc->layout.layer_size : 0));
+ 
+    tiled = fd_resource_tile_mode(psurf->texture, psurf->level);
+ 
+    OUT_PKT4(ring, REG_A5XX_RB_RESOLVE_CNTL_3, 5);
+-   OUT_RING(ring, 0x00000004 | /* XXX RB_RESOLVE_CNTL_3 */
++   /* a5xx.xml: 0xf = GMEM->memory with color flags. There is no
++    * RB_BLIT_DST_INFO on a5xx; this is its resolve control register. */
++   OUT_RING(ring, (ubwc ? 0xf : 0x00000004) |
+                      COND(tiled, A5XX_RB_RESOLVE_CNTL_3_TILED));
+    OUT_RELOC(ring, rsc->bo, offset, 0, 0); /* RB_BLIT_DST_LO/HI */
+    OUT_RING(ring, A5XX_RB_BLIT_DST_PITCH(pitch));
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_texture.c b/src/gallium/drivers/freedreno/a5xx/fd5_texture.c
+index 1068858..896b625 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_texture.c
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_texture.c
+@@ -129,6 +129,7 @@ fd5_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
+    so->base.texture = prsc;
+    so->base.reference.count = 1;
+    so->base.context = pctx;
++   so->dynamic_layout = rsc->layout.ubwc;
+ 
+    so->texconst0 = A5XX_TEX_CONST_0_FMT(fd5_pipe2tex(format)) |
+                    A5XX_TEX_CONST_0_SAMPLES(fd_msaa_samples(prsc->nr_samples)) |
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_texture.h b/src/gallium/drivers/freedreno/a5xx/fd5_texture.h
+index 60126ba..ccc47ed 100644
+--- a/src/gallium/drivers/freedreno/a5xx/fd5_texture.h
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_texture.h
+@@ -34,8 +34,25 @@ struct fd5_pipe_sampler_view {
+    uint32_t texconst0, texconst1, texconst2, texconst3, texconst5;
+    uint32_t texconst6, texconst7, texconst8, texconst9, texconst10, texconst11;
+    uint32_t offset;
++   bool dynamic_layout;
+ };
+ 
++/* A CPU map can shadow a compressed allocation to linear. Views can outlive
++ * that transition (including unbound cached air views), so refresh them at
++ * emission, rather than only when the currently bound state is rebound. */
++static inline void
++fd5_sampler_view_update(struct fd5_pipe_sampler_view *view)
++{
++   if (!view->dynamic_layout)
++      return;
++   struct fd_resource *rsc = fd_resource(view->base.texture);
++   view->offset = fd_resource_offset(rsc, 0, 0);
++   view->texconst2 = A5XX_TEX_CONST_2_PITCHALIGN(rsc->layout.pitchalign - 6) |
++                     A5XX_TEX_CONST_2_PITCH(fd_resource_pitch(rsc, 0)) |
++                     A5XX_TEX_CONST_2_TYPE(A5XX_TEX_2D);
++   view->texconst3 = A5XX_TEX_CONST_3_ARRAY_PITCH(rsc->layout.layer_size);
++}
++
+ static inline struct fd5_pipe_sampler_view *
+ fd5_pipe_sampler_view(struct pipe_sampler_view *pview)
+ {
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_ubwc.h b/src/gallium/drivers/freedreno/a5xx/fd5_ubwc.h
+new file mode 100644
+index 0000000..28256a1
+--- /dev/null
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_ubwc.h
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef FD5_UBWC_H
++#define FD5_UBWC_H
++#include "util/u_debug.h"
++#include "freedreno_resource.h"
++#include "fd5_hw.h"
++
++DEBUG_GET_ONCE_BOOL_OPTION(fd5_ubwc_mrts2, "FD5_UBWC_MRTS2", true)
++DEBUG_GET_ONCE_BOOL_OPTION(fd5_ubwc_sysmem, "FD5_UBWC_SYSMEM", true)
++DEBUG_GET_ONCE_BOOL_OPTION(fd5_ubwc_tileall, "FD5_UBWC_TILEALL", true)
++DEBUG_GET_ONCE_OPTION(fd5_ubwc_texbase, "FD5_UBWC_TEXBASE", "flags")
++
++static inline unsigned
++fd5_ubwc_mask(const struct pipe_framebuffer_state *pfb)
++{
++   unsigned mask = 0;
++   for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
++      if (pfb->cbufs[i].texture &&
++          fd_resource_ubwc_enabled(fd_resource(pfb->cbufs[i].texture),
++                                   pfb->cbufs[i].level))
++         mask |= 1u << i;
++   }
++   return mask;
++}
++
++static inline uint32_t
++fd5_ubwc_render_flags(const struct pipe_framebuffer_state *pfb)
++{
++   unsigned mask = fd5_ubwc_mask(pfb);
++   return A5XX_RB_RENDER_CNTL_FLAG_MRTS(mask) |
++          (debug_get_option_fd5_ubwc_mrts2() ?
++           A5XX_RB_RENDER_CNTL_FLAG_MRTS2(mask) : 0);
++}
++
++static inline uint32_t
++fd5_ubwc_tex_flags(struct fd_resource *rsc)
++{
++   return rsc->layout.ubwc ? A5XX_TEX_CONST_3_FLAG |
++      (debug_get_option_fd5_ubwc_tileall() ? A5XX_TEX_CONST_3_TILE_ALL : 0) : 0;
++}
++
++static inline uint32_t
++fd5_ubwc_tex_offset(struct fd_resource *rsc, unsigned color_offset)
++{
++   return rsc->layout.ubwc &&
++          strcmp(debug_get_option_fd5_ubwc_texbase(), "color") ?
++          fd_resource_ubwc_offset(rsc, 0, 0) : color_offset;
++}
++#endif
+diff --git a/src/gallium/drivers/freedreno/a5xx/fd5_ubwc_eligible.h b/src/gallium/drivers/freedreno/a5xx/fd5_ubwc_eligible.h
+new file mode 100644
+index 0000000..98366a1
+--- /dev/null
++++ b/src/gallium/drivers/freedreno/a5xx/fd5_ubwc_eligible.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef FD5_UBWC_ELIGIBLE_H
++#define FD5_UBWC_ELIGIBLE_H
++#include <stdbool.h>
++
++/* Gallium enum/flag translation stays at the call site; the policy itself
++ * is independent of generated headers and exercised by the host test. */
++static inline bool
++fd5_ubwc_eligible(bool explicit_compressed, bool is_2d, bool rgba8,
++                  unsigned depth, unsigned layers, unsigned last_level,
++                  unsigned samples, unsigned storage_samples,
++                  bool staging, bool forbidden_bind, bool persistent)
++{
++   return explicit_compressed && is_2d && rgba8 && depth == 1 && layers == 1 &&
++      last_level == 0 && samples <= 1 && storage_samples <= 1 &&
++      !staging && !forbidden_bind && !persistent;
++}
++#endif
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index b865b12..eca19a8 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -26,6 +26,7 @@
+ #include "freedreno_resource.h"
+ #include "freedreno_tracepoints.h"
+ #include "freedreno_util.h"
++#include "a5xx/fd5_ubwc.h"
+ 
+ /*
+  * GMEM is the small (ie. 256KiB for a200, 512KiB for a220, etc) tile buffer
+@@ -1183,6 +1184,12 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+       sysmem = true;
+    }
+ 
++   /* Apply after all normal bypass policies. fd5_draw preserves binning
++    * for these batches even under FD_MESA_DEBUG=sysmem. */
++   if (ctx->screen->gen == 5 && !batch->nondraw &&
++       !debug_get_option_fd5_ubwc_sysmem() && fd5_ubwc_mask(pfb))
++      sysmem = false;
++
+    fd_bt_batch(batch, batch->nondraw ? "select-nondraw" : sysmem ? "select-sysmem" : "select-gmem", NULL, NULL, FD_DBG(SYSMEM));
+    fd_reset_wfi(batch);
+ 
+diff --git a/src/gallium/drivers/freedreno/freedreno_resource.c b/src/gallium/drivers/freedreno/freedreno_resource.c
+index 719a960..15e801d 100644
+--- a/src/gallium/drivers/freedreno/freedreno_resource.c
++++ b/src/gallium/drivers/freedreno/freedreno_resource.c
+@@ -28,6 +28,7 @@
+ #include "freedreno_resource.h"
+ #include "freedreno_screen.h"
+ #include "freedreno_util.h"
++#include "a5xx/fd5_ubwc_eligible.h"
+ 
+ #include <errno.h>
+ #include "drm-uapi/drm_fourcc.h"
+@@ -213,7 +214,23 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
+     * around the issue, but any memset value seems to.
+     */
+    if (rsc->layout.ubwc) {
+-      rsc->needs_ubwc_clear = true;
++      if (is_a5xx(screen)) {
++         /* fd5 has no clear_ubwc callback. This allocation is not yet
++          * referenced by any batch; wait for BO-cache reuse before writing. */
++         void *map = NULL;
++         if (!bo || fd_bo_cpu_prep(bo, NULL, FD_BO_PREP_WRITE) ||
++             !(map = fd_bo_map(bo))) {
++            if (bo)
++               fd_bo_del(bo);
++            fd_resource_set_bo(rsc, NULL);
++            return;
++         }
++         memset((char *)map + rsc->layout.ubwc_slices[0].offset,
++                0, rsc->layout.ubwc_slices[0].size0);
++         rsc->needs_ubwc_clear = false;
++      } else {
++         rsc->needs_ubwc_clear = true;
++      }
+    }
+ 
+    util_range_set_empty(&rsc->valid_buffer_range);
+@@ -1001,12 +1018,27 @@ fd_resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
+                          unsigned level, unsigned usage,
+                          const struct pipe_box *box,
+                          struct pipe_transfer **pptrans)
++   /* The UBWC uncompress below is driver-thread only: threaded-unsync maps
++    * of UBWC resources are refused before it (as improve_transfer_map_usage):
++    */
++   in_dt
+ {
+    struct fd_context *ctx = fd_context(pctx);
+    struct fd_resource *rsc = fd_resource(prsc);
+    struct fd_transfer *trans;
+    struct pipe_transfer *ptrans;
+ 
++   /* CPU access must never interpret compressed color or write stale flags.
++    * Shadowing preserves the old contents with a draw blit, rebinds views,
++    * and leaves this resource linear for subsequent partial CPU updates. */
++   if (is_a5xx(ctx->screen) && rsc->layout.ubwc) {
++      if (usage & (PIPE_MAP_DIRECTLY | PIPE_MAP_THREAD_SAFE |
++                   TC_TRANSFER_MAP_THREADED_UNSYNC))
++         return NULL;
++      fd_resource_uncompress(ctx, rsc, true);
++      usage &= ~PIPE_MAP_UNSYNCHRONIZED;
++   }
++
+    DBG("prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d", prsc, level, usage,
+        box->width, box->height, box->x, box->y);
+ 
+@@ -1326,6 +1358,23 @@ get_best_layout(struct fd_screen *screen,
+    }
+ 
+    bool ubwc_ok = is_a6xx(screen) && !screen->info->props.is_a702;
++   if (is_a5xx(screen)) {
++      /* a5xx is opt-in ONLY through an explicit compressed modifier.
++       * Never change implicit allocations, imports, or display surfaces. */
++      ubwc_ok = fd5_ubwc_eligible(
++         drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count),
++         tmpl->target == PIPE_TEXTURE_2D,
++         tmpl->format == PIPE_FORMAT_R8G8B8A8_UNORM ||
++         tmpl->format == PIPE_FORMAT_B8G8R8A8_UNORM,
++         tmpl->depth0, tmpl->array_size, tmpl->last_level,
++         tmpl->nr_samples, tmpl->nr_storage_samples,
++         tmpl->usage == PIPE_USAGE_STAGING,
++         !(tmpl->bind & PIPE_BIND_RENDER_TARGET) ||
++         (tmpl->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED | PIPE_BIND_LINEAR |
++                        PIPE_BIND_SHADER_IMAGE)),
++         tmpl->flags & (PIPE_RESOURCE_FLAG_MAP_PERSISTENT |
++                        PIPE_RESOURCE_FLAG_MAP_COHERENT));
++   }
+    if (FD_DBG(NOUBWC))
+       ubwc_ok = false;
+ 
+@@ -1752,6 +1801,9 @@ fd_resource_from_memobj(struct pipe_screen *pscreen,
+       modifiers = DRM_FORMAT_MOD_LINEAR;
+    }
+ 
++   if (is_a5xx(fd_screen(pscreen)) && modifiers == DRM_FORMAT_MOD_QCOM_COMPRESSED)
++      return NULL;
++
+    /* Allocate new pipe resource. */
+    prsc = fd_resource_allocate_and_resolve(pscreen, tmpl, &modifiers, 1, &size);
+    if (!prsc)

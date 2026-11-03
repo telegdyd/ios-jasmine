@@ -173,6 +173,26 @@ class TimelineParserTests(unittest.TestCase):
             self.assertIn('GPU-private UBWC-eligible share', text)
             self.assertIn('passes 1 (0.50/CB)', text)
 
+    def test_ubwc_class_is_reported_and_counted_as_private(self):
+        with workdir() as tmp:
+            path, _ = self.fixture(tmp)
+            cap = btl.load(path)
+            records = []
+            for r in cap['records']:
+                a = r['a']
+                if r['kind'] == 19:  # convert the fixture's private attachment
+                    a &= ~(3 << 14)
+                if r['kind'] == 21:  # convert private source to UBWC source
+                    a &= ~(3 << 4)
+                records.append(record(r['t'], r['kind'], r['cb'], a, r['b']))
+            write_ring(path, records)
+            out = io.StringIO()
+            btl.report(path, out=out)
+            text = out.getvalue()
+            self.assertIn('ubwc: attach_write 3.96 MiB/CB', text)
+            self.assertIn('ubwc->surface', text)
+            self.assertIn('GPU-private UBWC-eligible share 68.0%', text)
+
     def test_kernel_join_by_seqno_and_generation(self):
         with workdir() as tmp:
             path, _ = self.fixture(tmp)
