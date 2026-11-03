@@ -1,3 +1,9 @@
+### 2026-11-03: m8tc1 RE-INSTALLED after the reboot (user: "Reinstall m8tc1") - awaiting panel check
+
+`install.py install --cand xnu/out-mesa-m8tc1`: backboardd 57 -> 375, async confirmed, no faults. Rollback:
+`install.py restore` -> m8cw1 (backup-m8cw1b). capture.py expects m8tc1 installed again; install.py still expects
+m8cw1 as the installed pair for a fresh install, so rebaseline it after the user keeps m8tc1.
+
 ### 2026-11-03 ~19:00: severe flicker/tearing after the rp1+rf1 captures; cleared by reboot. INSTALLED NOW: m8cw1
 
 User saw "real bad flicker and tearing" after the two back-to-back timeline captures (rp1, rf1). Device files were
