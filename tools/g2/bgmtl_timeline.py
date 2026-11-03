@@ -27,6 +27,7 @@ KIND = {
     5: 'SUBMIT_BEGIN', 6: 'SUBMIT_END', 7: 'REPLAY_END', 8: 'SCHEDULED_RUN',
     9: 'FENCE_OBSERVED', 10: 'COMPLETED_RUN', 11: 'PRESENT_POST', 12: 'PRESENT_ENTER',
     13: 'LOCK_WAIT', 14: 'HANDLERS_BEGIN', 15: 'DEFER_DRAIN', 16: 'GETBYTES',
+    17: 'REPLAY_WAIT',
 }
 QUEUE = {0: 'replay', 1: 'completion', 2: 'inline'}
 NO_CB = 0xffffffff
@@ -406,6 +407,19 @@ def report(path, events=(), epoch=None, out=sys.stdout):
         fast = sum(1 for r in gb if r['a'] == 1)
         emit(f"  getBytes: {len(gb)} calls, {fast} unlocked fast, {len(gb) - fast} locked fallback, "
              f"{sum(r['b'] for r in gb)} bytes")
+
+    rw = [r for r in capture['records'] if r['kind'] == 17]
+    if rw:
+        scale = capture['numer'] / capture['denom'] / 1e6
+
+        def wait_line(label, site):
+            xs = [r['b'] * scale for r in rw if r['a'] == site]
+            if xs:
+                emit(f"  replay wait {label}: {len(xs)} waits, {sum(xs):.3f} ms total, "
+                     f"{max(xs):.3f} ms max")
+
+        wait_line('cpu-blit finish', 1)
+        wait_line('fence seqno drain', 2)
 
     emit('\n  10 longest frames (by create -> completed):')
     longest = sorted((r for r in rows if r['total'] is not None), key=lambda r: r['total'], reverse=True)[:10]

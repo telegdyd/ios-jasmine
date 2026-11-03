@@ -65,6 +65,9 @@ class TimelineParserTests(unittest.TestCase):
             # LOCK_WAITs have cb=NO_CB and must never create a CB row.
             record(start + 850_000, 13, btl.NO_CB, site(0, 1472, 99), 150_000),
             record(start + 1_000_000, 13, btl.NO_CB, site(1, 39, 99), 100_000),
+            # In-replay wait records; 1 = CPU-blit finish, 2 = fence seqno drain.
+            record(start + 300_000, 17, 1, 1, 50_000),
+            record(start + 310_000, 17, 1, 2, 20_000),
         ]
         path = Path(tmp) / 'bgmtl-tl-4242.bin'
         write_ring(path, recs, dropped=dropped)
@@ -154,6 +157,8 @@ class TimelineParserTests(unittest.TestCase):
             self.assertIn('CAPTURE INCOMPLETE', text)
             self.assertIn('2 ring records dropped', text)
             self.assertIn('missing COMPLETED_RUN', text)
+            self.assertIn('replay wait cpu-blit finish: 1 waits', text)
+            self.assertIn('replay wait fence seqno drain: 1 waits', text)
 
     def test_kernel_join_by_seqno_and_generation(self):
         with workdir() as tmp:
