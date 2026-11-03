@@ -1,3 +1,22 @@
+### 2026-11-03: M8 fix A (unlocked getBytes) INSTALLED as m8gb1 - slow completed handlers GONE; awaiting panel check
+
+Metal bd4f5fb / root 5cd8472 (DeepSeek, reviewed by Claude): rwa_texture_read_unlocked (air/air_metal.c ~2547):
+under fd_screen_lock (same lock as fd_try_shadow_resource's bo/layout swap and fd_batch_resource_write) gate 2D,
+non-depth, 1 sample, linear, no UBWC, valid, no pending write batch; fd_bo_ref, unlock; fd_bo_cpu_prep(READ), fd_bo_map,
+row copy. getBytes tries it first unless the texture has a shadow (_surfTex) or private surface copy; else the old
+bg_lock path. Timeline kind 16 GETBYTES; parser now resolves lock sites from current source.
+Build xnu/out-mesa-m8gb1 (libbgmtl 5bf0ad1b, libbgair 87bfd466; includes fix C). Host tests PASS (read-unlocked,
+defer-destroy, timeline, write-admission), 60 g2 unit tests OK.
+Capture research/metal-m8/gb1 (complete, byte-exact restore): handlers_begin -> completed p99 18.3 -> 1.47 ms, max
+19.3 -> 1.5; 0 bg_lock waits inside handlers; CA's getBytes = 11 calls x 4 bytes (one pixel), all unlocked.
+Validation research/metal-m7-suspend/m8gb1: identical totals to m8adm1/m8dd2, 0 failed; the probes' getBytes
+pixel checks ran on the unlocked path (log line in every probe process), no fallback logged.
+INSTALLED over m8dd2 (install.py baselined on m8dd2; backup research/metal-m8/backup-m8dd2; earlier backups
+backup-m8adm1, backup (m7close4) kept): backboardd 63377 -> 63895, async confirmed, unlocked getBytes in use,
+0 faults in logs/netlog-m8gb1-install.txt. Rollback: `python research/metal-m8/install.py restore` (-> m8dd2).
+Remaining M8 lead: bgCollectWrites (bg_work_admission.h:34) 42 waits / 246 ms per 8 s on encoding threads, likely
+behind create -> commit p90 ~27 ms; needs the narrower argbuf lock + M7 ordering audit (lockfree-design.md B).
+
 ### 2026-11-03: M8 fix C (deferred texture/buffer destroy) INSTALLED as m8dd2 - awaiting the user's panel check
 
 Design: research/metal-m8/lockfree-design.md (DeepSeek; order C dealloc -> A getBytes -> B bgCollectWrites).
