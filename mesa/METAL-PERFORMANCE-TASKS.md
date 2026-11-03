@@ -35,10 +35,10 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
 | M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
-| M7 | Partial | Display-suspended admission fixed; run 7 clean (zero `BEGIN refused`); user async panel check passed 2026-11-02 (temporary install, restored). ticketed-at-replay/j0127/fault cases; installation decision | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
+| M7 | Done (validation); install open | m7close4 fixes an async CA-memory crash (run 9), a failed-submit-as-Completed gap and a same-surface reuse race; j0127 cancelled ACK (P24), pending reuse (P25), submit failure (P26) pass on device; async-only trials 16-18 clean. Installation decision (user; panel check was on the earlier m7suspend build) | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
-Recommended next implementation investigation: **M7 asynchronous replay safety**.
+Recommended next: the **M7 installation decision** (user), then **M8** attribution.
 The bounded M6 logical lifetime audit found no safely removable operation within
 its observer coverage. Revisit M6 with a specific physical-backing/global-observer
 proof strategy. M5's wallpaper gap remains a separate targeted diagnostic task.
@@ -172,11 +172,15 @@ phase; the logger prints only the first and every 100th event, so it is not a
 total). Twelve screenshot labels each returned three non-uniform/non-black
 surfaces; P1-wake1 and P2-wake3 were viewed clean; restore was byte-exact. Not installed.
 
-**Remaining work:** Obtain a user panel check after wake in candidate-inline and
-candidate-async phases; installed async activation needs the user. Exercise
-ticketed-at-replay admission in the compositor (only P23 so far), then j0127
-cancelled-SEAL, true fault/quarantine and same-surface pending-reuse cases; decide
-installation. Preserve ordered callbacks, resource lifetimes, M4 grouping/drains
+**Closed (2026-11-03):** [M7 closing](METAL-M7-CLOSING.md). m7close4 (Metal `327bf2f`) adds a replay-mode log that positively confirms async in
+backboardd, fixes an async-only backboardd SIGSEGV (CA layer memory under a NoCopy
+buffer read on the replay worker: vm_remap alias plus a length check), makes a failed
+submit an Error instead of Completed, counts unticketed destinations, and releases
+admission at completion (P25 found a -EBUSY reuse race). P24 proves the j0127
+cancelled ACK through the command-buffer path; ticketed-at-replay stays P23-only
+evidence (always logged now); a real GPU fault is untested by design (no hang
+recovery, reboot cost). **Remaining:** the installation decision (user) and a fresh
+panel check on m7close4 if async is to be installed. Preserve ordered callbacks, resource lifetimes, M4 grouping/drains
 and M6's sticky fetch restriction. Existing host/backend race cases and isolated
 GPU destination regressions are completed evidence; do not repeat them as a
 substitute for the compositor/panel gap. No default enablement or installation

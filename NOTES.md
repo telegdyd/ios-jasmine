@@ -1,3 +1,20 @@
+### 2026-11-03: M7 CLOSED (validation); not installed, installation decision open
+
+Metal 327bf2f, build xnu/out-mesa-m7close4 (libbgmtl 05866ab6, libbgair 62eed9e4). Report
+mesa/METAL-M7-CLOSING.md. Found and fixed: (1) async-only backboardd SIGSEGV (run 9 P2, once in four async
+runs): linear-texture refresh on the replay worker read CA layer memory (VM tag 51) under a retained NoCopy
+buffer past a live mapping; async now reads NoCopy caller memory through a vm_remap alias + length check.
+(2) A submit failing inside the void pipe flush completed the CB (kfence 0); now Error. (3) Admission entries
+released at replay end raced the kernel (-EBUSY, P25 2/20); now released at completion. Also: _ucount in the
+32 cap, reticket always logged, one-time "BGMTL replay: async|inline" line (run 7/panel check had never
+positively proved async). Device: close4 six modes 47/47, P23 39/42, P24 9/9 (j0127 cancel d=2 then ACK d=3
+via bench events), P25 3/3 (x2), P26 3/3, ticket probe PASS; async-only trials 16-18 (trial.py --async-only)
+zero failures/restarts, async confirmed, 12/12 shots non-uniform, restore byte-exact. Real GPU fault not
+tested by design (no hang recovery; reboot cost). Runs 10/11/13/15 aborted on Wi-Fi socket resets (not Metal).
+Phone: installed M4 95cea7f9/3d91c9f6, envs original, temporary m7ack kernel, lock released.
+Next: user decides installation; if async is to be installed, panel check on m7close4 first (the passed
+check below used m7suspend). Then M8.
+
 ### 2026-11-02: M7 async panel check PASSED (user: "Looks right"); original M4 runtime RESTORED
 
 Temporary install (4bbeccf entry): m7suspend pair libbgair5501bbfe/libbgmtl e13d1174 + BGMTL_ASYNC=1 in
