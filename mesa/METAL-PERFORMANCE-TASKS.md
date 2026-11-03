@@ -35,10 +35,10 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | --- | --- | --- | --- |
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
 | M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
-| M7 | Done (validation); install open | m7close4 fixes an async CA-memory crash (run 9), a failed-submit-as-Completed gap and a same-surface reuse race; j0127 cancelled ACK (P24), pending reuse (P25), submit failure (P26) pass on device; async-only trials 16-18 clean. Installation decision (user; panel check was on the earlier m7suspend build) | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
+| M7 | Done; async INSTALLED 2026-11-03 | m7close4 fixes an async CA-memory crash (run 9), a failed-submit-as-Completed gap and a same-surface reuse race; j0127 cancelled ACK (P24), pending reuse (P25), submit failure (P26) pass on device; async-only trials 16-18 clean. User panel check on m7close4 passed; installed in backboardd with BGMTL_ASYNC=1 (rollback `panel.py restore`) | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
 | M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
 
-Recommended next: the **M7 installation decision** (user), then **M8** attribution.
+Recommended next: **M8** attribution (async is now installed).
 The bounded M6 logical lifetime audit found no safely removable operation within
 its observer coverage. Revisit M6 with a specific physical-backing/global-observer
 proof strategy. M5's wallpaper gap remains a separate targeted diagnostic task.

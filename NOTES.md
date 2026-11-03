@@ -1,3 +1,16 @@
+### 2026-11-03: M7 async INSTALLED (m7close4, user panel check: "Looks right, keep it")
+
+backboardd 43862 runs libbgair 62eed9e4 / libbgmtl 05866ab6 (Metal 327bf2f) with bgmtl-bb.env
+CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 + BGMTL_ASYNC=1; log `BGMTL replay: async (chlorophyll.replay)`.
+Session slice since install: 0 command buffer failed, 0 QUEUE FALLBACK, 0 CRASH/panic, 0 linear-refresh
+refusals, 0 GPU submit failed, 1 display-suspended diagnostic (the only "reason 16" is the Wi-Fi AP).
+Wallpaper/poster pair 0d9fb5a2/eaf44cde unchanged. Rollback to M4: `python research/metal-m7-panel/panel.py
+restore` (backups in research/metal-m7-panel/backup, keep them). KERNEL CAVEAT: the phone runs the temporary
+m7ack kernel (j0127). Installed boot_b is still shim-boot-pride-slotb (kernel j0121-j0126, NO j0127). After any
+reboot into boot_b the env keeps async on without the j0127 cancelled-ACK: display-off cancellations would fail
+CBs / hold frames. Before a reboot either flash a j0127 kernel into boot_b (user approval needed) or restore
+(`panel.py restore`) / drop BGMTL_ASYNC=1 from bgmtl-bb.env. Next: resolve that, then M8.
+
 ### 2026-11-03: m7close4 + BGMTL_ASYNC=1 INSTALLED in backboardd for the user's panel check
 
 User: "test it then install it". `python research/metal-m7-panel/panel.py install` (CAND out-mesa-m7close4):
