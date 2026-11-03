@@ -1,3 +1,12 @@
+### 2026-11-03: M8 CLOSED (user: "Close M8"). Installed: m8tc1
+
+Final M8 state and numbers are in mesa/METAL-PERFORMANCE-TASKS.md (M8 row). Installed backboardd pair m8tc1 (libbgmtl
+6bc927ec, libbgair 773da9a9, env CA_DISABLE_FRAMEBUFFER_COMPRESSION=1 + BGMTL_ASYNC=1); rollback to m8cw1 from
+research/metal-m8/backup-m8cw1b. Mesa/metal HEAD (7cde9d6) carries three unshipped, safe changes (f08875e recursive-lock
+bypass, 7cb65aa REPLAY_WAIT timeline kind, 7cde9d6 fb-bind skip); any next Mesa install will include them, so
+validate.py + panel check it then. Open leftovers: replaceRegion uploads, small-constant compare. Next milestone:
+to be chosen with the user.
+
 ### 2026-11-03: M8 per-draw emit audit: mostly intrinsic (m8pe1 built, NOT captured/installed; m8tc1 installed)
 
 DeepSeek (research/metal-m8/replay-attribution.md, gitignored): air already caches CSO/vertex/sampler/view/viewport
