@@ -1,3 +1,20 @@
+### 2026-11-03: M9 DRAM byte split measured: ~54% of compositor bytes are GPU-private (UBWC-eligible)
+
+DeepSeek m9bw1 (mesa/metal afa33b0, root 9f8f44a): timeline kinds 18-21 (PASS, PASS_ATTACH, PASS_SAMPLE, BLIT),
+encoding mesa/metal/src/bg_tl_dram.h, parser section "DRAM bytes". Capture bw1 was wrong: it looked attachments up
+with rwaSurfaceTexture, which is NULL for non-IOSurface textures, so 1463/1826 passes had no attachments. Claude
+fixed it (rwaTextureAny, mesa/metal commit below), built xnu/out-mesa-m9bw2 (libbgmtl 8b4d35a1, libbgair 28680501).
+Capture research/metal-m8/bw2 (logs/capture-bw2.txt; restore byte-exact, backboardd 9126; kernel state after:
+bench idle, GPU 588, DDR 1804, ddrgov mode 1). Grouping tool research/metal-m9-fbc/bytes.py (ignored).
+Per CB (70 CBs, 18.4 passes/CB, 7.7 draws/pass), full-surface upper bounds:
+- writes: private 34.3 MiB, surface 19.8 MiB; loads: private 3.1, surface 19.7; sampled: private 24.0, surface 13.7.
+- total ~114 MiB/CB, GPU-private 53.6%.
+- Biggest: ~4 full-screen 828x1792 BGRA8 private targets per CB (load dontcare, store), 3.5 full-screen surface
+  passes per CB (load+store), private sampled 1271x1823 / 1326x1160 / 1326x1326 (blur/backdrop-like), many
+  684x424 / 686x426 private targets cleared+stored. CA renders at 828x1792.
+Not measured: GMEM vs sysmem per batch, overdraw/blend reads (real traffic is higher), what the full-screen private
+targets are in CA terms. Phone: m8pe1 installed, env BGMTL_ASYNC=1 only.
+
 ### 2026-11-03: CA_DISABLE_FRAMEBUFFER_COMPRESSION does nothing on our stack (QuartzCore disassembled)
 
 User: keep the flag removed, find out what it does. mesa/METAL-M9-FBC.md section 0 (Claude; DeepSeek's sandbox
