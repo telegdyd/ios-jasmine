@@ -1,3 +1,10 @@
+### 2026-11-03: m8tc1 KEPT again (user panel check after reinstall: "Looks right")
+
+Installed: m8tc1 (backboardd 375). Rollback to m8cw1: backup-m8cw1b (install.py now rebaselined to m8tc1, so restore
+it by hand from that dir or temporarily point BACKUP back). install.py/capture.py both expect m8tc1; next install
+backs up to backup-m8tc1. Next M8 options: freedreno per-draw emit cost, replaceRegion uploads, or close M8.
+Captures: space them out and check panel + kernel state after each (see the flicker entry below).
+
 ### 2026-11-03: m8tc1 RE-INSTALLED after the reboot (user: "Reinstall m8tc1") - awaiting panel check
 
 `install.py install --cand xnu/out-mesa-m8tc1`: backboardd 57 -> 375, async confirmed, no faults. Rollback:
