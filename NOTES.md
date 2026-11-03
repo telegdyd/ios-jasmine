@@ -1,3 +1,31 @@
+### 2026-11-04: M10 buffer-texture copy removed; m10wr8 TEMPORARILY INSTALLED (awaiting user panel check): Home +21 %, CC +16 %
+
+Attribution (research/metal-m8/ubwc3; tools in gitignored research/metal-m10: seq.py per-CB timeline, threads.py WSL
+per-thread stacks - NOTE CPUs 0-3 = Gold, 4-7 = Silver, the script's cluster labels are inverted -, uploads.py
+BGMTL_UPLOAD_PROFILE inventory over the installed pair, restores byte-exact). Motion frames: encode -> replay -> GPU is
+serial per frame. Biggest replay CPU item: memmove in rwa_texture_write <- -[BGMTLTexture rwaTexture] (_linSrc refresh),
+~63 ms/s. Inventory: CA's two newBufferWithBytesNoCopy layer images 1326x1326 / 1326x1160 BGRA8 (pitch 5312, offset 0,
+~7 MB each) re-copied in most CBs, never changed: Home 6.8 MB/CB, CC 9.9 MB/CB (+720x338 BGRA8 and A8 masks, smaller).
+Fix, Metal 16236a1 (DeepSeek wrote the GPU-buffer alias; Claude added the no-copy wrap):
+- GPU-allocated buffer: rwa_texture_create_over_buffer imports the buffer's BO (fd_bo_handle + resource_from_handle KMS,
+  same fd_bo; heap-suballocated -> copy path). CA does NOT use this path (its buffers are no-copy).
+- no-copy buffer: IOSurfaceCreate with IOSurfaceAddress over the pinned alias (bgReplayBytes) -> existing IOSurface
+  import; rwa_texture_flush_surface once per refresh epoch (plain CPU stores move no seed). Off switch:
+  BGMTL_LINEAR_ALIAS=0 in bgmtl-bb.env (same build).
+- -replaceRegion:mipmapLevel:withBytes:bytesPerRow:bytesPerImage: was unimplemented (zero answer): now forwards.
+Probe P27 (bgmtl_render_probe): validate.py part 1 on m10wr8: 6 modes x 65/65 (47 old + 18 new). Gotcha found on the way:
+a probe making >64 autoreleased command buffers without an @autoreleasepool blocks in -commandBuffer (queue slot limit,
+as Metal) - it looked like a kernel hang. validate.py (gitignored) now accepts any "N checks passed, 0 failed".
+Results: upload inventory Home 6.8 -> 0.006 MB/CB (research/metal-m10/up-home-wr8). Capture wr8: replay p50 14.7 -> 12.2.
+framebench same session (research/metal-m10/fb-*): m9ubwc9 base1 Home B 31.0, CC A 28.9, CC B 28.7, Spotlight 24.0;
+m10wr8 fb-wr8/fb-wr8c Home B 37.7/37.5, CC A 33.4/33.9, CC B 33.6/33.3, Spotlight 22.7/27.7 (fb-wr8b stopped on a
+command-port timeout, not a UI stall). M9's Spotlight 42.1 was an outlier (base today 24.0). Screenshots after install
+(research/metal-m10/shots: Today view, lock screen, CC) render correctly. No faults in install netlogs.
+INSTALLED NOW: m10wr8 (libbgmtl fa400aa8, libbgair 3edf3ba9), env unchanged (BGMTL_ASYNC=1, BGMTL_UBWC=1), via
+research/metal-m8/install.py (backup research/metal-m8/backup-m9ubwc9). Rollback: `python research/metal-m8/install.py
+restore` (-> m9ubwc9). If the user keeps it: rebaseline install.py/capture.py INSTALLED to m10wr8. Next lead: CA
+-replaceRegion waits on bg_lock behind the replay (17-24 waits, ~180-250 ms per 8 s capture, max ~30 ms).
+
 ### 2026-11-03: UBWC KEPT (user: "Keep it"); M9 closed. Installed: m9ubwc9 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
 
 Phone readback: /usr/local/bin libbgmtl 94cfe61f, libbgair 9cc14f1a (= xnu/out-mesa-m9ubwc9), bgmtl-bb.env
