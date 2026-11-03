@@ -1,3 +1,23 @@
+### 2026-11-03: M8 texture creation off bg_lock INSTALLED as m8tc1 - awaiting panel check
+
+Metal 683ad7c / root 95f8f7e (DeepSeek, reviewed by Claude): the non-IOSurface allocate branch of
+-[BGMTLTexture init...] calls rwa_texture_create without bg_lock (screen-only: resource_create takes fd_screen_lock /
+BO-cache locks itself; tex_pool_take only takes tex_pool_mtx). The pool's expiry (tex_pool_drop ->
+sampler_view_destroy, a context call) moved out of tex_pool_take; it runs only in tex_pool_put under bg_lock, so
+pooled entries can age longer when nothing is destroyed. tex_pool_on via pthread_once. IOSurface import branch
+(sbo_cache, resource_from_handle, copySurfaceLocked), buffer/sampler/depth-stencil init, newTextureWithBytesNoCopy
+unchanged (context work). No new lock.
+Build xnu/out-mesa-m8tc1 (libbgmtl 6bc927ec, libbgair 773da9a9). Host tests incl. new run-tex-pool.sh PASS.
+Capture research/metal-m8/tc1 vs cw1: texture-create waits 21 (258 ms) -> 0; total bg_lock wait per 8 s 264 -> 106 ms;
+create -> commit p50 7.4 -> 6.9, p90 19.6 -> 16.3, p99 108.7 -> 74.2 ms. Remaining: -[BGMTLTexture replaceRegion:]
+(rwa_texture_write, needs the context) 21 waits, 104 ms, max 15; bg_adm_lock 2 waits. Single capture each.
+Validation research/metal-m7-suspend/m8tc1: identical totals, 0 failed. INSTALLED over m8cw1 (install.py baselined on
+m8cw1; backup research/metal-m8/backup-m8cw1): backboardd 70679 -> 71204, async confirmed, 0 faults in
+logs/netlog-m8tc1-install.txt. Rollback: `python research/metal-m8/install.py restore` (-> m8cw1).
+M8 summary vs m8adm1 start: completed-handler p99 ~21 -> ~1.2 ms; encode p50 11.2 -> 6.9, p90 26.8 -> 16.3 ms;
+bg_lock wait per 8 s 476 -> 106 ms. Possible next: replaceRegion uploads (would need a staging/deferred upload
+design); replay itself (replay_begin -> submit_begin p50 ~10-19 ms) and GPU wait (~21-28 ms) are untouched.
+
 ### 2026-11-03: M8 m8cw1 KEPT (user panel check: "Looks right")
 
 m8cw1 (fixes A + B + C) stays installed in backboardd (libbgmtl 4a3e04c8, libbgair f829ccca, env unchanged).
