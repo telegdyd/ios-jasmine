@@ -1,3 +1,13 @@
+### 2026-11-03: UBWC KEPT (user: "Keep it"); M9 closed. Installed: m9ubwc9 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
+
+Phone readback: /usr/local/bin libbgmtl 94cfe61f, libbgair 9cc14f1a (= xnu/out-mesa-m9ubwc9), bgmtl-bb.env
+`BGMTL_ASYNC=1\nBGMTL_UBWC=1\n`, backboardd 16340. research/metal-m8/install.py + capture.py rebaselined:
+INSTALLED m9ubwc9, INSTALLED_ENV with BGMTL_UBWC=1, BACKUP backup-m9ubwc9 (created on the next install). Rollback to
+m8pe1: hand-restore research/metal-m8/backup-m8pe1-kept (libs + env without BGMTL_UBWC) and restart backboardd;
+or just drop the BGMTL_UBWC=1 line (env-only off switch, same build). Survives reboot (libs in /usr/local/bin,
+env in /private/var/tmp; boot_b unchanged = j0127). mesa/METAL-PERFORMANCE-TASKS.md M9 row added. Next lead: Home/CC
+two-refresh cadence with the GPU at ~9.5 ms p50 (CPU encode+replay or frame serialization) - not measured yet.
+
 ### 2026-11-03: m9ubwc9 + BGMTL_UBWC=1 temporarily INSTALLED; user panel check "it looks fine"; framebench
 
 install.py (now INSTALLED_ENV b'BGMTL_ASYNC=1\n', --env-extra, default cand m9ubwc9) installed m9ubwc9 with env
