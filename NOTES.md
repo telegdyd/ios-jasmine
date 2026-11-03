@@ -1,4 +1,12 @@
-### 2026-11-04: M10 buffer-texture copy removed; m10wr8 TEMPORARILY INSTALLED (awaiting user panel check): Home +21 %, CC +16 %
+### 2026-11-04: m10wr8 KEPT (user: "Yes, looks good! Install it"); M10 copy fix closed. Installed: m10wr8 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
+
+Phone readback: libbgmtl fa400aa8, libbgair 3edf3ba9 (= xnu/out-mesa-m10wr8), bgmtl-bb.env unchanged, backboardd 26436.
+research/metal-m8/install.py + capture.py (+ metal-m10/uploads.py) rebaselined: INSTALLED m10wr8, BACKUP backup-m10next
+(created on the next install), STATE install-state-m10next.json. The m9ubwc9 files are kept in
+research/metal-m8/backup-m9ubwc9-before-m10wr8 (hand-restore + restart backboardd to go back); env-only off switch:
+BGMTL_LINEAR_ALIAS=0. Next: CA -replaceRegion waits on bg_lock behind the replay (in progress).
+
+### 2026-11-04: M10 buffer-texture copy removed; m10wr8 installed (kept, see above): Home +21 %, CC +16 %
 
 Attribution (research/metal-m8/ubwc3; tools in gitignored research/metal-m10: seq.py per-CB timeline, threads.py WSL
 per-thread stacks - NOTE CPUs 0-3 = Gold, 4-7 = Silver, the script's cluster labels are inverted -, uploads.py
