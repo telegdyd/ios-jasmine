@@ -26,45 +26,18 @@ KIND = {
     1: 'CREATE', 2: 'COMMIT_ENTER', 3: 'REPLAY_BEGIN', 4: 'TICKET_BEGIN',
     5: 'SUBMIT_BEGIN', 6: 'SUBMIT_END', 7: 'REPLAY_END', 8: 'SCHEDULED_RUN',
     9: 'FENCE_OBSERVED', 10: 'COMPLETED_RUN', 11: 'PRESENT_POST', 12: 'PRESENT_ENTER',
-    13: 'LOCK_WAIT', 14: 'HANDLERS_BEGIN',
+    13: 'LOCK_WAIT', 14: 'HANDLERS_BEGIN', 15: 'DEFER_DRAIN', 16: 'GETBYTES',
 }
 QUEUE = {0: 'replay', 1: 'completion', 2: 'inline'}
 NO_CB = 0xffffffff
 FILE_NAMES = {0: 'bgmtl.m', 1: 'bg_write_admission.h', 2: 'bg_work_admission.h'}
+SRC_DIR = Path(__file__).resolve().parents[2] / 'mesa' / 'metal' / 'src'
+_SOURCE_CACHE = {}
 
 # Call-site line -> enclosing function, as of the source at this commit. Lines are
 # the source line of each bg_lock() token; file tags come from the header macros
 # (1=bg_write_admission.h, 2=bg_work_admission.h, 0=bgmtl.m). Keep this table in
 # sync when bgmtl.m moves; an unknown site is still printed as file:line.
-SITES = {
-    (0, 920): '-[BGMTLDevice newTextureWithBytesNoCopy:...]',
-    (0, 1031): '-[BGMTLDevice newRenderPipelineStateWithDescriptor:error:]',
-    (0, 1037): '-[BGMTLDevice newRenderPipelineStateWithDescriptor:error:] cleanup',
-    (0, 1064): '-[BGMTLDevice bgPipelineForFunction:descriptor:error:]',
-    (0, 1069): '-[BGMTLDevice bgPipelineForFunction:descriptor:error:] cleanup',
-    (0, 1111): '-[BGMTLBuffer initWithBGDevice:length:]',
-    (0, 1136): '-[BGMTLBuffer dealloc]',
-    (0, 1180): '-[BGMTLComputePipeline dealloc]',
-    (0, 1229): '-[BGMTLCommandBuffer dealloc]',
-    (0, 1472): '-[BGMTLCommandBuffer commit]',
-    (0, 1508): '-[BGMTLCommandBuffer bgReplayFrom:]',
-    (0, 2260): '-[BGMTLTexture initWithBGDevice:descriptor:iosurface:plane:] surface',
-    (0, 2286): '-[BGMTLTexture initWithBGDevice:descriptor:iosurface:plane:] allocate',
-    (0, 2296): '-[BGMTLTexture dealloc]',
-    (0, 2352): '-[BGMTLTexture rwaTextureSampled]',
-    (0, 2405): '-[BGMTLTexture rwaTexture] refresh epoch',
-    (0, 2413): '-[BGMTLTexture rwaTexture] no-copy cache',
-    (0, 2428): '-[BGMTLTexture rwaTexture] linear source',
-    (0, 2486): '-[BGMTLTexture replaceRegion:...]',
-    (0, 2502): '-[BGMTLTexture getBytes:...]',
-    (0, 2527): '-[BGMTLSampler initWithBGDevice:descriptor:]',
-    (0, 2534): '-[BGMTLSampler dealloc]',
-    (0, 2556): '-[BGMTLDepthStencil initWithBGDevice:descriptor:]',
-    (0, 2567): '-[BGMTLDepthStencil dealloc]',
-    (0, 2578): '-[BGMTLRenderPipeline dealloc]',
-    (1, 39): 'bg_adm_lock',
-    (2, 34): '-[BGMTLCommandBuffer bgCollectWrites:]',
-}
 
 # name, label, positive-only (fence->scheduled is normally negative)
 INTERVALS = [
@@ -231,8 +204,41 @@ def _site_parts(a):
     return file, line, tid
 
 
+def _source_owner(file, line):
+    """Enclosing method/function at a current source line, or None.
+
+    The ring stores a source line, not a symbol; the source can move between the
+    build and the report. Resolve it against the checked-out tree so a capture is
+    labelled with the function at report time, and fall back to the static table.
+    """
+    key = (file, line)
+    if key in _SOURCE_CACHE:
+        return _SOURCE_CACHE[key]
+    owner = None
+    path = SRC_DIR / FILE_NAMES.get(file, '')
+    if path.is_file():
+        try:
+            lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+        except OSError:
+            lines = []
+        for i in range(min(line - 1, len(lines) - 1), -1, -1):
+            s = lines[i].strip()
+            if not s or s.startswith(('//', '/*', '*', '#')):
+                continue
+            if s.startswith(('- (', '+ (')):
+                owner = s.split('{', 1)[0].strip()
+                break
+            if s.startswith(('if ', 'for ', 'while ', 'switch ', 'return ', 'else ')):
+                continue
+            if re.match(r'^(static\s+)?(inline\s+)?[A-Za-z_][\w \t*]*\([^;]*\)\s*(\{|$)', s):
+                owner = s.split('{', 1)[0].strip()
+                break
+    _SOURCE_CACHE[key] = owner
+    return owner
+
+
 def _site_label(file, line):
-    owner = SITES.get((file, line))
+    owner = _source_owner(file, line)
     where = f'{FILE_NAMES.get(file, str(file))}:{line}'
     return f'{where} {owner}' if owner else where
 
@@ -393,6 +399,12 @@ def report(path, events=(), epoch=None, out=sys.stdout):
     if st['scheduled_before_fence']:
         emit(f"  note: scheduled ran before fence observation on {st['scheduled_before_fence']} CBs "
              "(expected when BGMTL_DEFER_SCHEDULED is off)")
+
+    gb = [r for r in capture['records'] if r['kind'] == 16]
+    if gb:
+        fast = sum(1 for r in gb if r['a'] == 1)
+        emit(f"  getBytes: {len(gb)} calls, {fast} unlocked fast, {len(gb) - fast} locked fallback, "
+             f"{sum(r['b'] for r in gb)} bytes")
 
     emit('\n  10 longest frames (by create -> completed):')
     longest = sorted((r for r in rows if r['total'] is not None), key=lambda r: r['total'], reverse=True)[:10]

@@ -136,6 +136,14 @@ class TimelineParserTests(unittest.TestCase):
             self.assertEqual(len(summary['waits']), 2)
             self.assertEqual(len(summary['lock_stats']), 2)
 
+    def test_source_site_resolves_current_getbytes(self):
+        src = (btl.SRC_DIR / 'bgmtl.m').read_text(encoding='utf-8', errors='replace').splitlines()
+        start = next(i for i, line in enumerate(src, 1)
+                     if '- (void)getBytes:(void *)bytes bytesPerRow' in line)
+        label = btl._site_label(0, start + 4)
+        self.assertIn('bgmtl.m:', label)
+        self.assertIn('getBytes', label)
+
     def test_report_flags_missing_completed_and_dropped(self):
         with workdir() as tmp:
             path, _ = self.fixture(tmp, dropped=2)
