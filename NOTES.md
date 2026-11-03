@@ -1,3 +1,15 @@
+### 2026-11-03: M8 per-draw emit audit: mostly intrinsic (m8pe1 built, NOT captured/installed; m8tc1 installed)
+
+DeepSeek (research/metal-m8/replay-attribution.md, gitignored): air already caches CSO/vertex/sampler/view/viewport
+binds. Metal 7cde9d6 / root b8c8b1b adds a framebuffer-bind skip (fb_bind, util_framebuffer_state_equal, invalidated
+in gs_invalidate/fb_release_texture) -> xnu/out-mesa-m8pe1 (libbgair 19427479, libbgmtl e6a84e48), but
+fd_set_framebuffer_state already early-returns on equal state, so expected saving ~0; not worth a capture alone.
+Why fd5 still emits per draw (source citations unverified by Claude): fd_context_all_dirty at every new batch, and
+Home runs ~1.85 draws/batch (old GPUPROF: 100 draws / 54 batches), so first-draw full emit is intrinsic;
+fd_set_constant_buffer always dirties CONST (air rebinds set*Bytes every draw -> ir3_emit_ubos 8.7%); images are
+unbound after every draw. Remaining contained ideas (small, medium risk): hash-compare small (<=256 B) user
+constants before rebinding; keep shader images bound with an image-set cache; cache SSBO binds.
+
 ### 2026-11-03: m8tc1 KEPT again (user panel check after reinstall: "Looks right")
 
 Installed: m8tc1 (backboardd 375). Rollback to m8cw1: backup-m8cw1b (install.py now rebaselined to m8tc1, so restore
