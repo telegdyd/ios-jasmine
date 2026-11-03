@@ -1,3 +1,24 @@
+### 2026-11-03: M8 started - per-CB timeline ring built; completion waits on bg_lock behind the next replay
+
+Survey: research/metal-m8/survey.md (DeepSeek; kernel already has ticket/present events, libbgmtl had no
+per-CB events). New ring mesa/metal/src/bg_timeline.h (Metal dc67e88): `BGMTL_TL=1` in bgmtl-bb.env +
+trigger /private/var/tmp/bgmtl-tl-start -> /private/var/tmp/bgmtl-tl-PID.bin (120 CBs / 8 s, no behaviour
+change). Parser tools/g2/bgmtl_timeline.py, `frametl.py --bgmtl`; framebench.py stores capture_epoch; event-40
+fix (memory snapshot vs ticket owner: a ticket 40 always has a 41 with the same generation). Host tests pass;
+timeline_test off+armed pass on the VM. Build xnu/out-mesa-m8tl1 (libbgmtl 060c5914, libbgair 62eed9e4).
+Capture tool research/metal-m8/capture.py (swaps in the candidate + BGMTL_TL=1, ~8 s Home swipes + CC,
+restores m7close4 byte-exact in a finally). cap1 and cap2 (cap2 adds 4 s stack samples, not yet analysed):
+both complete (120 CBs, 0 drops), installed runtime restored byte-exact, backboardd did not crash.
+Observed, swipe frames (~150-250 commands, ~25 fps): replay_begin->submit p50 18.7 ms, submit->fence observed
+p50 27 ms (replay of N+1 overlaps GPU of N), flush+ioctl 0.7 ms, handoff 0.3 ms, **fence->completed p50 9.9 /
+p90 19 ms** although present itself is ~1 us. Of 73 CBs (cap2) delayed >2 ms after their fence, 69 observed the
+fence while another CB was replaying and 55 started present within [-0.5,1] ms of that replay's end (cap1:
+58/54/40). Cause in code: bgReleaseAdmissionOwners (bg_write_admission.h:45), called before bgCompleteFrom,
+takes the global bg_lock that replay holds for its whole duration, only to walk bg_pending_writers. Not yet
+fixed: candidate fix is a dedicated admission lock for the pending-writer table (needs the M7 ordering
+argument re-checked: P25 reuse race, owner release). Seqno join: kernel events 20/21 are absent in this mode;
+seal 31 supplies seqno (84/120 joined in cap2). Phone: installed M7 runtime, lock free.
+
 ### 2026-11-03: boot_b = m7ack j0127 kernel FLASHED (user: "Yes, flash boot_b"); async survives reboot
 
 shim/out/shim-boot-m7ack-slotb.img (sha256 85878476ec223685...): kernel bytes identical to the temporary

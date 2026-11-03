@@ -36,7 +36,7 @@ M6's final suites passed 35/35 in normal, forced-sysmem and eligible-GMEM modes.
 | M5 | Partial | Resolve wallpaper collection/export and complete client attribution | Targeted configuration/replay inspection; compositor ranking already exists |
 | M6 | Partial; deferred | Logical graph captured; no safe removal established. Reopen only for a specific operation and a strategy to cover its missing observers/backing | [Lifetime audit](METAL-M6-LIFETIMES.md); retain corrected feedback constraint |
 | M7 | Done; async INSTALLED 2026-11-03 | m7close4 fixes an async CA-memory crash (run 9), a failed-submit-as-Completed gap and a same-surface reuse race; j0127 cancelled ACK (P24), pending reuse (P25), submit failure (P26) pass on device; async-only trials 16-18 clean. User panel check on m7close4 passed; installed in backboardd with BGMTL_ASYNC=1 (rollback `panel.py restore`) | [Trial](METAL-M7-TRIAL.md), [recovery](METAL-M7-ASYNC.md), [callbacks](METAL-M7-CALLBACKS.md), [admission](METAL-M7-ADMISSION.md); not installed, installed async off |
-| M8 | Open | Attribute callback/presentation delays and repeatable gaps | Inline analysis can start now; async conclusions require safe M7 |
+| M8 | In progress | Attribute callback/presentation delays and repeatable gaps | Per-CB ring built (Metal dc67e88); completion found waiting on bg_lock behind the next replay (fence->completed p50 9.9 ms); fix pending |
 
 Recommended next: **M8** attribution (async is now installed).
 The bounded M6 logical lifetime audit found no safely removable operation within

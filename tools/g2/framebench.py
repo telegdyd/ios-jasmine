@@ -291,13 +291,19 @@ def collect(a):
             try:
                 client, caps = discover(a.host)
                 manifest.update(host=client.host, caps=caps)
+                manifest['bench_stat'] = None
+                manifest['bench_epoch'] = None
                 for query in ('prof stat', 'bench stat', 'gpu state', 'ddr state', 'tsens', 'state'):
                     reply = client.request(query)
                     manifest[query] = reply
                     if query == 'prof stat' and 'running' in reply:
                         raise RuntimeError('another profiler is active')
-                    if query == 'bench stat' and (kv(reply).get('active') or kv(reply).get('busy')):
-                        raise RuntimeError('another framebench capture is active')
+                    if query == 'bench stat':
+                        stat = kv(reply)
+                        manifest['bench_stat'] = stat
+                        manifest['bench_epoch'] = stat.get('epoch')
+                        if stat.get('active') or stat.get('busy'):
+                            raise RuntimeError('another framebench capture is active')
                 if not a.manual and not a.ui_ready:
                     raise ValueError('standard mode requires --ui-ready: unlocked and settled UI')
                 manifest['status'] = 'capturing'
@@ -307,6 +313,8 @@ def collect(a):
                 if reply != 'OK bench started':
                     raise RuntimeError(reply)
                 started = True
+                # bench start sets a new bc_epoch; record it for the M8 ring dump.
+                manifest['capture_epoch'] = kv(client.request('bench stat')).get('epoch')
                 run = Run(client, out, duration - 2, a.sample_b)
                 run.manual(a.seconds) if a.manual else run.standard()
                 manifest['status'] = 'captured'
@@ -729,6 +737,7 @@ def present_report(events):
     ticket_metadata = {}
     ticket_current = {}
     ticket_waits = collections.defaultdict(list)
+    ticket_generations = {(e[4], e[5]) for e in events if e[1] == 41}
     for us, kind, phase, tid, a, b, c, d in events:
         if kind == 10:
             begins[a] = us
@@ -740,6 +749,12 @@ def present_report(events):
             frame['flip_to_ctl_clear_us'] = us - frame['flip_us']
             if frame.get('begin_us') is not None:
                 frame['begin_to_ctl_clear_us'] = us - frame['begin_us']
+            continue
+        # Kernel event id 40 is shared: bc_memory_snapshot emits (free, wired,
+        # free_wanted, tasks) once a second, and sweet_ticket_metadata emits
+        # (generation low/high, identity low/high) always paired with a 41 for
+        # the same generation. A 40 without a matching 41 is a memory snapshot.
+        if kind == 40 and (a, b) not in ticket_generations:
             continue
         if kind not in PRESENT_EVENTS:
             continue

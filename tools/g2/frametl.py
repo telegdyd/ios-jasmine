@@ -1,11 +1,14 @@
 """Per-frame pipeline timeline of one framebench capture (task 27; WSL, repo root: needs prof.py's symbolizer).
     python3 tools/g2/frametl.py research/framebench/NAME KERNEL LIB [--phase control-a] [--lanes N] [--start K]
+    python3 tools/g2/frametl.py research/framebench/NAME KERNEL LIB --bgmtl /path/bgmtl-tl-PID.bin
 For every swap the render thread ended in the CPU-sampled window: when its first ticket was begun (render thread,
 first GPU write of the frame), SwapEnd, the ticket SEAL (gdrv0, after the frame's last submit), the GPU completion
 of that submit (observed), FLIP and LATCH, plus what the render thread waited on in that frame. --lanes prints
 N frames as 0.5 ms lanes: R render thread (C CA, M Mesa, K kernel, s SwapWait wait, r runnable, g glthread wait,
 l lock, . other wait), W glthread worker, D gdrv0 on CPU, G GPU job outstanding (submit..observed), with event
-marks (B ticket begin, E SwapEnd, S seal, F flip, L latch)."""
+marks (B ticket begin, E SwapEnd, S seal, F flip, L latch).
+--bgmtl adds the M8 libbgmtl per-CB ring (see mesa/metal/src/bg_timeline.h): create/commit/replay/submit/
+fence/handler/present intervals, kernel seqno and ticket generation joins, and the 10 longest frames."""
 import collections
 import statistics
 import sys
@@ -16,7 +19,7 @@ import prof
 
 args = sys.argv[1:]
 opt = {}
-for k in ('--phase', '--lanes', '--start'):
+for k in ('--phase', '--lanes', '--start', '--bgmtl'):
     if k in args:
         i = args.index(k)
         opt[k] = args[i + 1]
@@ -223,3 +226,9 @@ print(f'\n  SwapWait over 0.1 ms, {PNAME}, {nend} swaps ended (rel = waited id -
 for (r, d, c), v in sorted(sw.items()):
     print(f'    rel {r:+d}{" id0" if d else "    "} {"done   " if c else "timeout"} {len(v):5d} calls, median {statistics.median(v) / 1000:.2f} ms, '
           f'{sum(v) / 1000 / max(1, nend):.2f} ms per swap')
+
+# Optional M8 libbgmtl timeline ring: per-CB create/replay/submit/handler intervals.
+if opt.get('--bgmtl'):
+    import bgmtl_timeline
+    bgmtl_timeline.report(opt['--bgmtl'], events,
+                          epoch=bgmtl_timeline.manifest_epoch(out))
