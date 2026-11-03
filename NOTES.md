@@ -1,3 +1,21 @@
+### 2026-11-03: M8 bg_lock completion wait REMOVED (Metal b049aff); validated, NOT installed
+
+Fix: the pending-writer table has its own bg_adm_mutex (bg_write_admission.h). Admission takes bg_lock then
+bg_adm_mutex across check + BEGIN + insert; release/quarantine take only bg_adm_mutex; nothing under
+bg_adm_mutex takes bg_lock. Release still precedes bgCompleteFrom (P25 ordering unchanged). Admission test
+mock fixed for the ring hook (it had not compiled since dc67e88) + new case: release completes while another
+thread holds bg_lock; passes under ASan/UBSan on the VM, timeline_test passes. Build xnu/out-mesa-m8adm1
+(libbgmtl e64b82a3, libbgair 62eed9e4 unchanged). Capture research/metal-m8/fix1 (same script/workload as
+cap1/cap2, complete, restored byte-exact): fence->present p50/p90 10.19/18.88 ms (cap2) -> 0.028/0.049 ms;
+fence->completed 9.9/19 -> 0.055/0.42 ms; CBs delayed >2 ms 74 -> 8. Replay, GPU wait and completion spacing
+(~37 ms) unchanged: no frame-rate claim. The 8 remaining all present immediately; their 10-20 ms is inside
+CA's completed handler while the next CB replays (inferred: the handler calls into something that takes
+bg_lock; not investigated). M7 validate.py parts 1-7 against m8adm1 (research/metal-m7-suspend/m8adm1): all
+ok - P0-P23 x6 modes, P23 display-off/wake native+async, P24 9/9 native+async with bench ACK, P25 3/3
+native+async, P26 3/3, ticket display epochs; installed runtime byte-exact afterwards. Installed runtime is
+still m7close4 + BGMTL_ASYNC=1. Next: user decision on installing m8adm1 (async trial + panel check, as M7);
+then the CA completed-handler lead, and cap2's stack samples for the 18.7 ms replay.
+
 ### 2026-11-03: M8 started - per-CB timeline ring built; completion waits on bg_lock behind the next replay
 
 Survey: research/metal-m8/survey.md (DeepSeek; kernel already has ticket/present events, libbgmtl had no
