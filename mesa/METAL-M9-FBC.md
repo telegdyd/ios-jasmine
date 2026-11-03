@@ -1,28 +1,37 @@
 # M9: CA_DISABLE_FRAMEBUFFER_COMPRESSION, fd5, and framebuffer compression
 
-Research only. No production code, no env change, no phone access, no push.
+Research only. No production code, no phone access, no push. (The user removed the env line from the phone; see NOTES.)
 
-## Blocker: WSL is inaccessible from this sandbox
+## 0. What the flag gates in iOS 16.7 QuartzCore (Claude, disassembled 2026-11-03)
 
-The files are in WSL as the follow-up said, but the DSH process sandbox refuses
-to start WSL:
+Method: `ipsw dyld extract` of QuartzCore from ~/ios-work/gl/dsc (WSL, 20H392), `ipsw macho disass --force`;
+CFString keys decoded from __DATA_CONST.__cfstring. Extracted binary and dump stayed in WSL /tmp (not in git).
 
-- `wsl.exe -e bash -lc '…'` and `wsl.exe -d Ubuntu -- echo hi` both return
-  `Wsl/E_ACCESSDENIED`;
-- `cmd /c wsl ...` returns the same;
-- `\\wsl.localhost\Ubuntu\home` and the other distro names return
-  `PermissionDenied`.
+- `CA_DISABLE_FRAMEBUFFER_COMPRESSION` is entry 61 of QuartzCore's 206-entry `CA_*` debug-env table (vm
+  0x1d5b4b960, `CA_COLOR_FLUSH` .. `CA_GLOBAL_BANDWIDTH_CHECK_INTENSITY`). An init loop (0x1883794f8) reads each
+  name once and stores a bool at 0x1e1df7710 + index, so this flag is byte 0x1e1df774d.
+- That byte is read in three places (0x188357a48, 0x188362aa8, 0x1883bc664). Each read only matters if
+  `CADeviceSupportsUniversalCompression` is true (byte 0x1e1df61c8 checked first/alongside); the framebuffer
+  allocation site (0x1883bc628..) additionally requires `CADeviceUseFramebufferCompression`.
+- `CADeviceSupportsUniversalCompression` = MobileGestalt answer `AoKnINTLPoKML3ctoP0AZg` (a dictionary) ->
+  key `universal-buffer-compression` -> CFBool. This is Apple-GPU (AGX) hardware capability data.
+- `CADeviceUseCompression` ("IOSurface Compression Enabled") = only if `CADeviceSupportsCIF10` and not
+  `CADeviceIsVirtualized`, then MobileGestalt `ChipID` must be in a later part of a built-in chip-id table;
+  defaults key `CAEnableIOSurfaceCompression` can override.
+- `CADeviceUseFramebufferCompression` ("System UI Framebuffer Compression Enabled") = `CADeviceUseCompression`,
+  overridable by `CAEnableFramebufferCompression` when `CADeviceUseCIF10` (MG `Aixt/MEN2O2B7f+8m4TxUA` +
+  `CAEnableDeepFramebuffer`).
+- No MTLDevice selector is involved: the decision is MobileGestalt + chip id + CA defaults, then CA asks
+  IOSurface for Apple's compressed surface layouts (AGX lossless compression).
 
-The VM also has no `~/ios-work`/`ipsw`, and `research/dsc/` is absent, so no
-copy of the QuartzCore image is readable here. I therefore **cannot extract or
-disassemble `CADeviceUseFramebufferCompression` in this environment**, and the
-caller/check trace remains unresolved. The user-provided symbol names
-(`CADeviceUseFramebufferCompression`, `CAEnableFramebufferCompression`) are
-consistent with the string evidence but were not independently disassembled
-here.
-
-The remaining findings below are from the Mesa/bgmtl source and the capture
-logs; they do not answer the exact QuartzCore checks.
+**Conclusion: on our stack the flag does nothing.** Our device identity is iPhone10,3 (A11), which has no
+universal-buffer-compression; CA never reaches the env check, so removing the line is a no-op (consistent with the
+one framebench run). Making CA take the path would need faked MG answers (universal-buffer-compression, ChipID,
+CIF10) AND an IOSurface/bgmtl implementation of Apple's compressed surface formats AND real GPU compression
+behind them (section 2: fd5 has no UBWC in Mesa) AND a linear resolve before the display reads the surface.
+Faking the MG answers alone would make CA request formats we cannot back (likely refusals or corruption).
+The useful part is the last two items, which do not need CA at all: driver-internal UBWC for GPU-private
+render targets (section 3).
 
 ## 1. What bgmtl answers today
 
@@ -158,12 +167,13 @@ general property, not a measurement here.
    removed as the user did. The current stack does not advertise compression and
    the one removal capture showed no gain.
 
-**No production fix was implemented.** The smallest real fix would be: obtain
-the QuartzCore/IOSurface compressed path evidence, add an fd5 UBWC-capable
-layout/emit path, keep imported/final display surfaces linear with an end-of-pass
-resolve, and gate it behind an env switch for A/B. That is a driver feature, not
-a contained bgmtl change; CPU readback/getBytes/replaceRegion would also need
-decompress/refuse handling.
+**No production fix was implemented.** Section 0 shows CA's path is gated on Apple-GPU MobileGestalt data and
+Apple's compressed IOSurface layouts, so the realistic route skips CA: (1) an fd5 UBWC layout/emit/descriptor path
+in freedreno, (2) used by air for GPU-private render targets the compositor writes and then samples (offscreen
+layers, blur passes), (3) final IOSurface/display surfaces stay linear, with CPU readback/getBytes/replaceRegion on a
+UBWC resource decompressing or refusing, behind an env switch for A/B. That is a driver feature (weeks, needs
+on-device bring-up for fd5 flag-buffer formats), not a contained bgmtl change. Before starting it, measure how
+many bytes per frame go to GPU-private intermediates vs final surfaces, since only the former would benefit.
 
 ## Files / tests
 

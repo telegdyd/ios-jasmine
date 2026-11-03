@@ -1,3 +1,16 @@
+### 2026-11-03: CA_DISABLE_FRAMEBUFFER_COMPRESSION does nothing on our stack (QuartzCore disassembled)
+
+User: keep the flag removed, find out what it does. mesa/METAL-M9-FBC.md section 0 (Claude; DeepSeek's sandbox
+cannot reach WSL - `Wsl/E_ACCESSDENIED` - so it wrote sections 1-3 from Mesa/bgmtl source only, commits c843a31,
+c39cdba). The flag is CA debug-env entry 61; every read of it is behind `CADeviceSupportsUniversalCompression`
+(MobileGestalt dict `AoKnINTLPoKML3ctoP0AZg` key `universal-buffer-compression`) and, for the framebuffer,
+`CADeviceUseFramebufferCompression` (CIF10 + MG ChipID table + CA defaults). No MTLDevice query involved. A11 /
+our stack never passes that gate, so removing the line is a no-op. fd5 has no UBWC in Mesa 26.2.5 (Claude checked
+freedreno_resource.c:1328 is_a6xx gate, fd5_gmem.c:179). Real compression = fd5 UBWC driver feature for GPU-private
+render targets, independent of CA; large. Tools: ipsw at WSL ~/ios-work/tools/ipsw-3.1.739/x/ipsw; `ipsw dyld
+disass` on the whole cache OOMs in WSL - use `ipsw dyld extract <dsc> QuartzCore` + `ipsw macho disass --force`.
+Phone unchanged since the previous entry (env BGMTL_ASYNC=1 only, m8pe1).
+
 ### 2026-11-03: CA_DISABLE_FRAMEBUFFER_COMPRESSION dropped (user: "turn it back on"); one framebench: no gain
 
 Env /private/var/tmp/bgmtl-bb.env now `BGMTL_ASYNC=1\n` only (was `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1\n` +
