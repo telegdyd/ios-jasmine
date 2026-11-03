@@ -1,3 +1,22 @@
+### 2026-11-03: M8 fix B (narrow argbuf lock in bgCollectWrites) INSTALLED as m8cw1 - awaiting panel check
+
+Metal e6abb7b / root dc9d2dd (DeepSeek; Claude scoped it narrower than lockfree-design.md B and reviewed): M7
+admission untouched (bg_adm_lock still bg_lock -> bg_adm_mutex; tickets, pending-writer table, _committed as before).
+bgCollectWrites' pointer collection + rwa_*_write_destinations now run under a leaf process-wide bg_argbuf_mutex
+(air/bg_argbuf_lock.h) instead of bg_lock; every argbuf record reader/mutator in air_metal.c takes it (encode,
+encoded_members, scrub, forget_all, check_bindings/bind_stage); order always bg_lock -> bg_argbuf_mutex. With
+BGMTL_BB + BGMTL_SHADOW=1 (drawable shadow swaps _tex) it keeps bg_lock too; the installed env has no shadow, and
+_tex is otherwise assigned only in init/dealloc (checked). Timeline file tag 3 = argbuf mutex waits.
+Build xnu/out-mesa-m8cw1 (libbgmtl 4a3e04c8, libbgair f829ccca). Host tests incl. new run-argbuf-lock.sh PASS.
+Capture research/metal-m8/cw1 vs gb1: bgCollectWrites waits 42 (246 ms) -> 0, argbuf mutex 0 waits; create -> commit
+p50 14.4 -> 7.4 ms, p90 27.2 -> 19.6 (p99 ~same ~100 ms). Waits MOVED partly: -[BGMTLTexture init...] allocate branch
+(bgmtl.m:2432, rwa_texture_create under bg_lock) 21 waits, 258 ms, max 112 (gb1: 2 waits); total bg_lock wait
+~same (264 vs 251 ms). Single capture each - variance not measured.
+Validation research/metal-m7-suspend/m8cw1: identical totals, 0 failed. INSTALLED over m8gb1 (install.py now
+baselined on m8gb1; backup research/metal-m8/backup-m8gb1): backboardd 68357 -> 68812, async confirmed, 0 faults in
+logs/netlog-m8cw1-install.txt. Rollback: `python research/metal-m8/install.py restore` (-> m8gb1).
+Next M8 lead: texture creation under bg_lock (does rwa_texture_create need pipe_context, or only pipe_screen?).
+
 ### 2026-11-03: M8 m8gb1 KEPT (user panel check: "Looks right")
 
 m8gb1 (fix A unlocked getBytes + fix C deferred destroy) stays installed in backboardd (libbgmtl 5bf0ad1b, libbgair
