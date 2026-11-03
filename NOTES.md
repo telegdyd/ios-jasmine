@@ -1,3 +1,16 @@
+### 2026-11-03: boot_b = m7ack j0127 kernel FLASHED (user: "Yes, flash boot_b"); async survives reboot
+
+shim/out/shim-boot-m7ack-slotb.img (sha256 85878476ec223685...): kernel bytes identical to the temporary
+m7ack payload (xnu/out-jasmine-m7ack, j0110..j0127), command line and ADT byte-identical to the previous
+installed shim-boot-pride-slotb (cmdline in shim/out/cmdline-m7slotb.txt, ADT extracted to
+shim/out/jasmine-m7slotb.adt). A fresh HEAD rebuild (xnu/out-jasmine-m7slotb) differs only in CTF data; the
+tested m7ack binary was used. Flashed via tools/g2/flash-slotb.sh 01:53; first boot logs/netlog-m7ack-slotb.txt:
+boot_b marked successful, `BGMTL replay: async (chlorophyll.replay)`, 0 command buffer failed / QUEUE
+FALLBACK / reason 16 / SMMU fault / fence timeout / panic / backboardd crash; usual boot kills only
+(driverkitd, widget extensions, LockScreenPeople, CollectionsPoster sig 9). Runtime: compositor m7close4
+62eed9e4/05866ab6 + BGMTL_ASYNC=1, wallpaper pair unchanged. The kernel caveat in the next entry is resolved.
+Rollback: flash shim/out/shim-boot-pride-slotb.img to boot_b; M4 userland via `panel.py restore`. Next: M8.
+
 ### 2026-11-03: M7 async INSTALLED (m7close4, user panel check: "Looks right, keep it")
 
 backboardd 43862 runs libbgair 62eed9e4 / libbgmtl 05866ab6 (Metal 327bf2f) with bgmtl-bb.env
