@@ -26,8 +26,45 @@ KIND = {
     1: 'CREATE', 2: 'COMMIT_ENTER', 3: 'REPLAY_BEGIN', 4: 'TICKET_BEGIN',
     5: 'SUBMIT_BEGIN', 6: 'SUBMIT_END', 7: 'REPLAY_END', 8: 'SCHEDULED_RUN',
     9: 'FENCE_OBSERVED', 10: 'COMPLETED_RUN', 11: 'PRESENT_POST', 12: 'PRESENT_ENTER',
+    13: 'LOCK_WAIT', 14: 'HANDLERS_BEGIN',
 }
 QUEUE = {0: 'replay', 1: 'completion', 2: 'inline'}
+NO_CB = 0xffffffff
+FILE_NAMES = {0: 'bgmtl.m', 1: 'bg_write_admission.h', 2: 'bg_work_admission.h'}
+
+# Call-site line -> enclosing function, as of the source at this commit. Lines are
+# the source line of each bg_lock() token; file tags come from the header macros
+# (1=bg_write_admission.h, 2=bg_work_admission.h, 0=bgmtl.m). Keep this table in
+# sync when bgmtl.m moves; an unknown site is still printed as file:line.
+SITES = {
+    (0, 920): '-[BGMTLDevice newTextureWithBytesNoCopy:...]',
+    (0, 1031): '-[BGMTLDevice newRenderPipelineStateWithDescriptor:error:]',
+    (0, 1037): '-[BGMTLDevice newRenderPipelineStateWithDescriptor:error:] cleanup',
+    (0, 1064): '-[BGMTLDevice bgPipelineForFunction:descriptor:error:]',
+    (0, 1069): '-[BGMTLDevice bgPipelineForFunction:descriptor:error:] cleanup',
+    (0, 1111): '-[BGMTLBuffer initWithBGDevice:length:]',
+    (0, 1136): '-[BGMTLBuffer dealloc]',
+    (0, 1180): '-[BGMTLComputePipeline dealloc]',
+    (0, 1229): '-[BGMTLCommandBuffer dealloc]',
+    (0, 1472): '-[BGMTLCommandBuffer commit]',
+    (0, 1508): '-[BGMTLCommandBuffer bgReplayFrom:]',
+    (0, 2260): '-[BGMTLTexture initWithBGDevice:descriptor:iosurface:plane:] surface',
+    (0, 2286): '-[BGMTLTexture initWithBGDevice:descriptor:iosurface:plane:] allocate',
+    (0, 2296): '-[BGMTLTexture dealloc]',
+    (0, 2352): '-[BGMTLTexture rwaTextureSampled]',
+    (0, 2405): '-[BGMTLTexture rwaTexture] refresh epoch',
+    (0, 2413): '-[BGMTLTexture rwaTexture] no-copy cache',
+    (0, 2428): '-[BGMTLTexture rwaTexture] linear source',
+    (0, 2486): '-[BGMTLTexture replaceRegion:...]',
+    (0, 2502): '-[BGMTLTexture getBytes:...]',
+    (0, 2527): '-[BGMTLSampler initWithBGDevice:descriptor:]',
+    (0, 2534): '-[BGMTLSampler dealloc]',
+    (0, 2556): '-[BGMTLDepthStencil initWithBGDevice:descriptor:]',
+    (0, 2567): '-[BGMTLDepthStencil dealloc]',
+    (0, 2578): '-[BGMTLRenderPipeline dealloc]',
+    (1, 39): 'bg_adm_lock',
+    (2, 34): '-[BGMTLCommandBuffer bgCollectWrites:]',
+}
 
 # name, label, positive-only (fence->scheduled is normally negative)
 INTERVALS = [
@@ -38,6 +75,8 @@ INTERVALS = [
     ('submit_end_to_fence', 'submit_end -> fence_observed (GPU wait)', True),
     ('submit_end_to_scheduled', 'submit_end -> scheduled (scheduled callback)', True),
     ('fence_to_scheduled', 'fence -> scheduled (only if not earlier)', True),
+    ('fence_to_handlers_begin', 'fence -> handlers_begin', True),
+    ('handlers_begin_to_completed', 'handlers_begin -> completed (handlers)', True),
     ('fence_to_completed', 'fence -> completed (callback)', True),
     ('present_enter_to_post', 'present_enter -> present_post', True),
 ]
@@ -116,6 +155,8 @@ def build(capture, epoch=None):
         rec['us'] = to_us(rec['t'], epoch, numer, denom)
     grouped = collections.defaultdict(list)
     for rec in capture['records']:
+        if rec['cb'] == NO_CB:
+            continue
         grouped[rec['cb']].append(rec)
     rows = []
     for cb, evs in sorted(grouped.items()):
@@ -125,6 +166,7 @@ def build(capture, epoch=None):
         create, commit, replay = f(1), f(2), f(3)
         sub_b, sub_e, rep_e = f(5), f(6), f(7)
         sched, fence, completed = f(8), f(9), f(10)
+        handlers_begin, handlers_end = f(14), f(10)
         pres_b, pres_e = f(12), f(11)
         ticket = first.get(4)
         tickets = [e for e in evs if e['kind'] == 4]
@@ -132,6 +174,9 @@ def build(capture, epoch=None):
         row = dict(cb=cb, create=create, commit=commit, replay=replay,
                    submit_begin=sub_b, submit_end=sub_e, replay_end=rep_e,
                    scheduled=sched, fence=fence, completed=completed,
+                   handlers_begin=handlers_begin, handlers_end=handlers_end,
+                   handler_count=first[14]['a'] if 14 in first else None,
+                   handler_tid=first[14]['b'] if 14 in first else None,
                    present_enter=pres_b, present_post=pres_e,
                    generation=ticket['a'] if ticket else None,
                    generations=generations,
@@ -149,6 +194,8 @@ def build(capture, epoch=None):
         row['submit_end_to_fence'] = _positive(sub_e, fence)
         row['submit_end_to_scheduled'] = _positive(sub_e, sched)
         row['fence_to_scheduled'] = _positive(fence, sched)
+        row['fence_to_handlers_begin'] = _positive(fence, handlers_begin)
+        row['handlers_begin_to_completed'] = _positive(handlers_begin, completed)
         row['scheduled_before_fence'] = fence is not None and sched is not None and sched < fence
         row['fence_to_completed'] = _positive(fence, completed)
         row['present_enter_to_post'] = _positive(pres_b, pres_e)
@@ -175,6 +222,61 @@ def percentile(values, q):
     if not xs:
         return None
     return xs[max(0, math.ceil(q * len(xs)) - 1)]
+
+
+def _site_parts(a):
+    file = (a >> 62) & 3
+    line = (a >> 48) & 0x3fff
+    tid = a & 0xffffffffffff
+    return file, line, tid
+
+
+def _site_label(file, line):
+    owner = SITES.get((file, line))
+    where = f'{FILE_NAMES.get(file, str(file))}:{line}'
+    return f'{where} {owner}' if owner else where
+
+
+def lock_waits(capture, epoch=None):
+    """LOCK_WAIT records with their absolute start/end and call site."""
+    epoch = capture['start'] if epoch is None else epoch
+    numer, denom = capture['numer'], capture['denom']
+    waits = []
+    for rec in capture['records']:
+        if rec['kind'] != 13:
+            continue
+        file, line, tid = _site_parts(rec['a'])
+        us = to_us(rec['t'], epoch, numer, denom)
+        wait_ms = (rec['b'] * numer) / denom / 1e6
+        waits.append(dict(us=us, start_us=us - wait_ms * 1000.0, ms=wait_ms,
+                          tid=tid, file=file, line=line,
+                          site=_site_label(file, line), cb=rec['cb']))
+    return waits
+
+
+def annotate_waits(waits, rows):
+    """Mark each wait that overlaps a handlers_begin->completed window on its tid."""
+    windows = [(r['handlers_begin'], r['completed'], r['handler_tid'], r['cb'])
+               for r in rows if r.get('handlers_begin') is not None and r.get('completed') is not None]
+    for w in waits:
+        w['inside'] = [cb for begin, end, tid, cb in windows
+                       if tid == w['tid'] and w['start_us'] < end and w['us'] > begin]
+    return waits
+
+
+def lock_stats(waits):
+    grouped = collections.defaultdict(list)
+    for w in waits:
+        grouped[(w['file'], w['line'], w['site'])].append(w)
+    result = []
+    for (file, line, site), ws in sorted(grouped.items(), key=lambda kv: -sum(w['ms'] for w in kv[1])):
+        inside = [w for w in ws if w.get('inside')]
+        result.append(dict(file=file, line=line, site=site, count=len(ws),
+                           total_ms=sum(w['ms'] for w in ws),
+                           max_ms=max(w['ms'] for w in ws),
+                           inside_count=len(inside),
+                           inside_ms=sum(w['ms'] for w in inside)))
+    return result
 
 
 def stats(rows):
@@ -215,6 +317,8 @@ def report(path, events=(), epoch=None, out=sys.stdout):
     epoch = capture['start'] if epoch is None else epoch
     rows = build(capture, epoch)
     join = kernel_join(rows, events)
+    waits = annotate_waits(lock_waits(capture, epoch), rows)
+    lock_st = lock_stats(waits)
     incomplete = []
     if capture['dropped']:
         incomplete.append(f"{capture['dropped']} ring records dropped")
@@ -227,6 +331,47 @@ def report(path, events=(), epoch=None, out=sys.stdout):
     def emit(*args):
         print(*args, file=out)
 
+    def show_locks():
+        emit(f"\n  bg_lock waits >=100 us: {len(waits)} waits, "
+             f"{sum(w['ms'] for w in waits):.3f} ms total")
+        if not lock_st:
+            emit('    (none)')
+            return
+        emit(f"    {'site':56s} {'n':>4s} {'total_ms':>9s} {'max_ms':>8s}")
+        for s in lock_st:
+            emit(f"    {s['site']:56s} {s['count']:4d} {s['total_ms']:9.3f} {s['max_ms']:8.3f}")
+        inside = [s for s in lock_st if s['inside_count']]
+        emit(f"\n  waits inside completed handlers: {sum(s['inside_count'] for s in inside)} waits, "
+             f"{sum(s['inside_ms'] for s in inside):.3f} ms total")
+        if inside:
+            for s in inside:
+                emit(f"    {s['site']:56s} {s['inside_count']:4d} {s['inside_ms']:9.3f} ms")
+        else:
+            emit('    (none)')
+        handler_rows = sorted((r for r in rows if r['handlers_begin_to_completed'] is not None),
+                              key=lambda r: r['handlers_begin_to_completed'], reverse=True)[:10]
+        emit('\n  10 slowest completed-handler runs:')
+        for r in handler_rows:
+            ws = sorted((w for w in waits if w['tid'] == r['handler_tid'] and r['cb'] in w['inside']),
+                        key=lambda w: -w['ms'])
+            if ws:
+                shown = '; '.join(f"{w['site']} {w['ms']:.3f}" for w in ws[:12])
+                if len(ws) > 12:
+                    shown += f'; +{len(ws) - 12} more'
+            else:
+                shown = '(none)'
+            emit(f"    cb {r['cb']:4d} handlers {r['handlers_begin_to_completed']:8.3f} ms "
+                 f"queue {r['completed_queue']}: {shown}")
+
+    if not rows:
+        emit(f"\n  BGMTL timeline: {path} (pid {capture['pid']}, 0 CBs, "
+             f"{len(capture['records'])} records, epoch {epoch})")
+        if incomplete:
+            emit('  CAPTURE INCOMPLETE: ' + '; '.join(incomplete))
+        show_locks()
+        return dict(capture=capture, rows=rows, stats={}, incomplete=incomplete, join=join,
+                    waits=waits, lock_stats=lock_st)
+
     emit(f"\n  BGMTL timeline: {path} (pid {capture['pid']}, {len(rows)} CBs, "
          f"{len(capture['records'])} records, epoch {epoch})")
     if incomplete:
@@ -236,8 +381,6 @@ def report(path, events=(), epoch=None, out=sys.stdout):
     emit(f"  kernel join: seqno {join['seqno_matches']}/{len(rows)} CBs, "
          f"ticket generation {join['generation_matches']}/{len(rows)} CBs "
          f"({join['seqnos']} seqnos, {join['generations']} generations in capture)")
-    if not rows:
-        return dict(capture=capture, rows=rows, stats={}, incomplete=incomplete, join=join)
 
     emit('\n  interval                          n      p50      p90      p99      max   (ms)')
     st = stats(rows)
@@ -257,4 +400,6 @@ def report(path, events=(), epoch=None, out=sys.stdout):
         dom = f"{r['dominant'][0]} {r['dominant'][1]:.3f} ms" if r['dominant'] else '-'
         queue = f" sched={r['scheduled_queue']} completed={r['completed_queue']}"
         emit(f"    cb {r['cb']:4d} total {r['total']:8.3f} ms  dominant {dom}{queue}")
-    return dict(capture=capture, rows=rows, stats=st, incomplete=incomplete, join=join)
+    show_locks()
+    return dict(capture=capture, rows=rows, stats=st, incomplete=incomplete, join=join,
+                waits=waits, lock_stats=lock_st)

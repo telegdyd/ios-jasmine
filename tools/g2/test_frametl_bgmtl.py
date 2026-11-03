@@ -13,6 +13,10 @@ def record(t, kind, cb, a=0, b=0):
     return btl.REC.pack(t, kind, cb, a, b)
 
 
+def site(file, line, tid):
+    return (file << 62) | (line << 48) | tid
+
+
 def write_ring(path, records, *, dropped=0, numer=1, denom=1, start=1_000_000, count=None):
     if count is None:
         count = len(records)
@@ -46,9 +50,10 @@ class TimelineParserTests(unittest.TestCase):
             record(start + 460_000, 8, 1, 0, 99),  # SCHEDULED_RUN replay
             record(start + 500_000, 7, 1, 4),    # REPLAY_END, status 4
             record(start + 700_000, 9, 1, 0, 250),  # FENCE_OBSERVED, 250 us
-            record(start + 800_000, 10, 1, 4, 1),  # COMPLETED_RUN, status 4, completion
-            record(start + 810_000, 12, 1, 1, 99),  # PRESENT_ENTER
-            record(start + 830_000, 11, 1, 0, 1),  # PRESENT_POST
+            record(start + 700_000, 14, 1, 1, 99),  # HANDLERS_BEGIN, 1 handler, thread 99
+            record(start + 900_000, 10, 1, 4, 1),  # COMPLETED_RUN, status 4, completion
+            record(start + 910_000, 12, 1, 1, 99),  # PRESENT_ENTER
+            record(start + 930_000, 11, 1, 0, 1),  # PRESENT_POST
             # CB 2 never completes: the parser must flag it.
             record(start + 900_000, 1, 2),
             record(start + 950_000, 2, 2, 1),
@@ -57,6 +62,9 @@ class TimelineParserTests(unittest.TestCase):
             record(start + 1_150_000, 6, 2, 451),
             record(start + 1_160_000, 7, 2, 4),
             record(start + 1_200_000, 9, 2, 0, 50),
+            # LOCK_WAITs have cb=NO_CB and must never create a CB row.
+            record(start + 850_000, 13, btl.NO_CB, site(0, 1472, 99), 150_000),
+            record(start + 1_000_000, 13, btl.NO_CB, site(1, 39, 99), 100_000),
         ]
         path = Path(tmp) / 'bgmtl-tl-4242.bin'
         write_ring(path, recs, dropped=dropped)
@@ -78,9 +86,13 @@ class TimelineParserTests(unittest.TestCase):
             self.assertAlmostEqual(a['submit_end_to_scheduled'], 0.010, places=6)
             self.assertIsNone(a['fence_to_scheduled'])       # scheduled ran before fence
             self.assertTrue(a['scheduled_before_fence'])
-            self.assertAlmostEqual(a['fence_to_completed'], 0.100, places=6)
+            self.assertAlmostEqual(a['fence_to_handlers_begin'], 0.000, places=6)
+            self.assertAlmostEqual(a['handlers_begin_to_completed'], 0.200, places=6)
+            self.assertAlmostEqual(a['fence_to_completed'], 0.200, places=6)
+            self.assertEqual(a['handler_count'], 1)
+            self.assertEqual(a['handler_tid'], 99)
             self.assertAlmostEqual(a['present_enter_to_post'], 0.020, places=6)
-            self.assertAlmostEqual(a['total'], 0.800, places=6)
+            self.assertAlmostEqual(a['total'], 0.900, places=6)
             self.assertEqual(a['dominant'][0], 'submit_end_to_fence')
             self.assertEqual(a['seqno'], 450)
             self.assertEqual(a['generation'], 5)
@@ -93,6 +105,36 @@ class TimelineParserTests(unittest.TestCase):
             self.assertEqual(st['create_to_commit']['count'], 2)
             self.assertEqual(st['fence_to_completed']['count'], 1)
             self.assertAlmostEqual(st['create_to_commit']['p50'], 0.050, places=6)
+
+    def test_lock_waits_handler_overlap_and_report(self):
+        with workdir() as tmp:
+            path, _ = self.fixture(tmp)
+            cap = btl.load(path)
+            rows = btl.build(cap)
+            self.assertEqual([r['cb'] for r in rows], [1, 2], 'NO_CB lock wait made a CB row')
+            waits = btl.annotate_waits(btl.lock_waits(cap), rows)
+            self.assertEqual(len(waits), 2)
+            inside = [w for w in waits if w['inside']]
+            self.assertEqual(len(inside), 1)
+            self.assertEqual(inside[0]['cb'], btl.NO_CB)
+            self.assertEqual(inside[0]['tid'], 99)
+            self.assertEqual(inside[0]['inside'], [1])
+            self.assertAlmostEqual(inside[0]['ms'], 0.150, places=6)
+            self.assertEqual([w for w in waits if not w['inside']][0]['inside'], [])
+            st = btl.lock_stats(waits)
+            self.assertEqual(len(st), 2)
+            self.assertEqual(st[0]['count'], 1)
+            self.assertEqual(st[0]['inside_count'], 1)
+            out = io.StringIO()
+            summary = btl.report(path, out=out)
+            text = out.getvalue()
+            self.assertIn('bg_lock waits', text)
+            self.assertIn('waits inside completed handlers', text)
+            self.assertIn('bgmtl.m:1472', text)
+            self.assertIn('bg_write_admission.h:39', text)
+            self.assertIn('10 slowest completed-handler runs', text)
+            self.assertEqual(len(summary['waits']), 2)
+            self.assertEqual(len(summary['lock_stats']), 2)
 
     def test_report_flags_missing_completed_and_dropped(self):
         with workdir() as tmp:

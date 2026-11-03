@@ -1,15 +1,41 @@
 """Offline correctness and failure-path tests; never contact the phone."""
 import argparse
 import json
+import os
 from pathlib import Path
+import shutil
 import socket
-import tempfile
 import unittest
 from unittest import mock
 import importlib.util
 import struct
 
 import framebench as fb
+
+
+class _WorkspaceTemporaryDirectory:
+    """TemporaryDirectory under this test dir.
+
+    tempfile.TemporaryDirectory creates its directory with mode 0700 before
+    Windows sandbox ACLs are provisioned, so writes inside it are denied in the
+    DSH workspace. A plain mkdir here inherits the writable workspace ACL.
+    """
+    _serial = 0
+
+    def __init__(self):
+        type(self)._serial += 1
+        self.name = str(Path(__file__).resolve().parent /
+                        f'.fb-test-{os.getpid()}-{type(self)._serial}')
+        Path(self.name).mkdir(exist_ok=True)
+
+    def __enter__(self):
+        return self.name
+
+    def __exit__(self, *exc):
+        self.cleanup()
+
+    def cleanup(self):
+        shutil.rmtree(self.name, ignore_errors=True)
 
 
 def event(us, kind, phase=5, a=0, b=0, c=0, d=0, tid=1):
@@ -23,7 +49,7 @@ def snapshot(us=1000000, free=128 << 20, wanted=0, footprint=64 << 20, uniqueid=
 
 class ReportTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = _WorkspaceTemporaryDirectory()
         self.root = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
 
@@ -295,7 +321,7 @@ class ImageTests(unittest.TestCase):
 
 class OwnershipTests(unittest.TestCase):
     def test_other_lock_is_never_removed(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _WorkspaceTemporaryDirectory() as tmp:
             lock = Path(tmp) / 'phone.lock'
             lock.write_text('another agent')
             with self.assertRaises(FileExistsError):
@@ -304,14 +330,14 @@ class OwnershipTests(unittest.TestCase):
             self.assertEqual(lock.read_text(), 'another agent')
 
     def test_replaced_lock_survives_exit(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _WorkspaceTemporaryDirectory() as tmp:
             lock = Path(tmp) / 'phone.lock'
             with fb.phone_lock(lock):
                 lock.write_text('new owner')
             self.assertEqual(lock.read_text(), 'new owner')
 
     def test_own_lock_released_on_failure(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _WorkspaceTemporaryDirectory() as tmp:
             lock = Path(tmp) / 'phone.lock'
             with self.assertRaises(ValueError):
                 with fb.phone_lock(lock):
@@ -319,7 +345,7 @@ class OwnershipTests(unittest.TestCase):
             self.assertFalse(lock.exists())
 
     def test_failed_preflight_writes_report_without_start_or_gestures(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _WorkspaceTemporaryDirectory() as tmp:
             root = Path(tmp)
             args = argparse.Namespace(out=root / 'out', kernel=None, lib=[], manual=False,
                 ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1, sample_b=False)
@@ -331,7 +357,7 @@ class OwnershipTests(unittest.TestCase):
             self.assertFalse(args.lock.exists())
 
     def test_no_checkpoint_during_motion(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _WorkspaceTemporaryDirectory() as tmp:
             client = mock.Mock()
             run = fb.Run(client, Path(tmp), 10)
             run.moving = True
@@ -339,7 +365,7 @@ class OwnershipTests(unittest.TestCase):
             client.request.assert_not_called()
 
     def test_midrun_loss_keeps_memory_evidence_and_releases_lock(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _WorkspaceTemporaryDirectory() as tmp:
             root = Path(tmp)
             args = argparse.Namespace(out=root / 'out', kernel=None, lib=[], manual=False,
                 ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1, sample_b=False)
@@ -370,7 +396,7 @@ class OwnershipTests(unittest.TestCase):
             self.assertFalse(any('reboot' in c or 'clk' in c for c in calls))
 
     def test_successful_capture_exports_each_blob_once(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _WorkspaceTemporaryDirectory() as tmp:
             root = Path(tmp)
             args = argparse.Namespace(out=root / 'out', kernel=None, lib=[], manual=False,
                 ui_ready=True, lock=root / 'lock', host=None, seconds=45, export_timeout=1, sample_b=False)
