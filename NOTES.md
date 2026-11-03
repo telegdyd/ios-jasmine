@@ -1,3 +1,16 @@
+### 2026-11-03: fd5 UBWC build (user: "Build UBWC") - DeepSeek refused 3x; spec ready, not started
+
+DeepSeek (brief ~/.dsh/dispatch-logs/briefs/m9-ubwc.md + 2 follow-ups) wrote no code each time ("will not commit
+speculative register/layout code"). Claude established: Mesa never had a5xx UBWC (fd5_gmem.c 18.3..20.0 always zero
+flag regs). a5xx.xml (VM ~/topaz-mesa/mesa-src/src/freedreno/registers/adreno/a5xx.xml ~2175-2240) has a blob trace:
+per level FLAGS first then COLOR, each 4 KiB aligned; cpp4 meta pitch ALIGN(ceil(w/16),64) B, meta height
+ALIGN(ceil(h/4),16) (100x2000 -> 64x512 = 0x8000, colour at flags+0x8000); texture BASE = level-0 flags address,
+TEX_CONST_3 FLAG(b28)+TILE_ALL(b27), TILE5_3; RB_MRT_FLAG_BUFFER(i) ADDR/PITCH(shr6)/ARRAY_PITCH; RB_RENDER_CNTL
+FLAG_MRTS b16-23 / FLAG_MRTS2 b24-31; RB_BLIT_FLAG_DST* for GMEM resolve; 2d surf info FLAGS b12; blob does
+BYPASS blits before glReadPixels. Kernel never writes TPL1/RB_MODE_CNTL bank bits; tiled layouts already work, so
+kernel left alone. Spec with knobs (BGMTL_UBWC, FD5_UBWC_MRTS2/SYSMEM/TEXBASE/TILEALL) is in the second follow-up
+(~/.dsh/dispatch-logs/briefs/m9-ubwc-followup2.md). Nothing built; mesa/metal at 3eee3ed. Phone unchanged.
+
 ### 2026-11-03: M9 DRAM byte split measured: ~54% of compositor bytes are GPU-private (UBWC-eligible)
 
 DeepSeek m9bw1 (mesa/metal afa33b0, root 9f8f44a): timeline kinds 18-21 (PASS, PASS_ATTACH, PASS_SAMPLE, BLIT),
