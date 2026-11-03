@@ -1,3 +1,21 @@
+### 2026-11-03: M8 fix C (deferred texture/buffer destroy) INSTALLED as m8dd2 - awaiting the user's panel check
+
+Design: research/metal-m8/lockfree-design.md (DeepSeek; order C dealloc -> A getBytes -> B bgCollectWrites).
+Metal 8ab06d6 (DeepSeek): src/bg_defer_queue.h lock-free MPSC list; -[BGMTLTexture dealloc] / -[BGMTLBuffer dealloc]
+trylock the context lock and destroy inline when free, else push the rwa objects + IOSurfaces + nc cache to the list
+(destroy before CFRelease); drained at the start of bgReplayFrom under bg_lock (timeline kind 15 DEFER_DRAIN).
+Metal a9b6a0d (Claude review fix): bg_ctx_mutex is recursive, so a dealloc on the thread already holding it (inside a
+replay/transfer) drained other textures mid-replay (rwa_texture_destroy resets framebuffer state); added per-thread
+bg_lock_depth + bg_trylock, drain only at depth 1; bg_lock_at reads the timeline state once.
+Build xnu/out-mesa-m8dd2 (libbgmtl c2a321aa, libbgair 62eed9e4). VM host tests: defer-destroy, timeline, write-admission PASS.
+Capture research/metal-m8/dd2 (complete, restore byte-exact): texture dealloc bg_lock waits 18 (105 ms) -> 0;
+59 deferred destroys in 30 drains, max drain 0.15 ms. getBytes still stalls all 6 slow completed handlers (13-18 ms).
+Validation research/metal-m7-suspend/m8dd2 (logs/validate-m8dd2.txt): identical totals to m8adm1, 0 failed.
+INSTALLED (research/metal-m8/install.py, now baselined on m8adm1; backup research/metal-m8/backup-m8adm1; m7close4
+backup still in research/metal-m8/backup): backboardd 62225 -> 62790, async confirmed, deferral log seen, 0 faults in
+logs/netlog-m8dd2-install.txt (4.3 MB). Rollback: `python research/metal-m8/install.py restore` (-> m8adm1).
+In progress: fix A (getBytes via a gated direct linear-BO map under the screen lock), DeepSeek, build m8gb1.
+
 ### 2026-11-03: M8 lead 1 ATTRIBUTED - slow CA completed handlers are -getBytes: waiting on bg_lock
 
 Metal 09aa857 / root 3d4f883 (DeepSeek): the timeline ring records every bg_lock wait >=100 us with its call site
