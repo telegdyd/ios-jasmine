@@ -1,3 +1,9 @@
+### 2026-11-03: M8 m8cw1 KEPT (user panel check: "Looks right")
+
+m8cw1 (fixes A + B + C) stays installed in backboardd (libbgmtl 4a3e04c8, libbgair f829ccca, env unchanged).
+Rollback chain: install.py restore -> m8gb1 (backup-m8gb1); older backup-m8dd2, backup-m8adm1, backup (m7close4).
+Next M8 lead: texture creation (bgmtl.m:2432 rwa_texture_create) waiting on bg_lock behind replay.
+
 ### 2026-11-03: M8 fix B (narrow argbuf lock in bgCollectWrites) INSTALLED as m8cw1 - awaiting panel check
 
 Metal e6abb7b / root dc9d2dd (DeepSeek; Claude scoped it narrower than lockfree-design.md B and reviewed): M7
