@@ -1,3 +1,19 @@
+### 2026-11-03: M8 lead 1 ATTRIBUTED - slow CA completed handlers are -getBytes: waiting on bg_lock
+
+Metal 09aa857 / root 3d4f883 (DeepSeek): the timeline ring records every bg_lock wait >=100 us with its call site
+(bg_lock() -> bg_lock_at(__LINE__), file tag 0 bgmtl.m / 1 bg_write_admission.h / 2 bg_work_admission.h, only
+while armed) plus HANDLERS_BEGIN before the completed handlers. Build xnu/out-mesa-m8lw1 (libbgmtl 986873f7,
+libbgair 62eed9e4), capture-only (not installed). capture.py baseline is now m8adm1.
+Capture research/metal-m8/lw1 (120 CBs, complete, restore byte-exact, backboardd -> 59990):
+- handlers_begin -> completed p50 0.022 ms, p99 20.9, max 29.1. All 7 handler runs >=10 ms are one
+  -[BGMTLTexture getBytes:] (bgmtl.m:2502) waiting 9.7-28.7 ms on bg_lock (the next CB's replay). Dealloc
+  hypothesis was WRONG: no dealloc waits inside handlers.
+- Other bg_lock waits in 8 s (73 total, 476 ms): bgCollectWrites (bg_work_admission.h:34, encoding threads)
+  40 waits 231 ms max 28; -[BGMTLTexture dealloc] 18 waits 105 ms max 40 (outside handlers); getBytes 126 ms.
+  These are likely what stretches create -> commit (p90 26.8 ms).
+Next: design a getBytes readback (and maybe bgCollectWrites / texture dealloc) that does not need the shared
+context lock while a replay holds it. Observation only so far; no fix written.
+
 ### 2026-11-03: M8 fix KEPT (user panel check: "Looks right, keep it")
 
 m8adm1 stays installed in backboardd (libbgmtl e64b82a3, libbgair 62eed9e4, env CA_DISABLE_FRAMEBUFFER_COMPRESSION=1
