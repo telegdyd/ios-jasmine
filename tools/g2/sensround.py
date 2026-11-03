@@ -14,7 +14,8 @@ e.g. base:auto  cpumax:gold=2208000,silver=1843200  gpu430:gpu=430  ddr1296:ddr=
 
 Each capture goes to OUT/NAME (framebench refuses existing directories). The table at the
 end lists swap arrivals/s and median ms of the unsampled home-b / control-b segments and
-the sampled control-a. Clocks are runtime only; a reboot also restores them.
+the sampled control-a. Clocks are runtime only; a reboot also restores them. A "ddr" setting
+stops the DDR governor; it is switched back on at the end if it was on at the start.
 """
 import argparse
 import json
@@ -81,6 +82,7 @@ def main():
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     results = {}
+    gov_on = 'mode 1' in q('ddrgov')
     try:
         for c in a.configs:
             name, _, spec = c.partition(':')
@@ -103,6 +105,8 @@ def main():
         print('== restore defaults', flush=True)
         for line in DEFAULTS:
             q(line)
+        if gov_on:
+            q('ddrgov on')
     (a.out / 'sensround.json').write_text(json.dumps(results, indent=2))
     print(f'\n{"config":12} ' + ' '.join(f'{ph:>24}' for ph in ('home-b', 'control-a', 'control-b', 'spotlight-repeat')))
     for name, r in results.items():

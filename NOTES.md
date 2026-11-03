@@ -1,3 +1,25 @@
+### 2026-11-03: clock sweep on m8pe1 (Metal): still DDR-bound; GPU clock barely matters
+
+User asked whether we are still memory-bound. `tools/g2/sensround.py research/sweep-m8pe1 base gpu430 gpu647
+ddr1296 base2` (framebench per config, no restarts/installs; log logs/sweep-m8pe1.txt, data ignored).
+Swap arrivals/s (median ms):
+
+| config | Home B | CC A | CC B |
+|---|---|---|---|
+| base | 31.7 (32.5) | 27.6 (31.7) | 28.0 (31.6) |
+| base2 | 30.3 (32.9) | 27.9 (32.3) | 27.3 (32.6) |
+| GPU 430 | 30.2 (33.2) | 26.9 (32.7) | 27.1 (32.6) |
+| GPU 647 | 31.2 (32.5) | 27.8 (31.5) | 27.4 (31.5) |
+| DDR 1296 | 25.6 (36.3) | 22.3 (42.1) | 21.7 (41.7) |
+
+Vs base mean: DDR 1296 (-28% clock) -> Home -17%, CC -20/-21%; GPU 430 (-27%) -> -2..-3%; GPU 647 -> no gain.
+Stronger memory dependence than the GL-era Oct 28 sweep (GPU 430 cost -4/-11% then). Median frame ~32 ms = two
+16.7 ms periods. Conclusion (observation): the GPU waits on DRAM; next levers cut bytes per frame (UBWC is off
+via CA_DISABLE_FRAMEBUFFER_COMPRESSION=1, blur/CC passes, formats, overdraw), not GPU or CPU clocks.
+Side effect found and fixed: the `ddr` command stops the DDR governor (ddrgov went to mode 0 for the sweep).
+Restored by hand with `ddrgov on` (mode 1, read back); sensround now re-enables it if it was on. Final state read
+back: GPU 588, DDR 1804 vote, ddrgov mode 1, dvfs auto 1, bench idle. m8pe1 still installed (no restarts).
+
 ### 2026-11-03: m8pe1 INSTALLED and KEPT (user panel check: "Looks right")
 
 m8pe1 = mesa/metal 7cde9d6 (f08875e recursive-lock bypass, 7cb65aa REPLAY_WAIT timeline kind, 7cde9d6 fb-bind skip)
