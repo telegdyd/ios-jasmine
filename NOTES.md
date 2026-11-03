@@ -1,3 +1,15 @@
+### 2026-11-03: m9ubwc9 + BGMTL_UBWC=1 temporarily INSTALLED; user panel check "it looks fine"; framebench
+
+install.py (now INSTALLED_ENV b'BGMTL_ASYNC=1\n', --env-extra, default cand m9ubwc9) installed m9ubwc9 with env
+`BGMTL_ASYNC=1\nBGMTL_UBWC=1\n`: backboardd 16019 -> 16340, async confirmed, no faults (logs/netlog-m9ubwc9-install.txt,
+UBWC textures created). Backup of m8pe1: research/metal-m8/backup-m8pe1 (`install.py restore` puts it back).
+framebench research/metal-m9-fbc/fb-ubwc9 (logs/fb-ubwc9.txt), ddrgov on: Home B 30.8/s (33.0 ms), CC A 28.4 (33.3),
+CC B 28.2 (33.2), Spotlight 42.1 (16.7 ms). Sweep base/base2: Home 31.7/30.3, CC A 27.6/27.9, CC B 28.0/27.3,
+Spotlight 24.3/22.3 (33-36 ms). So Spotlight now hits one refresh period; Home/CC stay at two periods (~33 ms)
+although the GPU wait p50 fell to 9.5 ms (capture ubwc3) - Home/CC are no longer GPU-bound. Guess (not measured):
+per-frame CPU encode+replay (~6 + ~15 ms p50) or frame serialization now sets the 2-period cadence. Not yet decided:
+keep UBWC installed permanently.
+
 ### 2026-11-03: fd5 UBWC WORKS in the compositor (m9ubwc9, BGMTL_UBWC=1): GPU wait p50 23.9 -> 9.5 ms
 
 Codex wrote 0032 + air/bgmtl + probe (mesa/metal 45edcb3, root da15f29; local-only, its sandbox cannot reach VM/WSL:
