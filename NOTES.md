@@ -1,3 +1,9 @@
+### 2026-11-03: M8 m8gb1 KEPT (user panel check: "Looks right")
+
+m8gb1 (fix A unlocked getBytes + fix C deferred destroy) stays installed in backboardd (libbgmtl 5bf0ad1b, libbgair
+87bfd466, env unchanged). Rollback chain: install.py restore -> m8dd2 (backup-m8dd2); older backup-m8adm1, backup
+(m7close4). Next M8 lead: bgCollectWrites lock waits (lockfree-design.md B).
+
 ### 2026-11-03: M8 fix A (unlocked getBytes) INSTALLED as m8gb1 - slow completed handlers GONE; awaiting panel check
 
 Metal bd4f5fb / root 5cd8472 (DeepSeek, reviewed by Claude): rwa_texture_read_unlocked (air/air_metal.c ~2547):
