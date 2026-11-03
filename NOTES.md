@@ -1,3 +1,16 @@
+### 2026-11-03: CA_DISABLE_FRAMEBUFFER_COMPRESSION dropped (user: "turn it back on"); one framebench: no gain
+
+Env /private/var/tmp/bgmtl-bb.env now `BGMTL_ASYNC=1\n` only (was `CA_DISABLE_FRAMEBUFFER_COMPRESSION=1\n` +
+that). It is Apple CoreAnimation's switch, not freedreno UBWC (METAL-STEP7.md r10, "never shown to matter").
+Tool research/metal-m9-fbc/toggle.py on|off (ignored dir; writes env, restarts backboardd, short swipes + netlog).
+backboardd 3655 -> 6277, async replay confirmed, no faults (logs/netlog-fbc-on.txt), format-500 refusals as before.
+One framebench research/metal-m9-fbc/fb-on (logs/fb-fbc-on.txt), ddrgov ON (mode 1), ~2 min after restart:
+Home B 29.2/s (32.9 ms), CC A 22.1 (45.9), CC B 27.0 (32.5), Spotlight 18.5 (43.4).
+Vs sweep base/base2 (governor off, settled backboardd): Home 31.7/30.3, CC A 27.6/27.9, CC B 28.0/27.3, Spot 24.3/22.3.
+So no improvement; CC A and Spotlight lower. Confounded (fresh restart, governor on vs off) - not proof of harm.
+State: env changed (install.py/capture.py now refuse: they expect the old env). Revert: `python
+research/metal-m9-fbc/toggle.py off`. m8pe1 dylibs unchanged.
+
 ### 2026-11-03: clock sweep on m8pe1 (Metal): still DDR-bound; GPU clock barely matters
 
 User asked whether we are still memory-bound. `tools/g2/sensround.py research/sweep-m8pe1 base gpu430 gpu647
