@@ -1,3 +1,10 @@
+### 2026-11-03: M8 fix KEPT (user panel check: "Looks right, keep it")
+
+m8adm1 stays installed in backboardd (libbgmtl e64b82a3, libbgair 62eed9e4, env CA_DISABLE_FRAMEBUFFER_COMPRESSION=1
++ BGMTL_ASYNC=1). Backup of the previous m7close4 pair remains in research/metal-m8/backup for
+`install.py restore`. M8 open leads: CA completed-handler 10-20 ms on ~7% of CBs while the next CB replays;
+cap2 stack samples for the 18.7 ms replay.
+
 ### 2026-11-03: M8 fix INSTALLED for panel check (m8adm1; user: "obviously install it")
 
 research/metal-m8/install.py: backed up the m7close4 pair + envs to research/metal-m8/backup, wrote the
