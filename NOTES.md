@@ -1,3 +1,13 @@
+### 2026-11-03: m8pe1 INSTALLED and KEPT (user panel check: "Looks right")
+
+m8pe1 = mesa/metal 7cde9d6 (f08875e recursive-lock bypass, 7cb65aa REPLAY_WAIT timeline kind, 7cde9d6 fb-bind skip)
+on top of m8tc1. validate.py parts 1-7: 2x39, 2x42, 6x47 passed, p24 9/9 native+async, p25 3/3 both, p26 3/3; the
+4 UBO-limit + 6 "BEGIN refused (-16)" lines are the expected negative cases (same as m8tc1/m8cw1). install.py:
+backboardd 375 -> 3655, async confirmed, no faults. Installed libbgmtl e6a84e48, libbgair c2173afb (DeepSeek's
+reported 19427479 was wrong; the file built 19:13 after the 19:10 commit is c2173afb). Rollback to m8tc1:
+research/metal-m8/backup-m8tc1 (install.py now rebaselined to m8pe1, so restore it by hand or repoint BACKUP).
+capture.py/install.py expect m8pe1 installed. M8 stays closed; next milestone to be chosen with the user.
+
 ### 2026-11-03: M8 CLOSED (user: "Close M8"). Installed: m8tc1
 
 Final M8 state and numbers are in mesa/METAL-PERFORMANCE-TASKS.md (M8 row). Installed backboardd pair m8tc1 (libbgmtl
