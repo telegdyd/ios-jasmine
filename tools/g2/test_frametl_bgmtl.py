@@ -68,6 +68,16 @@ class TimelineParserTests(unittest.TestCase):
             # In-replay wait records; 1 = CPU-blit finish, 2 = fence seqno drain.
             record(start + 300_000, 17, 1, 1, 50_000),
             record(start + 310_000, 17, 1, 2, 20_000),
+            # M9 DRAM records: one pass, one private attachment, one sampled
+            # surface, and a 1 MiB blit.
+            record(start + 320_000, 18, 1, 0, 2 | (2 << 16)),
+            record(start + 321_000, 19, 1,
+                   0 | (2 << 14) | (1 << 16) | (1 << 18) | (1 << 20) | (4 << 24) |
+                   (1080 << 32) | (1920 << 45), 4 * 1920 * 1080),
+            record(start + 322_000, 20, 1,
+                   0 | (1 << 14) | (1 << 20) | (4 << 24) |
+                   (1080 << 32) | (1920 << 45), 4 * 1920 * 1080),
+            record(start + 323_000, 21, 1, 1 | (2 << 4) | (1 << 6), 1024 * 1024),
         ]
         path = Path(tmp) / 'bgmtl-tl-4242.bin'
         write_ring(path, recs, dropped=dropped)
@@ -159,6 +169,9 @@ class TimelineParserTests(unittest.TestCase):
             self.assertIn('missing COMPLETED_RUN', text)
             self.assertIn('replay wait cpu-blit finish: 1 waits', text)
             self.assertIn('replay wait fence seqno drain: 1 waits', text)
+            self.assertIn('DRAM bytes', text)
+            self.assertIn('GPU-private UBWC-eligible share', text)
+            self.assertIn('passes 1 (0.50/CB)', text)
 
     def test_kernel_join_by_seqno_and_generation(self):
         with workdir() as tmp:

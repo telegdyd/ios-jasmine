@@ -27,7 +27,7 @@ KIND = {
     5: 'SUBMIT_BEGIN', 6: 'SUBMIT_END', 7: 'REPLAY_END', 8: 'SCHEDULED_RUN',
     9: 'FENCE_OBSERVED', 10: 'COMPLETED_RUN', 11: 'PRESENT_POST', 12: 'PRESENT_ENTER',
     13: 'LOCK_WAIT', 14: 'HANDLERS_BEGIN', 15: 'DEFER_DRAIN', 16: 'GETBYTES',
-    17: 'REPLAY_WAIT',
+    17: 'REPLAY_WAIT', 18: 'PASS', 19: 'PASS_ATTACH', 20: 'PASS_SAMPLE', 21: 'BLIT',
 }
 QUEUE = {0: 'replay', 1: 'completion', 2: 'inline'}
 NO_CB = 0xffffffff
@@ -320,6 +320,14 @@ def kernel_join(rows, events):
                 seqnos=len(seqnos), generations=len(gens | gen_low))
 
 
+def _dram_parts(a):
+    """Unpack a PASS_ATTACH/PASS_SAMPLE `a` (see bg_timeline.h)."""
+    return dict(pass_id=a & 0xfff, role=(a >> 12) & 3, cls=(a >> 14) & 3,
+                load=(a >> 16) & 3, store=(a >> 18) & 3, samples=(a >> 20) & 15,
+                bpp=(a >> 24) & 0xff, height=(a >> 32) & 0x1fff,
+                width=(a >> 45) & 0x1fff)
+
+
 def report(path, events=(), epoch=None, out=sys.stdout):
     capture = load(path)
     epoch = capture['start'] if epoch is None else epoch
@@ -420,6 +428,75 @@ def report(path, events=(), epoch=None, out=sys.stdout):
 
         wait_line('cpu-blit finish', 1)
         wait_line('fence seqno drain', 2)
+
+    dram = [r for r in capture['records'] if r['kind'] in (18, 19, 20, 21)]
+    if dram:
+        classes = {1: 'surface', 2: 'private', 3: 'other'}
+        per_cb = collections.defaultdict(lambda: collections.Counter())
+        passes = collections.Counter()
+        top = []
+        for r in dram:
+            cb = r['cb']
+            if cb == NO_CB:
+                continue
+            if r['kind'] == 18:
+                passes[cb] += 1
+                continue
+            if r['kind'] == 21:
+                kind = r['a'] & 15
+                sc = classes.get((r['a'] >> 4) & 3, 'other')
+                dc = classes.get((r['a'] >> 6) & 3, 'other')
+                per_cb[cb]['blit'] += r['b']
+                if sc == 'private' or dc == 'private':
+                    per_cb[cb]['blit_private'] += r['b']
+                top.append((r['b'], f'blit k{kind} {sc}->{dc}'))
+                continue
+            p = _dram_parts(r['a'])
+            cls = classes.get(p['cls'], 'other')
+            if r['kind'] == 19:
+                if p['load'] == 1:
+                    per_cb[cb]['attach_load'] += r['b']
+                    per_cb[cb][f'attach_load_{cls}'] += r['b']
+                if p['store']:
+                    per_cb[cb]['attach_write'] += r['b']
+                    per_cb[cb][f'attach_write_{cls}'] += r['b']
+                top.append((r['b'], f"attach {p['width']}x{p['height']} bpp{p['bpp']} {cls}"))
+            else:
+                per_cb[cb]['sampled'] += r['b']
+                per_cb[cb][f'sampled_{cls}'] += r['b']
+                top.append((r['b'], f"sample {p['width']}x{p['height']} bpp{p['bpp']} {cls}"))
+
+        def mib(x):
+            return x / (1024.0 * 1024.0)
+
+        ncbs = max(1, len(rows))
+        elapsed = max(1, capture['end'] - capture['start'])
+        secs = elapsed * capture['numer'] / capture['denom'] / 1e9
+        sums = collections.Counter()
+        for c in per_cb.values():
+            sums.update(c)
+        emit('\n  DRAM bytes (M9 instrumentation; attachment/sample are full-surface upper bounds):')
+        emit(f"    per CB avg: attach_write {mib(sums['attach_write'])/ncbs:.2f} MiB, "
+             f"attach_load {mib(sums['attach_load'])/ncbs:.2f} MiB, "
+             f"sampled {mib(sums['sampled'])/ncbs:.2f} MiB, "
+             f"blit {mib(sums['blit'])/ncbs:.2f} MiB")
+        emit(f"    per second: attach_write {mib(sums['attach_write'])/secs:.2f} MiB/s, "
+             f"attach_load {mib(sums['attach_load'])/secs:.2f} MiB/s, "
+             f"sampled {mib(sums['sampled'])/secs:.2f} MiB/s, "
+             f"blit {mib(sums['blit'])/secs:.2f} MiB/s")
+        for cls in ('surface', 'private', 'other'):
+            total = sum(sums[f'{k}_{cls}'] for k in ('attach_write', 'attach_load', 'sampled'))
+            emit(f"    {cls}: attach_write {mib(sums['attach_write_'+cls])/ncbs:.2f} MiB/CB, "
+                 f"attach_load {mib(sums['attach_load_'+cls])/ncbs:.2f} MiB/CB, "
+                 f"sampled {mib(sums['sampled_'+cls])/ncbs:.2f} MiB/CB, "
+                 f"blit_private_share {mib(sums['blit_private'] if cls == 'private' else 0)/ncbs:.2f} MiB/CB")
+        total_bytes = sums['attach_write'] + sums['attach_load'] + sums['sampled'] + sums['blit']
+        private_bytes = sums['attach_write_private'] + sums['attach_load_private'] + sums['sampled_private'] + sums['blit_private']
+        emit(f"    passes {sum(passes.values())} ({sum(passes.values())/ncbs:.2f}/CB); "
+             f"GPU-private UBWC-eligible share {100.0*private_bytes/max(1,total_bytes):.1f}%")
+        emit('    top 10 contributors:')
+        for nbytes, label in sorted(top, reverse=True)[:10]:
+            emit(f'      {mib(nbytes):8.2f} MiB  {label}')
 
     emit('\n  10 longest frames (by create -> completed):')
     longest = sorted((r for r in rows if r['total'] is not None), key=lambda r: r['total'], reverse=True)[:10]
