@@ -1,3 +1,9 @@
+### 2026-11-03: M8 m8tc1 KEPT (user panel check: "Looks right")
+
+m8tc1 stays installed in backboardd (libbgmtl 6bc927ec, libbgair 773da9a9, env unchanged). Rollback chain:
+install.py restore -> m8cw1 (backup-m8cw1); older backup-m8gb1, backup-m8dd2, backup-m8adm1, backup (m7close4).
+Next options: replaceRegion uploads (staging/deferred upload design), or replay cost / GPU wait.
+
 ### 2026-11-03: M8 texture creation off bg_lock INSTALLED as m8tc1 - awaiting panel check
 
 Metal 683ad7c / root 95f8f7e (DeepSeek, reviewed by Claude): the non-IOSurface allocate branch of
