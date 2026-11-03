@@ -1,3 +1,13 @@
+### 2026-11-03: M8 fix INSTALLED for panel check (m8adm1; user: "obviously install it")
+
+research/metal-m8/install.py: backed up the m7close4 pair + envs to research/metal-m8/backup, wrote the
+m8adm1 compositor pair (libbgmtl e64b82a3, libbgair 62eed9e4), env unchanged (CA_DISABLE_FRAMEBUFFER_COMPRESSION=1
++ BGMTL_ASYNC=1, no BGMTL_TL), wallpaper pair/env untouched; backboardd 57639 -> 58380. Smoke: 16 Home swipes +
+2 Control Center open/close, pid stable, `BGMTL replay: async (chlorophyll.replay)`, 0 command buffer failed /
+QUEUE FALLBACK / SMMU or GPU fault / fence timeout / panic in logs/netlog-m8adm1-install.txt (4.3 MB). Awaiting
+the user's panel check. Rollback: `python research/metal-m8/install.py restore` (m7close4, byte-exact).
+boot_b unchanged (j0127). Survives reboot: the pair lives in /usr/local/bin like m7close4.
+
 ### 2026-11-03: M8 bg_lock completion wait REMOVED (Metal b049aff); validated, NOT installed
 
 Fix: the pending-writer table has its own bg_adm_mutex (bg_write_admission.h). Admission takes bg_lock then
