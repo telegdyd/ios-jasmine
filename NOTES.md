@@ -1,3 +1,18 @@
+### 2026-11-03: M8 replay-cost attribution (m8rp1, m8rf1 captured, NOT installed; m8tc1 stays installed)
+
+DeepSeek analysed the tc1 stacks (research/metal-m8/replay-attribution.md, gitignored). Replay thread inside
+bgReplayFrom: rwa_render_draw 41% (fd_draw_vbo -> fd5_emit_state/fd5_program_emit/ir3_emit_ubos), fence waits ~22%,
+rwaTextureSampled/rwaTexture 18%, uploads 6.5%. cap2 agrees. GPU wait ~20 ms/CB is real GPU work (71% busy,
+submit 0.66 ms), not fence/submit latency.
+- Metal f08875e / root 9fa6826: rwaTextureSampled/rwaTexture skip the recursive bg_lock when the thread holds it.
+  Capture rp1: replay p50 9.7 -> 9.0, p90 22.0 -> 22.7 ms: noise. Safe, not installed alone.
+- Metal 7cb65aa / root e005ea5: timeline kind 17 REPLAY_WAIT (a=1 CPU-blit rwa_finish, a=2 rwa_fence_seqno).
+  Capture rf1: seqno drain 120 waits, 91.7 ms per 8 s (0.76 ms/CB, max 5.3); CPU-blit waits: none. So in-replay
+  GPU waits are small; replay time is CPU draw-state emission. rf1's whole run was slower (replay p50 14.4, encode
+  p50 8.9) than rp1/tc1 on identical work: single 8 s captures vary ~+/-50%, compare several before trusting deltas.
+Scripts rebaselined: capture.py/install.py expect m8tc1 (next install backs up to backup-m8tc1).
+Next options: freedreno per-draw emit cost (state-group reuse, fewer draws per CB), replaceRegion uploads, or close M8.
+
 ### 2026-11-03: M8 m8tc1 KEPT (user panel check: "Looks right")
 
 m8tc1 stays installed in backboardd (libbgmtl 6bc927ec, libbgair 773da9a9, env unchanged). Rollback chain:
