@@ -2,20 +2,27 @@
 
 Research only. No production code, no env change, no phone access, no push.
 
-## Blocker: QuartzCore shared cache is absent
+## Blocker: WSL is inaccessible from this sandbox
 
-The requested shared cache and symbolizer are not present in this checkout or on
-the VM:
+The files are in WSL as the follow-up said, but the DSH process sandbox refuses
+to start WSL:
 
-- `research/dsc/` does not exist;
-- `~/ios-work/gl/dsc/dyld_shared_cache_arm64`, `~/ios-work/tools/ipsw-3.1.739/x/ipsw`,
-  and `~/ios-work/prof-syms` are absent on the VM;
-- `ipsw` is not on PATH.
+- `wsl.exe -e bash -lc '…'` and `wsl.exe -d Ubuntu -- echo hi` both return
+  `Wsl/E_ACCESSDENIED`;
+- `cmd /c wsl ...` returns the same;
+- `\\wsl.localhost\Ubuntu\home` and the other distro names return
+  `PermissionDenied`.
 
-I therefore **cannot cite the QuartzCore code that reads
-`CA_DISABLE_FRAMEBUFFER_COMPRESSION` or trace its IOSurface/MTL descriptor
-properties**. Everything below about the flag’s internals is explicitly marked
-as inference; the device/stack facts are source/log observations.
+The VM also has no `~/ios-work`/`ipsw`, and `research/dsc/` is absent, so no
+copy of the QuartzCore image is readable here. I therefore **cannot extract or
+disassemble `CADeviceUseFramebufferCompression` in this environment**, and the
+caller/check trace remains unresolved. The user-provided symbol names
+(`CADeviceUseFramebufferCompression`, `CAEnableFramebufferCompression`) are
+consistent with the string evidence but were not independently disassembled
+here.
+
+The remaining findings below are from the Mesa/bgmtl source and the capture
+logs; they do not answer the exact QuartzCore checks.
 
 ## 1. What bgmtl answers today
 
@@ -77,6 +84,48 @@ Observed in the Mesa tree used by the VM build:
 answers CA’s compression queries and backs textures with UBWC is not
 implementable on Adreno 512 without a new fd5 UBWC layout/emit/flag-buffer
 implementation (and a kernel/display story for the flag buffer).
+
+Upstream’s `fdl_layout.h` says UBWC color compression is “a5xx+” and exposes
+`fdl5_layout_image` plus `ubwc_slices`/`ubwc_layer_size` (public Mesa mirror:
+`src/freedreno/fdl/freedreno_layout.h`). So the hardware/layout concept exists;
+our tree’s `is_a6xx` gate is the local blocker. A concrete fd5 UBWC enablement
+would need:
+
+1. let `get_best_layout` choose `FD_LAYOUT_UBWC` for a5xx, with
+   `DRM_FORMAT_MOD_QCOM_COMPRESSED` and `fdl5_layout_image(..., ubwc=true)`;
+2. program `RB_MRT_FLAG_BUFFER(i)` address/pitch/array-pitch and
+   `RB_DEPTH_FLAG_BUFFER` from the UBWC slices; today `fd5_gmem.c:179-186` and
+   `:225-228/:284-287` write zeros;
+3. set the fd5 texture descriptor’s UBWC/flag-buffer fields and tile/flag mode
+   (the local fd5 texture path has no UBWC field setup);
+4. teach `fd_resource_ubwc_enabled`/offset and the readback paths: `getBytes`,
+   `replaceRegion`, and `rwa_texture_read_unlocked` currently refuse/gate UBWC
+   (`air_metal.c:2606-2621,7994,8022`), so CPU access must decompress or refuse;
+5. keep the final CA/IOSurface/display surface linear and add a resolve/
+   decompress at the end of the pass (the display path reads the IOSurface
+   linearly), or teach the kernel scanout about the flag buffer;
+6. make CA request the compressed surface/format if it is to benefit from the
+   framebuffer path; `rwa_texture_from_surface` currently imports linear only
+   (`air_metal.c:1900-1912`).
+
+This is a driver feature (layout + emit + descriptor + resolve + validation),
+not a contained bgmtl change. Upstream a5xx UBWC work exists in the kernel
+(`drm/msm` UBWC config for a5xx), but Mesa’s a5xx path here is still gated off.
+
+### Cheaper bandwidth levers in this stack
+
+- **Tiled non-UBWC a5xx layouts:** `get_best_layout` already returns
+  `FD_LAYOUT_TILED` for implicit non-linear resources
+  (`freedreno_resource.c:1349-1358`); imported/display IOSurfaces are forced
+  linear (`:1320-1326`). GPU-private intermediates can stay tiled; the final
+  surface cannot without a resolve. This is already mostly in use.
+- **Format choices:** CA’s own RGBA8/BGRA8 vs wider formats; bgmtl cannot
+  transparently change a layer’s pixel format without changing the app’s
+  contract.
+- **Reduce full-screen passes/blur/overdraw:** the sweep’s DDR sensitivity
+  points here, but it is not framebuffer compression.
+- **GPU-private intermediates:** already tiled; making them UBWC is the fd5
+  feature above.
 
 ### IOSurface import and final scanout
 
