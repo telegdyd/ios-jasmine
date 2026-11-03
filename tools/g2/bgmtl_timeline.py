@@ -30,7 +30,8 @@ KIND = {
 }
 QUEUE = {0: 'replay', 1: 'completion', 2: 'inline'}
 NO_CB = 0xffffffff
-FILE_NAMES = {0: 'bgmtl.m', 1: 'bg_write_admission.h', 2: 'bg_work_admission.h'}
+FILE_NAMES = {0: 'bgmtl.m', 1: 'bg_write_admission.h', 2: 'bg_work_admission.h',
+              3: 'bg_argbuf_mutex'}
 SRC_DIR = Path(__file__).resolve().parents[2] / 'mesa' / 'metal' / 'src'
 _SOURCE_CACHE = {}
 
