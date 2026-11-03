@@ -1,3 +1,14 @@
+### 2026-11-03: m7close4 + BGMTL_ASYNC=1 INSTALLED in backboardd for the user's panel check
+
+User: "test it then install it". `python research/metal-m7-panel/panel.py install` (CAND out-mesa-m7close4):
+backboardd 43389 -> 43862, libbgair 62eed9e4 / libbgmtl 05866ab6, bgmtl-bb.env + BGMTL_ASYNC=1, log shows
+`BGMTL replay: async (chlorophyll.replay)`. Wallpaper pair/poster env untouched. M4 backups in
+research/metal-m7-panel/backup; rollback `panel.py restore`. Pending: user's panel verdict; if it passes this
+stays installed (keep the backup dir until a later cleanup). Earlier check1 evidence moved to
+research/metal-m7-panel/check1-m7suspend. Correction to the entry below: runs 10/11/13/15 aborts were NOT
+Wi-Fi (the link is USB CDC, 192.168.7.2); the USB link never reset (event counters unchanged) but the phone's
+USB tx queue was full (`tx busy 1, txq 26-32`) at each abort. Cause of the tx backlog unverified.
+
 ### 2026-11-03: M7 CLOSED (validation); not installed, installation decision open
 
 Metal 327bf2f, build xnu/out-mesa-m7close4 (libbgmtl 05866ab6, libbgair 62eed9e4). Report
@@ -10,7 +21,7 @@ released at replay end raced the kernel (-EBUSY, P25 2/20); now released at comp
 positively proved async). Device: close4 six modes 47/47, P23 39/42, P24 9/9 (j0127 cancel d=2 then ACK d=3
 via bench events), P25 3/3 (x2), P26 3/3, ticket probe PASS; async-only trials 16-18 (trial.py --async-only)
 zero failures/restarts, async confirmed, 12/12 shots non-uniform, restore byte-exact. Real GPU fault not
-tested by design (no hang recovery; reboot cost). Runs 10/11/13/15 aborted on Wi-Fi socket resets (not Metal).
+tested by design (no hang recovery; reboot cost). Runs 10/11/13/15 aborted on command-socket resets (USB tx queue full; see correction above).
 Phone: installed M4 95cea7f9/3d91c9f6, envs original, temporary m7ack kernel, lock released.
 Next: user decides installation; if async is to be installed, panel check on m7close4 first (the passed
 check below used m7suspend). Then M8.

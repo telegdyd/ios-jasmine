@@ -179,7 +179,8 @@ always logged, so any occurrence is visible in the next trial log.
   `/private/var/tmp/bgmtl.sync`, `bgmtl-bb.sync` and `bgmtl.trace` before any async
   phase (`:604`, `:1202`).
 - Retries for read-only queries and swipes only (`:135-138`). Runs 10/11/13/15
-  aborted on socket timeouts/resets around `wifip2pd`/`bluetoothd` launches;
+  aborted on socket timeouts/resets over the USB CDC link (192.168.7.2): the link never
+  reset, but the phone's USB tx queue was full (`tx busy 1, txq 26-32`); cause unverified;
   side-effecting commands are never retried.
 - P24-based j0127 kernel evidence: a validate P24 run whose bench epoch is still
   current establishes the ACK on this boot (`:467-488`, `:502`).
