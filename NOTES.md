@@ -1,3 +1,32 @@
+### 2026-11-05: j0134 client-layer present/complete patch written (NOT built, NOT booted, not committed)
+Mechanism from `logs/netlog-swap133.txt` checked against `research/t27/recon-j0133/iokit/Kernel/arm/SweetFramebuffer.cpp`:
+- Sync freeze: after `QUEUE FALLBACK reason 1`, `fQueueActive=0` and SwapBegin stops allocating serials, so
+  j0133's recovery (needs `fQueueActive && serial`) cannot fire. The copy path at 1735-1740 waits up to 100 ms
+  per layer on `sweet_surface_cpu_access(held[i], true)` (j0110 `sweet_ticket_wait`) and on timeout returns
+  success without `present()`/`noteShown()`; `fEndID` stays 377. The page SwapWait rule at 2531 needs
+  `fEndID > id` (377-379 is negative; the queue rule is skipped) -> every poll times out forever. Swaps
+  378/379 are that silent path; 379 had surface 650 pid 302 (Maps drawable) + surface 3 pid 57 (backboardd).
+- Queue `reason 1`: a 200 ms present-scope timeout (1759-1766) calls `rejectFrame(1)` -> `queueFallback`
+  (1882-1907) while `queuePresent` holds `fPresentBusy` for up to 1000 ms in its ticket admission wait
+  (1982-2000, 2029), so one slow present becomes "synchronous for the rest of boot".
+- The driver also waits up to 100 ms on every layer's `gpuSeqno` (1744-1756), including a client surface's.
+  Ticket stats bracket the fallback: `netlog-swap133.txt:11144` live/high 2/3, timeout 1 -> `:11196` timeout 4,
+  live 0: open tickets existed and three display ticket waits timed out across the fallback and the 378/379 copies.
+`xnu/patches/j0134-jasmine-client-layer-present.patch` (boot-arg `sweetfb_clientlayer=0` disables): track the
+SwapEnd caller pid (`fPid`), do not ticket/gpuSeqno-wait on layers created by another process (CA already
+waited for the app's present), never leave `fEndID` behind a successful sync SwapEnd (noteShown instead of a
+silent drop), drop a scope-timed-out queue frame without falling back (8 consecutive drops still fall back),
+and extend j0133's 50 ms recovery to sync mode (copy the shown client surface first if `!fScanOwned`).
+Verified: `git apply --check` on `research/t27/recon-j0133` exit 0; fresh `recon-fwd + j0132 + j0133 + j0134`
+hashes equal `research/t27/recon-j0134/...` (A4508218...). No build/boot.
+Userspace lead (NOT edited): `mesa/metal/src/bg_write_admission.h:150-152` waits 1 s on `prior->done` and
+fails the CB; on timeout, re-query `rwa_texture_ticket_begin` and admit if the kernel now grants it (BEGIN is
+the authority on surface ownership). Also consider `kIOSurfaceLockAvoidSync` for the seed-bump lock in
+`bgCompleteFrom` (`bgmtl.m:2440-2460`), so the serial completion queue cannot lag the 1 s admission wait.
+Next: build swap134 (`tools/vm-build.sh swap134`, j0134 is picked up by filename), image, open Maps, and check
+for `client layer, no ticket wait` / `not presented ... completed (sync)` / absence of a sync-mode `swapWait
+stuck`. Do not commit without the user's OK.
+
 ### 2026-11-04: Maps freeze = GPU hang (job never completes, no SMMU fault) while pinch-zooming the map; diagnosis in progress
 Observed twice. (1) User's run before 06:10 (previous boot, backboardd 34567, m11fb1): oslog `logs/oslog-maps-sys.txt`
 (sweet_oslog 3000 s, Maps/backboardd/SpringBoard/kernel), Maps open ~2 min, then during two-finger pinches:
