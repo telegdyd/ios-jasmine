@@ -1,0 +1,67 @@
+Subject: [PATCH] jasmine-j0129: "gpu hang" on the command port dumps a GPU that stopped without an SMMU fault
+
+The Maps pinch freeze leaves a job pending forever with no SMMU fault, so the
+j0125 dump never runs. "gpu hang" prints RBBM/CP status, the IB1/IB2 fetch
+pointers, the last 16 jobs and the first pending job IBs (plus 256 dwords
+before the IB2 pointer). Diagnostic only: nothing changes unless the command is sent.
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -1293,6 +1293,8 @@
+ 	}
+ }
+ 
++static bool submit_history_force;
++
+ /* gpu_lock held. */
+ static void
+ submit_history_note(void)
+@@ -1317,14 +1319,17 @@
+ 		    pending ? " PENDING" : "", submit_history[i].who,
+ 		    submit_history[i].n, submit_history[i].iova[0], submit_history[i].dwords[0]);
+ 		static bool dumped;
+-		if (pending && !dumped) {
++		if (pending && (!dumped || submit_history_force)) {
+ 			dumped = true;
++			submit_history_force = false;
+ 			for (uint32_t b = 0; b < submit_history[i].n && b < SUBMIT_HISTORY_IBS; b++) {
+ 				char tag[16];
+ 				snprintf(tag, sizeof(tag), "ib%u", b);
+ 				gpu_dump_va(tag, submit_history[i].iova[b], MIN(submit_history[i].dwords[b], 2048));
+ 			}
+ 			if (ib2 != 0) {
++				/* j0129: also the 256 dwords before the CP's IB2 fetch pointer */
++				gpu_dump_va("ib2-", ib2 - 1024, 256);
+ 				gpu_dump_va("ib2", ib2, 512);
+ 			}
+ 		}
+@@ -1610,7 +1615,27 @@
+ 		lck_mtx_unlock(gpu_lock);
+ 		return reply;
+ 	}
+-	return "gpu: ? (clk MHZ, state, pc ..., cg 0|1)\n";
++	/*
++	 * j0129: "gpu hang" prints to the console what the fault path prints (CP IB1/IB2
++	 * pointers, the last 16 jobs and the first pending job's IBs) plus RBBM/CP status,
++	 * for a GPU that stopped completing work without an SMMU fault (Maps pinch hang).
++	 */
++	if (strcmp(line + 4, "hang") == 0) {
++		lck_mtx_lock(gpu_lock);
++		gpu_hold_on();
++		printf("SWEET GPU: hang: RBBM_STATUS %08x STATUS3 %08x INT_0_STATUS %08x, CP HW_FAULT %08x "
++		    "INTERRUPT_STATUS %08x PROTECT_STATUS %08x, RB rptr %u wptr %u, IB1 rem %u IB2 rem %u\n",
++		    gpu_rd(RBBM_STATUS), gpu_rd(RBBM_STATUS3), gpu_rd(RBBM_INT_0_STATUS), gpu_rd(0x0821),
++		    gpu_rd(0x0823), gpu_rd(0x0824), gpu_rd(CP_RB_RPTR), gpu_rd(CP_RB_WPTR), gpu_rd(0x0b21), gpu_rd(0x0b24));
++		submit_history_force = true;
++		submit_history_note();
++		gpu_hold_off();
++		lck_mtx_unlock(gpu_lock);
++		snprintf(reply, sizeof(reply), "gpu hang: dumped to the console, completed %u of %u\n",
++		    sweet_gpu_completed(), gpu_seqno);
++		return reply;
++	}
++	return "gpu: ? (clk MHZ, state, hang, pc ..., cg 0|1)\n";
+ }
+ 
+ /*

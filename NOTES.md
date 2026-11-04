@@ -1,3 +1,24 @@
+### 2026-11-04: Maps freeze = GPU hang (job never completes, no SMMU fault) while pinch-zooming the map; diagnosis in progress
+Observed twice. (1) User's run before 06:10 (previous boot, backboardd 34567, m11fb1): oslog `logs/oslog-maps-sys.txt`
+(sweet_oslog 3000 s, Maps/backboardd/SpringBoard/kernel), Maps open ~2 min, then during two-finger pinches:
+`SWEET FB: QUEUE FALLBACK reason 1` (present admission timed out: GPU not done), `quarantine 1 layer objects, 5963776
+bytes`, then backboardd `command buffer failed: imported destination prior producer did not complete within admission
+deadline` (mesa/metal bg_write_admission.h) and endless `fence wait failed ... fence timeout`; GPU 2 submits / 10 s, UI
+frozen, Maps "long commit sync wait" on backboardd. (2) Reproduced 06:28 on ui128-tmp: script
+(tools/g2/mapspinch.py: `touch 0/1 ...` command-port two-finger pinches at the user's coordinates; Maps icon tap
+899,1303) froze on the 2nd pinch: `gpu state` completed 12830 of 12833, stuck. Same log signature
+(logs/netlog-maps1.txt, logs/maps-pinch1.txt). One-finger pans + double-tap zoom for 150 s did NOT hang
+(tools/g2/mapsdrive.py, logs/maps-drive1.txt). backboardd threads idle in the census (research/maps-hang/stuck1-backboardd.txt): the
+compositor is not deadlocked, the GPU is wedged. Maps itself owns no GPU memory (SWEET POOL owners: backboardd and the
+posters only), so the hanging job is almost certainly backboardd compositing Maps' layers. Not known yet: which draw
+hangs (guess, unverified: an extreme layer transform/blur during the pinch). Command-port `reboot` hangs in shutdown with
+the GPU wedged (needs power + volume-down).
+Next: kernel j0129 (`xnu/patches/j0129-jasmine-gpu-hang-dump.patch`, diagnostic only) adds command-port `gpu hang`:
+prints RBBM/CP status, IB1/IB2 pointers, last 16 jobs and the pending job's IBs to the console. Built
+xnu/out-jasmine-hang129; image shim/out/shim-boot-hang129-tmp.img (40c6582b..., = ui128-tmp recipe with the new
+kernel; recipe checked byte-identical against payload-ui128-tmp.bin with the ui128 kernel). NOT booted yet. Plan: temp
+boot, open Maps, pinch (tools/g2/mapspinch.py 60), `python tools/sweet-cmd.py "gpu hang"`, decode the IBs (freedreno cffdump).
+
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); TEMPORARY boot only, boot_b not flashed
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
 getSubscriptionInfoWithError: (carrier bundle key LocationServicesAvailable) and on error stores nothing; nil hides the
