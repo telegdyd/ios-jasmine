@@ -1,65 +1,415 @@
 Subject: [PATCH] jasmine-j0129: "gpu hang" on the command port dumps a GPU that stopped without an SMMU fault
 
 The Maps pinch freeze leaves a job pending forever with no SMMU fault, so the
-j0125 dump never runs. "gpu hang" prints RBBM/CP status, the IB1/IB2 fetch
-pointers, the last 16 jobs and the first pending job IBs (plus 256 dwords
-before the IB2 pointer). Diagnostic only: nothing changes unless the command is sent.
+j0125 dump never runs. "gpu hang" copies RBBM/CP status, the IB1/IB2 fetch
+pointers and 64 dwords around each, the ring around CP_RB_RPTR, and the last 16
+jobs into a static snapshot under gpu_lock, then prints after dropping it. It
+never resumes or resets a wedged GPU, reads no register while GX is collapsed,
+reads GPU memory only through a valid PTE whose physical page this driver was
+given, and prints at most about 60 lines. The A5xx offsets are now right
+(CP_HW_FAULT 0x0b1a, CP_INTERRUPT_STATUS 0x0b18, CP_PROTECT_STATUS 0x0b1c);
+0x0821/0x0823/0x0824 are the CP ROQ/MEQ debug address/data registers and the
+MEQ data port has side effects. Diagnostic only: nothing changes unless the
+command is sent.
 
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
 --- a/bsd/dev/sweet_gpu.c
 +++ b/bsd/dev/sweet_gpu.c
-@@ -1293,6 +1293,8 @@
+@@ -146,6 +146,7 @@
+ #define RBBM_SECVID_TRUST_CNTL  0xf400
+ #define RBBM_SECVID_TSB_ADDR_MODE_CNTL 0xf810
+ #define CP_RB_BASE              0x0800
++#define CP_RB_BASE_HI           0x0801
+ #define CP_RB_CNTL              0x0802
+ #define CP_RB_RPTR              0x0806
+ #define CP_RB_WPTR              0x0807
+@@ -162,6 +163,19 @@
+ #define CP_PROTECT_CNTL         0x08a0
+ #define CP_INTERRUPT_STATUS     0x0b18
+ #define CP_HW_FAULT             0x0b1a
++#define CP_AHB_FAULT            0x0b1b
++#define CP_PROTECT_STATUS       0x0b1c
++#define CP_IB1_BASE             0x0b1f
++#define CP_IB1_BASE_HI          0x0b20
++#define CP_IB1_BUFSZ            0x0b21
++#define CP_IB2_BASE             0x0b22
++#define CP_IB2_BASE_HI          0x0b23
++#define CP_IB2_BUFSZ            0x0b24
++#define CP_SCRATCH(n)           (0x0b78 + (n))
++#define RBBM_AHB_ME_SPLIT_STATUS 0x04f0
++#define RBBM_AHB_PFP_SPLIT_STATUS 0x04f1
++#define RBBM_AHB_ETS_SPLIT_STATUS 0x04f3
++#define RBBM_AHB_ERROR_STATUS   0x04f4
+ #define VSC_ADDR_MODE_CNTL      0x0bc1
+ #define GRAS_ADDR_MODE_CNTL     0x0c81
+ #define RB_DBG_ECO_CNTL         0x0cc4
+@@ -1068,6 +1082,61 @@
+ static uint32_t gpu_seqno;
+ static bool gpu_ready;
+ 
++/*
++ * j0129: physical ranges the GPU page table was given (sweet_gpu_vm_map),
++ * so a diagnostic read through the GPU's own table never touches an address
++ * the driver does not own. The table only grows and entries are merged; an
++ * unmapped GPU VA has no valid PTE, so stale entries cannot make one readable.
++ */
++#define GPU_PA_RANGES           512
++static struct { uint64_t lo, hi; } gpu_pa_range[GPU_PA_RANGES];
++static unsigned gpu_pa_nrange;
++
++static void
++gpu_pa_note(uint64_t lo, uint64_t hi)
++{
++	lo &= ~0xfffull;
++	hi = (hi + 0xfff) & ~0xfffull;
++	if (hi <= lo) {
++		return;
++	}
++	for (unsigned i = 0; i < gpu_pa_nrange;) {
++		if (lo <= gpu_pa_range[i].hi && hi >= gpu_pa_range[i].lo) {
++			lo = MIN(lo, gpu_pa_range[i].lo);
++			hi = MAX(hi, gpu_pa_range[i].hi);
++			gpu_pa_range[i] = gpu_pa_range[--gpu_pa_nrange];
++			i = 0;
++		} else {
++			i++;
++		}
++	}
++	if (gpu_pa_nrange < GPU_PA_RANGES) {
++		gpu_pa_range[gpu_pa_nrange].lo = lo;
++		gpu_pa_range[gpu_pa_nrange++].hi = hi;
++	}
++}
++
++/* The page at pa is RAM this driver gave the GPU (or one of its own pages). */
++static bool
++gpu_pa_ok(uint64_t pa)
++{
++	pa &= ~0xfffull;
++	if (gpu_scratch_pa != 0 && pa - gpu_scratch_pa < PAGE_SIZE) {
++		return true;
++	}
++	for (unsigned i = 0; i < pt_nchunks; i++) {
++		if (pa - pt_chunks[i].pa < PAGE_SIZE) {
++			return true;
++		}
++	}
++	for (unsigned i = 0; i < gpu_pa_nrange; i++) {
++		if (pa >= gpu_pa_range[i].lo && pa < gpu_pa_range[i].hi) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ static uint64_t
+ kva_to_pa(vm_offset_t va)
+ {
+@@ -1235,6 +1304,20 @@
  	}
+ 	for (uint32_t i = 0; i < npages && !err; i++) {
+ 		err = gpu_pte_set(iova + 0x1000ull * i, (pa[i] & 0xffffffff000ull) | PTE_PAGE | (readonly ? PTE_RO : 0));
++	}
++	if (!err && npages != 0) {
++		uint64_t lo = ~0ull, hi = 0;
++		for (uint32_t i = 0; i < npages; i++) {
++			uint64_t p = pa[i] & 0xffffffff000ull;
++			if (p == 0) {
++				continue;
++			}
++			lo = MIN(lo, p);
++			hi = MAX(hi, p + 0x1000);
++		}
++		if (hi > lo) {
++			gpu_pa_note(lo, hi);
++		}
+ 	}
+ 	for (uint64_t off = 0; off < GPU_VA_PAD && !err; off += 0x1000) {
+ 		err = gpu_pte_set(iova + 0x1000ull * npages + off, gpu_scratch_pa | PTE_PAGE);
+@@ -1276,17 +1359,45 @@
+ static uint32_t submit_history_next;
+ uint32_t sweet_gpu_completed(void);
+ 
++/*
++ * One dword of GPU VA through the GPU's own page table. Only a valid PTE whose
++ * physical page the driver handed to the GPU is read: ml_phys_read_word_64
++ * faults on a physical address that is not RAM, and an IB can point at a page
++ * that was unmapped after the job was submitted.
++ */
++static bool
++gpu_va_read32(uint64_t va, uint32_t *out)
++{
++	if (va < GPU_VA_BASE || va >= GPU_VA_END) {
++		return false;
++	}
++	uint64_t *l3 = pt_l3(va, false);
++	if (l3 == NULL) {
++		return false;
++	}
++	uint64_t pte = l3[(va >> 12) & 511];
++	if ((pte & 3) != 3) {
++		return false;
++	}
++	uint64_t pa = (pte & 0xffffffff000ull) | (va & 0xfff);
++	if (!gpu_pa_ok(pa)) {
++		return false;
++	}
++	*out = ml_phys_read_word_64(pa);
++	return true;
++}
++
+ /* Print GPU memory at va, through the GPU's own page table, eight dwords a line. */
+ static void
+ gpu_dump_va(const char *tag, uint64_t va, uint32_t dwords)
+ {
++	dwords = MIN(dwords, 4096);
+ 	for (uint32_t d = 0; d < dwords; d += 8) {
+ 		uint32_t w[8];
+ 		for (uint32_t k = 0; k < 8; k++) {
+-			uint64_t a = va + 4ull * (d + k);
+-			uint64_t *l3 = pt_l3(a, false);
+-			uint64_t pte = l3 != NULL ? l3[(a >> 12) & 511] : 0;
+-			w[k] = (pte & 3) == 3 ? ml_phys_read_word_64((pte & 0xffffffff000ull) | (a & 0xfff)) : 0xdeaddead;
++			if (!gpu_va_read32(va + 4ull * (d + k), &w[k])) {
++				w[k] = 0xdeaddead;
++			}
+ 		}
+ 		printf("SWEET GPU: %s +%04x: %08x %08x %08x %08x %08x %08x %08x %08x\n", tag, d,
+ 		    w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+@@ -1358,6 +1469,208 @@
+ 	smmu_wr(cb, 0x058, fsr);
  }
  
-+static bool submit_history_force;
++/*
++ * j0129: state for the command port's "gpu hang". Everything is copied under
++ * gpu_lock into this static snapshot; the (possibly slow) console output runs
++ * after the lock is dropped, and no register is touched unless GX is powered.
++ * Nothing here resumes or resets the GPU: a wedged CP must be observed, not
++ * poked.
++ */
++#define HANG_DWORDS             64
++#define HANG_BEFORE             32
++struct hang_snapshot {
++	bool powered;
++	uint32_t done, seqno;
++	struct {
++		uint32_t rbbm_status, rbbm_status3, rbbm_int, rbbm_ahb_error;
++		uint32_t rbbm_me_split, rbbm_pfp_split, rbbm_ets_split;
++		uint32_t cp_hw_fault, cp_int, cp_protect, cp_ahb_fault;
++		uint32_t rb_rptr, rb_wptr, rb_base_lo, rb_base_hi, rb_cntl;
++		uint32_t ib1_lo, ib1_hi, ib1_sz, ib2_lo, ib2_hi, ib2_sz;
++		uint32_t scratch[8];
++	} r;
++	uint32_t ring[HANG_DWORDS];
++	uint64_t ring_first;
++	uint64_t ib1_va, ib2_va;
++	uint32_t ib1_sz, ib2_sz, ib1_n, ib2_n;
++	uint32_t ib1_w[HANG_DWORDS], ib2_w[HANG_DWORDS];
++	uint64_t ib1_ok, ib2_ok;
++	struct {
++		uint32_t seqno, n, dwords[SUBMIT_HISTORY_IBS];
++		uint64_t iova[SUBMIT_HISTORY_IBS];
++		char who[20];
++	} hist[SUBMIT_HISTORY];
++};
++static struct hang_snapshot hang;
 +
- /* gpu_lock held. */
- static void
- submit_history_note(void)
-@@ -1317,14 +1319,17 @@
- 		    pending ? " PENDING" : "", submit_history[i].who,
- 		    submit_history[i].n, submit_history[i].iova[0], submit_history[i].dwords[0]);
- 		static bool dumped;
--		if (pending && !dumped) {
-+		if (pending && (!dumped || submit_history_force)) {
- 			dumped = true;
-+			submit_history_force = false;
- 			for (uint32_t b = 0; b < submit_history[i].n && b < SUBMIT_HISTORY_IBS; b++) {
- 				char tag[16];
- 				snprintf(tag, sizeof(tag), "ib%u", b);
- 				gpu_dump_va(tag, submit_history[i].iova[b], MIN(submit_history[i].dwords[b], 2048));
- 			}
- 			if (ib2 != 0) {
-+				/* j0129: also the 256 dwords before the CP's IB2 fetch pointer */
-+				gpu_dump_va("ib2-", ib2 - 1024, 256);
- 				gpu_dump_va("ib2", ib2, 512);
- 			}
- 		}
-@@ -1610,7 +1615,27 @@
++static void
++hang_read_ib(uint64_t va, uint32_t n, uint32_t *w, uint64_t *ok)
++{
++	*ok = 0;
++	for (uint32_t i = 0; i < n; i++) {
++		if (gpu_va_read32(va + 4ull * i, &w[i])) {
++			*ok |= 1ull << i;
++		} else {
++			w[i] = 0;
++		}
++	}
++}
++
++/* gpu_lock held, GX on, GPU wedged: read once, copy only. */
++static void
++hang_take(void)
++{
++	uint32_t nr = RING_SIZE / 4;
++
++	bzero(&hang, sizeof(hang));
++	hang.done = sweet_gpu_completed();
++	hang.seqno = gpu_seqno;
++	for (unsigned i = 0; i < SUBMIT_HISTORY; i++) {
++		unsigned s = (submit_history_next + i) % SUBMIT_HISTORY;
++		hang.hist[i].seqno = submit_history[s].seqno;
++		hang.hist[i].n = submit_history[s].n;
++		for (unsigned b = 0; b < SUBMIT_HISTORY_IBS; b++) {
++			hang.hist[i].iova[b] = submit_history[s].iova[b];
++			hang.hist[i].dwords[b] = submit_history[s].dwords[b];
++		}
++		memcpy(hang.hist[i].who, submit_history[s].who, sizeof(hang.hist[i].who));
++		hang.hist[i].who[sizeof(hang.hist[i].who) - 1] = 0;
++	}
++	if (!pc.on) {
++		return;                 /* GX collapsed: a register read can fault */
++	}
++	hang.powered = true;
++	hang.r.rbbm_status = gpu_rd(RBBM_STATUS);
++	hang.r.rbbm_status3 = gpu_rd(RBBM_STATUS3);
++	hang.r.rbbm_int = gpu_rd(RBBM_INT_0_STATUS);
++	hang.r.rbbm_ahb_error = gpu_rd(RBBM_AHB_ERROR_STATUS);
++	hang.r.rbbm_me_split = gpu_rd(RBBM_AHB_ME_SPLIT_STATUS);
++	hang.r.rbbm_pfp_split = gpu_rd(RBBM_AHB_PFP_SPLIT_STATUS);
++	hang.r.rbbm_ets_split = gpu_rd(RBBM_AHB_ETS_SPLIT_STATUS);
++	hang.r.cp_hw_fault = gpu_rd(CP_HW_FAULT);
++	hang.r.cp_int = gpu_rd(CP_INTERRUPT_STATUS);
++	hang.r.cp_protect = gpu_rd(CP_PROTECT_STATUS);
++	hang.r.cp_ahb_fault = gpu_rd(CP_AHB_FAULT);
++	hang.r.rb_rptr = gpu_rd(CP_RB_RPTR);
++	hang.r.rb_wptr = gpu_rd(CP_RB_WPTR);
++	hang.r.rb_base_lo = gpu_rd(CP_RB_BASE);
++	hang.r.rb_base_hi = gpu_rd(CP_RB_BASE_HI);
++	hang.r.rb_cntl = gpu_rd(CP_RB_CNTL);
++	hang.r.ib1_lo = gpu_rd(CP_IB1_BASE);
++	hang.r.ib1_hi = gpu_rd(CP_IB1_BASE_HI);
++	hang.r.ib1_sz = gpu_rd(CP_IB1_BUFSZ);
++	hang.r.ib2_lo = gpu_rd(CP_IB2_BASE);
++	hang.r.ib2_hi = gpu_rd(CP_IB2_BASE_HI);
++	hang.r.ib2_sz = gpu_rd(CP_IB2_BUFSZ);
++	for (unsigned i = 0; i < 8; i++) {
++		hang.r.scratch[i] = gpu_rd(CP_SCRATCH(i));
++	}
++
++	hang.ring_first = (hang.r.rb_rptr + nr - HANG_BEFORE) % nr;
++	for (uint32_t i = 0; i < HANG_DWORDS; i++) {
++		hang.ring[i] = sg.mem[(RING_OFF / 4) + ((hang.ring_first + i) % nr)];
++	}
++
++	hang.ib1_va = ((uint64_t)hang.r.ib1_hi << 32) | hang.r.ib1_lo;
++	hang.ib1_sz = hang.r.ib1_sz;
++	hang.ib1_n = MIN(HANG_DWORDS, hang.ib1_sz);
++	if (hang.ib1_va != 0 && hang.ib1_n != 0) {
++		hang_read_ib(hang.ib1_va, hang.ib1_n, hang.ib1_w, &hang.ib1_ok);
++	}
++	hang.ib2_va = ((uint64_t)hang.r.ib2_hi << 32) | hang.r.ib2_lo;
++	hang.ib2_sz = hang.r.ib2_sz;
++	hang.ib2_n = MIN(HANG_DWORDS, hang.ib2_sz);
++	if (hang.ib2_va != 0 && hang.ib2_n != 0) {
++		hang_read_ib(hang.ib2_va, hang.ib2_n, hang.ib2_w, &hang.ib2_ok);
++	}
++}
++
++static void
++hang_print_ib(const char *tag, uint64_t va, uint32_t sz, uint32_t n, const uint32_t *w, uint64_t ok)
++{
++	if (va == 0 || sz == 0) {
++		printf("SWEET GPU: hang %s: none\n", tag);
++		return;
++	}
++	printf("SWEET GPU: hang %s: fetch %llx, %u dwords left, showing %u%s\n", tag, va, sz, n,
++	    va >= GPU_VA_BASE && va < GPU_VA_END ? "" : " (not a client VA)");
++	for (uint32_t d = 0; d < n; d += 8) {
++		uint32_t m = MIN(8u, n - d);
++		bool bad = false;
++		char lb[160];
++		int k = snprintf(lb, sizeof(lb), "SWEET GPU: hang %s +%04x:", tag, d);
++		for (uint32_t i = 0; i < m; i++) {
++			if ((ok >> (d + i)) & 1) {
++				k += snprintf(lb + k, sizeof(lb) - (size_t)k, " %08x", w[d + i]);
++			} else {
++				bad = true;
++				k += snprintf(lb + k, sizeof(lb) - (size_t)k, " --------");
++			}
++		}
++		if (bad) {
++			k += snprintf(lb + k, sizeof(lb) - (size_t)k, " (unmapped)");
++		}
++		printf("%s\n", lb);
++	}
++}
++
++static void
++hang_print(void)
++{
++	if (!hang.powered) {
++		printf("SWEET GPU: hang: GX collapsed (not powered), registers not read, completed %u of %u\n",
++		    hang.done, hang.seqno);
++	} else {
++		printf("SWEET GPU: hang: GX on, completed %u of %u, rptr %u wptr %u, ring base %08x%08x cntl %08x\n",
++		    hang.done, hang.seqno, hang.r.rb_rptr, hang.r.rb_wptr, hang.r.rb_base_hi,
++		    hang.r.rb_base_lo, hang.r.rb_cntl);
++		printf("SWEET GPU: hang rbbm: STATUS %08x STATUS3 %08x INT_0_STATUS %08x AHB_ERROR %08x "
++		    "ME_SPLIT %08x PFP_SPLIT %08x ETS_SPLIT %08x\n", hang.r.rbbm_status,
++		    hang.r.rbbm_status3, hang.r.rbbm_int, hang.r.rbbm_ahb_error, hang.r.rbbm_me_split,
++		    hang.r.rbbm_pfp_split, hang.r.rbbm_ets_split);
++		printf("SWEET GPU: hang cp: HW_FAULT %08x INTERRUPT_STATUS %08x PROTECT_STATUS %08x "
++		    "AHB_FAULT %08x\n", hang.r.cp_hw_fault, hang.r.cp_int, hang.r.cp_protect,
++		    hang.r.cp_ahb_fault);
++		printf("SWEET GPU: hang scratch: %08x %08x %08x %08x %08x %08x %08x %08x\n",
++		    hang.r.scratch[0], hang.r.scratch[1], hang.r.scratch[2], hang.r.scratch[3],
++		    hang.r.scratch[4], hang.r.scratch[5], hang.r.scratch[6], hang.r.scratch[7]);
++		uint32_t nr = RING_SIZE / 4;
++		printf("SWEET GPU: hang ring: %u before rptr %u, %u after it (indices mod %u)\n",
++		    HANG_BEFORE, hang.r.rb_rptr, HANG_DWORDS - HANG_BEFORE, nr);
++		for (uint32_t d = 0; d < HANG_DWORDS; d += 8) {
++			uint32_t at = (hang.ring_first + d) % nr;
++			printf("SWEET GPU: hang ring [%04x]: %08x %08x %08x %08x %08x %08x %08x %08x\n",
++			    at, hang.ring[d], hang.ring[d + 1], hang.ring[d + 2], hang.ring[d + 3],
++			    hang.ring[d + 4], hang.ring[d + 5], hang.ring[d + 6], hang.ring[d + 7]);
++		}
++		printf("SWEET GPU: hang ib1: base %08x%08x rem %u\n", hang.r.ib1_hi,
++		    hang.r.ib1_lo, hang.r.ib1_sz);
++		hang_print_ib("ib1", hang.ib1_va, hang.ib1_sz, hang.ib1_n, hang.ib1_w, hang.ib1_ok);
++		printf("SWEET GPU: hang ib2: base %08x%08x rem %u\n", hang.r.ib2_hi,
++		    hang.r.ib2_lo, hang.r.ib2_sz);
++		hang_print_ib("ib2", hang.ib2_va, hang.ib2_sz, hang.ib2_n, hang.ib2_w, hang.ib2_ok);
++	}
++	printf("SWEET GPU: hang jobs (oldest first):\n");
++	for (unsigned i = 0; i < SUBMIT_HISTORY; i++) {
++		if (hang.hist[i].seqno == 0) {
++			continue;
++		}
++		bool pending = (int32_t)(hang.hist[i].seqno - hang.done) > 0;
++		char lb[256];
++		int k = snprintf(lb, sizeof(lb), "SWEET GPU: hang job %u%s by %s: %u IBs,",
++		    hang.hist[i].seqno, pending ? " PENDING" : "", hang.hist[i].who, hang.hist[i].n);
++		for (unsigned b = 0; b < hang.hist[i].n && b < SUBMIT_HISTORY_IBS; b++) {
++			k += snprintf(lb + k, sizeof(lb) - (size_t)k, " ib%u %llx/%u", b,
++			    hang.hist[i].iova[b], hang.hist[i].dwords[b]);
++		}
++		if (hang.hist[i].n > SUBMIT_HISTORY_IBS) {
++			snprintf(lb + k, sizeof(lb) - (size_t)k, " (+%u more)",
++			    hang.hist[i].n - SUBMIT_HISTORY_IBS);
++		}
++		printf("%s\n", lb);
++	}
++}
++
+ /* Ring dwords free before the CP's read pointer (one kept free: full != empty). */
+ static uint32_t
+ ring_space(void)
+@@ -1610,7 +1923,28 @@
  		lck_mtx_unlock(gpu_lock);
  		return reply;
  	}
 -	return "gpu: ? (clk MHZ, state, pc ..., cg 0|1)\n";
 +	/*
-+	 * j0129: "gpu hang" prints to the console what the fault path prints (CP IB1/IB2
-+	 * pointers, the last 16 jobs and the first pending job's IBs) plus RBBM/CP status,
-+	 * for a GPU that stopped completing work without an SMMU fault (Maps pinch hang).
++	 * j0129: a GPU that stopped without an SMMU fault (Maps pinch). Copy what
++	 * is needed under gpu_lock, then print with the lock dropped; never resume
++	 * or reset it, and never read a register while GX is collapsed.
 +	 */
 +	if (strcmp(line + 4, "hang") == 0) {
-+		lck_mtx_lock(gpu_lock);
-+		gpu_hold_on();
-+		printf("SWEET GPU: hang: RBBM_STATUS %08x STATUS3 %08x INT_0_STATUS %08x, CP HW_FAULT %08x "
-+		    "INTERRUPT_STATUS %08x PROTECT_STATUS %08x, RB rptr %u wptr %u, IB1 rem %u IB2 rem %u\n",
-+		    gpu_rd(RBBM_STATUS), gpu_rd(RBBM_STATUS3), gpu_rd(RBBM_INT_0_STATUS), gpu_rd(0x0821),
-+		    gpu_rd(0x0823), gpu_rd(0x0824), gpu_rd(CP_RB_RPTR), gpu_rd(CP_RB_WPTR), gpu_rd(0x0b21), gpu_rd(0x0b24));
-+		submit_history_force = true;
-+		submit_history_note();
-+		gpu_hold_off();
++		static char hang_reply[256];
++		unsigned tries = 0;
++		while (!lck_mtx_try_lock(gpu_lock)) {
++			if (++tries >= 200) {
++				return "gpu hang: gpu_lock busy, not dumped\n";
++			}
++			delay(1000);
++		}
++		hang_take();
 +		lck_mtx_unlock(gpu_lock);
-+		snprintf(reply, sizeof(reply), "gpu hang: dumped to the console, completed %u of %u\n",
-+		    sweet_gpu_completed(), gpu_seqno);
-+		return reply;
++		hang_print();
++		snprintf(hang_reply, sizeof(hang_reply), "gpu hang: dumped to the console, completed %u of %u%s\n",
++		    hang.done, hang.seqno, hang.powered ? "" : " (GX off, registers skipped)");
++		return hang_reply;
 +	}
 +	return "gpu: ? (clk MHZ, state, hang, pc ..., cg 0|1)\n";
  }

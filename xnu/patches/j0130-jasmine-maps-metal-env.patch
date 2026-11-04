@@ -1,0 +1,25 @@
+Subject: [PATCH] jasmine-j0130: give Maps the Metal env group
+
+Maps is a Metal-only client: VectorKit's map renderer needs an MTLDevice.
+Today the app is in no sweetenv group, so it never loads bgmtl, never calls
+MTLAddDevice and draws no map. The installed command line is 601 of 607
+bytes, so a Maps entry of its own does not fit.
+
+Add "Maps" to the existing @wallpaper process group (j0121). It then gets
+DYLD_INSERT_LIBRARIES=/usr/local/p/i.dylib and BGMTL_ENABLE=1 from the
+already-present @wallpaper entry, costing no boot-arg bytes. The injector
+allowlist is extended separately (mesa/metal/inject/bgmtl_sweet_inject.m).
+
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5615,7 +5615,8 @@
+ 		static const char *const names[] = {
+ 			"AegirPoster", "CollectionsPoster", "GradientPosterExtension",
+ 			"PridePosterExtension", "LegacyPoster", "PhotosPosterProvider",
+-			"UnityPosterExtension", "EmojiPosterExtension", "ExtragalacticPoster"
++			"UnityPosterExtension", "EmojiPosterExtension", "ExtragalacticPoster",
++			"Maps"
+ 		};
+ 		for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+ 			if (strcmp(base, names[i]) == 0) return 1;
