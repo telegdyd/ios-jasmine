@@ -46,6 +46,25 @@ remap. j0130 hunk context checked only against a reconstruction (DeepSeek); dry-
 tools/vm-build.sh maps130 + tools/vm-mesa.sh ios maps130, image with the ui128-tmp recipe, back up /usr/local/p/i.dylib,
 install new bgmtl_inject.dylib there, open Maps. Known likely blockers if it registers but draws nothing: Apple4 family
 gate (try Maps:BGMTL_FAMILY=4), argument buffers, texture views, events.
+UPDATE 19:45 (Maps Metal in progress; phone on shim-boot-maps130-tmp.img, temp boot 19:04):
+- bearssl.org git returned HTTP 502, breaking every kernel build at 0020-stage-bearssl.sh; fallback to the GitHub mirror
+  mitchcapper/BearSSL (same pinned sha, hash checked) committed 5af5dbb. Kernel maps130 (j0129 rewrite + j0130) built
+  (VM back up 18:48). First image had an EMPTY cmdline (my wsl.exe bash -c quoting dropped $B): non-verbose Apple
+  progress bar, no USB net. Rebuilt from a script file (cmdline 592 bytes, recipe reproduces payload-ui128-tmp):
+  shim/out/shim-boot-maps130-tmp.img 41184fba... Booted fine, GPU healthy, `SWEET ENV: Maps += ... BGMTL_ENABLE=1`.
+- Phone /usr/local/p changed (backups research/maps-render/backup/*.before-*): i.dylib = maps130 injector (d6086a21);
+  libbgmtl/libbgair/bg_kernels/bg_render.metallib = mesa build pipe131 (old ones were an older matched set; new libbgmtl
+  needs ~20 newer libbgair symbols). Wallpapers load the same dir. /private/var/tmp/bgmtl-poster.env now has
+  Maps:BGMTL_LOG_DIR=/private/var/tmp and Maps:BGMTL_TRACE=1 (trace makes Maps slow; remove when done).
+- Result 1 (Maps-306.log): registered BGMTLDevice, VectorKit default.metallib loaded, map black, only location dot;
+  27,868 `draw with no pipeline`. Cause: VectorKit uses newRenderPipelineStateWithDescriptor:options:reflection:error:,
+  _MTLDevice answered nil silently. Fixed mesa/metal 80f6944 (all options/completion variants routed; log throttled).
+- Result 2 (Maps-2416.log, still black): 142 pipelines created, ~1000 draws run. Remaining: (1) DaVinci::ground_base_vertex
+  samples a texture in the VERTEX stage, setVertexTexture/SamplerState unimplemented -> `command buffer failed` (the base
+  map); (2) 48 pipelines refused `attachment feedback supports single-sample color targets` (Maps uses 4x MSAA, memoryless,
+  resolve store); (3) 22 refused blend-colour factors; (4) 19 refused intrinsic air.pack.unorm2x16; (5) 36 refused
+  `interface: a buffer in address space 0`. DeepSeek implementing 1-4 (2 = opt-in BGMTL_MAX_SAMPLES=1 answer to
+  supportsTextureSampleCount), investigating 5. hangwatch (logs/hangwatch-maps130.txt) running; no GPU hang this boot.
 
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); boot_b = ui128 FLASHED (user: "Yes, flash boot_b")
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
