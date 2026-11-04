@@ -111,6 +111,19 @@ UPDATE 20:45 (end of session; user went home):
 - Phone state: temp boot (smp131); a plain reboot returns to the flashed boot_b (ui128), where Maps is not in the
   @wallpaper group (no Metal for Maps). /usr/local/p holds the fwd133 Metal libs + maps130 injector (backups of the
   originals in research/maps-render/backup/). Poster env: BGMTL_POSTER_SDR=1, Maps:BGMTL_LOG_DIR=/private/var/tmp.
+UPDATE 22:50:
+- j0132 (0fed0bc, swapWait stuck dump), kernel swap132: freeze dump (logs/netlog-swap132.txt:4837-4845): waited 246,
+  shown/latched 246, 247/248 ENDED and accepted (accepted 248) but never programmed (fEndID 246 = last programmed).
+  Page SwapWait needs a later latch -> deadlock. Not direct scanout of a Maps surface in that case (surface 3 = backboardd).
+  Kernel tickets clean (begin/seal 290/290). Maps-297.log: 8x `imported destination prior producer did not complete
+  within admission deadline` (frames dropped; map did not draw that run).
+- j0133 (a9b655f): recovery in queue mode (copy shown frame to a driver flip buffer, treat newer swaps abandoned after
+  50 ms; sweetfb_abandon=0 off). Kernel swap133, image shim/out/shim-boot-swap133-tmp.img (5f2fcb85...), booted 22:38.
+  Result (logs/netlog-swap133.txt): recovery fired twice (11111, 11155), then `QUEUE FALLBACK reason 1, epoch 2;
+  synchronous for rest of boot` + quarantine, then frozen in SYNC mode (11199): waited 377, shown/end 377, 379 ended with
+  2 layers: surface 650 pid 302 = MAPS' OWN DRAWABLE as a CA layer + backboardd surface 3. Maps surfaces are untracked
+  (render tickets are backboardd-only). DeepSeek writing j0134 (client-layer present always bounded + sync-mode recovery,
+  sweetfb_clientlayer=0 off) and a userspace admission recommendation.
 
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); boot_b = ui128 FLASHED (user: "Yes, flash boot_b")
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
