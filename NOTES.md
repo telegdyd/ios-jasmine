@@ -1,4 +1,12 @@
-### 2026-11-04: m10ul2 TEMPORARILY INSTALLED (user: adopt it; awaiting panel check)
+### 2026-11-04: m10ul2 KEPT (user: "yeah looks great"); M10 B/C closed. Installed: m10ul2 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
+
+Phone readback: libbgmtl 0873319b, libbgair 23faefe2 (= xnu/out-mesa-m10ul2, Metal d0aaa02), env unchanged,
+backboardd 32271. research/metal-m8/install.py + capture.py (+ metal-m10/uploads.py) rebaselined: INSTALLED m10ul2,
+BACKUP backup-m10next (created on the next install). m10wr8 files kept in research/metal-m8/backup-m10wr8-before-m10ul2
+(hand-restore + restart backboardd to go back). Upload-only off switch: BGMTL_UNLOCKED_UPLOAD=0. Next lead: per-draw
+replay cost in motion CBs (20-30 ms), GPU ~20 ms per motion CB as a co-limit.
+
+### 2026-11-04: m10ul2 installed (kept, see above)
 
 The user overruled the rollback below: removing the waits is an improvement even with flat fps. install.py
 installed xnu/out-mesa-m10ul2 over m10wr8: smoke check OK (async confirmed, no faults in 8.6 MB netlog),
