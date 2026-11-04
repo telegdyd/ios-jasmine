@@ -1,0 +1,340 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jasmine <jasmine@localhost>
+Date: Tue, 4 Nov 2026 23:30:00 +0100
+Subject: [PATCH] jasmine-j0133: retire abandoned newer swaps when a queue-mode
+ SwapWait stalls
+
+The Maps freeze (netlog-swap132) is a queue-mode page SwapWait that can never
+complete: backboardd waits on swap 246, which is shown and latched, while the
+rule is fLatchedSerial > serial. Swaps 247/248 were begun, and j0132 shows 248
+did reach SwapEnd, but neither was ever programmed, so no later latch can
+arrive and CA's display thread loops in can_update forever. SwapCancel (52)
+and SwapCancelAll (81) exist in IOMobileFramebuffer, but backboardd never
+called either (no "sel 52/81" line), so the abandonment is implicit.
+
+Maps-297.log adds the upstream half: 8 command buffers fail admission waiting
+for a prior producer's completion (bg_write_admission.h: a 1 s
+dispatch_group_wait on the prior BGWriteOwner's _done), and a failed command
+buffer skips present (bgmtl.m: only status 4 presents). That is not a leaked
+kernel ticket: the same freeze's ticket stats are begin/seal/abort 290/290/0,
+stale/error 0, live 0. A pending ticket would show live > 0, make BEGIN return
+Busy, or force a queue fallback/epoch bump; the dump has queue active, epoch 1.
+So the admission failure and this swapWait deadlock are not the same kernel
+root cause: a shared GPU/fence/completion stall stops the later frames, and the
+queue completion rule turns that into a permanent display-thread deadlock.
+Fixing admission alone cannot retire an already-abandoned swap, so the
+resilience fix belongs here; the Mesa/GPU completion stall needs its own fix.
+
+j0133 (default on, boot-arg sweetfb_abandon=0 off): when the waited swap is
+the one on the panel (fEndID/fShownID/fLatchedSerial all it), nothing newer
+has been programmed for 50 ms, and newer swaps have been begun, retire the
+newer tokens as abandoned and mark the waited serial latched. Queue mode gives
+VIG0 the client's surface directly, so first copy the shown frame into a
+driver-owned flip buffer (composeFit applies the MDP's fit), flip, and wait
+for the CTL flush; only then may CA reuse the page. A late SwapEnd of an
+abandoned token is acknowledged instead of failing the transaction. This keeps
+the default SwapWait rule for every other case.
+
+---
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index f992023..534d021 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -155,6 +155,22 @@ static bool sweet_fb_sleeping;
+  * from the first unblank on and slept the whole 3 ms, twice per frame.
+  */
+ static bool sweet_fb_wait0;
++/*
++ * j0133 (default on, boot-arg sweetfb_abandon=0 off): a page's SwapWait in queue mode is
++ * done once a later swap latched.  If CoreAnimation begins newer swaps and never gets one
++ * programmed (a begun-but-never-ended swap, or an ended frame the presenter dropped), no
++ * later latch can ever arrive and its display thread sleeps in can_update forever (the
++ * Maps freeze).  When the waited swap is the one on the panel and nothing newer has been
++ * programmed for 50 ms, retire the newer begun swaps as abandoned -- but first copy the
++ * shown frame into one of our own flip buffers, because in queue mode the MDP fetches the
++ * client's surface directly and reusing it while it is still scanned would tear.
++ */
++static bool sweet_fb_abandon_on = true;
++static bool
++sweet_fb_abandon(void)
++{
++	return sweet_fb_abandon_on;
++}
+ static uint64_t sweet_fb_slept_us, sweet_fb_spun_us;
+ 
+ /*
+@@ -435,16 +451,19 @@ public:
+ 	uint64_t      fSerial, fAcceptedSerial, fProgramSerial, fLatchedSerial;
+ 	bool          fWrapped;
+ 	bool          fLatchValid, fShownValid;
++	volatile bool fScanOwned;      /* j0133: MDP scans a driver-owned buffer, not a client surface */
++	uint64_t      fShownAt;        /* j0133: when the frame on the panel was programmed */
+ 	struct Token {
+ 		IOMobileFramebufferUserClient *owner;
+ 		uint64_t serial;
+ 		uint32_t id, epoch;
+-		bool ended, cancelled;
++		bool ended, cancelled, abandoned;   /* j0133: abandoned: retired without a latch */
+ 	} fTokens[128];
+ 	bool queueCandidate(const uint8_t *rec, SweetSurface **held);
+ 	void queueFallback(uint32_t reason); /* fLock held */
+ 	IOReturn rejectFrame(uint32_t id, uint32_t reason, IOReturn error);
+ 	bool waitLatch(void);
++	bool abandonShown(void);       /* j0133: move scanout to a driver copy of the shown frame */
+ 	bool drainPresent(void);
+ 	void releasePresent(void);
+ 	void queuePresent(void);
+@@ -754,6 +773,9 @@ AppleCLCD::start(IOService *provider)
+ 	uint32_t wait0 = 1;
+ 	PE_parse_boot_argn("sweetfb_wait0", &wait0, sizeof(wait0));
+ 	sweet_fb_wait0 = wait0 != 0;
++	uint32_t abandon = 1;
++	PE_parse_boot_argn("sweetfb_abandon", &abandon, sizeof(abandon));
++	sweet_fb_abandon_on = abandon != 0;
+ 	if (queue && (!sleep || topaz || !fScaler || console || !fFlipVA[0] || !fFlipVA[1] || sweet_fb_nohold())) {
+ 		IOLog("SWEET FB: queue refused: requires sleep, jasmine scaler, flip buffers, holds and GUI\n");
+ 		queue = 0;
+@@ -761,6 +783,8 @@ AppleCLCD::start(IOService *provider)
+ 	fProtocol = queue != 0;
+ 	fQueueActive = false;
+ 	fEpoch = 1;
++	fScanOwned = false;
++	fShownAt = 0;
+ 	PE_parse_boot_argn("sweetgpu_tickets", &sweet_tickets_on, sizeof(sweet_tickets_on));
+ 	if (sweet_tickets_on && !fProtocol) {
+ 		IOLog("SWEET GPU: tickets refused: requires sweetfb_queue=1\n");
+@@ -2270,6 +2294,7 @@ AppleCLCD::scanFrom(uint64_t pa, uint32_t stride)
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	fScanPhys = pa;
+ 	fScanStride = stride;
++	fScanOwned = true;      /* j0133: a flip/console/boot buffer, not a client surface */
+ }
+ 
+ /* j0058: VIG0 scans a whole 1125x2436 frame and its scaler fits it into the panel window */
+@@ -2287,6 +2312,7 @@ AppleCLCD::scanScaled(uint64_t pa, uint32_t stride)
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	fScanPhys = pa;
+ 	fScanStride = stride;
++	fScanOwned = false;     /* j0133: the MDP fetches the client's surface itself */
+ }
+ 
+ /*
+@@ -2302,6 +2328,7 @@ AppleCLCD::noteShown(uint32_t id)
+ {
+ 	IOLockLock(fLock);
+ 	fEndID = id;
++	fShownAt = mach_absolute_time();       /* j0133: watchdog for abandoned newer swaps */
+ 	if (fProtocol) {
+ 		for (unsigned i = 0; i < 128; i++) {
+ 			if (fTokens[i].owner && fTokens[i].id == id) { fProgramSerial = fTokens[i].serial; }
+@@ -2373,6 +2400,82 @@ AppleCLCD::retireLatched(void)
+ 	sweet_hold_set(gone, false);
+ }
+ 
++/*
++ * j0133: queue mode gives VIG0 the client's surface itself (scanScaled), so before a SwapWait
++ * may declare its page free the MDP must stop fetching it.  Copy the frame fShowHold says is
++ * on the panel into the back flip buffer (composeFit applies the same fit the MDP scaler did),
++ * flip to it and wait for the CTL flush to clear.  fPresentBusy keeps a new present out while
++ * the copy runs.  True: the MDP now scans our buffer, the client's surface can be reused.
++ */
++bool
++AppleCLCD::abandonShown(void)
++{
++	SweetSurface *src = NULL;
++
++	if (terminal()) {
++		return false;
++	}
++	IOLockLock(fLock);
++	if (fScanOwned) {
++		/* A flip we programmed earlier may still be waiting for its vsync. */
++		bool clear = fCtl0 != NULL && (fCtl0[0x18 / 4] & fFlushMask) == 0;
++		IOLockUnlock(fLock);
++		return clear;
++	}
++	if (fPresentBusy || fQueueWaiting || fPowerOff || fConsShown || fCtl0 == NULL ||
++	    fFitW == 0 || fFitXMap == NULL || fFitYMap == NULL || fFlipVA[0] == NULL ||
++	    fFlipVA[1] == NULL || fFitX + fFitW > fWidth || fScanPhys == 0) {
++		IOLockUnlock(fLock);
++		return false;
++	}
++	for (unsigned i = 0; i < 4; i++) {
++		if (fShowHold[i] == NULL) {
++			continue;
++		}
++		uint64_t pa = fShowHold[i]->scanoutPhys + fShowHold[i]->offset;
++		if (pa != fScanPhys) {
++			continue;               /* not the surface the MDP is fetching */
++		}
++		if (src != NULL) {
++			IOLockUnlock(fLock);
++			src->release();
++			return false;           /* several layers on screen: composeFit would lose their order */
++		}
++		src = fShowHold[i];
++		src->retain();
++	}
++	if (src == NULL || src->bytesPerElement != 4 || src->width != fLogicalW ||
++	    src->height != fLogicalH || src->memory == NULL) {
++		IOLockUnlock(fLock);
++		if (src != NULL) { src->release(); }
++		return false;
++	}
++	fPresentBusy = true;            /* block admissions while the panel switches buffers */
++	IOLockUnlock(fLock);
++
++	if (src->kernelAddress() == 0) {
++		src->release();
++		releasePresent();
++		return false;
++	}
++	bool ok = false;
++	if (sweet_surface_cpu_access(src, false) == kIOReturnSuccess) {
++		uint8_t *dst = backBuffer();
++		bzero(dst, (size_t)fRowBytes * fHeight);
++		composeFit(dst, src, 0, 0, 0, 0, (int32_t)src->width, (int32_t)src->height);
++		flipBack();             /* scans fFlipPhys, fScanOwned = true */
++		uint64_t until;
++		clock_interval_to_deadline(50, kMillisecondScale, &until);
++		while ((fCtl0[0x18 / 4] & fFlushMask) != 0 && mach_absolute_time() < until) {
++			sweet_fb_pause(1000);
++		}
++		ok = fScanOwned && (fCtl0[0x18 / 4] & fFlushMask) == 0;
++	}
++	src->release();
++	releasePresent();               /* fPresentBusy = false, wake admissions */
++	return ok;
++}
++
+ /* timeout: the top bit set for CoreAnimation's polls, the rest ms (0x80000001: up to 1 ms) */
+ IOReturn
+ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient *client)
+@@ -2397,8 +2500,8 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 		for (unsigned i = 0; i < 128; i++) {
+ 			Token &t = fTokens[i];
+ 			if ((id && t.id == id) || (!id && t.serial && t.serial == client->fNewestSerial)) {
+-				if (t.epoch != fEpoch || t.cancelled) {
+-					t.cancelled = true;
++				if (t.epoch != fEpoch || t.cancelled || t.abandoned) {
++					if (t.epoch != fEpoch) { t.cancelled = true; }
+ 					IOLockUnlock(fLock);
+ 					__atomic_store_n(&client->fSwapWaitTimeouts, 0, __ATOMIC_RELAXED);
+ 					return kIOReturnSuccess;
+@@ -2427,19 +2530,67 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 		/* done: older than the last swap ended (1) or than the one on the panel (2), or never begun */
+ 		bool done = fSwapWait == 0 || (int32_t)((fSwapWait == 2 ? fShownID : fEndID) - id) > 0 ||
+ 		    (int32_t)(id - fSwapID) > 0;
+-		bool cancelled = false;
++		bool cancelled = false, abandoned = false;
+ 		if (fProtocol && serial) {
+ 			for (unsigned i = 0; i < 128; i++) {
+ 				Token &t = fTokens[i];
+ 				if (t.serial == serial) {
+ 					if (t.epoch != fEpoch) { t.cancelled = true; }
+ 					cancelled = t.cancelled;
++					abandoned = t.abandoned;
+ 				}
+ 			}
+ 		}
+ 		if (fQueueActive) { done = fShownValid && (newest ? fLatchedSerial >= serial : fLatchedSerial > serial); }
+-		done = done || cancelled;
++		done = done || cancelled || abandoned;
++		/*
++		 * j0133: the waited swap is the frame on the panel, and nothing newer has been
++		 * programmed for 50 ms.  The newer begun swaps therefore cannot latch any more
++		 * (Maps' admission failures show the upstream cause can be a command buffer whose
++		 * prior producer's fence never completed; that is a userspace completion wait, not
++		 * a leaked kernel ticket).  Before retiring them, stop scanning the waited swap's
++		 * client surface (the MDP fetches it directly in queue mode).
++		 */
++		bool retire = false;
++		uint64_t age = 0;
++		if (!done && fQueueActive && !newest && serial && sweet_fb_abandon() &&
++		    !fPowerOff && !fConsShown && fShownValid && fEndID == id && fShownID == id &&
++		    fLatchedSerial == serial && !fLatchValid && fLatchID == 0 &&
++		    !fQueueWaiting && !fPresentBusy && fSwapID != id && fShownAt != 0) {
++			absolutetime_to_nanoseconds(mach_absolute_time() - fShownAt, &age);
++			if (age >= 50 * NSEC_PER_MSEC) {
++				retire = true;
++			}
++		}
+ 		IOLockUnlock(fLock);
++		if (retire && abandonShown()) {
++			IOLockLock(fLock);
++			if (fQueueActive && fShownValid && fEndID == id && fShownID == id &&
++			    fLatchedSerial == serial && !fQueueWaiting && !fPresentBusy) {
++				uint32_t to = fSwapID;
++				for (unsigned i = 0; i < 128; i++) {
++					Token &t = fTokens[i];
++					if (t.owner == client && t.serial > serial && t.id != id) {
++						t.abandoned = true;
++					}
++				}
++				/* The waited page is free; the newer tokens carry the abandoned
++				 * verdict themselves, so do not claim their serials latched. */
++				fLatchedSerial = serial + 1;
++				done = true;
++				static uint64_t abandonAt;
++				static uint32_t abandonLogs;
++				uint64_t now = mach_absolute_time(), gap = 0;
++				if (abandonAt != 0) { absolutetime_to_nanoseconds(now - abandonAt, &gap); }
++				if (abandonLogs < 8 && (abandonAt == 0 || gap >= NSEC_PER_SEC)) {
++					IOLog("SWEET FB: swapWait: treating abandoned swaps %u..%u as cancelled (waited %u)\n",
++					    id + 1, to, id);
++					abandonAt = now;
++					abandonLogs++;
++				}
++			}
++			IOLockUnlock(fLock);
++		}
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+ 		if (done || ns >= (uint64_t)ms * NSEC_PER_MSEC) {
+ 			if (ns > 100000) { sweet_bench_event(18, id, (uint32_t)(ns / 1000), done, newest); }
+@@ -3171,7 +3322,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		if (fFB->fQueueActive) {
+ 			uint64_t serial = fFB->fSerial + 1;
+ 			AppleCLCD::Token &t = fFB->fTokens[serial % 128];
+-			if (fClosed || serial == 0 || (t.owner && t.epoch == fFB->fEpoch && !t.cancelled && t.serial >= fFB->fLatchedSerial)) {
++			if (fClosed || serial == 0 || (t.owner && t.epoch == fFB->fEpoch && !t.cancelled && !t.abandoned && t.serial >= fFB->fLatchedSerial)) {
+ 				IOLockUnlock(fFB->fLock);
+ 				ret = kIOReturnBusy;
+ 				break;
+@@ -3182,7 +3333,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			t.id = fFB->fSwapID;
+ 			t.serial = serial;
+ 			t.epoch = fFB->fEpoch;
+-			t.ended = t.cancelled = false;
++			t.ended = t.cancelled = t.abandoned = false;
+ 			out[0] = t.id;
+ 		} else {
+ 			out[0] = ++fFB->fSwapID;
+@@ -3204,11 +3355,20 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		}
+ 		memcpy(rec, args->structureInput, sizeof(rec));
+ 		if (fFB->fQueueActive) {
++			bool retired = false;
+ 			IOLockLock(fFB->fLock);
+ 			ret = kIOReturnBadArgument;
+ 			for (unsigned i = 0; i < 128; i++) {
+ 				AppleCLCD::Token &t = fFB->fTokens[i];
+ 				if (t.owner == this && t.id == get32(rec, 0x50) && !t.ended) {
++					if (t.abandoned) {
++						/* j0133: the wait already retired this swap; a late
++						 * SwapEnd must not fail the transaction or reach the queue. */
++						t.ended = true;
++						ret = kIOReturnSuccess;
++						retired = true;
++						break;
++					}
+ 					ret = !fClosed && t.epoch == fFB->fEpoch ? kIOReturnSuccess : kIOReturnAborted;
+ 					t.ended = true;
+ 					break;
+@@ -3216,6 +3376,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			}
+ 			IOLockUnlock(fFB->fLock);
+ 			if (ret != kIOReturnSuccess) { fFB->rejectFrame(get32(rec, 0x50), 11, ret); }
++			if (retired) { break; }
+ 		}
+ 		ret = fFB->swap(rec);
+ 		break;
