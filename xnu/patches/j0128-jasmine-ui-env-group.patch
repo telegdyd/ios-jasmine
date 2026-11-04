@@ -1,0 +1,20 @@
+Subject: [PATCH] jasmine-j0128: sweetenv group @ui = SpringBoard + Preferences
+
+The boot command line is capped at 607 bytes and the installed one uses 600,
+so Settings (Preferences) cannot get an entry of its own. @ui shares one
+DYLD_INSERT_LIBRARIES list between SpringBoard and Preferences; each injected
+library checks which process it is in.
+
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5622,6 +5622,9 @@
+ 		}
+ 		return 0;
+ 	}
++	if (n == 3 && strncmp(entry, "@ui", n) == 0) {
++		return strcmp(base, "SpringBoard") == 0 || strcmp(base, "Preferences") == 0;
++	}
+ 	return strlen(base) == n && strncmp(base, entry, n) == 0;
+ }
+

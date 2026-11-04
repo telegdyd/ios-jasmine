@@ -1,3 +1,17 @@
+### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); TEMPORARY boot only, boot_b not flashed
+Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
+getSubscriptionInfoWithError: (carrier bundle key LocationServicesAvailable) and on error stores nothing; nil hides the
+row. No CommCenter here, so it always errored. Fix: `ios/sweet_prefs.c` -> /q.dylib sets the value to YES when nil
+(what iOS stores with no SIM). Command line was 600 of 607 bytes, so kernel patch j0128 adds sweetenv group
+`@ui` = SpringBoard + Preferences; cmdline `@ui:DYLD_INSERT_LIBRARIES=/s.dylib:/q.dylib` (601 bytes,
+shim/out/cmdline-ui128-slotb.txt). /s.dylib (sweet_sbshape) now returns early outside SpringBoard; installed new one
+(old d18be426 = out-ios-t19 kept in research/prefs-loc/s.dylib-before). Kernel xnu/out-jasmine-ui128 (HEAD = j0127 +
+j0128), ADT jasmine-m7slotb.adt. Images shim-boot-ui128-tmp.img (13494a27..., no abmark) and -slotb.img (c102a5be...).
+Temp boot 06:1x: logs/netlog-ui128-tmp.txt 0 panic / SMMU / fence / cmdbuf failures; sweet_prefs.log "CoreTelephony
+gave no answer, set available"; sbshape still sets 227x32; user: row shows, location on, Wi-Fi location finds the
+city. NOT yet on boot_b: an installed-slot reboot runs the old kernel (SpringBoard gets /s.dylib as before, no row).
+Rollback after a flash: shim/out/shim-boot-m7ack-slotb.img.
+
 ### 2026-11-04: removable system apps restored (32 apps moved from /private/var/staged_system_apps to /Applications)
 Why the home screen had only Photos, App Store, Settings (+ dock Phone, Safari, Messages): iOS 16 ships the removable
 apps (Mail, Notes, Calendar, Weather, Clock, Maps, Music, Health, Wallet, Files, ...) in

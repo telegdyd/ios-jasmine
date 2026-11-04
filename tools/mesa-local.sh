@@ -26,7 +26,7 @@ case $mode in
 ios)
 	for src in ios/*.c; do
 		name=$(basename "$src" .c)
-		[ "$name" = sweet_sbshape ] && continue	# a SpringBoard dylib, below
+		case $name in sweet_sbshape|sweet_prefs) continue;; esac	# SpringBoard / Settings dylibs, below
 		libs=
 		[ "$name" = sweet_imgtest ] && libs="-framework CoreFoundation -framework CoreGraphics -framework ImageIO"
 		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror -o "$OUT/$name" "$src" $libs
@@ -43,6 +43,10 @@ ios)
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror \
 		-dynamiclib -install_name /s.dylib -lobjc -o "$OUT/sweet_sbshape.dylib" ios/sweet_sbshape.c
 	codesign -f -s - "$OUT/sweet_sbshape.dylib"
+	# injected into Settings (installed as /q.dylib, kernel @ui group)
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror \
+		-dynamiclib -install_name /q.dylib -lobjc -o "$OUT/sweet_prefs.dylib" ios/sweet_prefs.c
+	codesign -f -s - "$OUT/sweet_prefs.dylib"
 	;;
 metal-host)
 	# Stage and validate the same sources as the iOS build, then build native

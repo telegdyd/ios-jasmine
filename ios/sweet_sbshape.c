@@ -20,6 +20,7 @@
 #include <objc/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct { double x, y, w, h; } rect;
 
@@ -98,6 +99,9 @@ image_added(const struct mach_header *mh, intptr_t slide)
 __attribute__((constructor)) static void
 init(void)
 {
+   /* j0128's @ui group also injects this into Settings (Preferences) */
+   if (strcmp(getprogname(), "SpringBoard") != 0)
+      return;
    FILE *pf = fopen("/usr/local/bin/sbs-noparallax", "r");
    if (pf) {
       fclose(pf);
