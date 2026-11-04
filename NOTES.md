@@ -1,4 +1,12 @@
-### 2026-11-04: M10 B/C lock waits removed (Metal d0aaa02): validated, NO fps change, NOT installed (m10wr8 stays)
+### 2026-11-04: m10ul2 TEMPORARILY INSTALLED (user: adopt it; awaiting panel check)
+
+The user overruled the rollback below: removing the waits is an improvement even with flat fps. install.py
+installed xnu/out-mesa-m10ul2 over m10wr8: smoke check OK (async confirmed, no faults in 8.6 MB netlog),
+readback libbgmtl 0873319b / libbgair 23faefe2, env unchanged, backboardd 32271, phone state normal.
+Backup research/metal-m8/backup-m10next (= m10wr8); rollback `python research/metal-m8/install.py restore`.
+Upload-only off switch: BGMTL_UNLOCKED_UPLOAD=0. If kept: rebaseline install.py/capture.py INSTALLED to m10ul2.
+
+### 2026-11-04: M10 B/C lock waits removed (Metal d0aaa02): validated, NO fps change (later installed, see above)
 
 Lead: CA -replaceRegion waited on bg_lock behind the replay (wr8 capture: 17 waits, 182 ms per 8 s, max 31 ms).
 - B: -replaceRegion on a plain texture (no _surface/_surfTex/_copySurface/_linSrc/_ncBytes/_aliasBuf) writes its
