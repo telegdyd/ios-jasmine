@@ -34,6 +34,18 @@ wrong registers (0x821/0x823/0x824 = CP_ROQ_DBG_ADDR/CP_MEQ_DBG_ADDR/CP_MEQ_DBG_
 j0129 (bounded output, print outside gpu_lock, validated reads, no resume). Phone back on shim-boot-ui128-tmp.img 16:16.
 Parallel: DeepSeek researching why Maps draws no map (Maps has no MTLDevice; posters get libbgmtl via @wallpaper),
 report -> research/maps-render/plan.md.
+UPDATE 16:45: committed (7752823; mesa/metal 4388228), NOT BUILT: the build VM (ssh mac, 192.168.1.123) is unreachable
+(no ping). (1) j0129 rewritten by DeepSeek, Claude checked offsets vs a5xx.xml: snapshot under gpu_lock (try_lock
+200 ms), print after unlock, ~50 lines, no reads when GX collapsed (pc.on), GPU-VA reads only through valid PTEs to
+driver-owned pages; registers CP_HW_FAULT 0xb1a, CP_INTERRUPT_STATUS 0xb18, CP_PROTECT_STATUS 0xb1c, IB1/IB2 0xb1f-0xb24,
+ring +-32 dwords around rptr. Guess at the old crash: reading CP_MEQ_DBG_DATA (0x824) on a wedged CP. Not compiled yet.
+(2) Maps rendering, experiment (a) of research/maps-render/plan.md: j0130 adds "Maps" to the kernel @wallpaper names
+(gets /usr/local/p/i.dylib + BGMTL_ENABLE=1, no cmdline bytes); injector lets Maps register a BGMTLDevice, reads
+/private/var/tmp/bgmtl-poster.env `Maps:` lines (Maps:BGMTL_LOG_DIR=/private/var/tmp -> Maps-<pid>.log), no poster SDR
+remap. j0130 hunk context checked only against a reconstruction (DeepSeek); dry-run on the real tree pending. Next:
+tools/vm-build.sh maps130 + tools/vm-mesa.sh ios maps130, image with the ui128-tmp recipe, back up /usr/local/p/i.dylib,
+install new bgmtl_inject.dylib there, open Maps. Known likely blockers if it registers but draws nothing: Apple4 family
+gate (try Maps:BGMTL_FAMILY=4), argument buffers, texture views, events.
 
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); boot_b = ui128 FLASHED (user: "Yes, flash boot_b")
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
