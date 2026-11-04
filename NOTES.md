@@ -1,3 +1,17 @@
+### 2026-11-04: removable system apps restored (32 apps moved from /private/var/staged_system_apps to /Applications)
+Why the home screen had only Photos, App Store, Settings (+ dock Phone, Safari, Messages): iOS 16 ships the removable
+apps (Mail, Notes, Calendar, Weather, Clock, Maps, Music, Health, Wallet, Files, ...) in
+`/private/var/staged_system_apps`; a real phone installs them at first boot (presumably the DataMigration step that
+sweet-root-tweaks skips; not proven which component). Here nothing did: no `/private/var/containers/Bundle/Application`,
+no MobileInstallation state, oslog full of -10814 / "FBSApplicationLibrary returned nil for com.apple.mobilemail".
+Root fs is 17 GiB with 509 MiB free, so copying was out: new `ios/sweet_mv.c` (rename(2), refuses existing DST;
+built `tools/vm-mesa.sh ios apps1`, pushed to /usr/local/bin/sweet_mv), all 32 moved one per sweetd call (a single
+64-arg call was rejected "bad request"), then `sweet_extq --rebuild`: LS installedPlugins 413 -> 516 (Fitness, Stocks,
+WorldClock widgets now listed). SpringBoard/backboardd kept running (pids 34569/34567). Not yet verified on the panel
+(user to look). Undo = move them back. `tools/sweet-root-tweaks.py` now does the same move for fresh roots
+(`staged_apps`, untested on a fresh image). Note: plain `sweet_shot OUT` returns black and `-s` finds 0 surfaces on the
+Metal path while the screen is on; do not send `key 3` to "wake" it (it toggles the screen off).
+
 ### 2026-11-04: m11fb1 KEPT (user: "Looks good, keep it"); M11 feedback barrier closed. Installed: m11fb1 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
 
 Readback: libbgmtl 0873319b (unchanged from m10ul2), libbgair 41eab378, env unchanged, backboardd 34567; survives reboot

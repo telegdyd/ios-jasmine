@@ -19,6 +19,11 @@ screen (image versions v8-v14 in NOTES.md):
                   (on iOS they live on the data volume)
   migration       LastSystemVersion so DataMigration does not run for an hour
                   on every boot
+  staged apps     /private/var/staged_system_apps/*.app (the 32 removable apps:
+                  Mail, Notes, Calendar, Weather, ...) moved into /Applications.
+                  On iOS the first-boot migration installs them; with it skipped
+                  nothing does, so the home screen had only Photos, App Store,
+                  Settings. Moved, not copied (the root is nearly full)
   audio           VirtualAudio HAL plug-in disabled (mediaserverd crash);
                   BTAudioHALPlugin disabled (its bluetoothd service is gone, so
                   mediaserverd reconnected in a tight loop, ~0.4 of a core)
@@ -95,6 +100,15 @@ def containers(root):
             print('mkdir', d)
 
 
+def staged_apps(root):
+    staged = os.path.join(root, 'private/var/staged_system_apps')
+    for app in sorted(glob.glob(os.path.join(staged, '*.app'))):
+        dst = os.path.join(root, 'Applications', os.path.basename(app))
+        if not os.path.exists(dst):
+            os.rename(app, dst)
+            print('move', app, '->', dst)
+
+
 def find_container(root, kind, identifier):
     for meta in glob.glob(os.path.join(root, 'private/var/containers', kind, '*',
                                        '.com.apple.mobile_container_manager.metadata.plist')):
@@ -154,6 +168,7 @@ def main():
         runpy.run_path(os.path.join(os.path.dirname(__file__), 'wifi-root-config.py'))['apply'](root)
     launchd(root)
     containers(root)
+    staged_apps(root)
     activation(root)
     audio(root)
     merge_pref(root, 'com.apple.migration', {
