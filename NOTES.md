@@ -30,7 +30,7 @@ shim/out/cmdline-ui128-slotb.txt). /s.dylib (sweet_sbshape) now returns early ou
 j0128), ADT jasmine-m7slotb.adt. Images shim-boot-ui128-tmp.img (13494a27..., no abmark) and -slotb.img (c102a5be...).
 Temp boot 06:1x: logs/netlog-ui128-tmp.txt 0 panic / SMMU / fence / cmdbuf failures; sweet_prefs.log "CoreTelephony
 gave no answer, set available"; sbshape still sets 227x32; user: row shows, location on, Wi-Fi location finds the
-city. Flashed 06:48 via flash-slotb.sh (fastboot took ~3 min to appear after the command-port reboot); first boot
+city. Flashed 06:48 via flash-slotb.sh (the command-port reboot did not reach fastboot; the user put the phone in fastboot by hand); first boot
 logs/netlog-ui128-slotb.txt: boot-args with @ui, boot_b marked successful, BGMTL async, 0 SMMU/fence/cmdbuf failures,
 panic matches = the usual 3 boot lines; sweet_prefs hooked again. Rollback: flash shim/out/shim-boot-m7ack-slotb.img
 (and /s.dylib from research/prefs-loc/s.dylib-before is optional: the guarded one behaves the same in SpringBoard).
