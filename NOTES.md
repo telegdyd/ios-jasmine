@@ -1,3 +1,46 @@
+### 2026-11-05: j0136 per-layer mixed-swap bounds, no fallback for client swaps, requeue (NOT built, NOT booted, not committed)
+Result on the j0135 kernel (logs/netlog-gate135.txt:6330-6365): swap 618 was treated
+as a client swap, so backboardd's own layer 6 (behind Maps' GPU work on the single
+ring) got only the 100 ms bounds.  Its ticket/gpuSeqno probe expired and
+rejectFrame(2) ran `QUEUE FALLBACK reason 2`; backboardd's render tickets then
+stayed `display suspended` and every frame went out ungated.
+`xnu/patches/j0136-jasmine-mixed-swap-no-fallback.patch` (on top of j0135):
+- Per-layer classification in swap() and queuePresent (fQueueClient[4]).  An own
+  layer gets SWEET_FB_OWN_TICKET_MS (1000 ms) for ticket AND gpuSeqno whether it
+  is alone or next to a client layer; only a client layer skips the ticket wait
+  (j0134) and keeps the 100 ms probe when sweetfb_clientlayer=0.  gpuSeqno expiry
+  now waits for every lagging layer's own bound.  queuePresent skips client layers
+  entirely and uses the 1000 ms tracked admission for any own ticket/seqno.
+- rejectFrame suppresses queueFallback for any swap whose SwapEnd recorded a
+  client layer (swapHasClient), so ticket/seqno/epoch reasons 2/11/16 cannot take
+  the queue down.  The client present-scope path no longer calls queueFallback(1)
+  after 8 drops; the stuck-latch fallback(6) skips a client latch; queuePresent
+  suppresses fallback(2/3) and quarantine for a client frame (quarantine is what
+  held 5963776 bytes for the boot).  Own-only swaps keep the j0132 fallback rules.
+- Requeue (default on, boot-arg sweetfb_requeue=0 off): after a fallback, once 30
+  synchronous presents over >=3 s are clean, no render ticket is live, no
+  latch/accepted frame is in flight, the newest begun swap ended and quarantined
+  surfaces' gpuSeqno completed, maybeRequeue() sets fQueueActive=1, fSwapWait=0,
+  fEpoch++, fRequeueBase=fSwapID and releases fFaultHold.  A late SwapEnd for a
+  swap begun before the requeue is completed as stale (no token wait spin, no
+  fallback).  Display/render-ticket epochs are separate, so ticket BEGIN resumes.
+- Userspace resume (read-only check): it is the BEGIN return code, not a
+  notification.  darwin_ticket_begin() first calls darwin_ticket_query()
+  (mesa/darwin/darwin_device.c:49-72); the kernel's sweet_ticket_query() reports
+  bit 3 = fQueueActive && !sweet_ticket_suspended && !fPowerOff && !terminal
+  (xnu/patches/j0110-jasmine-render-tickets.patch:508-519).  With fQueueActive=1
+  the next query returns bit 3 and BEGIN opens a generation; deferred entries are
+  retried once at replay (bg_write_admission.h:112-135,167-181).  Nothing in
+  bg_write_admission.h/bgmtl.m needs resetting; already-unticketed command buffers
+  stay unticketed and rely on the swap-time gpuSeqno.
+- Verification: recon-fwd + j0132 + j0133 + j0134 + j0135 + j0136 applies with
+  `git apply --whitespace=error-all` and equals research/t27/recon-j0136
+  (SHA256 3F89D8E1...); source braces/parens 678/678 and 2330/2330 (stripped).
+  No build/boot; the 3 s / 30-frame thresholds and the requeue race handling are
+  untested.  Next: build swap136, image, open Maps, expect own-layer waits to
+  succeed or a dropped frame with `queue kept`, no `QUEUE FALLBACK` for a mixed
+  swap, and `QUEUE REQUEUE` if a fallback still happens.
+
 ### 2026-11-05: j0135 gates j0133/j0134 on client layers; own frames get 1000/1500 ms bounds (NOT built, NOT booted, not committed)
 Regression on j0134: netlog-swap134 drops backboardd-only swaps 766/768/770/775 at
 j0134's ticket-not-ready path and j0133 retires them as abandoned.  netlog-swap134b

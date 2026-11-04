@@ -1,0 +1,768 @@
+From 8d476a9a7a5e7546f8b124133e9f3df57e8e0651 Mon Sep 17 00:00:00 2001
+From: jasmine <jasmine@localhost>
+Date: Thu, 5 Nov 2026 13:00:00 +0100
+Subject: [PATCH] jasmine-j0136: per-layer mixed-swap bounds; no fallback for a
+ client swap; requeue
+
+A mixed swap (backboardd's own layer 6 next to Maps' drawable, swap 618 in
+logs/netlog-gate135.txt) was classified as a client swap by j0135, so every layer
+in it took the 100 ms client rules.  backboardd's own layer sits behind Maps' GPU
+work on the single ring; its ticket/gpuSeqno probe expired, rejectFrame(2) fell
+back, and the display stayed synchronous for the rest of the boot (render tickets
+suspended, every frame ungated).
+
+j0136 classifies per layer:
+
+- an own layer gets SWEET_FB_OWN_TICKET_MS (1000 ms) for ticket and gpuSeqno,
+  whether it is alone or next to a client layer; only client layers skip the
+  ticket wait (j0134) and keep the old 100 ms probe when that switch is off;
+- queuePresent's admission is per layer too: a client layer never gates readiness,
+  and an own layer with a ticket or gpuSeqno gets the 1000 ms tracked admission,
+  never the 100 ms untracked one;
+- a swap carrying a client layer never calls queueFallback, whatever the reason
+  (ticket, gpuSeqno, present scope, queuePresent validity or a stuck latch).  It
+  is dropped or completed by the j0133/j0134 client-layer paths and the queue
+  stays active.  Own-only swaps keep j0132's fallback rules, including the
+  stuck-presenter escape.
+
+j0136 also re-enables queue mode after a fallback (boot-arg sweetfb_requeue=0
+turns it off, default on) instead of staying synchronous for the boot.  Once 30
+synchronous presents over at least 3 s were clean, no render ticket is live, no
+latch or accepted frame is in flight, the newest begun swap has ended and
+quarantined storage has finished its GPU work, queue mode is restored:
+fQueueActive=1, fSwapWait=0, fEpoch++ (retires sync-interval swap tokens), the
+clean streak reset and quarantine holds released.  Render-ticket epochs are
+separate and unchanged, so the next BEGIN after sweet_ticket_query reports bit 3
+gets a real generation again.  A SwapEnd for a swap begun before the requeue has
+no queue token; it is completed as a stale transaction instead of spinning in the
+token wait or faulting the re-enabled queue.  No build or boot has been done for
+this patch.
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 427 +++++++++++++++++++++-----
+ 1 file changed, 351 insertions(+), 76 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 0969883..4074d74 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -298,13 +298,23 @@ enum {
+ #define SWEET_FB_SWAP_REC_SIZE          0x46c
+ #define SWEET_FB_LAYERS                 4
+ /*
+- * j0135: an own-only frame can be behind another process's GPU work on the single
+- * ring.  Its ticket/seqno validation gets queuePresent's tracked-ticket admission
+- * bound; the present scope gets that plus the presenter's latch/cancel allowance.
+- * Client-layer swaps keep the 100 ms probe and 200 ms scope.
++ * j0135/j0136: an own layer can be behind another process's GPU work on the single
++ * ring, in an own-only swap or next to a client layer in a mixed one.  Its ticket/
++ * seqno validation gets queuePresent's tracked-ticket admission bound; the present
++ * scope gets that plus the presenter's latch/cancel allowance.  Client layers keep
++ * the 100 ms probe (when the ticket bypass is switched off) and never gate the
++ * display client's own work.
+  */
+ #define SWEET_FB_OWN_TICKET_MS          1000
+ #define SWEET_FB_OWN_SCOPE_MS           1500
++/*
++ * j0136 (default on, boot-arg sweetfb_requeue=0 off): a client-layer swap must never
++ * switch the presenter off for the boot.  After a fallback, turn queue mode back on
++ * once synchronous presents have been clean for this long and no render ticket or
++ * quarantined GPU write is outstanding.
++ */
++#define SWEET_FB_REQUEUE_MS             3000
++#define SWEET_FB_REQUEUE_FRAMES         30
+ #define SWEET_FB_FADE_STEPS             30      /* ~0.5 s at 60 Hz */
+ #define SWEET_FB_MAX_NITS               500     /* IOMFBBrightnessLevel at panel DBV 0x7ff */
+ #define SWEET_FB_NOTIFY_TYPES           8
+@@ -467,6 +477,14 @@ public:
+ 	void          swapBegun(uint32_t id);
+ 	void          swapEnded(uint32_t id, bool client, IOMobileFramebufferUserClient *swapClient);
+ 	bool          swapClientInvolved(uint32_t from, uint32_t to);
++	/* j0136: is this exact swap recorded as carrying a client layer? (fLock held) */
++	bool          swapHasClient(uint32_t id);
++	/* j0136: was this swap begun before the queue was last re-enabled? (fLock held) */
++	bool          swapBeforeRequeue(uint32_t id);
++	/* j0136: bootstrap the queue back on after clean synchronous presents */
++	void          syncCleanReset(void);              /* fLock held */
++	void          syncPresentDone(void);             /* a synchronous present() completed */
++	void          maybeRequeue(void);
+ 	/* Build 1: fLock protects queue, tokens, ownership and submit reservations. */
+ 	bool          fProtocol, fQueueActive, fPresentBusy, fQueueWaiting;
+ 	volatile bool fTerminal;
+@@ -479,6 +497,7 @@ public:
+ 	uint8_t       fQueueRec[SWEET_FB_SWAP_REC_SIZE];
+ 	SweetSurface *fQueueHold[4];
+ 	uint32_t      fQueueSeq[4], fQueueEpoch;
++	bool          fQueueClient[4];      /* j0136: this layer was created by another process */
+ 	SweetRenderTicket *fQueueTicket[4]; /* retained generation snapshot, including unchanged layers */
+ 	uint64_t      fSerial, fAcceptedSerial, fProgramSerial, fLatchedSerial;
+ 	bool          fWrapped;
+@@ -507,6 +526,13 @@ public:
+ 	/* j0135: highest id seen with a client layer; survives the ring losing an old entry */
+ 	uint32_t      fClientSwapID;
+ 	bool          fClientSwapValid;
++	/* j0136: clean synchronous-present streak and the sweetfb_requeue=0 off-switch */
++	bool          fRequeueOn;
++	uint64_t      fSyncCleanAt;         /* first clean synchronous present, 0: none */
++	uint32_t      fSyncClean;           /* clean synchronous presents in this streak */
++	uint32_t      fRequeues;
++	uint32_t      fRequeueBase;         /* j0136: last swap id begun in synchronous mode */
++	bool          fRequeueValid;
+ 	bool queueCandidate(const uint8_t *rec, SweetSurface **held);
+ 	void queueFallback(uint32_t reason); /* fLock held */
+ 	IOReturn rejectFrame(uint32_t id, uint32_t reason, IOReturn error);
+@@ -828,6 +854,9 @@ AppleCLCD::start(IOService *provider)
+ 	uint32_t clientlayer = 1;
+ 	PE_parse_boot_argn("sweetfb_clientlayer", &clientlayer, sizeof(clientlayer));
+ 	sweet_fb_client_layer_on = clientlayer != 0;
++	uint32_t requeue = 1;
++	PE_parse_boot_argn("sweetfb_requeue", &requeue, sizeof(requeue));
++	fRequeueOn = requeue != 0;
+ 	if (queue && (!sleep || topaz || !fScaler || console || !fFlipVA[0] || !fFlipVA[1] || sweet_fb_nohold())) {
+ 		IOLog("SWEET FB: queue refused: requires sleep, jasmine scaler, flip buffers, holds and GUI\n");
+ 		queue = 0;
+@@ -841,6 +870,12 @@ AppleCLCD::start(IOService *provider)
+ 	bzero(fSwapInfo, sizeof(fSwapInfo));    /* j0135: no swap has ended yet */
+ 	fClientSwapID = 0;
+ 	fClientSwapValid = false;
++	bzero(fQueueClient, sizeof(fQueueClient));  /* j0136: no admitted frame yet */
++	fSyncCleanAt = 0;
++	fSyncClean = 0;
++	fRequeues = 0;
++	fRequeueBase = 0;
++	fRequeueValid = false;
+ 	PE_parse_boot_argn("sweetgpu_tickets", &sweet_tickets_on, sizeof(sweet_tickets_on));
+ 	if (sweet_tickets_on && !fProtocol) {
+ 		IOLog("SWEET GPU: tickets refused: requires sweetfb_queue=1\n");
+@@ -1792,6 +1827,24 @@ AppleCLCD::swapClientInvolved(uint32_t from, uint32_t to)
+ 	return false;
+ }
+ 
++/*
++ * j0136: "this exact swap carried a client layer".  rejectFrame and retireLatched use
++ * this to keep every fallback reason away from such a swap: one mixed frame that is
++ * slow must not turn the whole boot synchronous.  fLock held.
++ */
++bool
++AppleCLCD::swapHasClient(uint32_t id)
++{
++	return id != 0 && swapClientInvolved(id, id);
++}
++
++/* j0136: a swap begun while the queue was off has no token.  fLock held. */
++bool
++AppleCLCD::swapBeforeRequeue(uint32_t id)
++{
++	return fRequeueValid && id != 0 && (int32_t)(id - fRequeueBase) <= 0;
++}
++
+ IOReturn
+ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ {
+@@ -1810,17 +1863,19 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 		}
+ 	}
+ 	/*
+-	 * j0135: the unit of every new j0133/j0134 decision is the swap, not the layer.  Record
+-	 * whether this SwapEnd carries at least one layer created by another process.  A swap
+-	 * with none must take the j0132 paths unchanged (ticket wait, rejectFrame(16) drop,
+-	 * 200 ms scope -> queueFallback(1)); only a client-layer swap may be completed without
+-	 * presenting or retired as abandoned.
++	 * j0135/j0136: record the composition of this SwapEnd per layer, not just per swap.
++	 * hasClient still picks the j0133/j0134 recovery paths for the swap as a whole, but
++	 * the validation bounds are now per layer: an own layer gets the 1000 ms tracked
++	 * admission even when it is next to a client layer, and only a client layer itself
++	 * skips the ticket wait.  A swap with none must take the j0132 paths unchanged
++	 * (ticket wait, rejectFrame(16) drop, 1500 ms scope -> queueFallback(1)); a swap
++	 * with a client layer never falls back.
+ 	 */
+ 	bool hasClient = false;
++	bool clientLayers[4] = {};
+ 	for (unsigned i = 0; i < 4; i++) {
+-		if (held[i] != NULL && clientLayer(held[i], client)) {
+-			hasClient = true;
+-		}
++		clientLayers[i] = held[i] != NULL && clientLayer(held[i], client);
++		hasClient = hasClient || clientLayers[i];
+ 	}
+ 	IOLockLock(fLock);
+ 	swapEnded(get32(rec, 0x50), hasClient, client);
+@@ -1841,9 +1896,36 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 			for (unsigned i = 0; i < 128; i++) {
+ 				if (fTokens[i].owner && fTokens[i].id == get32(rec, 0x50) && fTokens[i].epoch == fEpoch) { token = true; serial = fTokens[i].serial; }
+ 			}
++			/*
++			 * j0136: a swap begun in the synchronous interval has no queue token.  Its
++			 * SwapEnd can only arrive after a requeue if it raced the transition; do not
++			 * spin in the token wait (it is stale, and newer swaps have already ended).
++			 */
++			if (!token && fQueueActive && swapBeforeRequeue(get32(rec, 0x50))) {
++				IOLockUnlock(fLock);
++				static uint32_t staleLogs;
++				if (staleLogs < 8) {
++					staleLogs++;
++					IOLog("SWEET FB: swap %u ended after requeue without a token; dropped\n",
++					    get32(rec, 0x50));
++				}
++				sweet_hold_set(held, false);
++				return kIOReturnSuccess;
++			}
++			bool clientSwap = swapHasClient(get32(rec, 0x50));   /* fLock held */
+ 			if (!token || (fQueueActive && serial <= fAcceptedSerial)) {
+ 				IOLockUnlock(fLock);
+ 				rejectFrame(get32(rec, 0x50), 11, kIOReturnAborted);
++				if (clientSwap) {
++					/*
++					 * j0136: a client swap may not fall back, and the old loop relied
++					 * on the fallback to turn the token test true.  This is a duplicate
++					 * or token-less SwapEnd: complete it without presenting and keep
++					 * the queue; an own-only swap continues to the synchronous path.
++					 */
++					sweet_hold_set(held, false);
++					return kIOReturnSuccess;
++				}
+ 				continue;
+ 			}
+ 			bool queued = fQueueActive && queueCandidate(rec, held);
+@@ -1864,6 +1946,7 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 					if (fQueueTicket[i]) { fQueueTicket[i]->retain(); }
+ 				}
+ 				fQueueEpoch = fEpoch;
++				memcpy(fQueueClient, clientLayers, sizeof(fQueueClient));  /* j0136 */
+ 				fAcceptedSerial = serial;
+ 				fQueueWaiting = true;
+ 				fAdmissions++;
+@@ -1884,22 +1967,28 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 					return kIOReturnAborted;
+ 				}
+ 				/*
+-				 * j0135: own-only frames must not be dropped because Maps' work is ahead
+-				 * of backboardd's on the single GPU ring.  Give the whole validation the
+-				 * queue presenter's 1000 ms tracked-ticket admission bound; only that
+-				 * expiry takes the j0132 path.  Client-layer swaps keep the 100 ms probe
+-				 * and j0134 completion.
++				 * j0136: per layer.  An own layer (in an own-only swap or next to a
++				 * client layer in a mixed one) gets queuePresent's 1000 ms tracked-
++				 * ticket admission bound; only a client layer skips the ticket wait
++				 * (j0134) and, with that switch off, keeps the old 100 ms probe.  j0135
++				 * gave the whole mixed swap the client bound, so an own layer behind
++				 * Maps' GPU work timed out after 100 ms and its gpuSeqno reject took
++				 * the queue down for the boot.
+ 				 */
+-				bool ownOnly = !hasClient;
+-				uint64_t validationUntil = 0;
+-				if (ownOnly) {
++				uint64_t validationUntil = 0, clientProbeUntil = 0;
++				bool ownLayer = false;
++				for (unsigned i = 0; i < 4; i++) {
++					ownLayer = ownLayer || (held[i] != NULL && !clientLayers[i]);
++				}
++				if (ownLayer) {
+ 					clock_interval_to_deadline(SWEET_FB_OWN_TICKET_MS, kMillisecondScale, &validationUntil);
+ 				}
++				clock_interval_to_deadline(100, kMillisecondScale, &clientProbeUntil);
+ 				for (unsigned i = 0; i < 4; i++) {
+ 					if (held[i] == NULL || !sweet_tickets_enabled()) {
+ 						continue;
+ 					}
+-					if (clientLayer(held[i], client) && sweet_fb_clientlayer()) {
++					if (clientLayers[i] && sweet_fb_clientlayer()) {
+ 						/*
+ 						 * j0134: a surface created by another process (Maps'
+ 						 * CAMetalLayer drawable) has no render ticket the
+@@ -1916,6 +2005,7 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 						(void)sweet_surface_cpu_access(held[i], false);
+ 						continue;
+ 					}
++					uint64_t layerUntil = clientLayers[i] ? clientProbeUntil : validationUntil;
+ 					IOReturn ticket;
+ 					for (;;) {
+ 						ticket = sweet_surface_cpu_access(held[i], true);
+@@ -1923,8 +2013,7 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 							break;
+ 						}
+ 						/* A cancelled ticket is not "not ready": take j0132 now. */
+-						if (!ownOnly || ticket != kIOReturnTimeout ||
+-						    mach_absolute_time() >= validationUntil) {
++						if (ticket != kIOReturnTimeout || mach_absolute_time() >= layerUntil) {
+ 							break;
+ 						}
+ 						sweet_fb_pause(1000);
+@@ -1934,7 +2023,7 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 					}
+ 					if (!sweet_fb_clientlayer() || !hasClient) {
+ 						/* j0132 (and j0134's kill switch): own-only frames
+-						 * already got the 1000 ms wait above; a ticket that
++						 * already got their 1000 ms wait above; a ticket that
+ 						 * is still not ready drops this transaction and
+ 						 * completes nothing. */
+ 						rejectFrame(get32(rec, 0x50), 16, kIOReturnAborted);
+@@ -1942,12 +2031,12 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 						return kIOReturnSuccess;
+ 					}
+ 					/*
+-					 * j0134: never drop a SwapEnd without completing it. In queue
+-					 * mode the latch rule retires this frame; after a fallback
+-					 * (synchronous mode) there is no later latch, so mark it shown
+-					 * or every later SwapWait for it can never complete.  j0135:
+-					 * only for a swap that carries a client layer; an own-only
+-					 * swap keeps the drop above.
++					 * j0134/j0136: never drop a mixed SwapEnd without completing it.
++					 * In queue mode the latch rule retires this frame; after a fallback
++					 * (synchronous mode) there is no later latch, so mark it shown or
++					 * every later SwapWait for it can never complete.  Only a swap that
++					 * carries a client layer takes this path; an own-only swap keeps the
++					 * drop above.  rejectFrame(16) cannot fall back for a client swap.
+ 					 */
+ 					rejectFrame(get32(rec, 0x50), 16, kIOReturnAborted);
+ 					IOLockLock(fLock);
+@@ -1969,21 +2058,31 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 					sweet_hold_set(held, false);
+ 					return kIOReturnSuccess;
+ 				}
+-				uint64_t until;
+-				if (ownOnly) {
+-					/* The same 1000 ms budget covers ticket + seqno (j0135). */
+-					until = validationUntil;
+-				} else {
+-					clock_interval_to_deadline(100, kMillisecondScale, &until);
+-				}
++				/*
++				 * j0136: the gpuSeqno wait is per layer too.  An own layer gets the
++				 * same 1000 ms budget as its ticket; a client layer keeps the 100 ms
++				 * probe.  rejectFrame(2) is suppressed for a client-layer swap, so a
++				 * mixed frame that is still late is presented/completed by the paths
++				 * below while the queue stays active.
++				 */
+ 				for (;;) {
+-					bool ready = true;
++					bool ready = true, expired = true;
+ 					uint32_t completed = sweet_gpu_completed();
++					uint64_t now = mach_absolute_time();
+ 					for (unsigned i = 0; i < 4; i++) {
+-						if (held[i] && held[i]->gpuSeqno && (int32_t)(completed - held[i]->gpuSeqno) < 0) { ready = false; }
++						if (held[i] == NULL || !held[i]->gpuSeqno ||
++						    (int32_t)(completed - held[i]->gpuSeqno) >= 0) {
++							continue;
++						}
++						uint64_t layerUntil = clientLayers[i] ? clientProbeUntil : validationUntil;
++						ready = false;
++						/* Expire only when every lagging layer is past its own bound. */
++						if (now < layerUntil) {
++							expired = false;
++						}
+ 					}
+ 					if (ready) { break; }
+-					if (mach_absolute_time() >= until) {
++					if (expired) {
+ 						rejectFrame(get32(rec, 0x50), 2, kIOReturnTimeout);
+ 						break;
+ 					}
+@@ -1994,44 +2093,43 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 			IOLockUnlock(fLock);
+ 			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+ 			/*
+-			 * j0135: an own-only frame must not lose the present scope because the
++			 * j0135/j0136: an own frame must not lose the present scope because the
+ 			 * queue presenter is still waiting for the previous own frame's ticket.
+ 			 * queuePresent holds fPresentBusy for up to 1000 ms (tracked-ticket
+ 			 * admission) + 100 ms (cancel quiesce) + 150 ms (waitLatch); the old
+ 			 * 200 ms bound fired inside that window and one slow present became
+ 			 * queueFallback(1).  1500 ms covers a full admission with margin; only
+ 			 * after it is j0132's rejectFrame(1)/drop path taken.  Client-layer
+-			 * swaps keep the 200 ms bound and j0134's drop/retry.
++			 * swaps keep the 200 ms bound and j0134's drop/retry.  j0136: a client-
++			 * layer swap never calls queueFallback here, however many times it drops.
+ 			 */
+ 			uint64_t scopeMS = hasClient ? 200 : SWEET_FB_OWN_SCOPE_MS;
+ 			if (ns >= scopeMS * NSEC_PER_MSEC) {
+-				bool queueNow = false, fallback = false;
++				bool queueNow = false;
+ 				uint32_t drops = 0;
+ 				if (sweet_fb_clientlayer() && hasClient) {
+ 					IOLockLock(fLock);
+ 					queueNow = fQueueActive;
+ 					if (queueNow) {
+ 						drops = ++fScopeDrops;
+-						fallback = drops >= 8;
+-						if (fallback) { queueFallback(1); }
+ 					}
+ 					IOLockUnlock(fLock);
+ 				}
+ 				if (queueNow) {
+ 					/*
+-					 * j0134: the queue presenter is bounded by its own watchdogs
+-					 * (1 s for a ticket, 150 ms for a latch).  A swap that cannot
+-					 * get the present scope within the bound is one slow frame,
+-					 * not a protocol fault: falling back here turned a single slow
+-					 * present into "synchronous for the rest of boot" (the
+-					 * QUEUE FALLBACK reason 1 in netlog-swap133).  Drop the frame
+-					 * and keep the queue; eight consecutive drops still fall back.
+-					 * j0135 keeps 200 ms for client-layer swaps only.
++					 * j0134/j0136: the queue presenter is bounded by its own
++					 * watchdogs (1 s for a ticket, 150 ms for a latch).  A swap
++					 * that cannot get the present scope within the bound is one
++					 * slow frame, not a protocol fault: falling back here turned
++					 * a single slow present into "synchronous for the rest of
++					 * boot" (QUEUE FALLBACK reason 1 in netlog-swap133).  Drop the
++					 * frame and keep the queue.  A client-layer swap must never
++					 * fall back, so the old eight-drop escape is gone for it;
++					 * own-only swaps keep j0132's rejectFrame(1) below.
+ 					 */
+ 					if (drops <= 16 || drops % 8 == 0) {
+-						IOLog("SWEET FB: swap %u: no present scope for %llu ms, dropped (%u%s)\n",
+-						    get32(rec, 0x50), (unsigned long long)(ns / NSEC_PER_MSEC), drops,
+-						    fallback ? ", queue fallback" : "");
++						IOLog("SWEET FB: swap %u: no present scope for %llu ms, dropped (%u)\n",
++						    get32(rec, 0x50), (unsigned long long)(ns / NSEC_PER_MSEC), drops);
+ 					}
+ 					sweet_hold_set(held, false);
+ 					return kIOReturnSuccess;
+@@ -2048,7 +2146,11 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 					 * j0134: a synchronous SwapEnd must never leave fEndID behind
+ 					 * it. Marking the swap shown is what a copy present would have
+ 					 * done for the transaction; the panel keeps the previous frame.
++					 * j0136: this is not a clean present, so it ends a requeue streak.
+ 					 */
++					IOLockLock(fLock);
++					syncCleanReset();
++					IOLockUnlock(fLock);
+ 					noteShown(get32(rec, 0x50));
+ 					if (sweet_fb_clientlayer_logs < 8) {
+ 						sweet_fb_clientlayer_logs++;
+@@ -2117,6 +2219,19 @@ AppleCLCD::swap(const uint8_t *rec, IOMobileFramebufferUserClient *client)
+ 		}
+ 		noteShown(get32(rec, 0x50));
+ 		sweet_bench_event(12, get32(rec, 0x50), inPlace, 0, 0);
++		/*
++		 * j0136: only a frame that actually went through present() counts towards a
++		 * requeue streak, and only while the queue is off (after a fallback).  The
++		 * mixed/non-candidate frames of a healthy queue still take this path.
++		 * Release the present scope first: maybeRequeue requires an idle presenter,
++		 * and this transaction is finished once noteShown has run.
++		 */
++		if (scope.owned) {
++			scope.owned = false;
++			releasePresent();
++		}
++		syncPresentDone();
++		maybeRequeue();
+ 		static uint32_t frames, scaled;
+ 		scaled += inPlace;
+ 		if (++frames == 600) {
+@@ -2184,9 +2299,17 @@ AppleCLCD::rejectFrame(uint32_t id, uint32_t reason, IOReturn error)
+ 	fDrops++;
+ 	if (reason < 16) { fDropReason[reason]++; }
+ 	sweet_bench_event(34, id, fEpoch, reason, 0);
+-	/* Ticket readiness/epoch rejection is a dropped transaction, not permission
+-	 * to scan a frame still being written. Keep the previous frame and queue. */
+-	if (!(sweet_tickets_enabled() && reason == 16)) { queueFallback(reason); }
++	/* A drop ends a clean synchronous-present streak (j0136). */
++	syncCleanReset();
++	/*
++	 * j0136: a swap that carries a client layer must never switch the presenter off,
++	 * whatever the reject reason.  The frame is dropped/completed by the j0133/j0134
++	 * paths and the queue stays up.  Ticket readiness/epoch rejection of an own-only
++	 * swap is still a dropped transaction, not permission to scan a frame being
++	 * written; its j0132 fallback rules are unchanged.
++	 */
++	bool clientSwap = swapHasClient(id);
++	if (!clientSwap && !(sweet_tickets_enabled() && reason == 16)) { queueFallback(reason); }
+ 	IOLockUnlock(fLock);
+ 	return error;
+ }
+@@ -2194,6 +2317,8 @@ AppleCLCD::rejectFrame(uint32_t id, uint32_t reason, IOReturn error)
+ void
+ AppleCLCD::queueFallback(uint32_t reason)
+ {
++	/* A fallback ends a clean synchronous-present streak (j0136). */
++	syncCleanReset();
+ 	if (fQueueActive) {
+ 		fQueueActive = false;
+ 		fSwapWait = 1;
+@@ -2201,11 +2326,112 @@ AppleCLCD::queueFallback(uint32_t reason)
+ 		fFallbacks++;
+ 		sweet_fb_force_sync = true;
+ 		sweet_bench_event(35, fEpoch, reason, 0, 0);
+-		IOLog("SWEET FB: QUEUE FALLBACK reason %u, epoch %u; synchronous for rest of boot\n", reason, fEpoch);
++		IOLog("SWEET FB: QUEUE FALLBACK reason %u, epoch %u; synchronous %s\n", reason, fEpoch,
++		    fRequeueOn ? "until requeue" : "for rest of boot");
+ 		IOLockWakeup(fLock, fQueueRec, false);
+ 	}
+ }
+ 
++/* fLock held: a drop, a timeout or a fallback means the streak was not clean. */
++void
++AppleCLCD::syncCleanReset(void)
++{
++	fSyncCleanAt = 0;
++	fSyncClean = 0;
++}
++
++/* A synchronous present() returned; count it only while the queue is off. */
++void
++AppleCLCD::syncPresentDone(void)
++{
++	IOLockLock(fLock);
++	if (!fQueueActive && !terminal() && !fPowerOff && !fConsShown) {
++		if (fSyncCleanAt == 0) {
++			fSyncCleanAt = mach_absolute_time();
++		}
++		fSyncClean++;
++	}
++	IOLockUnlock(fLock);
++}
++
++/*
++ * j0136: bring queue mode back after a fallback once presents have been clean for
++ * SWEET_FB_REQUEUE_MS and no work is outstanding.  The old code left the queue off for
++ * the rest of the boot: backboardd's render tickets stayed suspended (-EAGAIN from
++ * BEGIN, see sweet_ticket_query's bit 3) and every frame went out ungated.
++ *
++ * fLock held when the state is changed.  Required state:
++ *  - presenter idle: no accepted frame (fPresentBusy/fQueueWaiting) and no latch in
++ *    flight (fLatchValid/fLatchID); queuePresent/swapWait own those fields;
++ *  - no render ticket live and tickets not suspended by a display power-off: a ticket
++ *    opened before the fallback must retire, or the first BEGIN after requeue would
++ *    still be refused;
++ *  - no begun-but-unended synchronous swap: it has no queue token, and its SwapEnd
++ *    would find none after requeue;
++ *  - quarantine drained: fFaultHold surfaces may only be released once the GPU work
++ *    that kept them (gpuSeqno) completed.
++ *
++ * Then: fQueueActive=1 starts the next SwapBegin serial/token again and makes
++ * sweet_ticket_query report bit 3, so the next BEGIN reopens tickets (userspace needs
++ * no other signal); fSwapWait=0 selects queue completion; fEpoch++ retires every token
++ * from the synchronous interval (SwapEnd/SwapWait see a stale epoch and complete);
++ * serials continue, so fAcceptedSerial is already behind the next serial and
++ * fLatchedSerial behind the next latch.  Epochs of the render tickets are separate
++ * (sweet_render_epoch) and unchanged, so BEGIN's epoch check still matches.
++ */
++void
++AppleCLCD::maybeRequeue(void)
++{
++	if (!fRequeueOn || !fProtocol) {
++		return;
++	}
++	SweetSurface *released[4] = {};
++	uint64_t ns = 0;
++	IOLockLock(fLock);
++	if (fQueueActive || terminal() || fPowerOff || fConsShown ||
++	    fPresentBusy || fQueueWaiting || fLatchValid || fLatchID != 0 ||
++	    !fShownValid || sweet_ticket_live != 0 || sweet_ticket_suspended ||
++	    fSyncCleanAt == 0 || fSyncClean < SWEET_FB_REQUEUE_FRAMES) {
++		IOLockUnlock(fLock);
++		return;
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - fSyncCleanAt, &ns);
++	if (ns < (uint64_t)SWEET_FB_REQUEUE_MS * NSEC_PER_MSEC) {
++		IOLockUnlock(fLock);
++		return;
++	}
++	/* A newest begun swap that has not ended has no queue token yet. */
++	SwapInfo &newest = fSwapInfo[fSwapID % 128];
++	if (newest.id == fSwapID && !newest.known) {
++		IOLockUnlock(fLock);
++		return;
++	}
++	/* Quarantined storage may only be freed once its GPU work completed. */
++	uint32_t completed = sweet_gpu_completed();
++	for (unsigned i = 0; i < 4; i++) {
++		if (fFaultHold[i] != NULL && fFaultHold[i]->gpuSeqno != 0 &&
++		    (int32_t)(completed - fFaultHold[i]->gpuSeqno) < 0) {
++			IOLockUnlock(fLock);
++			return;
++		}
++	}
++	memcpy(released, fFaultHold, sizeof(released));
++	bzero(fFaultHold, sizeof(fFaultHold));
++	uint32_t frames = fSyncClean;
++	fQueueActive = true;
++	fSwapWait = 0;
++	fEpoch++;
++	fRequeueBase = fSwapID;
++	fRequeueValid = true;
++	fScopeDrops = 0;
++	syncCleanReset();
++	fRequeues++;
++	IOLog("SWEET FB: QUEUE REQUEUE epoch %u after %llu ms of clean synchronous presents (%u frames, %u requeues); render tickets resume\n",
++	    fEpoch, (unsigned long long)(ns / NSEC_PER_MSEC), frames, fRequeues);
++	IOLockUnlock(fLock);
++	sweet_hold_set(released, false);
++}
++
+ void
+ AppleCLCD::releasePresent(void)
+ {
+@@ -2259,6 +2485,7 @@ AppleCLCD::queuePresent(void)
+ 	uint8_t rec[SWEET_FB_SWAP_REC_SIZE];
+ 	SweetSurface *held[4];
+ 	SweetRenderTicket *tickets[4];
++	bool client[4];
+ 	uint32_t seq[4], epoch;
+ 	IOLockLock(fLock);
+ 	while (!fQueueWaiting || fPresentBusy) {
+@@ -2269,17 +2496,33 @@ AppleCLCD::queuePresent(void)
+ 	memcpy(held, fQueueHold, sizeof(held));
+ 	memcpy(seq, fQueueSeq, sizeof(seq));
+ 	memcpy(tickets, fQueueTicket, sizeof(tickets));
++	memcpy(client, fQueueClient, sizeof(client));     /* j0136: per-layer composition */
+ 	epoch = fQueueEpoch;
+ 	IOLockUnlock(fLock);
+ 	SweetPresentScope scope = { this, true };
+ 	uint64_t until;
+-	bool tracked = false;
+-	for (unsigned i = 0; i < 4; i++) { tracked = tracked || tickets[i] != NULL; }
++	bool tracked = false, ownTickets = false;
++	/*
++	 * j0136: the admission bound is per layer.  A client layer never gates the frame
++	 * (CoreAnimation already waited for the app's present, and no display ticket can
++	 * arrive for it); an own layer with a ticket or a gpuSeqno behind Maps' work gets
++	 * the 1000 ms tracked admission, not the 100 ms untracked one.
++	 */
++	for (unsigned i = 0; i < 4; i++) {
++		if (client[i]) {
++			continue;
++		}
++		if (tickets[i]) {
++			tracked = ownTickets = true;
++		} else if (held[i] != NULL && held[i]->gpuSeqno) {
++			tracked = true;
++		}
++	}
+ 	/* A tracked frame's drain (shader variants are compiled there) and its GPU work both
+-	 * count from here. Slow is not a fault, and this bound switches the queue off for the
+-	 * boot, so it is for lost work only; admission drops frames meanwhile.
+-	 * j0135: swap()'s own-only validation uses the same 1000 ms bound, and its 1500 ms
+-	 * scope covers this admission plus the latch/cancel allowance. */
++	 * count from here. Slow is not a fault, and this bound switches the queue off, so it
++	 * is for lost work only; admission drops frames meanwhile.  swap()'s own-layer
++	 * validation uses the same 1000 ms bound, and its 1500 ms scope covers this admission
++	 * plus the latch/cancel allowance. */
+ 	clock_interval_to_deadline(tracked ? 1000 : 100, kMillisecondScale, &until);
+ 	bool ready = false;
+ 	IOReturn ticketError = kIOReturnSuccess;
+@@ -2287,28 +2530,31 @@ AppleCLCD::queuePresent(void)
+ 	while (!terminal()) {
+ 		uint32_t done = sweet_gpu_completed();
+ 		ready = true;
+-		if (tracked) { IOLockLock(fLock); }
++		if (ownTickets) { IOLockLock(fLock); }
+ 		for (unsigned i = 0; i < 4; i++) {
++			if (client[i]) {
++				continue;
++			}
+ 			if (tickets[i]) {
+ 				IOReturn r = sweet_ticket_ready(tickets[i], done, &seq[i]);
+ 				if (r != kIOReturnSuccess) { ready = false; }
+ 				if (r != kIOReturnSuccess && r != kIOReturnNotReady) { ticketError = r; }
+ 			} else if (seq[i] && (int32_t)(done - seq[i]) < 0) { ready = false; }
+ 		}
+-		if (tracked) { IOLockUnlock(fLock); }
++		if (ownTickets) { IOLockUnlock(fLock); }
+ 		if (ready || ticketError != kIOReturnSuccess || mach_absolute_time() >= until) { break; }
+ 		sweet_fb_pause(1000);
+ 	}
+ 	uint64_t ticketNS = 0;
+ 	absolutetime_to_nanoseconds(mach_absolute_time() - ticketStart, &ticketNS);
+ 	for (unsigned i = 0; i < 4; i++) {
+-		if (tickets[i]) { sweet_ticket_metadata(tickets[i]); sweet_bench_event(39, get32(rec, 0x50), (uint32_t)tickets[i]->generation,
++		if (!client[i] && tickets[i]) { sweet_ticket_metadata(tickets[i]); sweet_bench_event(39, get32(rec, 0x50), (uint32_t)tickets[i]->generation,
+ 		    ready ? 0 : (uint32_t)(ticketError == kIOReturnSuccess ? kIOReturnTimeout : ticketError), (uint32_t)(ticketNS / 1000)); }
+ 	}
+ 	bool cancelled = false;
+-	if (tracked) {
++	if (ownTickets) {
+ 		IOLockLock(fLock);
+-		for (unsigned i = 0; i < 4; i++) { cancelled = cancelled || (tickets[i] && tickets[i]->cancelled); }
++		for (unsigned i = 0; i < 4; i++) { cancelled = cancelled || (!client[i] && tickets[i] && tickets[i]->cancelled); }
+ 		IOLockUnlock(fLock);
+ 	}
+ 	bool cancelQuiesced = false;
+@@ -2319,6 +2565,9 @@ AppleCLCD::queuePresent(void)
+ 			IOLockLock(fLock);
+ 			cancelQuiesced = true;
+ 			for (unsigned i = 0; i < 4; i++) {
++				if (client[i]) {
++					continue;
++				}
+ 				if ((tickets[i] && tickets[i]->backing) ||
+ 				    (held[i] && held[i]->gpuSeqno && (int32_t)(done - held[i]->gpuSeqno) < 0)) { cancelQuiesced = false; }
+ 			}
+@@ -2330,7 +2579,8 @@ AppleCLCD::queuePresent(void)
+ 	bool latched = waitLatch();
+ 	IOLockLock(fLock);
+ 	bool valid = ready && !cancelled && latched && !terminal() && fQueueActive && epoch == fEpoch && queueCandidate(rec, held);
+-	if (!valid && fQueueActive && !(cancelled && cancelQuiesced)) { queueFallback(ready ? 3 : 2); }
++	bool clientSwap = client[0] || client[1] || client[2] || client[3];   /* j0136: exact admitted composition */
++	if (!valid && fQueueActive && !(cancelled && cancelQuiesced) && !clientSwap) { queueFallback(ready ? 3 : 2); }
+ 	IOLockUnlock(fLock);
+ 	if (valid) {
+ 		unsigned layer = 0;
+@@ -2355,8 +2605,10 @@ AppleCLCD::queuePresent(void)
+ 		for (unsigned i = 0; i < 128; i++) {
+ 			if (fTokens[i].id == get32(rec, 0x50) && fTokens[i].owner) { fTokens[i].cancelled = ready || cancelQuiesced; }
+ 		}
+-		if ((!ready && !cancelQuiesced) || terminal()) {
+-			/* Bounded quarantine: only one admitted record; never free unfinished GPU storage. */
++		if (((!ready && !cancelQuiesced) || terminal()) && !clientSwap) {
++			/* Bounded quarantine: only one admitted record; never free unfinished GPU storage.
++			 * j0136: a client-layer frame is dropped by the j0133/j0134 paths instead,
++			 * so it cannot hold another process's drawable for the boot. */
+ 			memcpy(fFaultHold, held, sizeof(fFaultHold));
+ 			uint64_t bytes = 0;
+ 			uint32_t objects = 0;
+@@ -2366,12 +2618,22 @@ AppleCLCD::queuePresent(void)
+ 			IOLog("SWEET FB: quarantine %u layer objects, %llu bytes held for boot\n", objects, bytes);
+ 			bzero(held, sizeof(held));
+ 		}
++		if (clientSwap) {
++			static uint32_t clientDrops, clientLogs;
++			clientDrops++;
++			if (clientLogs < 8 || clientDrops % 100 == 0) {
++				clientLogs++;
++				IOLog("SWEET FB: queue: client-layer swap %u dropped (%u, ready %u cancelled %u); queue kept\n",
++				    get32(rec, 0x50), clientDrops, (unsigned)ready, (unsigned)cancelled);
++			}
++		}
+ 		IOLockUnlock(fLock);
+ 		sweet_hold_set(held, false);
+ 	}
+ 	IOLockLock(fLock);
+ 	bzero(fQueueHold, sizeof(fQueueHold));
+ 	bzero(fQueueTicket, sizeof(fQueueTicket));
++	bzero(fQueueClient, sizeof(fQueueClient));
+ 	fQueueWaiting = false;
+ 	IOLockWakeup(fLock, fQueueRec, false);
+ 	if (fAdmissions && fAdmissions % 600 == 0) {
+@@ -2680,7 +2942,9 @@ AppleCLCD::retireLatched(void)
+ 				fLatchTimeoutChecks++;
+ 				IOLog("SWEET FB: latch still pending after %llu ms, holds kept\n", ns / NSEC_PER_MSEC);
+ 			}
+-			if (ns >= 150 * NSEC_PER_MSEC) { queueFallback(6); }
++			/* j0136: a client-layer swap's stuck latch is dropped/retired by the
++			 * j0133/j0134 paths, never by switching the queue off. */
++			if (ns >= 150 * NSEC_PER_MSEC && !swapHasClient(fLatchID)) { queueFallback(6); }
+ 		}
+ 	}
+ 	uint64_t limit = fQueueActive ? 150 * NSEC_PER_MSEC : 50 * NSEC_PER_MSEC;
+@@ -3747,8 +4011,19 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 					break;
+ 				}
+ 			}
++			bool preRequeue = fFB->swapBeforeRequeue(get32(rec, 0x50));
+ 			IOLockUnlock(fFB->fLock);
+-			if (ret != kIOReturnSuccess) { fFB->rejectFrame(get32(rec, 0x50), 11, ret); }
++			if (ret != kIOReturnSuccess) {
++				if (preRequeue) {
++					/* j0136: begun in the synchronous interval, so it has no queue
++					 * token.  Its late SwapEnd completes the transaction; it is not
++					 * a protocol fault and must not fault the re-enabled queue. */
++					ret = kIOReturnSuccess;
++					retired = true;
++				} else {
++					fFB->rejectFrame(get32(rec, 0x50), 11, ret);
++				}
++			}
+ 			if (retired) { break; }
+ 		}
+ 		ret = fFB->swap(rec, this);
