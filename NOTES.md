@@ -7,8 +7,8 @@ no MobileInstallation state, oslog full of -10814 / "FBSApplicationLibrary retur
 Root fs is 17 GiB with 509 MiB free, so copying was out: new `ios/sweet_mv.c` (rename(2), refuses existing DST;
 built `tools/vm-mesa.sh ios apps1`, pushed to /usr/local/bin/sweet_mv), all 32 moved one per sweetd call (a single
 64-arg call was rejected "bad request"), then `sweet_extq --rebuild`: LS installedPlugins 413 -> 516 (Fitness, Stocks,
-WorldClock widgets now listed). SpringBoard/backboardd kept running (pids 34569/34567). Not yet verified on the panel
-(user to look). Undo = move them back. `tools/sweet-root-tweaks.py` now does the same move for fresh roots
+WorldClock widgets now listed). SpringBoard/backboardd kept running (pids 34569/34567). **User confirmed the icons are on the phone.**
+Next: try each app and record what works. Undo = move them back. `tools/sweet-root-tweaks.py` now does the same move for fresh roots
 (`staged_apps`, untested on a fresh image). Note: plain `sweet_shot OUT` returns black and `-s` finds 0 surfaces on the
 Metal path while the screen is on; do not send `key 3` to "wake" it (it toggles the screen off).
 
