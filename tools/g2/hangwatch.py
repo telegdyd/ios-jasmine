@@ -3,7 +3,7 @@
 
     hangwatch.py [--minutes M]
 
-Polls `gpu state` every second; when `completed` stays below the submitted count for 3 s it
+Polls `gpu state` every second; when `completed` stays below the submitted count for 1 s it
 sends `gpu hang` (the dump goes to the console, i.e. the running netlog) and exits 0.
 Exits 1 if nothing hangs within M minutes (default 30).
 """
@@ -34,7 +34,7 @@ def main():
         if m:
             done, sub = int(m.group(1)), int(m.group(2))
             if done < sub:
-                if stuck and stuck[0] == done and time.time() - stuck[1] >= 3:
+                if stuck and stuck[0] == done and time.time() - stuck[1] >= 1:
                     print(time.strftime('%H:%M:%S'), 'GPU stuck at', done, 'of', sub, flush=True)
                     print(cmd('gpu hang'), flush=True)
                     return 0
@@ -42,7 +42,7 @@ def main():
                     stuck = (done, time.time())
             else:
                 stuck = None
-        time.sleep(1)
+        time.sleep(0.3)
     print('no hang within', minutes, 'min')
     return 1
 

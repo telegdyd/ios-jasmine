@@ -26,6 +26,14 @@ the user's own touches (non-script coordinates, e.g. 949,1040 + 216,1662) appear
 NO `SWEET HID: touch` line in the next ~3400 lines and no `SWEET NVT: read error`. Leading hypothesis: touch input
 (NVT NT36672A path / HID) stopped at the freeze; unconfirmed until the user touches the frozen screen while the log is
 watched. tools/g2/hangwatch.py (polls `gpu state`, sends `gpu hang` on a 3 s stall) was running; no GPU stall seen.
+UPDATE 16:15: touch did resume later (edge swipe at netlog-hang129-a line 10256), so "touch died" is unproven. The GPU
+hang recurred twice on hang129 (16:09:45, 16:12:0x; user pinching in Maps) and BOTH times the phone reset to fastboot
+within ~1 s of hangwatch sending `gpu hang`; before j0129 a wedged GPU sat for minutes. So j0129's dump crashes the
+kernel (cause not captured: recovery/recovery.img (OrangeFox) is not on this PC, no persistent-log pull). j0129 also read
+wrong registers (0x821/0x823/0x824 = CP_ROQ_DBG_ADDR/CP_MEQ_DBG_ADDR/CP_MEQ_DBG_DATA in a5xx.xml). DeepSeek is rewriting
+j0129 (bounded output, print outside gpu_lock, validated reads, no resume). Phone back on shim-boot-ui128-tmp.img 16:16.
+Parallel: DeepSeek researching why Maps draws no map (Maps has no MTLDevice; posters get libbgmtl via @wallpaper),
+report -> research/maps-render/plan.md.
 
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); boot_b = ui128 FLASHED (user: "Yes, flash boot_b")
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
