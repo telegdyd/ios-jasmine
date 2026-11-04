@@ -65,6 +65,30 @@ UPDATE 19:45 (Maps Metal in progress; phone on shim-boot-maps130-tmp.img, temp b
   resolve store); (3) 22 refused blend-colour factors; (4) 19 refused intrinsic air.pack.unorm2x16; (5) 36 refused
   `interface: a buffer in address space 0`. DeepSeek implementing 1-4 (2 = opt-in BGMTL_MAX_SAMPLES=1 answer to
   supportsTextureSampleCount), investigating 5. hangwatch (logs/hangwatch-maps130.txt) running; no GPU hang this boot.
+UPDATE 20:30:
+- mesa/metal 1794421 (vertex textures/samplers, blend colour, pack/unpack, BGMTL_MAX_SAMPLES): installed in /usr/local/p
+  (mesa build vtex132). Maps drew its FIRST MAP TILE (green), Maps-288.log: 3258 draws, DaVinci ground pipeline bound,
+  no command buffer failures. Still refused: 80 GlowAlpha (attachment feedback on 4x MSAA; VectorKit never queries
+  supportsTextureSampleCount, so BGMTL_MAX_SAMPLES does nothing) and 88 Clear (address space 0; likely a missing
+  air.address_space key, see DeepSeek item 5). Trace now OFF (env: BGMTL_POSTER_SDR=1, Maps:BGMTL_LOG_DIR only).
+- UI FREEZE while Maps is foreground (user: NOT caused by leaving Maps; already frozen when they tried to leave). Seen
+  ~19:55 (after the pipe131 run), ~20:02 (freeze4) and 20:06 (freeze5, Maps-267 froze before its UI, ~90 s after launch,
+  log ends inside pipeline creation). GPU idle with all jobs completed every time; kernel alive.
+  freeze4 census (research/maps-hang/freeze4-*.txt, only 0.2 s fetched): backboardd display tid 619 in
+  CA::WindowServer can_update -> IOMobileFramebuffer _kern_SwapWait -> AppleCLCD::swapWait, timing out each vsync (swap
+  never completes); SpringBoard idle (telephony restart noise); Maps NOT captured (census only records threads that ran
+  in the last 500 ms). freeze5: Maps[267] zero samples = all threads blocked.
+  DeepSeek audit of mesa/metal (read-only), ranked hang paths: (1) CAMetalLayer nextDrawable pool dry (present skipped
+  when CB status != 4, bgmtl.m ~2450); (2) CODE-PROVEN: completed handlers delivered before _done is left
+  (bgCompleteFrom ~2468 vs _done leave 2289/2311) -> waitUntilCompleted from a handler deadlocks; (3) bg_ctx_mutex held
+  across the whole replay (1928-2266) -> pipeline creation blocks (fits freeze5); (4) serial completion queue
+  head-of-line block; (5) bg_adm_mutex across IOKit + BG_LOG; (6) encode-time Error without commit -> waitUntil*
+  forever; (7) newSharedEvent inherited, never signalled. Not fixed yet: waiting for Maps' stacks.
+- j0131 (6430c0d): command port `smp NAME|PID` dumps every thread of a process to the console (sweet_sample_task).
+  Kernel smp131 = j0129 + j0130 + j0131, image shim/out/shim-boot-smp131-tmp.img (cfbfa8e9..., ui128-tmp recipe,
+  cmdline 592 bytes). Booted ~20:25, `smp backboardd` -> 17 lines OK. NEXT: user opens Maps; at the freeze run
+  `smp Maps`, `smp backboardd`, `smp SpringBoard` and prof fetch --tasks Maps,backboardd,SpringBoard,kernel_task,all;
+  symbolicate SMP lines (user addresses, shared-cache slide in the header line) and match against the audit's signatures.
 
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); boot_b = ui128 FLASHED (user: "Yes, flash boot_b")
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
