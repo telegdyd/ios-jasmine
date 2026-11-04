@@ -18,6 +18,14 @@ prints RBBM/CP status, IB1/IB2 pointers, last 16 jobs and the pending job's IBs 
 xnu/out-jasmine-hang129; image shim/out/shim-boot-hang129-tmp.img (40c6582b..., = ui128-tmp recipe with the new
 kernel; recipe checked byte-identical against payload-ui128-tmp.bin with the ui128 kernel). NOT booted yet. Plan: temp
 boot, open Maps, pinch (tools/g2/mapspinch.py 60), `python tools/sweet-cmd.py "gpu hang"`, decode the IBs (freedreno cffdump).
+UPDATE 15:44: hang129 temp-booted (user forced fastboot). User pinched in Maps -> freeze #2 at ~15:49:30, a DIFFERENT
+kind: GPU healthy (completed 3877 of 3877), backboardd presents ~4 fps, no QUEUE FALLBACK/admission/fence lines, no
+crash. DeepSeek (read-only, no WSL; own parser of research/maps-hang/freeze2.bin/.meta, unverified symbols): no thread
+blocked, CA render server idle, Maps main thread ticks a QuartzCore callback ~30-60 Hz without commits. Claude checked:
+the user's own touches (non-script coordinates, e.g. 949,1040 + 216,1662) appear in netlog-hang129 up to line 6746, then
+NO `SWEET HID: touch` line in the next ~3400 lines and no `SWEET NVT: read error`. Leading hypothesis: touch input
+(NVT NT36672A path / HID) stopped at the freeze; unconfirmed until the user touches the frozen screen while the log is
+watched. tools/g2/hangwatch.py (polls `gpu state`, sends `gpu hang` on a 3 s stall) was running; no GPU stall seen.
 
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); boot_b = ui128 FLASHED (user: "Yes, flash boot_b")
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
