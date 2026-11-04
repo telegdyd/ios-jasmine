@@ -1,3 +1,34 @@
+### 2026-11-05: j0135 gates j0133/j0134 on client layers; own frames get 1000/1500 ms bounds (NOT built, NOT booted, not committed)
+Regression on j0134: netlog-swap134 drops backboardd-only swaps 766/768/770/775 at
+j0134's ticket-not-ready path and j0133 retires them as abandoned.  netlog-swap134b
+(j0134 minus the gpuSeqno skip) shows the same after Maps is exec'd: own frames
+428/434/437/440/441/614/... hit the 100 ms ticket probe, j0133 abandons them, and
+QUEUE FALLBACK reason 2 follows.  Maps' heavy jobs are ahead of backboardd's on the
+single GPU ring (one ring, no priority/preemption).
+`xnu/patches/j0135-jasmine-client-layer-gating.patch` (new, on top of current j0134):
+- records `hasClient` (clientLayer(): creatorPID != SwapEnd caller pid) in `Token.client`
+  and a per-id `SwapInfo` ring; `fClientSwapID` keeps the highest client id.  Gates:
+  j0133 retirement only for newer client tokens, j0134 ticket completion / scope drop /
+  sync watchdog / noteShown only for client-layer swaps.  clientLayer() no longer checks
+  sweetfb_clientlayer(); only the ticket bypass does, so the kill switches still work.
+- own-only bounds (new): ticket/gpuSeqno validation retries the 100 ms probe up to
+  SWEET_FB_OWN_TICKET_MS = 1000 ms (queuePresent's tracked-ticket admission), then takes
+  j0132 rejectFrame(16)/drop; the present scope is SWEET_FB_OWN_SCOPE_MS = 1500 ms
+  (1000 ticket + 100 cancel quiesce + 150 latch), then j0132 rejectFrame(1)/fallback/drop.
+  Client-layer swaps keep the 100 ms probe, 200 ms scope and j0134 completion.
+Verified: recon-fwd + j0132 + j0133 + current j0134 + j0135 applies (whitespace=error-all)
+and equals `research/t27/recon-j0135` (A0044A3B...); recon-j0133 + current j0134 =
+recon-j0134 (9A966CCC...); braces/parens 652/652, 2237/2237.  Own-only now differs from
+j0132 only by the longer bounds (recon-j0135 SweetFramebuffer.cpp:1893-1935, 1972-1977,
+2006-2007).  No build/boot.
+GPU-side priority: not available.  SweetGPU has one ring (`sweet_gpu_param` case 7
+returns 1; a single CP_RB_BASE/WPTR), serializes submits on `gpu_lock`, and has no
+preemption (`a5xx_submit without preemption`; no CP_PREEMPT/CP_RB2 symbols in
+xnu/patches).  A real fix needs multi-ring or context preemption, which is not
+cheap; the 1000/1500 ms display bounds are the cheap mitigation.
+Next: build swap135, image, open Maps; expect own-frame waits up to 1 s instead of
+drops/abandons, and no UI-wide glitching.
+
 ### 2026-11-05: j0134 client-layer present/complete patch written (NOT built, NOT booted, not committed)
 Mechanism from `logs/netlog-swap133.txt` checked against `research/t27/recon-j0133/iokit/Kernel/arm/SweetFramebuffer.cpp`:
 - Sync freeze: after `QUEUE FALLBACK reason 1`, `fQueueActive=0` and SwapBegin stops allocating serials, so

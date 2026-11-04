@@ -241,16 +241,6 @@ index 534d021..9f228c5 100644
  				}
  				uint64_t until;
  				clock_interval_to_deadline(100, kMillisecondScale, &until);
-@@ -1745,7 +1839,8 @@ AppleCLCD::swap(const uint8_t *rec)
- 					bool ready = true;
- 					uint32_t completed = sweet_gpu_completed();
- 					for (unsigned i = 0; i < 4; i++) {
--						if (held[i] && held[i]->gpuSeqno && (int32_t)(completed - held[i]->gpuSeqno) < 0) { ready = false; }
-+						if (held[i] && !clientLayer(held[i], client) && held[i]->gpuSeqno &&
-+						    (int32_t)(completed - held[i]->gpuSeqno) < 0) { ready = false; }
- 					}
- 					if (ready) { break; }
- 					if (mach_absolute_time() >= until) {
 @@ -1759,6 +1854,58 @@ AppleCLCD::swap(const uint8_t *rec)
  			IOLockUnlock(fLock);
  			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
