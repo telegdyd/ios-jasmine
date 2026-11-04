@@ -1,3 +1,23 @@
+### 2026-11-04: M11 in-batch feedback barrier for UBWC (Metal 4213986): m11fb1 TEMPORARILY INSTALLED for panel check
+
+Lead (per-draw replay cost): new research/metal-m10/replay.py (WSL; inclusive/self profile of the bgReplayFrom
+subtree) on capture ul2: replay 335 ms/s; rwa_render_draw 169 of it, incl. fd_texture_barrier -> fd_context_flush
+26, batch flush 50, batch create 27. Cause: since M9 (UBWC) every CA fetch target is UBWC, and fd5_feedback_barrier
+refused UBWC attachments (reason 3, a leftover from the libsweetca port where a5xx had no UBWC) -> every fetching
+draw flushed the whole context. netlogs since m9ubwc9: "0 kept" (before UBWC ~2500 kept). Fix: UBWC colour
+attachments accepted (CCU colour flush writes colour + flags, UCHE invalidate, fetch view samples via flags);
+RWA_FB_BARRIER_UBWC=0 restores the flush. Build xnu/out-mesa-m11fb1. validate.py parts 1-7 (m7-suspend/m11fb1): 6x65/65,
+P23 57/57 + 60/60 (x2), p24 9/9 both, p25 3/3 both, p26 3/3, part 7 OK. Device log: "kept in the batch (1, 1 UBWC;
+0/0/0/0 flushed)", later "84 kept", no attachment refusals. Capture research/metal-m8/fb1 (replay-fb1.txt): replay
+335 -> 266 ms/s (-21 %), rwa_render_draw 169 -> 116, batch flush 50 -> 24, batch create 27 -> 12, texture_barrier
+gone. Framebench (research/metal-m10 fb-fb1, fb-fb1c): Home B 38.3/38.8 (ul2 37.2/37.1), CC A 33.1/33.9, CC B
+32.6/34.0 (ul2 32.9-33.5); fb-fb1b timed out at home-a and fb-fb1c at idle-after (motion phases complete; the
+baseline fb-wr8b also timed out once), GPU healthy (all jobs complete, 0 failures). Installed now m11fb1 via
+install.py (backup research/metal-m8/backup-m10next = m10ul2; `python research/metal-m8/install.py restore` rolls back,
+byte-exact), backboardd 34567, env unchanged. WAITING: user panel check (rounded corners, CC blur). Remaining replay
+CPU: fd5_emit_state 63 ms/s, rwa_render_clear 52. Root commits since 2026-11-01 are not pushed (85 ahead of
+origin/jasmine, Metal 36 ahead of origin/adreno5xx); push only on the user's OK.
+
 ### 2026-11-04: m10ul2 KEPT (user: "yeah looks great"); M10 B/C closed. Installed: m10ul2 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
 
 Phone readback: libbgmtl 0873319b, libbgair 23faefe2 (= xnu/out-mesa-m10ul2, Metal d0aaa02), env unchanged,
