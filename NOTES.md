@@ -1,3 +1,12 @@
+### 2026-11-04: m11fb1 KEPT (user: "Looks good, keep it"); M11 feedback barrier closed. Installed: m11fb1 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
+
+Readback: libbgmtl 0873319b (unchanged from m10ul2), libbgair 41eab378, env unchanged, backboardd 34567; survives reboot
+(libs in /usr/local/bin). research/metal-m8/install.py + capture.py and research/metal-m10/uploads.py rebaselined to
+INSTALLED out-mesa-m11fb1. Rollback to m10ul2: hand-restore research/metal-m8/backup-m10ul2-before-m11fb1 (state
+install-state-m11fb1-kept.json) or set RWA_FB_BARRIER_UBWC=0 in the env file (same build). Next replay lead:
+fd5_emit_state 63 ms/s and rwa_render_clear 52 ms/s (research/metal-m10/replay-fb1.txt). Not pushed (user asked why;
+pushing only on the user's OK).
+
 ### 2026-11-04: M11 in-batch feedback barrier for UBWC (Metal 4213986): m11fb1 TEMPORARILY INSTALLED for panel check
 
 Lead (per-draw replay cost): new research/metal-m10/replay.py (WSL; inclusive/self profile of the bgReplayFrom
