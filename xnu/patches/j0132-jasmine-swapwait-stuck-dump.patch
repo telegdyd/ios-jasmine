@@ -1,0 +1,405 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jasmine <jasmine@localhost>
+Date: Tue, 4 Nov 2026 22:30:00 +0100
+Subject: [PATCH] jasmine-j0132: dump a SwapWait stuck in AppleCLCD (diagnostic)
+
+CoreAnimation's display thread (com.apple.coreanimation.display.primary) polls
+IOMobileFramebufferSwapWait every vsync in IOMFBDisplay::can_update_ and a swap that
+never latches leaves it there (Maps freeze, freeze7). This adds no behaviour, only logs:
+
+- swapWait counts consecutive timeouts per caller; on the 30th (then every 300th:
+  330, 630, ...) it prints one block with the waited id/serial, the client's newest
+  serial, fShownID, fEndID, fSwapID, fLatchedSerial, fShownValid, fLatchValid/fLatchID,
+  fProgramSerial, fAcceptedSerial, fQueueActive, fQueueWaiting, fPresentBusy and fEpoch,
+  plus the layer count and every layer of the newest begun and newest ended swap:
+  IOSurface id, creator pid, width x height, pixel format fourcc, bytes per row, and
+  whether the driver would scan that surface out or why it only copies it. The last
+  four SwapEnd records are kept for this (no locks are held while printing).
+- Every swap logs one line per layer surface that is new to the driver or whose
+  creator pid changed, at most 20 lines a boot:
+  "SWEET FB: swap N layer L surface S pid P WxH fmt FOURCC bpr B -> accepted|rejected(reason)".
+
+The pid is SweetSurface::creatorPID (the creator, not necessarily the current holder).
+"rejected" here means not accepted for direct MDP scanout, not that the swap failed:
+queueCandidate()/directPresent() only scan out one whole-screen GPU-pool surface, so an
+application's own CAMetalLayer surface is composed by the CPU.
+
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 298 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 297 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -497,6 +497,7 @@ public:
+ 	AppleCLCD          *fFB;
+ 	task_t              fTask;
+ 	uint64_t            fNewestSerial;
++	uint32_t            fSwapWaitTimeouts;     /* j0132: consecutive SwapWait timeouts */
+ 	bool                fClosed;
+ 	mach_port_t         fPort;
+ 	io_user_reference_t fFunc[SWEET_FB_NOTIFY_TYPES];
+@@ -1300,6 +1301,280 @@ static uint64_t sweet_fb_layer_sig[SWEET_FB_LAYERS];
+ static uint32_t sweet_fb_last_mask = ~0u;
+ static uint64_t sweet_fb_swap_count;
+ 
++/*
++ * j0132: why a swap never completes (diagnostic). CoreAnimation's display thread polls
++ * SwapWait every vsync; a swap whose latch never arrives leaves it there. After 30
++ * consecutive timeouts (then every 300th) one block dumps the swap state and the layers of
++ * the newest begun and newest ended swap. The per-swap lines name every layer surface that
++ * is new to the driver, or whose creator changed, at most 20 lines a boot.
++ */
++#define SWEET_FB_DIAG_SEEN      64
++#define SWEET_FB_DIAG_RECS      4
++#define SWEET_FB_DIAG_LINES     20
++
++struct sweet_fb_diag_rec {
++	uint32_t id, epoch;
++	uint64_t serial;
++	bool     valid;
++	uint8_t  rec[SWEET_FB_SWAP_REC_SIZE];
++};
++
++static struct {
++	struct sweet_fb_diag_rec rec[SWEET_FB_DIAG_RECS];
++	unsigned next, count;
++	uint32_t seen[SWEET_FB_DIAG_SEEN], nseen;
++	uint32_t lines;
++	int      lastpid[SWEET_FB_LAYERS];
++	bool     lastpidok[SWEET_FB_LAYERS];
++	uint32_t beginID, beginEpoch;
++	uint64_t beginSerial;
++	bool     beginValid;
++} sweet_fb_diag;
++
++static void
++sweet_fb_diag_fourcc(uint32_t fmt, char out[5])
++{
++	for (unsigned i = 0; i < 4; i++) {
++		uint8_t c = (uint8_t)(fmt >> (24 - 8 * i));
++		out[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
++	}
++	out[4] = 0;
++}
++
++/* Mirrors queueCandidate()/directPresent(): true only when the MDP fetches the surface itself. */
++static bool
++sweet_fb_diag_scanout(AppleCLCD *fb, const uint8_t *rec, uint32_t layer, SweetSurface *s, const char **why)
++{
++	uint32_t mask = get32(rec, 0x104), layers = 0;
++	for (uint32_t i = 0; i < SWEET_FB_LAYERS; i++) {
++		if ((mask & (1u << i)) && get32(rec, 0x54 + 4 * i) != 0) {
++			layers++;
++		}
++	}
++	if (layers != 1) { *why = "copy: more than one enabled layer"; return false; }
++	if (s == NULL) { *why = "no surface in the kernel table"; return false; }
++	const uint8_t *a = rec + 0x64 + 16 * layer, *b = rec + 0xc4 + 16 * layer;
++	bool whole = get32(a, 0) == 0 && get32(a, 4) == 0 && get32(b, 0) == 0 && get32(b, 4) == 0 &&
++	    (get32(a, 8) == 0 || get32(a, 8) == fb->fLogicalW) &&
++	    (get32(a, 12) == 0 || get32(a, 12) == fb->fLogicalH) &&
++	    ((int32_t)get32(b, 8) <= 0 || get32(b, 8) == fb->fLogicalW) &&
++	    ((int32_t)get32(b, 12) <= 0 || get32(b, 12) == fb->fLogicalH);
++	uint64_t pa = s->scanoutPhys + s->offset;
++	if (fb->fFitW != 0) {
++		if (!fb->fScaler) { *why = "no MDP scaler"; return false; }
++		if (!whole) { *why = "layer rect is not the whole frame"; return false; }
++		if (!s->gpuPool) { *why = "surface not from the GPU scanout pool"; return false; }
++		if (s->bytesPerElement != 4) { *why = "not 4 bytes per pixel"; return false; }
++		if (s->width != fb->fLogicalW || s->height != fb->fLogicalH) {
++			*why = "size is not the logical frame";
++			return false;
++		}
++		if ((pa & 15) != 0 || (s->bytesPerRow & 15) != 0) {
++			*why = "address or stride not 16-byte aligned";
++			return false;
++		}
++		if (pa + (uint64_t)fb->fLogicalH * s->bytesPerRow >= (1ull << 32)) {
++			*why = "not below 4 GiB";
++			return false;
++		}
++	} else {
++		if (!whole) { *why = "layer rect is not the whole frame"; return false; }
++		if (s->scanoutPhys == 0) { *why = "no scanout memory"; return false; }
++		if (s->bytesPerElement != 4) { *why = "not 4 bytes per pixel"; return false; }
++		if (s->width < fb->fWidth || s->height < fb->fHeight) { *why = "smaller than the panel"; return false; }
++		if (!s->gpuPool) { *why = "surface not from the GPU scanout pool"; return false; }
++		if ((pa & 15) != 0 || (s->bytesPerRow & 15) != 0) {
++			*why = "address or stride not 16-byte aligned";
++			return false;
++		}
++		if (pa + (uint64_t)fb->fHeight * s->bytesPerRow >= (1ull << 32)) {
++			*why = "not below 4 GiB";
++			return false;
++		}
++	}
++	*why = "scanout";
++	return true;
++}
++
++/* Called from swap() with no lock held; logs after releasing fLock. */
++static void
++sweet_fb_diag_note(AppleCLCD *fb, const uint8_t *rec)
++{
++	uint32_t id = get32(rec, 0x50), mask = get32(rec, 0x104);
++	SweetSurface *s[SWEET_FB_LAYERS] = {};
++	for (uint32_t i = 0; i < SWEET_FB_LAYERS; i++) {
++		uint32_t sid = get32(rec, 0x54 + 4 * i);
++		if ((mask & (1u << i)) && sid != 0) {
++			s[i] = sweet_surface_copy(sid);
++		}
++	}
++	struct {
++		uint32_t layer, sid;
++		int      pid;
++	} line[SWEET_FB_LAYERS];
++	uint32_t nline = 0;
++	IOLockLock(fb->fLock);
++	struct sweet_fb_diag_rec *r = &sweet_fb_diag.rec[sweet_fb_diag.next % SWEET_FB_DIAG_RECS];
++	sweet_fb_diag.next = (sweet_fb_diag.next + 1) % SWEET_FB_DIAG_RECS;
++	if (sweet_fb_diag.count < SWEET_FB_DIAG_RECS) {
++		sweet_fb_diag.count++;
++	}
++	r->id = id;
++	r->epoch = fb->fEpoch;
++	r->serial = 0;
++	for (unsigned i = 0; i < 128; i++) {
++		if (fb->fTokens[i].owner && fb->fTokens[i].id == id) {
++			r->serial = fb->fTokens[i].serial;
++			break;
++		}
++	}
++	memcpy(r->rec, rec, SWEET_FB_SWAP_REC_SIZE);
++	r->valid = true;
++	for (uint32_t i = 0; i < SWEET_FB_LAYERS; i++) {
++		if ((mask & (1u << i)) == 0) {
++			continue;
++		}
++		uint32_t sid = get32(rec, 0x54 + 4 * i);
++		int pid = s[i] != NULL ? s[i]->creatorPID : 0;
++		bool known = false;
++		for (uint32_t k = 0; k < sweet_fb_diag.nseen; k++) {
++			known = known || sweet_fb_diag.seen[k] == sid;
++		}
++		bool changed = !sweet_fb_diag.lastpidok[i] || sweet_fb_diag.lastpid[i] != pid;
++		if ((!known || changed) && sweet_fb_diag.lines < SWEET_FB_DIAG_LINES) {
++			line[nline].layer = i;
++			line[nline].sid = sid;
++			line[nline].pid = pid;
++			nline++;
++			sweet_fb_diag.lines++;
++		}
++		if (!known && sid != 0 && sweet_fb_diag.nseen < SWEET_FB_DIAG_SEEN) {
++			sweet_fb_diag.seen[sweet_fb_diag.nseen++] = sid;
++		}
++		sweet_fb_diag.lastpid[i] = pid;
++		sweet_fb_diag.lastpidok[i] = true;
++	}
++	IOLockUnlock(fb->fLock);
++	for (uint32_t k = 0; k < nline; k++) {
++		uint32_t i = line[k].layer;
++		const char *why = "scanout";
++		bool ok = sweet_fb_diag_scanout(fb, rec, i, s[i], &why);
++		char fmt[5];
++		sweet_fb_diag_fourcc(s[i] != NULL ? s[i]->pixelFormat : 0, fmt);
++		IOLog("SWEET FB: swap %u layer %u surface %u pid %d %ux%u fmt %c%c%c%c bpr %u -> %s%s%s\n",
++		    id, i, line[k].sid, line[k].pid, s[i] != NULL ? s[i]->width : 0,
++		    s[i] != NULL ? s[i]->height : 0, fmt[0], fmt[1], fmt[2], fmt[3],
++		    s[i] != NULL ? s[i]->bytesPerRow : 0, ok ? "accepted" : "rejected(",
++		    ok ? "" : why, ok ? "" : ")");
++	}
++	for (uint32_t i = 0; i < SWEET_FB_LAYERS; i++) {
++		if (s[i] != NULL) { s[i]->release(); }
++	}
++}
++
++static void
++sweet_fb_diag_layers(AppleCLCD *fb, const char *which, struct sweet_fb_diag_rec *r)
++{
++	uint32_t mask = get32(r->rec, 0x104), layers = 0;
++	for (uint32_t i = 0; i < SWEET_FB_LAYERS; i++) {
++		if ((mask & (1u << i)) && get32(r->rec, 0x54 + 4 * i) != 0) {
++			layers++;
++		}
++	}
++	IOLog("SWEET FB: swapWait stuck: %s id %u serial %llu epoch %u layer count %u\n",
++	    which, r->id, (unsigned long long)r->serial, r->epoch, layers);
++	for (uint32_t i = 0; i < SWEET_FB_LAYERS; i++) {
++		uint32_t sid = get32(r->rec, 0x54 + 4 * i);
++		if ((mask & (1u << i)) == 0) {
++			continue;
++		}
++		SweetSurface *s = sid != 0 ? sweet_surface_copy(sid) : NULL;
++		const char *why = "scanout";
++		bool ok = sweet_fb_diag_scanout(fb, r->rec, i, s, &why);
++		char fmt[5];
++		sweet_fb_diag_fourcc(s != NULL ? s->pixelFormat : 0, fmt);
++		IOLog("SWEET FB: swapWait stuck: %s id %u layer %u surface %u pid %d %ux%u fmt %c%c%c%c bpr %u -> %s%s%s\n",
++		    which, r->id, i, sid, s != NULL ? s->creatorPID : 0,
++		    s != NULL ? s->width : 0, s != NULL ? s->height : 0,
++		    fmt[0], fmt[1], fmt[2], fmt[3], s != NULL ? s->bytesPerRow : 0,
++		    ok ? "accepted" : "rejected(", ok ? "" : why, ok ? "" : ")");
++		if (s != NULL) { s->release(); }
++	}
++}
++
++/* Called from swapWait() with no lock held; takes fLock only to copy the state. */
++static void
++sweet_fb_diag_stuck(AppleCLCD *fb, uint32_t asked, uint64_t serial, uint64_t clientNewest, uint32_t timeouts)
++{
++	struct sweet_fb_diag_rec begun, ended;
++	uint32_t shownID, endID, swapID, latchID, epoch, beginID, beginEpoch;
++	uint64_t latched, program, accepted, beginSerial;
++	bool shownValid, latchValid, queueActive, queueWaiting, presentBusy, haveBegin, haveBegun, haveEnded;
++	bzero(&begun, sizeof(begun));
++	bzero(&ended, sizeof(ended));
++	IOLockLock(fb->fLock);
++	shownID = fb->fShownID;
++	endID = fb->fEndID;
++	swapID = fb->fSwapID;
++	latchID = fb->fLatchID;
++	epoch = fb->fEpoch;
++	latched = fb->fLatchedSerial;
++	program = fb->fProgramSerial;
++	accepted = fb->fAcceptedSerial;
++	shownValid = fb->fShownValid;
++	latchValid = fb->fLatchValid;
++	queueActive = fb->fQueueActive;
++	queueWaiting = fb->fQueueWaiting;
++	presentBusy = fb->fPresentBusy;
++	beginID = sweet_fb_diag.beginID;
++	beginEpoch = sweet_fb_diag.beginEpoch;
++	beginSerial = sweet_fb_diag.beginSerial;
++	haveBegin = sweet_fb_diag.beginValid;
++	haveBegun = false;
++	haveEnded = false;
++	if (sweet_fb_diag.count != 0) {
++		unsigned newest = (sweet_fb_diag.next + SWEET_FB_DIAG_RECS - 1) % SWEET_FB_DIAG_RECS;
++		if (sweet_fb_diag.rec[newest].valid) {
++			ended = sweet_fb_diag.rec[newest];
++			haveEnded = true;
++		}
++	}
++	if (haveBegin) {
++		for (unsigned i = 0; i < SWEET_FB_DIAG_RECS; i++) {
++			if (sweet_fb_diag.rec[i].valid && sweet_fb_diag.rec[i].id == beginID &&
++			    sweet_fb_diag.rec[i].epoch == beginEpoch) {
++				begun = sweet_fb_diag.rec[i];
++				haveBegun = true;
++			}
++		}
++	}
++	IOLockUnlock(fb->fLock);
++
++	char name[32];
++	proc_selfname(name, sizeof(name));
++	IOLog("SWEET FB: swapWait stuck: %s[%d] %u consecutive timeouts; waited id %u serial %llu (client newest %llu); "
++	    "shown %u end %u swap %u latched %llu; shownValid %u latchValid %u latch %u "
++	    "program %llu accepted %llu; queue %u waiting %u busy %u epoch %u\n",
++	    name, proc_selfpid(), timeouts, asked, (unsigned long long)serial, (unsigned long long)clientNewest,
++	    shownID, endID, swapID, (unsigned long long)latched, (unsigned)shownValid,
++	    (unsigned)latchValid, latchID, (unsigned long long)program, (unsigned long long)accepted,
++	    (unsigned)queueActive, (unsigned)queueWaiting, (unsigned)presentBusy, epoch);
++	if (!haveBegin) {
++		IOLog("SWEET FB: swapWait stuck: begun: no SwapBegin seen\n");
++	} else if (!haveBegun) {
++		IOLog("SWEET FB: swapWait stuck: begun id %u serial %llu epoch %u: no SwapEnd record (layers unknown)\n",
++		    beginID, (unsigned long long)beginSerial, beginEpoch);
++	} else {
++		sweet_fb_diag_layers(fb, "begun", &begun);
++	}
++	if (!haveEnded) {
++		IOLog("SWEET FB: swapWait stuck: ended: no SwapEnd record\n");
++	} else {
++		sweet_fb_diag_layers(fb, "ended", &ended);
++	}
++}
++
++
+ /* Copy each enabled layer's surface into the panel memory (no scaling). */
+ /*
+  * A swap only records the frame: copying 10 MB into the panel on every
+@@ -1364,6 +1639,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	sweet_fps_count();
+ 	sweet_ddrgov_activity(4, 0);            /* a present keeps the DDR governor at the full rate */
+ 	sweet_bench_event(11, get32(rec, 0x50), get32(rec, 0x54), get32(rec, 0x104), 0);
++	sweet_fb_diag_note(this, rec);
+ 	SweetSurface *held[4] = {};
+ 	uint32_t mask = get32(rec, 0x104);
+ 	for (uint32_t i = 0; i < 4 && i < SWEET_FB_LAYERS; i++) {
+@@ -2107,6 +2383,7 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 		ms = 100;
+ 	}
+ 	uint64_t serial = 0;
++	uint32_t asked = id;
+ 	/* SwapWait(0): the newest swap is done once it latched (j0119), a page's once a later one did */
+ 	bool newest = id == 0 && sweet_fb_wait0;
+ 	if (fProtocol) {
+@@ -2114,6 +2391,7 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 		bool queueMode = fQueueActive;
+ 		if (queueMode && id == 0 && client->fNewestSerial == 0) {
+ 			IOLockUnlock(fLock);
++			__atomic_store_n(&client->fSwapWaitTimeouts, 0, __ATOMIC_RELAXED);
+ 			return kIOReturnSuccess;
+ 		}
+ 		for (unsigned i = 0; i < 128; i++) {
+@@ -2122,10 +2400,12 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 				if (t.epoch != fEpoch || t.cancelled) {
+ 					t.cancelled = true;
+ 					IOLockUnlock(fLock);
++					__atomic_store_n(&client->fSwapWaitTimeouts, 0, __ATOMIC_RELAXED);
+ 					return kIOReturnSuccess;
+ 				}
+ 				if (queueMode && t.owner != client) {
+ 					IOLockUnlock(fLock);
++					__atomic_store_n(&client->fSwapWaitTimeouts, 0, __ATOMIC_RELAXED);
+ 					return kIOReturnAborted;
+ 				}
+ 				serial = t.serial;
+@@ -2135,7 +2415,10 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 		}
+ 		bool future = !fWrapped && id > fSwapID && (int32_t)(id - fSwapID) > 0;
+ 		IOLockUnlock(fLock);
+-		if (queueMode && !serial) { return future ? kIOReturnSuccess : kIOReturnBadArgument; }
++		if (queueMode && !serial) {
++			__atomic_store_n(&client->fSwapWaitTimeouts, 0, __ATOMIC_RELAXED);
++			return future ? kIOReturnSuccess : kIOReturnBadArgument;
++		}
+ 	}
+ 	sweet_fb_wait_calls++;
+ 	for (;;) {
+@@ -2162,6 +2445,14 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 			if (ns > 100000) { sweet_bench_event(18, id, (uint32_t)(ns / 1000), done, newest); }
+ 			sweet_fb_wait_us += ns / 1000;
+ 			sweet_fb_wait_busy += !done;
++			if (done) {
++				__atomic_store_n(&client->fSwapWaitTimeouts, 0, __ATOMIC_RELAXED);
++			} else {
++				uint32_t streak = __atomic_add_fetch(&client->fSwapWaitTimeouts, 1, __ATOMIC_RELAXED);
++				if (streak == 30 || (streak > 30 && (streak - 30) % 300 == 0)) {
++					sweet_fb_diag_stuck(this, asked, serial, client->fNewestSerial, streak);
++				}
++			}
+ 			return done ? kIOReturnSuccess : kIOReturnTimeout;
+ 		}
+ 		uint64_t until;
+@@ -2772,6 +3063,7 @@ IOMobileFramebufferUserClient::initWithTask(task_t owningTask, void *securityID,
+ 		return false;
+ 	}
+ 	fTask = owningTask;
++	fSwapWaitTimeouts = 0;
+ 	return true;
+ }
+ 
+@@ -2895,6 +3187,10 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		} else {
+ 			out[0] = ++fFB->fSwapID;
+ 		}
++		sweet_fb_diag.beginID = (uint32_t)out[0];
++		sweet_fb_diag.beginEpoch = fFB->fEpoch;
++		sweet_fb_diag.beginSerial = fFB->fQueueActive ? fFB->fSerial : 0;
++		sweet_fb_diag.beginValid = true;
+ 		sweet_bench_event(10, (uint32_t)out[0], 0, 0, 0);
+ 		IOLockUnlock(fFB->fLock);
+ 		outCount = 1;
