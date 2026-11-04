@@ -89,6 +89,27 @@ UPDATE 20:30:
   cmdline 592 bytes). Booted ~20:25, `smp backboardd` -> 17 lines OK. NEXT: user opens Maps; at the freeze run
   `smp Maps`, `smp backboardd`, `smp SpringBoard` and prof fetch --tasks Maps,backboardd,SpringBoard,kernel_task,all;
   symbolicate SMP lines (user addresses, shared-cache slide in the header line) and match against the audit's signatures.
+UPDATE 20:45 (end of session; user went home):
+- freeze6 (smp131, libs vtex132): smp + census showed NOTHING blocked; Maps main thread in VectorKit's display-link frame
+  with 49% in OUR bg_fwd_sig -> objc_copyProtocolList (forwarding fallback rescanned every protocol per call; VectorKit
+  calls stubbed updateFence:afterStages: per encoder per frame). Touches reached the kernel (SWEET HID) and backboardd.
+  Fixed mesa/metal acf7a67 (signature cache incl. negatives; BGMTLFence; no-op fences/useResource/useHeap/barriers),
+  mesa build fwd133 installed in /usr/local/p (readback OK). Booted smp131 20:31.
+- Result: MAP DRAWS (user: "map draws!") and Maps is no longer slow, but the UI froze again (freeze7,
+  research/maps-hang/freeze7-*): Maps idle, GPU idle (863 of 863), backboardd display thread every vsync in
+  CA IOMFBDisplay::can_update -> _kern_SwapWait -> kernel AppleCLCD::swapWait timing out: a swap is never latched/shown.
+  Same as freeze4. Hypothesis (unverified): CA does direct scanout of Maps' fullscreen opaque CAMetalLayer surface
+  (828x1792 BGRA8 sRGB, owned by Maps) and our AppleCLCD mishandles a swap with a client surface.
+- DeepSeek (dispatch started ~20:40, may not have finished if the PC slept) is writing
+  xnu/patches/j0132-jasmine-swapwait-stuck-dump.patch (diagnostic: dump swap state after 30 consecutive swapWait
+  timeouts; log new layer surfaces/owner pids per swap) and checking the direct-scanout hypothesis in the driver code.
+  Its log: C:\Users\teleg\.dsh\dispatch-logs\ (newest run). If the patch file is missing or partial, re-dispatch.
+- NEXT: review j0132, tools/vm-build.sh swap132, image via the script recipe (scratchpad mkimg-*.sh pattern: cmdline
+  from shim/out/cmdline-ui128-slotb.txt minus abmark=b; NEVER inline in wsl.exe bash -c, quoting drops $B), boot, user
+  opens Maps until the freeze, read `SWEET FB: swapWait stuck` / `SWEET FB: swap ... layer` lines.
+- Phone state: temp boot (smp131); a plain reboot returns to the flashed boot_b (ui128), where Maps is not in the
+  @wallpaper group (no Metal for Maps). /usr/local/p holds the fwd133 Metal libs + maps130 injector (backups of the
+  originals in research/maps-render/backup/). Poster env: BGMTL_POSTER_SDR=1, Maps:BGMTL_LOG_DIR=/private/var/tmp.
 
 ### 2026-11-04: Settings shows Location Services (j0128 @ui group + /q.dylib); boot_b = ui128 FLASHED (user: "Yes, flash boot_b")
 Cause: -[PUIPrivacyController refreshLocationServicesAvailable] (PrivacySettingsUI) asks CoreTelephony
