@@ -1,3 +1,27 @@
+### 2026-11-04: M10 B/C lock waits removed (Metal d0aaa02): validated, NO fps change, NOT installed (m10wr8 stays)
+
+Lead: CA -replaceRegion waited on bg_lock behind the replay (wr8 capture: 17 waits, 182 ms per 8 s, max 31 ms).
+- B: -replaceRegion on a plain texture (no _surface/_surfTex/_copySurface/_linSrc/_ncBytes/_aliasBuf) writes its
+  idle linear BO without pipe_context (rwa_texture_write_unlocked; gates under fd_screen_lock: 2D, 1 sample,
+  uncompressed, linear, no UBWC, no write_batch, batch_mask 0; FD_BO_PREP_NOSYNC busy -> locked path). Off switch
+  BGMTL_UNLOCKED_UPLOAD=0. Capture ul1 (m10ul1 = B only): replaceRegion waits gone, but the encode thread then
+  waited at bg_write_admission.h:39 (bg_adm_lock took bg_lock first): 21 waits, 127 ms.
+- C: encode-time admission takes only bg_adm_mutex (BEGIN = IOConnect calls; BO handle read under
+  fd_screen_lock); commit publishes _committed under bg_adm_mutex. write_admission_test new case (admission while
+  another thread holds bg_lock) passes under ASan/UBSan on the VM; it fails against the old header (checked).
+Build xnu/out-mesa-m10ul2. validate.py parts 1-7: 6x65/65, P23 57/57 + 60/60 (x2), p24 9/9 native+async,
+p25 3/3 both, p26 3/3, part 7 OK. Capture research/metal-m8/ul2: remaining bg_lock waits only IOSurface texture
+creation (bgmtl.m:2641) and buffer creation (1325), 13 waits 107 ms; no replaceRegion/admission waits.
+Framebench same session (research/metal-m10): m10wr8 fb-base2 Home B 36.8, CC A 34.0, CC B 33.6; m10ul2 (temporary
+install, no faults) fb-ul2/fb-ul2b Home B 37.2/37.1, CC A 32.9/33.2, CC B 33.1/32.8 -> no change. Restored m10wr8
+byte-exact (readback fa400aa8/3edf3ba9, backboardd 29482); phone state normal (bench idle, GPU 588, 72430/72430).
+Why no gain (research/metal-m10/seq-ul2.txt): motion CBs already overlap encode with the previous CB; per CB
+replay 20-30 ms and GPU 17-24 ms, both > a refresh. The replay CPU is diffuse driver work (threads-ul2.txt:
+fd5_emit_state, rwa_render_draw, ir3_emit_ubos memmove, bgReplayFrom memcmp, sweet_gpu_flush_all xcall); no single
+hot spot like the old memcpy. Next lead: cut per-draw replay cost (state emission per draw) or overlap replay of
+CB N+1 with GPU of CB N more deeply; GPU ~20 ms per motion CB is a co-limit. d0aaa02 is in the tree for future
+builds (all suites pass) but has had no panel check.
+
 ### 2026-11-04: m10wr8 KEPT (user: "Yes, looks good! Install it"); M10 copy fix closed. Installed: m10wr8 + env BGMTL_ASYNC=1, BGMTL_UBWC=1
 
 Phone readback: libbgmtl fa400aa8, libbgair 3edf3ba9 (= xnu/out-mesa-m10wr8), bgmtl-bb.env unchanged, backboardd 26436.
