@@ -1,0 +1,83 @@
+Subject: [PATCH] jasmine-j0142: AICL thresholds left as ABL set them, wall chargers at 1.8 A (as stock)
+
+On the user's 120 W Xiaomi charger (DCP) AICL cut the input from 1500 to 1050 mA at once and
+the battery got only +450 mA. The init sequence wrote mainline qcom_smbx's USBIN 5V / continuous
+AICL thresholds 0x3 ("these bits aren't documented anywhere"); stock Xiaomi qpnp-smb2 never
+writes them. Now left as found (chgaicl=1 restores the old writes for A/B), the DCP/OCP/float
+input limit is 1800 mA as stock's DCP_CURRENT_UA for CONFIG_MACH_MI (chgicl= up to 3000), and
+every SWEET CHG line shows the AICL thresholds, options and status.
+---
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -287,7 +287,9 @@
+  * Boot-args: chgmv= float voltage in mV (default 4300 since j0141, was the
+  * Nura 3950 = ~60 % full; stock fv-max 4400; 3600..4400), chgfcc= fast-charge
+  * current in mA (default 2000 since j0141, was 1000; stock fcc-max 2900;
+- * 100..2900), chgicl= wall-charger input limit in mA (default 1500;
++ * 100..2900), chgicl= wall-charger input limit in mA (default 1800 since
++ * j0142 as stock Xiaomi's DCP_CURRENT_UA, was 1500; chgaicl=1 writes mainline's
++ * undocumented 0x3 AICL thresholds again, default 0 leaves ABL's as stock does;
+  * 500..2000), sweetchg=0 leaves the charger alone. Registers are offsets
+  * from the charger base, as in qcom_smbx.c.
+  */
+@@ -400,8 +402,6 @@
+ 	{ CHG_USBIN_ICL_OPTIONS, 0x03, 0x02 },                  /* USB51 500 mA until a type is known */
+ 	{ CHG_SNARL_BARK_BITE_WD, 0xff, 0x00 },                 /* charger watchdog off */
+ 	{ CHG_WD_CFG, 0x80 | 0x02 | 0x40, 0x00 },
+-	{ CHG_USBIN_5V_AICL_THR, 0x07, 0x03 },
+-	{ CHG_USBIN_CONT_AICL_THR, 0x3f, 0x03 },
+ 	{ CHG_USBIN_AICL_OPTIONS, 0x80 | 0x20 | 0x08 | 0x04 | 0x02 | 0x01, 0x04 | 0x02 | 0x01 },
+ 	{ CHG_PRE_CURRENT, 0x3f, 500000 / 25000 },
+ 	{ CHG_THERMREG_SRC_CFG, 0x04 | 0x02, 0x00 },            /* only the die comparator */
+@@ -463,11 +463,17 @@
+ 	(void)chg_rd8(CHG_ICL_STATUS, &icl);
+ 	(void)chg_rd8(CHG_FLOAT_VOLTAGE, &fv);
+ 	(void)chg_rd8(CHG_APSD_RESULT, &apsd);
++	uint32_t a5 = 0, ac = 0, ao = 0, as = 0;
++	(void)chg_rd8(CHG_USBIN_5V_AICL_THR, &a5);
++	(void)chg_rd8(CHG_USBIN_CONT_AICL_THR, &ac);
++	(void)chg_rd8(CHG_USBIN_AICL_OPTIONS, &ao);
++	(void)chg_rd8(0x60A, &as);              /* MISC AICL_STATUS: bit1 fail, bit0 done */
+ 	struct sweet_fg f = { 0 };
+ 	bool fgok = sweet_fg_read(&f) == 0;
+-	printf("SWEET CHG: %s: usb %s (apsd %#x, limit %u mA), %s, input limit %u mA, float %u mV, status2 %#x, battery %d mV %d mA%s\n",
++	printf("SWEET CHG: %s: usb %s (apsd %#x, limit %u mA), %s, input limit %u mA, float %u mV, status2 %#x, battery %d mV %d mA%s; aicl thr5v %#x cont %#x opt %#x status %#x\n",
+ 	    why, (pp & 0x11) == 0x11 ? "online" : "offline", apsd & 0x7f, type_ua / 1000,
+-	    chg_states[st1 & 7], icl * 25, (3487500 + fv * 7500) / 1000, st2, f.mv, f.ma, fgok ? "" : " (no gauge)");
++	    chg_states[st1 & 7], icl * 25, (3487500 + fv * 7500) / 1000, st2, f.mv, f.ma, fgok ? "" : " (no gauge)",
++	    a5, ac, ao, as);
+ }
+ 
+ /*
+@@ -505,7 +511,7 @@
+ static void
+ pmic_charger_thread(void *arg, wait_result_t result)
+ {
+-	uint32_t icl_wall = 1500, fcc = 2000, last_type = ~0u;
++	uint32_t icl_wall = 1800, fcc = 2000, last_type = ~0u;
+ 	int tzone = -1;
+ 	unsigned ticks = 0;
+ 	bool online = false, reran = false;
+@@ -514,7 +520,7 @@
+ 	(void)result;
+ 	(void)PE_parse_boot_argn("chgicl", &icl_wall, sizeof(icl_wall));
+ 	(void)PE_parse_boot_argn("chgfcc", &fcc, sizeof(fcc));
+-	icl_wall = icl_wall < 500 ? 500 : (icl_wall > 2000 ? 2000 : icl_wall);
++	icl_wall = icl_wall < 500 ? 500 : (icl_wall > 3000 ? 3000 : icl_wall);
+ 	fcc = fcc < 100 ? 100 : (fcc > 2900 ? 2900 : fcc);
+ 	(void)chg_update(CHG_FAST_CURRENT, 0xff, (uint8_t)(fcc * 1000 / 25000));
+ 	for (;;) {
+@@ -646,6 +652,12 @@
+ 			err++;
+ 		}
+ 	}
++	uint32_t aicl_old = 0;
++	(void)PE_parse_boot_argn("chgaicl", &aicl_old, sizeof(aicl_old));
++	if (aicl_old) {
++		err += chg_update(CHG_USBIN_5V_AICL_THR, 0x07, 0x03) != 0;
++		err += chg_update(CHG_USBIN_CONT_AICL_THR, 0x3f, 0x03) != 0;
++	}
+ 	(void)PE_parse_boot_argn("chgmv", &mv, sizeof(mv));
+ 	mv = mv < 3600 ? 3600 : (mv > 4400 ? 4400 : mv);
+ 	err += chg_update(CHG_FLOAT_VOLTAGE, 0xff, (uint8_t)((mv * 1000 - 3487500) / 7500)) != 0;
