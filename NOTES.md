@@ -7,6 +7,18 @@
 - Likely cause (not proven): com.apple.fairplayd.H2 is deleted from launchd by tools/sweet-root-tweaks.py (it exited
   at once, "no hardware", 2026-10-21) and there is no FairPlay kernel side; adid runs but logs nothing. Same failure
   would hit anything that needs an AMS/Mescal signature (App Store, WeatherKit). No fix attempted.
+- Follow-up ~21:00 (phone untouched otherwise; files left in /private/var/tmp: fptrace.dylib, envrun, fptrace.log):
+  /usr/sbin/fairplayd.H2 and its LaunchDaemon plist are still on the root (only the launchd cache job is gone).
+  Plist MachServices: com.apple.fairplayd, com.apple.fairplayd.versioned, com.apple.unfreed HostSpecialPort 17
+  (= HOST_UNFREED_PORT, the upcall port of Apple's closed FairPlayIOKit kext; our XNU has no FairPlay kernel side).
+  Run by hand (root or uid 501, via research/fairplay/envrun + fptrace.dylib interposer, sources ignored in git):
+  container lookup, then main returns, exit 0, no IOKit/console lines. Interposed open/mach_msg/IOKit/
+  bootstrap_check_in/MG/exit never fire: the obfuscated daemon uses inline syscalls/traps, so only a kernel-side
+  syscall trace could show the exact check. main is control-flow-flattened (indirect br), static reading impractical.
+- Verdict: real FairPlay is not reachable. Even with the kext faked, Mescal signatures come from per-device keys that
+  Apple provisions for real iPhones, and Apple's server rejects unsigned requests (Weather's own analytics upload with
+  the "SigningFailure" fallback header got HTTP 401). Only realistic way to get weather: hook WeatherDaemon/WeatherKit
+  to fetch from a third-party API and fill its data model (large, unscoped). Not started.
 
 ### 2026-11-05 ~20:20: j0138 passive scan dwell 110 ms + `wscan`; phone temp-booted on scan138 (set to 110 50 500)
 - xnu/patches/j0138-jasmine-wifi-scan-times.patch: passive dwell 110 ms when wifid gives none (was 150); min/max rest
