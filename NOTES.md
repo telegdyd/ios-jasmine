@@ -1,4 +1,15 @@
-### 2026-11-05 ~13:10: Maps black map = CA "detached layer" whose scaler copy never happens (cause found, NOT fixed)
+### 2026-11-05 ~13:30: Maps black map FIXED by CA_DISABLE_DETACHED=1 in bgmtl-bb.env (user: "you just solved it")
+- Fix: /private/var/tmp/bgmtl-bb.env = `BGMTL_ASYNC=1
+BGMTL_UBWC=1
+CA_DISABLE_DETACHED=1
+` (QuartzCore debug env,
+  found in ~/ios-work/qc/QuartzCore strings: CA_DISABLE_DETACHED / CA_PRINT_DETACHING / CA_COLOR_DETACHED). Map stays
+  visible. Maps still freezes at times (next problem). Poster env back to SDR + Maps LOG_DIR + Maps FORCE_1X.
+- Debug sampler committed (Metal b22360a, off unless BGMTL_DUMP_AFTER). backboardd now runs the dump146 build of
+  the current tree in /usr/local/bin (was 0873319b, backup research/maps-render/backup-bb); /usr/local/p same.
+- Below: how it was found.
+
+### 2026-11-05 ~13:10: Maps black map = CA "detached layer" whose scaler copy never happens
 - Metal fixes for Maps (mesa/metal): 921ae75 BGMTL_FORCE_1X (Maps: MSAA demoted, set in poster env), 2a84766
   BG_MAX_BINDINGS 31, 3202342 Clear shader address space from pointer type (184 refusals/run -> 0, verified).
   User after FORCE_1X: freezes short and recover; map still goes black after loading, back briefly on relaunch.
@@ -23,7 +34,7 @@
 - Phone state: kernel slow135 (temp boot). /usr/local/p AND /usr/local/bin = dump146 libs (debug sampling);
   backboardd originals backed up in research/maps-render/backup-bb (libbgmtl 0873319b...). bgmtl-bb.env has
   BGMTL_DUMP_* lines added (restore: `BGMTL_ASYNC=1\nBGMTL_UBWC=1\n`); poster env has Maps:BGMTL_DUMP_* lines.
-- NEXT: find what makes CA detach (QuartzCore strings/disasm around detachable_layer_impl /
+- (done, see above) find what makes CA detach (QuartzCore strings/disasm around detachable_layer_impl /
   supports_detach_flags_p, IOMFB capability it reads; WSL qc extraction from the 16.7.16 IPSW in progress,
   ~/ios-work/dsc2, ~/ios-work/qc) and turn detaching off (CA debug env, or the IOMFB capability our kernel
   reports). Then restore normal libs/env.
