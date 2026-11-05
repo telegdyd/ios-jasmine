@@ -24,6 +24,23 @@
   3 latch/epoch invalid, 20 terminal); no WAKE after ACCEPT = presenter parked and never re-armed (its condvar
   IOLockSleep has no timeout). Latch retire reads only CTL_FLUSH & fFlushMask; a 150 ms timeout retire sets fShownID
   but not fLatchedSerial (then SwapWait cannot complete).
+- j0133 first build panicked at boot (trace read sweet_gpu_completed() before sg.mem was mapped); fixed c1017a7.
+  Trace at the Maps freeze (research/maps-hang/netlog-latch133b-freeze.txt): own swaps 398/399 `ADMIT ... ticket-fail
+  reason=16 ms=100` in swap()'s sync copy path -> rejectFrame(16) returns success without presenting -> lost.
+- j0134 (3a7316f): that ticket timeout retries every 100 ms up to 1 s (sweetfb_ticketgpu=0 off). Still froze
+  (netlog-tkt134): frames waited >1 s; GPU completed only ~600->623 in the window (Maps' jobs ahead on the ring).
+  Note: ACCEPT `seq` is the surface's last GPU write, not the ticket's seqno; a ticket is ready only once SEALed.
+- j0135 (4d65667, kernel slow135, image shim/out/shim-boot-slow135-tmp.img): every display bound on own frames
+  (ticket, gpuSeqno, present scope 200 ms, queue admission) keeps waiting while the GPU completed a job in the
+  last 3 s (sweetfb_slow=0 off). User: Maps renders, goes black, comes back after leaving/returning, then froze.
+  That freeze (netlog-slow135) = REAL GPU HANG: completed 1023 of 1032 not moving; no "slow frame" line ever.
+  First run of the safe j0129 `gpu hang` dump (phone survived): stuck in job 1024 = BACKBOARDD's compositor job
+  (IB1 802614000 = its ib3), RBBM_STATUS d301b1c1, STATUS3 00e00303, HW_FAULT 0, PROTECT 0, no SMMU fault; the
+  stuck swap composites Maps' drawable (surface 148 pid 275) + backboardd surface 7. Maps' surfaces are not UBWC
+  (Maps-275.log `fd5 ubwc ... ok 0`); backboardd UBWC only on its own render targets. IB1/IB2 dwords in the log
+  (netlog-slow135.txt ~6156) not decoded yet.
+- DeepSeek account out of credit (ACCOUNT_QUOTA) since ~02:45; Claude doing the coding.
+- NEXT: option 2 (Maps without 4x MSAA: Maps-only supportsTextureSampleCount answer), decode the hang IBs.
 
 ### 2026-11-05: j0136 per-layer mixed-swap bounds, no fallback for client swaps, requeue (REVERTED in 1b05f3e)
 Result on the j0135 kernel (logs/netlog-gate135.txt:6330-6365): swap 618 was treated
