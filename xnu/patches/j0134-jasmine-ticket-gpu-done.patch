@@ -1,0 +1,237 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jasmine <jasmine@localhost>
+Date: Fri, 6 Nov 2026 03:00:00 +0100
+Subject: [PATCH] jasmine-j0134: retry display render-ticket waits to GPU completion
+
+The Maps freeze trace (netlog-latch133b) shows own backboardd swaps in the
+synchronous copy path failing at sweet_surface_cpu_access(held[i], true)
+-> sweet_ticket_wait() after 100 ms, then rejectFrame(16) returning success
+without present()/noteShown().  fEndID never advances, so CA's SwapWait on the
+previous page can never complete.
+
+What the wait is: sweet_ticket_wait() -> sweet_ticket_ready() succeeds only
+for a SEALed ticket (t->status == 1) with a recorded t->seqno, once
+sweet_gpu_completed() has passed that seqno.  t->seqno is set only by
+sweet_ticket_end(), i.e. userspace's SEAL/write-end, and is validated against
+a successful post-BEGIN submit proof.  The ACCEPT trace's `seq` is NOT that
+value: j0133 prints held[i]->gpuSeqno, the last successful GPU job that wrote
+the surface.  So c >= the ACCEPT seq does not prove the ticket's own submit is
+done; the ticket can be unsealed or sealed with a newer seqno.  There is no
+safe "GPU done" readiness for an unsealed ticket (it has no recorded seqno),
+so (a) is the existing sealed-ticket condition; the new TICKET trace records
+it.  Unsealed/open tickets keep waiting.
+
+j0134 (default on, boot-arg sweetfb_ticketgpu=0 disables both):
+- swap() sync copy path: retry a kIOReturnTimeout from
+  sweet_surface_cpu_access() every 100 ms until a 1000 ms frame deadline; a
+  success after a retry is traced as TICKET gpu-done.  Any other error, or the
+  deadline, keeps the existing rejectFrame(16) path unchanged.
+- queuePresent(): trace TICKET gpu-done once per sealed ticket when
+  sweet_ticket_ready() declares it ready on GPU completion.
+- j0133 trace ring: new TICKET kind; no existing event changes.
+
+No build or boot.
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 128 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 128 insertions(+), 2 deletions(-)
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index e5fe169..db08992 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -156,6 +156,19 @@ static bool sweet_fb_sleeping;
+  * from the first unblank on and slept the whole 3 ms, twice per frame.
+  */
+ static bool sweet_fb_wait0;
++/*
++ * j0134 (default on, boot-arg sweetfb_ticketgpu=0 off): the display's synchronous
++ * copy path retries a render-ticket timeout for up to 1000 ms instead of dropping the
++ * frame after the ticket's own 100 ms bound.  A sealed ticket whose GPU seqno has
++ * completed is already ready (sweet_ticket_ready()); an unsealed one is still waiting
++ * for userspace's SEAL (the write-end), which t->seqno is only recorded with.
++ */
++static bool sweet_fb_ticketgpu_on = true;
++static bool
++sweet_fb_ticketgpu(void)
++{
++	return sweet_fb_ticketgpu_on;
++}
+ static uint64_t sweet_fb_slept_us, sweet_fb_spun_us;
+ 
+ /*
+@@ -782,6 +795,9 @@ AppleCLCD::start(IOService *provider)
+ 	uint32_t wait0 = 1;
+ 	PE_parse_boot_argn("sweetfb_wait0", &wait0, sizeof(wait0));
+ 	sweet_fb_wait0 = wait0 != 0;
++	uint32_t ticketgpu = 1;
++	PE_parse_boot_argn("sweetfb_ticketgpu", &ticketgpu, sizeof(ticketgpu));
++	sweet_fb_ticketgpu_on = ticketgpu != 0;
+ 	if (queue && (!sleep || topaz || !fScaler || console || !fFlipVA[0] || !fFlipVA[1] || sweet_fb_nohold())) {
+ 		IOLog("SWEET FB: queue refused: requires sleep, jasmine scaler, flip buffers, holds and GUI\n");
+ 		queue = 0;
+@@ -1612,6 +1628,10 @@ sweet_fb_diag_stuck(AppleCLCD *fb, uint32_t asked, uint64_t serial, uint64_t cli
+  * carries the GPU's completed seqno and its last submitted seqno. The ring is printed by "fb
+  * trace" (bsd/dev/sweet_usb.c) and automatically on the first swapWait stuck and on queueFallback.
+  * No IOLog happens while the ring or the framebuffer lock is held.
++ *
++ * j0134 adds TICKET: a sealed ticket declared ready because the GPU passed its own
++ * submit seqno (queue admission, and a sync copy path that succeeded after a retry),
++ * each sync copy path retry, and the final failure that takes rejectFrame(16).
+  */
+ #define SWEET_FB_TRACE_ENTRIES  64
+ #define SWEET_FB_TRACE_END_SLOTS 16
+@@ -1637,6 +1657,14 @@ enum {
+ 	SWEET_FB_TR_WAITLATCH,
+ 	SWEET_FB_TR_POWER,
+ 	SWEET_FB_TR_DRAIN,
++	SWEET_FB_TR_TICKET,     /* j0134: sealed ticket ready on GPU completion / sync-path retry */
++};
++
++/* j0134 TICKET 'why' codes. */
++enum {
++	SWEET_FB_TR_TICKET_GPU_DONE = 1,
++	SWEET_FB_TR_TICKET_RETRY,
++	SWEET_FB_TR_TICKET_FAIL,
+ };
+ 
+ /* Admission outcomes (the ADMIT line's word). */
+@@ -1870,6 +1898,42 @@ sweet_fb_trace_accept(AppleCLCD *fb, uint32_t id, uint64_t serial, uint32_t epoc
+ 	sweet_fb_trace_end_at(id, 0, serial);
+ }
+ 
++/* j0134: a render ticket's state at the display's readiness decision, or the sync copy
++ * path's retry.  status/seqno come from the ticket; 'why' says which decision this is. */
++static void
++sweet_fb_trace_ticket(uint32_t id, uint32_t layer, uint32_t surface, uint32_t status,
++    uint32_t tseq, uint32_t done, uint32_t why)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_TICKET, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.a = layer;
++	e.b = status;
++	e.c = tseq;
++	e.d = done;
++	e.flush = surface;
++	e.ok = why;
++	sweet_fb_trace_put(&e);
++}
++
++/* Same, for a surface whose ticket is read under fLock; the caller must not hold it. */
++static void
++sweet_fb_trace_ticket_surface(uint32_t id, uint32_t layer, SweetSurface *s, uint32_t why)
++{
++	uint32_t status = 0, tseq = 0, surface = s != NULL ? s->id : 0;
++	uint32_t done = sweet_gpu_completed();
++	AppleCLCD *fb = sweet_fb_main;
++	if (s != NULL && fb != NULL && fb->fLock != NULL) {
++		IOLockLock(fb->fLock);
++		if (s->renderTicket != NULL) {
++			status = s->renderTicket->status;
++			tseq = s->renderTicket->seqno;
++		}
++		IOLockUnlock(fb->fLock);
++	}
++	sweet_fb_trace_ticket(id, layer, surface, status, tseq, done, why);
++}
++
+ static void
+ sweet_fb_trace_presenter(AppleCLCD *fb, uint32_t phase)
+ {
+@@ -2397,6 +2461,14 @@ sweet_fb_trace_render(char *out, size_t len, const char *why)
+ 				    ms, us, e->a, e->b, e->waiting, e->accepted, e->latchValid, e->latch,
+ 				    e->d, e->ctl, e->flush, e->done, e->submit);
+ 				break;
++			case SWEET_FB_TR_TICKET:
++				TADD("SWEET FB: trace: t=%llu.%03llu TICKET id=%u ser=%llu layer=%u surf=%u why=%s "
++				    "status=%u tseq=%u done=%u c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->a, e->flush,
++				    e->ok == SWEET_FB_TR_TICKET_GPU_DONE ? "gpu-done" :
++				    e->ok == SWEET_FB_TR_TICKET_RETRY ? "retry" : "fail",
++				    e->b, e->c, e->d, e->done, e->submit);
++				break;
+ 			default:
+ 				TADD("SWEET FB: trace: t=%llu.%03llu event=%u id=%u c=%u s=%u\n",
+ 				    ms, us, e->kind, e->id, e->done, e->submit);
+@@ -2665,8 +2737,47 @@ AppleCLCD::swap(const uint8_t *rec)
+ 					sweet_hold_set(held, false);
+ 					return kIOReturnAborted;
+ 				}
++				/*
++				 * j0134 (b): the ticket's own bound is 100 ms, but under a heavy GPU
++				 * (Maps) the last submit of a frame's ticket can still be queued behind
++				 * other work.  Keep re-checking for up to 1000 ms; the old single 100 ms
++				 * probe returned success without presenting, so fEndID never advanced and
++				 * the client's SwapWait could never complete.  A real fault still takes
++				 * the existing rejectFrame(16) path.
++				 */
++				uint64_t ticketUntil = 0;
++				if (sweet_tickets_enabled() && sweet_fb_ticketgpu()) {
++					clock_interval_to_deadline(1000, kMillisecondScale, &ticketUntil);
++				}
+ 				for (unsigned i = 0; i < 4; i++) {
+-					if (sweet_tickets_enabled() && held[i] && sweet_surface_cpu_access(held[i], true) != kIOReturnSuccess) {
++					if (!sweet_tickets_enabled() || !held[i]) {
++						continue;
++					}
++					IOReturn ticketReady;
++					bool retried = false;
++					for (;;) {
++						ticketReady = sweet_surface_cpu_access(held[i], true);
++						if (ticketReady == kIOReturnSuccess) {
++							if (retried && sweet_fb_ticketgpu()) {
++								sweet_fb_trace_ticket_surface(trace_id, i, held[i],
++								    SWEET_FB_TR_TICKET_GPU_DONE);
++							}
++							break;
++						}
++						if (ticketReady != kIOReturnTimeout || !sweet_fb_ticketgpu() ||
++						    mach_absolute_time() >= ticketUntil) {
++							if (sweet_fb_ticketgpu()) {
++								sweet_fb_trace_ticket_surface(trace_id, i, held[i],
++								    SWEET_FB_TR_TICKET_FAIL);
++							}
++							break;
++						}
++						retried = true;
++						sweet_fb_trace_ticket_surface(trace_id, i, held[i],
++						    SWEET_FB_TR_TICKET_RETRY);
++						/* sweet_surface_cpu_access already waited its 100 ms bound. */
++					}
++					if (ticketReady != kIOReturnSuccess) {
+ 						SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_TICKET_FAIL, 16);
+ 						rejectFrame(get32(rec, 0x50), 16, kIOReturnAborted);
+ 						sweet_hold_set(held, false);
+@@ -2967,17 +3078,32 @@ AppleCLCD::queuePresent(void)
+ 	for (unsigned i = 0; i < 4; i++) { if (tickets[i] != NULL) { tmask |= 1u << i; } }
+ 	uint64_t ticketStart = mach_absolute_time(), lastTicketLog = 0;
+ 	uint32_t lastLag = 0;
+-	bool firstPoll = true;
++	bool firstPoll = true, gpuDoneLogged[4] = {};
+ 	while (!terminal()) {
+ 		uint32_t done = sweet_gpu_completed();
+ 		uint32_t iterLag = 0;
+ 		ready = true;
+ 		if (tracked) { IOLockLock(fLock); }
++		/*
++		 * j0134 (a): sweet_ticket_ready() already treats a sealed ticket (SEAL is
++		 * userspace's write-end) with a recorded seqno as ready once the GPU has passed
++		 * that seqno.  An unsealed/open ticket has no recorded seqno yet, so treating
++		 * its surface as ready on GPU completion would be guessing; it keeps waiting.
++		 */
+ 		for (unsigned i = 0; i < 4; i++) {
+ 			if (tickets[i]) {
+ 				IOReturn r = sweet_ticket_ready(tickets[i], done, &seq[i]);
+ 				if (r != kIOReturnSuccess) { ready = false; iterLag |= 1u << i; }
+ 				if (r != kIOReturnSuccess && r != kIOReturnNotReady) { ticketError = r; }
++				if (r == kIOReturnSuccess && !gpuDoneLogged[i] && sweet_fb_ticketgpu() &&
++				    tickets[i]->status == 1 && tickets[i]->seqno &&
++				    (int32_t)(done - tickets[i]->seqno) >= 0) {
++					/* j0134 (a): the sealed ticket's own submit seqno has completed. */
++					sweet_fb_trace_ticket(qid, i, get32(rec, 0x54 + 4 * i),
++					    tickets[i]->status, tickets[i]->seqno, done,
++					    SWEET_FB_TR_TICKET_GPU_DONE);
++					gpuDoneLogged[i] = true;
++				}
+ 			} else if (seq[i] && (int32_t)(done - seq[i]) < 0) { ready = false; iterLag |= 1u << i; }
+ 		}
+ 		if (tracked) { IOLockUnlock(fLock); }
