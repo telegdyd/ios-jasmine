@@ -1,3 +1,33 @@
+### 2026-11-05 ~13:10: Maps black map = CA "detached layer" whose scaler copy never happens (cause found, NOT fixed)
+- Metal fixes for Maps (mesa/metal): 921ae75 BGMTL_FORCE_1X (Maps: MSAA demoted, set in poster env), 2a84766
+  BG_MAX_BINDINGS 31, 3202342 Clear shader address space from pointer type (184 refusals/run -> 0, verified).
+  User after FORCE_1X: freezes short and recover; map still goes black after loading, back briefly on relaunch.
+- Diagnosis with env-gated debug sampling in src/bgmtl.m (NOT committed, ~140 lines; BGMTL_DUMP_AFTER=name,..|*,
+  BGMTL_DUMP_TEXSIZE=WxH, BGMTL_DUMP_EVERY/MAX; logs draw/sampled-texture stats, per-CB IOSurface targets with IDs,
+  every IOSurface wrap, first write per surface). Builds xnu/out-mesa-dump140..146.
+  Observed (logs/netlog-dump145b.txt, netlog-dump146b.txt, research/maps-render/d140/*.log):
+  - Maps draws correct bright frames into its own 3 IOSurfaces (kernel `surfaces`: creator Maps = 3 surfaces).
+  - backboardd composites Maps' layer from a 4th 828x1792 surface (id 92 in dump146 run, 686/696 before) that
+    backboardd itself created, wraps read-only, never draws/blits into via Metal: all zeros -> black map. It shows
+    briefly early (black flash) then permanently. Maps' UI stays live (user: buttons/sheet respond).
+  - At Maps start backboardd calls IOSurface sel 43 and matches AppleM2ScalerCSCDriver -> none (netlog-dump146b
+    ~4919). QuartzCore has CA::WindowServer::IOMFBDisplay::detach_layer / copy_surface(..., ScalerStatistics) /
+    detachable_layer_impl / supports_detach_flags_p (prof-syms/QuartzCore.txt): CA detaches the full-screen
+    CAMetalLayer to a display plane and copies it with the M2 scaler into its own surface; no scaler here ->
+    the copy never happens. Earlier kernel log shows the multi-layer swap (`swap 583 layer 0 surface 688` = Maps).
+  - After ~10 s Maps submits no GPU work at all (one `SWEET GPU: Maps: 198 submits` line, then none), even when
+    dragging; threads idle. Not yet explained (may follow from the detach).
+  - Ruled out: format-500 refusals (surface 29, 1105x1160 YCbCr, pre-existing); "lock for CPU access failed"
+    (my own sampler reading mid-replay before SEAL); render tickets off (sweetgpu_tickets=0 would fail every CB
+    writing a surface: bg_write_admission.h; image shim/out/shim-boot-notkt-tmp.img built, NOT to be booted).
+- Phone state: kernel slow135 (temp boot). /usr/local/p AND /usr/local/bin = dump146 libs (debug sampling);
+  backboardd originals backed up in research/maps-render/backup-bb (libbgmtl 0873319b...). bgmtl-bb.env has
+  BGMTL_DUMP_* lines added (restore: `BGMTL_ASYNC=1\nBGMTL_UBWC=1\n`); poster env has Maps:BGMTL_DUMP_* lines.
+- NEXT: find what makes CA detach (QuartzCore strings/disasm around detachable_layer_impl /
+  supports_detach_flags_p, IOMFB capability it reads; WSL qc extraction from the 16.7.16 IPSW in progress,
+  ~/ios-work/dsc2, ~/ios-work/qc) and turn detaching off (CA debug env, or the IOMFB capability our kernel
+  reports). Then restore normal libs/env.
+
 ### 2026-11-05 ~01:30: j0133-j0136 REVERTED (1b05f3e); back on j0129-j0132; investigating why accepted swaps never reach the panel
 - The four entries below (j0133-j0136) describe workarounds that are now REVERTED: on device each one, once Maps
   opened, ended in the permanent synchronous QUEUE FALLBACK, where backboardd's render tickets are suspended and
