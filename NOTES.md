@@ -1,3 +1,22 @@
+### 2026-11-05 ~20:05: j0137 Wi-Fi scans as wifid asks (channels, dwell, active); phone temp-booted on scan137b
+- xnu/patches/j0137-jasmine-wifi-scan-as-asked.patch (on j0136): topaz_sta.c passes redwood_sta_scan to the new
+  topaz_wlan_scan_on(); scan_send_start uses its channels (unknown dropped, none = all), dwell (active 20-120,
+  passive 110-300; 0 = 50/150), type 2 = passive, others active with one SSID entry + CCK/OFDM rate flags. Chan list:
+  PASSIVE flag only outside 2412-2472 / 5180-5240, DFS on 5260-5720. Boot scans unchanged (full, passive). Scan
+  request wakes the idle loop. Scan-done line counts probe responses.
+- Kernel scan137b (image shim/out/shim-boot-scan137b-tmp.img, slow135 recipe), temp-booted 20:00, idlepoll back to
+  defaults 5/5 after the boot. CAUTION: the first scan137b build (19:57) was empty - patch regenerated from the
+  wrong directory, build log "Skipping patch ... No valid patches"; check `grep "Skipping patch.*j013"` in
+  ~/topaz-xnu-build/build.log after builds. scan137 (19:45, without the probe counter) did contain j0137.
+- Results (logs/netlog-scan137*.txt, research/cpu-idle-20261105/scan137-wifi-list.png): wifid's 2-ch active scan
+  106 ms (was ~9.5 s for any scan), 3-ch passive 0.56 s, 10-ch passive 2.1 s (associated), join 9.4-9.7 s after modem
+  start (14.7 before). Settings > Wi-Fi asks 13 ch active (1.3 s: first results), then 37 ch (6.8-6.9 s), then
+  24 ch 5 GHz (5.5 s). Screens: list empty at +3 s (still sliding in), filled at +7/+8 s, 5 GHz network after the
+  37-ch pass (~9-10 s). User saw ~30 s on the first open (19:51) - the first 13-ch pass then returned only the joined
+  network. Probe responses: few (2 in 13 ch, 5 in 37 ch) - probes go out, most results still come from beacons.
+- Remaining time is the 5 GHz listen-only channels (20 x 150 ms + home-channel rest 50-500 ms each while associated).
+  Not tried: passive dwell 110 ms when wifid gives none, shorter rest times.
+
 ### 2026-11-05 ~20:00: j0136 idle poll backoff (modem + USB loops), temp-booted; Wi-Fi scan slowness diagnosed
 - xnu/patches/j0136-jasmine-idle-poll-backoff.patch: modem_watch and sweet_usb ud_thread poll every 1 ms only while
   busy (traffic, queued tx, bring-up/scan/join/leave, first 30 s), else every 5 ms; Wi-Fi transmit wakes the modem

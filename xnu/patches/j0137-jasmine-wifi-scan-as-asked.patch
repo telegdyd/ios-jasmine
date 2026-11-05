@@ -1,0 +1,278 @@
+Subject: [PATCH] jasmine-j0137: Wi-Fi scans as wifid asks for them (channels, dwell, active)
+
+User: scanning for networks is "like pulling teeth". topaz_sta.c dropped wifid's scan request
+(redwood_sta_scan: channels, dwell, passive, name) and the radio always ran the boot scan: all 37
+channels passive, 150 ms each plus up to 500 ms back on the home channel between channels while
+associated = ~9.5 s per scan (logs/netlog-idle136.txt: STARTED 63.8 s, done 73.2 s), even for
+wifid's frequent 1-3 channel requests (logs: type 2 3 channels 110 ms, type 1 1-2 channels,
+type 3 37 channels, ...).
+
+Now topaz_wlan_scan_on() takes wifid's channels (unknown ones dropped; none left = all), dwell
+(active 20-120 ms, passive 110-300 ms; 0 = ath10k's 50/150) and name. Scan type 2 stays passive;
+the others are active (one SSID entry: wifid's name or the wildcard, firmware adds CCK/OFDM rates)
+when at least one asked channel allows probing. The channel list marks PASSIVE only outside
+2.4 GHz 1-13 and 5180-5240 (probing allowed there everywhere), DFS on 5260-5720. The boot scans
+(first one + two repeats) stay full and passive. A scan request wakes the j0136 idle loop.
+The scan-done line also counts probe responses (proof that probes go out).
+
+---
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -5020,7 +5020,7 @@
+ 	uint8_t raw_ssid[32], raw_ssid_len; uint16_t freq, bintval, capab, ie_len; uint32_t last_ms; uint8_t ie[768];
+ };
+ static struct bss bss[64];
+-static uint32_t nbss, scans, scan_frames;
++static uint32_t nbss, scans, scan_frames, scan_probe_resps;   /* (j0137: probe responses of those) */
+ static volatile uint32_t api_scans_done;
+ 
+ /*
+@@ -5236,20 +5236,73 @@
+ static bool scan_started, scanning;
+ static unsigned next_scan_ms;
+ 
++/*
++ * j0137: a scan as wifid asks for it (redwood_sta_scan via topaz_sta.c): only its channels, its
++ * dwell, active (probe requests) unless it asks for a passive one. Probes go out only on channels
++ * where that is allowed everywhere (2.4 GHz 1-13, 5 GHz UNII-1); the others stay listen-only, the
++ * radar channels marked DFS. The kernel's own boot scans stay full and passive.
++ */
++struct w_scan_req {
++	uint16_t freqs[64];
++	uint32_t nfreq;                             /* 0: every channel */
++	bool passive;
++	uint32_t dwell_ms;                          /* 0: ath10k's 50 active / 150 passive */
++	uint8_t ssid[32], ssid_len;
++};
++static struct w_scan_req api_scan_req, cur_scan_req;
++
++static bool
++w_active_ok(uint32_t f)
++{
++	return (f >= 2412 && f <= 2472) || (f >= 5180 && f <= 5240);
++}
++
++static bool
++w_known_freq(uint32_t f)
++{
++	for (uint32_t i = 0; i < NFREQ; i++) {
++		if (scan_freqs[i] == f) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ static bool
+ scan_send_start(void)
+ {
+-	static uint8_t m[512];
++	static uint8_t m[768];
+ 	uint8_t *p = m, *c;
++	const struct w_scan_req *q = &cur_scan_req;
++	uint16_t fr[NFREQ];
++	uint32_t nf = 0;
++	bool any_active = false;
+ 	bzero(m, sizeof(m));
++	for (uint32_t i = 0; i < (q->nfreq ? q->nfreq : NFREQ) && nf < NFREQ; i++) {
++		uint16_t f = q->nfreq ? q->freqs[i] : scan_freqs[i];
++		if (w_known_freq(f)) {
++			fr[nf++] = f;
++			any_active |= w_active_ok(f);
++		}
++	}
++	if (nf == 0) {                              /* (nothing of ours asked for: every channel) */
++		for (; nf < NFREQ; nf++) {
++			fr[nf] = scan_freqs[nf];
++		}
++		any_active = true;
++	}
++	bool active = !q->passive && any_active;
++	uint32_t dwell_a = q->dwell_ms ? MAX(20u, MIN(q->dwell_ms, 120u)) : 50;
++	uint32_t dwell_p = q->dwell_ms ? MAX(110u, MIN(q->dwell_ms, 300u)) : 150;
++	uint32_t nssid = active ? 1 : 0;
+ 	c = wmi_put_tlv(p, TAG_START_SCAN_CMD, 100);
+ 	c = put32(c, 0xA000 | (scans + 1));         /* scan_id */
+ 	c = put32(c, 0xA000 | 1);                   /* scan_req_id */
+ 	c = put32(c, 0);                            /* vdev */
+ 	c = put32(c, 1);                            /* priority low */
+ 	c = put32(c, 0x001 | 0x002 | 0x004 | 0x008 | 0x100 | 0x010);   /* events */
+-	c = put32(c, 50);                           /* dwell active */
+-	c = put32(c, 150);                          /* dwell passive */
++	c = put32(c, dwell_a);                      /* dwell active */
++	c = put32(c, dwell_p);                      /* dwell passive */
+ 	c = put32(c, 50);                           /* min rest */
+ 	c = put32(c, 500);                          /* max rest */
+ 	c = put32(c, 0);
+@@ -5257,22 +5310,33 @@
+ 	c = put32(c, 0);
+ 	c = put32(c, 20000);                        /* max scan time */
+ 	c = put32(c, 5);                            /* probe delay */
+-	c = put32(c, (0x01 | 0x10) ^ 0x20);         /* passive, chan stat; probe-req filter inverted on TLV */
++	/* passive or active (+ CCK/OFDM rates in the probes), chan stat; probe-req filter inverted on TLV */
++	c = put32(c, ((active ? (0x04 | 0x08) : 0x01) | 0x10) ^ 0x20);
+ 	c = put32(c, 0);
+-	c = put32(c, NFREQ);
++	c = put32(c, nf);
+ 	c = put32(c, 1);                            /* bssids */
+-	c = put32(c, 0);                            /* ssids */
++	c = put32(c, nssid);                        /* ssids: one (wifid's, or the wildcard) when active */
+ 	c = put32(c, 0);                            /* ie_len */
+ 	c = put32(c, 3);                            /* num_probes */
+ 	p = c + 16;                                 /* mac addr + mask: zero */
+-	c = wmi_put_tlv(p, TAG_ARRAY_UINT32, NFREQ * 4);
+-	for (uint32_t i = 0; i < NFREQ; i++) {
+-		c = put32(c, scan_freqs[i]);
++	c = wmi_put_tlv(p, TAG_ARRAY_UINT32, nf * 4);
++	for (uint32_t i = 0; i < nf; i++) {
++		c = put32(c, fr[i]);
++	}
++	p = wmi_put_tlv(c, TAG_ARRAY_FIXED_STRUCT, nssid * 36);    /* struct wmi_ssid { len; ssid[32] } */
++	if (nssid) {
++		uint32_t l = MIN((uint32_t)q->ssid_len, 32u);
++		p = put32(p, l);
++		memcpy(p, q->ssid, l);
++		p += 32;
+ 	}
+-	p = wmi_put_tlv(c, TAG_ARRAY_FIXED_STRUCT, 0);
+ 	c = wmi_put_tlv(p, TAG_ARRAY_FIXED_STRUCT, 8);  /* bssid: broadcast */
+ 	memset(c, 0xFF, 6);
+ 	p = wmi_put_tlv(c + 8, TAG_ARRAY_BYTE, 0);
++	if (q->nfreq != 0 || active) {
++		LOG("t=%u ms: scan: %s, %u channels, dwell %u/%u ms%s", g_ms, active ? "active" : "passive", nf, dwell_a, dwell_p,
++		    q->ssid_len ? ", one name" : "");
++	}
+ 	return wmi_send(CMD_START_SCAN, m, (uint32_t)(p - m));
+ }
+ 
+@@ -5291,7 +5355,10 @@
+ 	p = wmi_put_tlv(p, TAG_ARRAY_STRUCT, NFREQ * (4 + 24));
+ 	for (uint32_t i = 0; i < NFREQ; i++) {
+ 		uint32_t mode = scan_freqs[i] < 4000 ? 1 : 0;
+-		uint32_t flags = mode | (1u << 7) | (1u << 11) | (scan_freqs[i] < 4000 ? 0 : (1u << 12));
++		/* j0137: PASSIVE (bit 7) only where probing is not allowed everywhere, DFS (bit 10) on the radar channels */
++		uint32_t f = scan_freqs[i];
++		uint32_t flags = mode | (w_active_ok(f) ? 0 : (1u << 7)) | (f >= 5260 && f <= 5720 ? (1u << 10) : 0) | (1u << 11) |
++		    (f < 4000 ? 0 : (1u << 12));
+ 		c = wmi_put_tlv(p, TAG_CHANNEL, 24);
+ 		c = put32(c, scan_freqs[i]);
+ 		c = put32(c, scan_freqs[i]);
+@@ -5308,6 +5375,8 @@
+ 	c = put32(c, 0);
+ 	memcpy(c, our_mac, 6);
+ 	bool b = wmi_send(CMD_VDEV_CREATE, v, sizeof(v));
++	bzero(&cur_scan_req, sizeof(cur_scan_req));
++	cur_scan_req.passive = true;                /* (the boot scans: every channel, passive) */
+ 	scanning = scan_send_start();
+ 	LOG("t=%u ms: scan: chan list (%u ch) %s, vdev %s, passive scan %s", g_ms, NFREQ, a ? "ok" : "FAILED",
+ 	    b ? "ok" : "FAILED", scanning ? "requested" : "FAILED");
+@@ -5566,7 +5635,8 @@
+ 	if (e[0] == 0x002 || e[0] == 0x040 || e[0] == 0x010) {
+ 		scanning = false;
+ 		scans++;
+-		LOG("t=%u ms: *** scan %u done (event %x): %u networks, %u beacons/probe responses, %u htt msdus ***", g_ms, scans, e[0], nbss, scan_frames, htt_msdus);
++		LOG("t=%u ms: *** scan %u done (event %x): %u networks, %u beacons/probe responses (%u probe responses), %u htt msdus ***", g_ms, scans, e[0], nbss,
++		    scan_frames, scan_probe_resps, htt_msdus);
+ 		next_scan_ms = scans < 3 ? g_ms + 10000 : 0;
+ 		api_scans_done++;
+ 	}
+@@ -5608,6 +5678,7 @@
+ 		return;                                 /* beacons and probe responses only */
+ 	}
+ 	scan_frames++;
++	scan_probe_resps += (f[0] >> 4) == 5;
+ 	if (s_state == S_UP && memcmp(f + 16, s_bssid, 6) == 0) {
+ 		w_rssi_note(hdr[1], true);              /* the joined AP's beacon */
+ 	}
+@@ -5692,6 +5763,8 @@
+ void (*topaz_wlan_ready_hook)(void);
+ bool topaz_wlan_ready(void);
+ int topaz_wlan_scan(void);
++int topaz_wlan_scan_on(const uint16_t *freqs, unsigned nfreq, bool passive, unsigned dwell_ms, const uint8_t *ssid,
++    unsigned ssid_len);
+ bool topaz_wlan_heard(unsigned index, struct topaz_wlan_bss *bss);
+ void topaz_wlan_address(uint8_t address[6]);
+ }
+@@ -5711,14 +5784,37 @@
+ 	memcpy(address, our_mac, 6);
+ }
+ 
++static void mw_kick(void);                  /* j0136, below */
++
+ int
+ topaz_wlan_scan(void)
+ {
++	return topaz_wlan_scan_on(NULL, 0, true, 0, NULL, 0);
++}
++
++int
++topaz_wlan_scan_on(const uint16_t *freqs, unsigned nfreq, bool passive, unsigned dwell_ms, const uint8_t *ssid,
++    unsigned ssid_len)
++{
+ 	if (!api_ready) {
+ 		return ENXIO;
+ 	}
++	struct w_scan_req *q = &api_scan_req;      /* (one asker at a time: redwood_sta's thread) */
++	bzero(q, sizeof(*q));
++	q->nfreq = freqs != NULL ? MIN(nfreq, 64u) : 0;
++	for (uint32_t i = 0; i < q->nfreq; i++) {
++		q->freqs[i] = freqs[i];
++	}
++	q->passive = passive;
++	q->dwell_ms = dwell_ms;
++	q->ssid_len = (uint8_t)MIN(ssid_len, 32u);
++	if (ssid != NULL) {
++		memcpy(q->ssid, ssid, q->ssid_len);
++	}
++	__atomic_thread_fence(__ATOMIC_RELEASE);
+ 	uint32_t before = api_scans_done;
+ 	api_scan_asked = true;
++	mw_kick();
+ 	for (int i = 0; i < 300 && api_scans_done == before; i++) {   /* 30 s */
+ 		IOSleep(100);
+ 	}
+@@ -7220,6 +7316,8 @@
+ 	}
+ 	bool scan_ok = scan_started && !scanning && !w_off_asked && (s_state == S_IDLE || s_state == S_UP);
+ 	if (scan_ok && api_scan_asked) {
++		__atomic_thread_fence(__ATOMIC_ACQUIRE);
++		cur_scan_req = api_scan_req;
+ 		api_scan_asked = false;
+ 		next_scan_ms = 0;
+ 		scanning = scan_send_start();
+@@ -7229,6 +7327,8 @@
+ 	}
+ 	if (scan_ok && !scanning && next_scan_ms != 0 && g_ms >= next_scan_ms) {
+ 		next_scan_ms = 0;
++		bzero(&cur_scan_req, sizeof(cur_scan_req));
++		cur_scan_req.passive = true;
+ 		scanning = scan_send_start();
+ 		LOG("t=%u ms: scan: passive scan %u %s", g_ms, scans + 1, scanning ? "requested" : "FAILED");
+ 	}
+diff --git a/bsd/dev/topaz_sta.c b/bsd/dev/topaz_sta.c
+--- a/bsd/dev/topaz_sta.c
++++ b/bsd/dev/topaz_sta.c
+@@ -27,6 +27,8 @@
+ extern void (*topaz_wlan_ready_hook)(void);
+ extern bool topaz_wlan_ready(void);
+ extern int topaz_wlan_scan(void);
++extern int topaz_wlan_scan_on(const uint16_t *freqs, unsigned nfreq, bool passive, unsigned dwell_ms, const uint8_t *ssid,
++    unsigned ssid_len);
+ extern bool topaz_wlan_heard(unsigned index, struct topaz_wlan_bss *bss);
+ extern void topaz_wlan_address(uint8_t address[6]);
+ extern int topaz_wlan_join(const uint8_t *ssid, unsigned ssid_len, const uint8_t *bssid, const uint8_t *pass, unsigned pass_len);
+@@ -56,9 +58,11 @@
+ }
+ 
+ static int
+-sta_scan(__unused const struct redwood_sta_scan *what)
++sta_scan(const struct redwood_sta_scan *what)
+ {
+-	return topaz_wlan_scan();
++	/* j0137: wifid's channels, dwell, passive/active and name go through to the radio */
++	return topaz_wlan_scan_on(what->frequencies, what->frequency_count, what->passive, what->dwell_ms, what->ssid,
++	           what->ssid_length);
+ }
+ 
+ static void
