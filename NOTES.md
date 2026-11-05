@@ -17,6 +17,13 @@
   admission/queuePresent/program/latch/retire + presenter wakeups/early returns + display power transitions;
   auto-dump on swapWait stuck / queueFallback, `fb trace` command). Build, boot, user opens Maps until freeze,
   read the trace: find where an accepted frame goes when the presenter is idle.
+- j0133-jasmine-latch-trace.patch written (DeepSeek, diagnostic only) and BUILT as kernel latch133 (01:50).
+  Trace ring: ACCEPT / PRESENTER WAKE / QP-ENTER / QP-TICKET / QP-CANCEL / WAITLATCH / QP-PROG / QP-EXIT reason /
+  NOTE / RETIRE-WAIT|OK / FALLBACK / POWER; auto-dump on swapWait stuck + fallback; `fb trace` on the command port.
+  Read the 191-type case: ACCEPT N, then PRESENTER WAKE + QP-ENTER N and QP-EXIT N reason (13 cancel, 2 not ready,
+  3 latch/epoch invalid, 20 terminal); no WAKE after ACCEPT = presenter parked and never re-armed (its condvar
+  IOLockSleep has no timeout). Latch retire reads only CTL_FLUSH & fFlushMask; a 150 ms timeout retire sets fShownID
+  but not fLatchedSerial (then SwapWait cannot complete).
 
 ### 2026-11-05: j0136 per-layer mixed-swap bounds, no fallback for client swaps, requeue (REVERTED in 1b05f3e)
 Result on the j0135 kernel (logs/netlog-gate135.txt:6330-6365): swap 618 was treated

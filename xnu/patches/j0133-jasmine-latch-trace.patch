@@ -1,0 +1,1667 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jasmine <jasmine@localhost>
+Date: Fri, 6 Nov 2026 01:30:00 +0100
+Subject: [PATCH] jasmine-j0133: trace queued swaps, the presenter and display power (diagnostic)
+
+Diagnostic only, no behaviour change. The clean-j0132 log netlog-revert.txt
+4490-4830 is the primary case: swap 191 was ADMITTED (accepted 191) but
+fShownID/fEndID/fProgramSerial stayed 189, while fQueueWaiting and
+fPresentBusy were both 0. So the presenter had already consumed and dropped
+the accepted record (or never re-armed for it), and its thread was parked.
+The 64-entry ring now records the whole path, including every presenter
+wakeup and every queuePresent exit, so the drop reason and the parked state
+are visible without any other log.
+
+Per-swap lines (all carry id and ser, the token serial, from the ACCEPT map):
+  BEGIN     SwapBegin: id, serial, epoch, queue mode.
+  ADMIT     swap(): SwapEnd decision. t = SwapEnd entry time; ms = time to
+            the decision; cand = queueCandidate(); tok = token found; wr =
+            a layer has displayWriters; avail = queue/present slot free;
+            outcome = queued/sync/direct/pending/reject/abort/sync-timeout/
+            ticket-fail/latch-fail; reason is the rejectFrame reason.
+  ACCEPT    fAcceptedSerial was advanced: id, serial, epoch, mode=queue/sync,
+            accepted/waiting/busy, q=fQueueActive, tickets bitmap, per-layer
+            gpuSeqno, layer mask.
+  QP-ENTER  queuePresent() acquired the present scope (fPresentBusy set):
+            age = ms since this swap's SwapEnd, tickets, point-in-time seq.
+  QP-TICKET-WAIT
+            one line per ticket/GPU-seqno poll: first poll, every 100 ms, or
+            when the lagging-layer mask changes. done = sweet_gpu_completed(),
+            wait = ms since the poll loop started, lag = layers still behind,
+            tickets = layers with a retained ticket, seq = per-layer seqno.
+  QP-TICKET the admission loop ended: ready, err, wait ms, final lag mask.
+  QP-CANCEL the ticket-cancel quiesce loop (only when a ticket was cancelled)
+            ended: cancelled, quiesced, wait ms, ticket mask.
+  WAITLATCH waitLatch() entered (phase 0), polled (phase 1, every 100 ms
+            while fLatchValid), or returned (phase 2, got): pending, latch,
+            ctl/flush, wait ms, fQueueWaiting/fPresentBusy.
+  QP-LATCH  waitLatch() returned at the queuePresent call site: got, wait ms,
+            pending, latch/latched/program, ctl/flush.
+  QP-PROG   scanScaled() programmed VIG0: surf/seq, pa/stride, scan ms, ctl.
+  QP-DROP   queuePresent() computed a drop: reason, ready, cancelled,
+            latched, epochok.
+  QP-EXIT   every queuePresent() return: reason code (below), valid/ready/
+            cancelled/quiesced/latched/epochok/terminal flags, active =
+            fQueueActive, accepted = fAcceptedSerial, waiting/busy AFTER the
+            queue state was cleared, wait ms, ticket mask, shown/end/latch/
+            latchedSer/program, mask. This is the line that explains an
+            accepted swap that was never programmed.
+  NOTE      noteShown(): fEndID/fLatchValid/fShownValid/fLatchID, ctl/flush,
+            fLatchedSerial/fProgramSerial after the call.
+  RETIRE-WAIT retireLatched() at each 50 ms retry while the latch is pending
+            and CTL_FLUSH is still set; wait ms, retry, latchValid, ctl/flush.
+  RETIRE-OK retireLatched() retired: by=ctl-clear or timeout; wait ms, ctl/
+            flush, latchValid after, latch id, shown/end, latched/program.
+  FALLBACK  queueFallback(): reason, swap, serial, epoch, latchValid/latch,
+            ctl/flush, latched/program, accepted/waiting/busy.
+
+QP-EXIT reason codes:
+  0  valid and programmed (scanScaled/noteShown completed)
+  2  GPU seqno/ticket not ready at the deadline (queueFallback reason 2)
+  3  ready but the record was no longer valid (latch/epoch/candidate/terminal
+     or queue off; queueFallback reason 3)
+  13 a ticket was cancelled and its backing was quiesced; dropped without a
+     fallback (this is the likely cause of an accepted swap disappearing)
+  20 terminal() after scanScaled but before noteShown; queuePresent returns
+     without clearing fQueueWaiting (early return)
+
+Presenter lines:
+  PRESENTER phase=1 start, 2 start-fail, 3 thread entry, 4 park-before-sleep,
+  5 wake-after-sleep, 6 non-protocol fQLock park, 7 non-protocol fQLock wake.
+  cond = (fQueueWaiting ? 1 : 0) | (fPresentBusy ? 2 : 0); accepted = the
+  serial seen; fSerial/epoch/shown/end/latch/latched/program are the state.
+  The thread has no exit: presenter() has two infinite for(;;) loops and
+  presenterMain() calls it forever. It can block indefinitely in
+  queuePresent()'s IOLockSleep(fLock, fQueueRec) (no timeout) and in the
+  non-protocol IOLockSleep(fQLock, fQRec) (no timeout); waitLatch() also has
+  no timeout (it polls every 1 ms and relies on retireLatched's 150 ms
+  fallback). When fQueueWaiting == 0 and fPresentBusy == 0 the presenter is
+  parked at the queuePresent condvar unless it has already exited.
+  Ticket/GPU waits are bounded (100 ms untracked, 1000 ms tracked); the
+  cancel quiesce is bounded at 100 ms; drainPresent's slot wait at 200 ms.
+
+Display power lines:
+  POWER phase=0 enter, 1 exit, 2 drain failure, 3 off ignored by sweetfb_stayon.
+  Fields: off, changed, owned (drainPresent owns the present scope), ret,
+  powerOff/fPowerOff, ep/fEpoch, active/fQueueActive, busy/fPresentBusy,
+  waiting/fQueueWaiting, accepted/fAcceptedSerial, suspended/
+  sweet_ticket_suspended, tokens (live fTokens), qtickets (fQueueTicket),
+  repoch/sweet_render_epoch, shown/end/latch/latchValid/latched/program, ctl/flush.
+  DRAIN phase=0 waiting for !fPresentBusy && !fQueueWaiting, 1 scope owned,
+  2 waitLatch returned true, 3 waitLatch false (releasePresent), 4 200 ms
+  timeout.
+
+What the power path resets (none of it is the framebuffer queue state):
+  display off: sweet_ticket_cancel(NULL) increments sweet_render_epoch, sets
+  sweet_ticket_suspended = true, marks every live ticket status=2/cancelled,
+  decrements live, increments aborts, and wakes fQueueRec. It does not change
+  fEpoch, fQueueActive, fAcceptedSerial, fProgramSerial, fLatchedSerial,
+  fLatchValid/fLatchID or fPresentBusy/fQueueWaiting.
+  Then drainPresent() waits for the presenter (200 ms) and takes the present
+  scope; it only retires a latch through waitLatch().
+  display on: clears sweet_ticket_suspended; it does not reset fEpoch, the
+  token table, the queue, the accepted/program serials or the latch. The
+  cancelled tickets stay cancelled.
+  The only framebuffer state changed is fPowerOff, fFadeStep=0 and fDirty=1.
+  A QUEUE FALLBACK reason 1 after display on comes from the synchronous
+  admission loop in AppleCLCD::swap(): after 200 ms without a free present
+  slot, rejectFrame(id, 1) -> queueFallback(1); the ADMIT line shows
+  reason=1 and the following FALLBACK line shows the swap/serial and the
+  power/latch state.
+
+The latch/retire condition is unchanged: pending = fLatchValid ||
+fLatchID != 0; it reads CTL_FLUSH only (fCtl0[0x18/4], not a vsync count)
+and retires when that register AND fFlushMask is zero, or after 150 ms in
+queue mode / 50 ms in sync mode. In queue mode it logs RETIRE-WAIT at 50 ms
+retries and calls queueFallback(6) at 150 ms; a timeout retirement does not
+advance fLatchedSerial or fShownValid, so queue-mode SwapWait
+(fLatchedSerial > serial) cannot complete.
+
+Every entry also carries c = sweet_gpu_completed() and s = sweet_gpu_seqno()
+(last seqno sweet_gpu_submit assigned; read-only accessor in
+bsd/dev/sweet_gpu.c), so Maps' work ahead of the display's own swaps is
+visible.
+
+Dump: automatic on the first j0132 swapWait stuck and on queueFallback; on
+demand with command-port "fb trace" (bsd/dev/sweet_usb.c, after j0131's
+"smp"). Output is bounded at 64 entry lines plus the header and state line.
+t is ms since the first entry; c/s are decimal seqnos; masks/ctl are hex.
+No IOLog happens while fLock or the entry-ring lock is held.
+
+---
+ bsd/dev/sweet_gpu.c                   |   8 +
+ bsd/dev/sweet_usb.c                   |   4 +
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 1100 ++++++++++++++++++++++++++++++++-
+ 3 files changed, 1088 insertions(+), 24 deletions(-)
+
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index ade52ac..21b919f 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -1811,6 +1811,14 @@ sweet_gpu_completed(void)
+ 	return done;
+ }
+ 
++/* j0133: the last seqno sweet_gpu_submit() assigned; read-only, for the framebuffer's trace. */
++uint32_t sweet_gpu_seqno(void);
++uint32_t
++sweet_gpu_seqno(void)
++{
++	return gpu_seqno;
++}
++
+ /* Wait until seqno has completed: 0, or ETIMEDOUT after timeout_ms. */
+ int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
+ int
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index a575f8e..1c59d43 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1857,6 +1857,7 @@ extern const char *sweet_gpu_cmd(const char *line);      /* bsd/dev/sweet_gpu.c
+ extern const char *sweet_ddr_cmd(const char *line);      /* bsd/dev/sweet_ddr.c (j0064) */
+ extern const char *sweet_ddrgov_cmd(const char *line);   /* bsd/dev/sweet_ddrgov.c (j0114) */
+ extern const char *sweet_sample_cmd(const char *line);   /* bsd/dev/sweet_sample.c (j0131) */
++extern const char *sweet_fb_trace_cmd(const char *line); /* iokit/Kernel/arm/SweetFramebuffer.cpp (j0133) */
+ extern void topaz_modem_stop(bool panic);                /* iokit/Kernel/arm/TopazModem.cpp (j0080x) */
+ static char ud_cmd_line[2048], ud_cmd_reply[8192];
+ extern const char *sweet_bench_blob(const char *, const void **, size_t *);
+@@ -1958,6 +1959,9 @@ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ 		if (prof == NULL && !reboot) {
+ 			prof = sweet_sample_cmd(line);
+ 		}
++		if (prof == NULL && !reboot) {
++			prof = sweet_fb_trace_cmd(line);
++		}
+ 		if (prof == NULL && !reboot && (strcmp(line, "pollE 0") == 0 || strcmp(line, "pollE 1") == 0)) {
+ 			sweet_poll_e = line[6] - '0';           /* j0120: the polling threads follow on their next poll */
+ 			prof = sweet_poll_e ? "OK polling threads to the E cluster\n" : "OK polling threads unbound\n";
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index f992023..9ff09ce 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -39,6 +39,7 @@ extern "C" void sweet_bench_event(uint32_t, uint32_t, uint32_t, uint32_t, uint32
+ extern "C" void sweet_bench_alloc(uint32_t, int64_t);
+ extern "C" bool sweet_bench_enabled(void);
+ extern "C" uint32_t sweet_gpu_completed(void);
++extern "C" uint32_t sweet_gpu_seqno(void);      /* bsd/dev/sweet_gpu.c (j0133): last submitted seqno */
+ extern "C" void sweet_ddrgov_activity(int src, int sync);       /* bsd/dev/sweet_ddrgov.c (j0114) */
+ extern "C" void sweet_ddrgov_display(int on);
+ extern "C" void sweet_fb_submit_fault(uint32_t reason);
+@@ -247,6 +248,31 @@ extern "C" volatile int sweet_pmic_ready;       /* SweetPlatformExpert.cpp */
+ #include <kern/clock.h>
+ #include <sys/proc.h>
+ 
++/* j0133: the latch-trace ring (diagnostic only; see sweet_fb_trace_render()). */
++static IOLock *sweet_fb_trace_lock;
++static IOLock *sweet_fb_trace_out_lock;
++static void sweet_fb_trace_presenter(AppleCLCD *fb, uint32_t phase, bool locked);
++
++/* PRESENTER phases. */
++enum {
++	SWEET_FB_TR_PRES_START = 1,
++	SWEET_FB_TR_PRES_START_FAIL,
++	SWEET_FB_TR_PRES_ENTER,
++	SWEET_FB_TR_PRES_PARK,
++	SWEET_FB_TR_PRES_WAKE,
++	SWEET_FB_TR_PRES_QPARK,
++	SWEET_FB_TR_PRES_QWAKE,
++	SWEET_FB_TR_PRES_LOOP,
++};
++
++/* POWER phases. */
++enum {
++	SWEET_FB_TR_PWR_ENTER = 0,
++	SWEET_FB_TR_PWR_EXIT = 1,
++	SWEET_FB_TR_PWR_FAIL = 2,
++	SWEET_FB_TR_PWR_IGNORED = 3,
++};
++
+ enum {
+ 	kSweetFBGetLayerDefaultSurface  = 3,
+ 	kSweetFBSwapBegin               = 4,
+@@ -442,9 +468,9 @@ public:
+ 		bool ended, cancelled;
+ 	} fTokens[128];
+ 	bool queueCandidate(const uint8_t *rec, SweetSurface **held);
+-	void queueFallback(uint32_t reason); /* fLock held */
++	void queueFallback(uint32_t reason, uint32_t swap = 0); /* fLock held */
+ 	IOReturn rejectFrame(uint32_t id, uint32_t reason, IOReturn error);
+-	bool waitLatch(void);
++	bool waitLatch(uint32_t id = 0);
+ 	bool drainPresent(void);
+ 	void releasePresent(void);
+ 	void queuePresent(void);
+@@ -580,6 +606,8 @@ AppleCLCD::start(IOService *provider)
+ 	fOffX = ((int32_t)(fLogicalW - fWidth) / 2) & ~3;
+ 	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
+ 	fLock = IOLockAlloc();
++	sweet_fb_trace_lock = IOLockAlloc();
++	sweet_fb_trace_out_lock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+ 	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
+@@ -773,8 +801,10 @@ AppleCLCD::start(IOService *provider)
+ 		if (kernel_thread_start(&AppleCLCD::presenterMain, this, &thread) == KERN_SUCCESS) {
+ 			thread_deallocate(thread);
+ 			if (fProtocol) { fQueueActive = true; }
++			sweet_fb_trace_presenter(this, SWEET_FB_TR_PRES_START, false);
+ 			IOLog("SWEET FB: direct frames through a presenter thread (SwapEnd returns at once)\n");
+ 		} else {
++			sweet_fb_trace_presenter(this, SWEET_FB_TR_PRES_START_FAIL, false);
+ 			IOLockFree(fQLock);
+ 			fQLock = NULL;
+ 		}
+@@ -1575,6 +1605,877 @@ sweet_fb_diag_stuck(AppleCLCD *fb, uint32_t asked, uint64_t serial, uint64_t cli
+ }
+ 
+ 
++/*
++ * j0133: latch trace (diagnostic only). CoreAnimation's queued swaps are admitted in swap(),
++ * programmed in queuePresent(), and completed in retireLatched() only when the MDP's CTL_FLUSH
++ * bits clear. This ring records those steps so a stuck latch can be read back. Every entry also
++ * carries the GPU's completed seqno and its last submitted seqno. The ring is printed by "fb
++ * trace" (bsd/dev/sweet_usb.c) and automatically on the first swapWait stuck and on queueFallback.
++ * No IOLog happens while the ring or the framebuffer lock is held.
++ */
++#define SWEET_FB_TRACE_ENTRIES  64
++#define SWEET_FB_TRACE_END_SLOTS 16
++#define SWEET_FB_TRACE_TEXT     32768
++
++enum {
++	SWEET_FB_TR_BEGIN = 1,
++	SWEET_FB_TR_ADMIT,
++	SWEET_FB_TR_ACCEPT,
++	SWEET_FB_TR_QP_ENTER,
++	SWEET_FB_TR_QP_TICKET_WAIT,
++	SWEET_FB_TR_QP_TICKET,
++	SWEET_FB_TR_QP_LATCH,
++	SWEET_FB_TR_QP_PROG,
++	SWEET_FB_TR_QP_DROP,
++	SWEET_FB_TR_QP_CANCEL,
++	SWEET_FB_TR_QP_EXIT,
++	SWEET_FB_TR_NOTE,
++	SWEET_FB_TR_RETIRE_WAIT,
++	SWEET_FB_TR_RETIRE_OK,
++	SWEET_FB_TR_FALLBACK,
++	SWEET_FB_TR_PRESENTER,
++	SWEET_FB_TR_WAITLATCH,
++	SWEET_FB_TR_POWER,
++	SWEET_FB_TR_DRAIN,
++};
++
++/* Admission outcomes (the ADMIT line's word). */
++enum {
++	SWEET_FB_TR_OUT_QUEUED = 1,
++	SWEET_FB_TR_OUT_SYNC,
++	SWEET_FB_TR_OUT_DIRECT,
++	SWEET_FB_TR_OUT_PENDING,
++	SWEET_FB_TR_OUT_REJECT,
++	SWEET_FB_TR_OUT_ABORT,
++	SWEET_FB_TR_OUT_SYNC_TIMEOUT,
++	SWEET_FB_TR_OUT_TICKET_FAIL,
++	SWEET_FB_TR_OUT_LATCH_FAIL,
++};
++
++struct sweet_fb_trace_ent {
++	uint64_t t;                     /* mach_absolute_time of the event (SwapEnd time for ADMIT) */
++	uint64_t serial, latched, program, addr;
++	uint32_t done, submit;          /* sweet_gpu_completed(), sweet_gpu_seqno() */
++	uint32_t id, kind;
++	int32_t  pid;
++	uint32_t a, b, c, d;            /* event-specific */
++	uint32_t seq[4];                /* the queued record's per-layer seqno */
++	uint32_t ctl, flush, shown, end, latch, epoch;
++	uint32_t accepted, waiting, busy, status, mask;   /* j0133 follow-up state */
++	uint32_t latchValid;
++	uint8_t  ok;
++};
++
++static struct {
++	struct sweet_fb_trace_ent ent[SWEET_FB_TRACE_ENTRIES];
++	unsigned next, count;
++	uint64_t boot;
++	struct {
++		uint32_t id;
++		uint64_t t, serial;
++		bool valid;
++	} end[SWEET_FB_TRACE_END_SLOTS];
++	volatile uint32_t dump_req;
++	volatile uint32_t stuck_done;
++} sweet_fb_trace;
++
++static char sweet_fb_trace_text[SWEET_FB_TRACE_TEXT];
++
++static void
++sweet_fb_trace_z(struct sweet_fb_trace_ent *e, uint32_t kind, uint32_t id)
++{
++	bzero(e, sizeof(*e));
++	e->kind = kind;
++	e->id = id;
++}
++
++static void
++sweet_fb_trace_put(struct sweet_fb_trace_ent *e)
++{
++	if (sweet_fb_trace_lock == NULL) {
++		return;
++	}
++	e->done = sweet_gpu_completed();
++	e->submit = sweet_gpu_seqno();
++	if (e->t == 0) {
++		e->t = mach_absolute_time();
++	}
++	IOLockLock(sweet_fb_trace_lock);
++	if (sweet_fb_trace.boot == 0) {
++		sweet_fb_trace.boot = e->t;
++	}
++	sweet_fb_trace.ent[sweet_fb_trace.next] = *e;
++	sweet_fb_trace.next = (sweet_fb_trace.next + 1) % SWEET_FB_TRACE_ENTRIES;
++	if (sweet_fb_trace.count < SWEET_FB_TRACE_ENTRIES) {
++		sweet_fb_trace.count++;
++	}
++	IOLockUnlock(sweet_fb_trace_lock);
++}
++
++static void
++sweet_fb_trace_end_at(uint32_t id, uint64_t t, uint64_t serial)
++{
++	if (sweet_fb_trace_lock == NULL) {
++		return;
++	}
++	IOLockLock(sweet_fb_trace_lock);
++	unsigned slot = id % SWEET_FB_TRACE_END_SLOTS;
++	if (sweet_fb_trace.end[slot].id != id) {
++		sweet_fb_trace.end[slot].serial = 0;
++	}
++	sweet_fb_trace.end[slot].id = id;
++	if (t != 0) {
++		sweet_fb_trace.end[slot].t = t;
++	}
++	if (serial != 0) {
++		sweet_fb_trace.end[slot].serial = serial;
++	}
++	sweet_fb_trace.end[slot].valid = true;
++	IOLockUnlock(sweet_fb_trace_lock);
++}
++
++static uint64_t
++sweet_fb_trace_serial_for(uint32_t id)
++{
++	uint64_t serial = 0;
++	if (sweet_fb_trace_lock == NULL) {
++		return 0;
++	}
++	IOLockLock(sweet_fb_trace_lock);
++	unsigned slot = id % SWEET_FB_TRACE_END_SLOTS;
++	if (sweet_fb_trace.end[slot].valid && sweet_fb_trace.end[slot].id == id) {
++		serial = sweet_fb_trace.end[slot].serial;
++	}
++	IOLockUnlock(sweet_fb_trace_lock);
++	return serial;
++}
++
++static uint32_t
++sweet_fb_trace_age_ms(uint32_t id)
++{
++	uint64_t t = 0;
++	if (sweet_fb_trace_lock == NULL) {
++		return 0;
++	}
++	IOLockLock(sweet_fb_trace_lock);
++	for (unsigned i = 0; i < SWEET_FB_TRACE_END_SLOTS; i++) {
++		if (sweet_fb_trace.end[i].valid && sweet_fb_trace.end[i].id == id) {
++			t = sweet_fb_trace.end[i].t;
++			break;
++		}
++	}
++	IOLockUnlock(sweet_fb_trace_lock);
++	if (t == 0 || mach_absolute_time() <= t) {
++		return 0;
++	}
++	uint64_t ns = 0;
++	absolutetime_to_nanoseconds(mach_absolute_time() - t, &ns);
++	return (uint32_t)(ns / NSEC_PER_MSEC);
++}
++
++static void
++sweet_fb_trace_begin(uint32_t id, uint64_t serial, uint32_t epoch, bool queued)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_BEGIN, id);
++	e.serial = serial;
++	e.epoch = epoch;
++	e.ok = queued;
++	e.pid = proc_selfpid();
++	sweet_fb_trace_put(&e);
++	if (serial != 0) {
++		sweet_fb_trace_end_at(id, 0, serial);
++	}
++}
++
++static void
++sweet_fb_trace_admit(uint32_t id, uint64_t serial, uint32_t epoch, uint32_t outcome,
++    uint32_t reason, uint64_t t0, uint32_t cand, bool token, bool writers, bool available,
++    uint32_t mask, uint32_t layers)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_ADMIT, id);
++	e.t = t0;
++	e.serial = serial;
++	e.epoch = epoch;
++	e.ok = (uint8_t)outcome;
++	e.latch = reason;
++	e.b = cand;
++	e.c = token;
++	e.d = (writers ? 1u : 0u) | (available ? 2u : 0u);
++	e.flush = mask;
++	e.shown = layers;
++	e.pid = proc_selfpid();
++	if (mach_absolute_time() > t0) {
++		uint64_t ns = 0;
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		e.a = (uint32_t)(ns / NSEC_PER_MSEC);
++	}
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_accept(AppleCLCD *fb, uint32_t id, uint64_t serial, uint32_t epoch, uint32_t mask,
++    SweetSurface **held, bool queued)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_ACCEPT, id);
++	e.serial = serial;
++	e.epoch = epoch;
++	e.mask = mask;
++	e.a = queued ? 1 : 2;
++	e.accepted = fb->fAcceptedSerial;
++	e.waiting = fb->fQueueWaiting;
++	e.busy = fb->fPresentBusy;
++	e.status = fb->fQueueActive;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	e.shown = fb->fShownID;
++	e.end = fb->fEndID;
++	e.latch = fb->fLatchID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	for (unsigned i = 0; i < 4; i++) {
++		e.seq[i] = held != NULL && held[i] != NULL ? held[i]->gpuSeqno : 0;
++		if (held != NULL && held[i] != NULL && held[i]->renderTicket != NULL) {
++			e.b |= 1u << i;
++		}
++	}
++	sweet_fb_trace_put(&e);
++	sweet_fb_trace_end_at(id, 0, serial);
++}
++
++static void
++sweet_fb_trace_presenter(AppleCLCD *fb, uint32_t phase, bool locked)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_PRESENTER, 0);
++	e.a = phase;
++	if (fb != NULL) {
++		if (!locked) { IOLockLock(fb->fLock); }
++		e.ok = fb->fProtocol;
++		e.epoch = fb->fEpoch;
++		e.accepted = fb->fAcceptedSerial;
++		e.waiting = fb->fQueueWaiting;
++		e.busy = fb->fPresentBusy;
++		e.status = fb->fSerial;
++		e.shown = fb->fShownID;
++		e.end = fb->fEndID;
++		e.latch = fb->fLatchID;
++		e.latched = fb->fLatchedSerial;
++		e.program = fb->fProgramSerial;
++		e.b = (fb->fQueueWaiting ? 1u : 0u) | (fb->fPresentBusy ? 2u : 0u);
++		if (!locked) { IOLockUnlock(fb->fLock); }
++	}
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_ticket_wait(uint32_t id, uint32_t done, uint32_t lag, uint32_t tickets,
++    const uint32_t seq[4], uint64_t ns)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_TICKET_WAIT, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.a = done;
++	e.b = lag;
++	e.d = tickets;
++	uint64_t elapsed = 0;
++	absolutetime_to_nanoseconds(ns, &elapsed);
++	e.c = (uint32_t)(elapsed / NSEC_PER_MSEC);
++	for (unsigned i = 0; i < 4; i++) {
++		e.seq[i] = seq[i];
++	}
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_qp_cancel(uint32_t id, bool cancelled, bool quiesced, uint64_t ns, uint32_t tickets)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_CANCEL, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.a = (uint32_t)(ns / NSEC_PER_MSEC);
++	e.b = cancelled;
++	e.c = quiesced;
++	e.d = tickets;
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_qp_exit(AppleCLCD *fb, uint32_t id, uint32_t reason, bool valid, bool ready,
++    bool cancelled, bool quiesced, bool latched, bool epochok, bool terminal, uint64_t ns,
++    uint32_t mask, uint32_t tickets, SweetSurface **held)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_EXIT, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.a = reason;
++	e.b = (valid ? 1u : 0u) | (ready ? 2u : 0u) | (cancelled ? 4u : 0u) |
++	    (quiesced ? 8u : 0u) | (latched ? 16u : 0u) | (epochok ? 32u : 0u) |
++	    (terminal ? 64u : 0u);
++	e.ok = valid;
++	e.accepted = fb->fAcceptedSerial;
++	e.waiting = fb->fQueueWaiting;
++	e.busy = fb->fPresentBusy;
++	e.status = fb->fQueueActive;
++	e.mask = mask;
++	e.c = tickets << 8;
++	e.d = (uint32_t)(ns / NSEC_PER_MSEC);
++	e.epoch = fb->fEpoch;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	e.shown = fb->fShownID;
++	e.end = fb->fEndID;
++	e.latch = fb->fLatchID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	for (unsigned i = 0; i < 4; i++) {
++		e.seq[i] = held != NULL && held[i] != NULL ? held[i]->gpuSeqno : 0;
++	}
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_waitlatch(AppleCLCD *fb, uint32_t id, uint32_t phase, bool got, uint64_t ns)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_WAITLATCH, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.a = phase;
++	e.ok = got;
++	e.d = (uint32_t)(ns / NSEC_PER_MSEC);
++	IOLockLock(fb->fLock);
++	e.b = fb->fLatchValid;
++	e.latch = fb->fLatchID;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	e.waiting = fb->fQueueWaiting;
++	e.busy = fb->fPresentBusy;
++	e.shown = fb->fShownID;
++	e.end = fb->fEndID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	IOLockUnlock(fb->fLock);
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_power(AppleCLCD *fb, bool off, uint32_t phase, bool changed, bool owned, IOReturn ret)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_POWER, 0);
++	e.a = phase;
++	e.ok = off;
++	e.b = (changed ? 1u : 0u) | (owned ? 2u : 0u);
++	e.status = (uint32_t)ret;
++	IOLockLock(fb->fLock);
++	e.epoch = fb->fEpoch;
++	e.accepted = fb->fAcceptedSerial;
++	e.waiting = fb->fQueueWaiting;
++	e.busy = fb->fPresentBusy;
++	e.mask = fb->fPowerOff;
++	e.shown = fb->fShownID;
++	e.end = fb->fEndID;
++	e.latch = fb->fLatchID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	e.latchValid = fb->fLatchValid ? 1u : 0u;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	e.c = fb->fQueueActive;
++	e.d = sweet_ticket_suspended ? 1u : 0u;
++	e.seq[2] = (uint32_t)sweet_render_epoch;
++	for (unsigned i = 0; i < 128; i++) {
++		if (fb->fTokens[i].owner != NULL) {
++			e.seq[0]++;
++		}
++	}
++	for (unsigned i = 0; i < 4; i++) {
++		if (fb->fQueueTicket[i] != NULL) {
++			e.seq[1]++;
++		}
++	}
++	IOLockUnlock(fb->fLock);
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_drain(AppleCLCD *fb, uint32_t phase, uint64_t ns)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_DRAIN, 0);
++	e.a = phase;
++	uint64_t elapsed = 0;
++	absolutetime_to_nanoseconds(ns, &elapsed);
++	e.d = (uint32_t)(elapsed / NSEC_PER_MSEC);
++	IOLockLock(fb->fLock);
++	e.b = fb->fPresentBusy;
++	e.waiting = fb->fQueueWaiting;
++	e.accepted = fb->fAcceptedSerial;
++	e.latchValid = fb->fLatchValid ? 1u : 0u;
++	e.latch = fb->fLatchID;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	IOLockUnlock(fb->fLock);
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_qp_enter(uint32_t id, uint32_t epoch, SweetRenderTicket **tickets,
++    const uint32_t seq[4])
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_ENTER, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.epoch = epoch;
++	e.a = sweet_fb_trace_age_ms(id);
++	for (unsigned i = 0; i < 4; i++) {
++		if (tickets[i] != NULL) {
++			e.b |= 1u << i;
++		}
++		e.seq[i] = seq[i];
++	}
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_qp_ticket(uint32_t id, bool ready, IOReturn err, uint64_t ns, uint32_t lag,
++    uint32_t tickets)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_TICKET, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.ok = ready;
++	e.c = (uint32_t)err;
++	e.a = (uint32_t)(ns / NSEC_PER_MSEC);
++	e.b = lag;
++	e.d = tickets;
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_qp_latch(AppleCLCD *fb, uint32_t id, bool got, uint64_t ns)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_LATCH, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.ok = got;
++	e.a = (uint32_t)(ns / NSEC_PER_MSEC);
++	e.b = fb->fLatchValid;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	e.latch = fb->fLatchID;
++	e.shown = fb->fShownID;
++	e.end = fb->fEndID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	e.epoch = fb->fEpoch;
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_qp_prog(uint32_t id, uint32_t surface, uint32_t seq, uint64_t pa, uint32_t stride,
++    uint64_t ns, uint32_t ctl)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_PROG, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.ok = 1;
++	e.b = surface;
++	e.c = seq;
++	e.addr = pa;
++	e.d = stride;
++	e.a = (uint32_t)(ns / NSEC_PER_MSEC);
++	e.ctl = ctl;
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_qp_drop(uint32_t id, uint32_t reason, bool ready, bool cancelled, bool latched,
++    bool epochok)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_QP_DROP, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.latch = reason;
++	e.b = ready;
++	e.c = cancelled;
++	e.d = latched;
++	e.ok = epochok;
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_note(AppleCLCD *fb, uint32_t id)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_NOTE, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.end = fb->fEndID;
++	e.a = fb->fLatchValid;
++	e.b = fb->fShownValid;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	e.latch = fb->fLatchID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	e.epoch = fb->fEpoch;
++	e.ok = fb->fLatchValid;
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_retire(AppleCLCD *fb, uint32_t kind, uint64_t ns, uint32_t ctl, uint32_t retry,
++    uint32_t id)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, kind, id);
++	e.serial = sweet_fb_trace_serial_for(id);
++	e.a = (uint32_t)(ns / NSEC_PER_MSEC);
++	e.b = retry;
++	e.ctl = ctl;
++	e.flush = fb->fFlushMask;
++	e.latch = id;
++	e.shown = fb->fShownID;
++	e.end = fb->fEndID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	e.epoch = fb->fEpoch;
++	e.c = fb->fQueueActive;
++	e.d = fb->fLatchValid;
++	e.ok = kind == SWEET_FB_TR_RETIRE_OK ? ((ctl & fb->fFlushMask) == 0) :
++	    ((fb->fLatchValid || fb->fLatchID != 0) ? 1 : 0);
++	sweet_fb_trace_put(&e);
++}
++
++static void
++sweet_fb_trace_fallback(AppleCLCD *fb, uint32_t reason, uint32_t swap)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_FALLBACK, swap);
++	e.serial = sweet_fb_trace_serial_for(swap);
++	e.a = reason;
++	e.latch = swap;
++	e.b = fb->fLatchID;
++	e.d = fb->fLatchValid;
++	e.c = fb->fQueueActive;
++	e.accepted = fb->fAcceptedSerial;
++	e.waiting = fb->fQueueWaiting;
++	e.busy = fb->fPresentBusy;
++	e.epoch = fb->fEpoch;
++	e.ctl = fb->fCtl0 != NULL ? fb->fCtl0[0x18 / 4] : 0;
++	e.flush = fb->fFlushMask;
++	e.shown = fb->fShownID;
++	e.end = fb->fEndID;
++	e.latched = fb->fLatchedSerial;
++	e.program = fb->fProgramSerial;
++	sweet_fb_trace_put(&e);
++	__atomic_store_n(&sweet_fb_trace.dump_req, 1, __ATOMIC_RELAXED);
++}
++
++static const char *
++sweet_fb_trace_outcome(uint32_t ok)
++{
++	switch (ok) {
++	case SWEET_FB_TR_OUT_QUEUED: return "queued";
++	case SWEET_FB_TR_OUT_SYNC: return "sync";
++	case SWEET_FB_TR_OUT_DIRECT: return "direct";
++	case SWEET_FB_TR_OUT_PENDING: return "pending";
++	case SWEET_FB_TR_OUT_REJECT: return "reject";
++	case SWEET_FB_TR_OUT_ABORT: return "abort";
++	case SWEET_FB_TR_OUT_SYNC_TIMEOUT: return "sync-timeout";
++	case SWEET_FB_TR_OUT_TICKET_FAIL: return "ticket-fail";
++	case SWEET_FB_TR_OUT_LATCH_FAIL: return "latch-fail";
++	default: return "?";
++	}
++}
++
++/*
++ * Formats the last entries (oldest first) and one live-state line. The caller must not hold
++ * fLock; this takes the trace lock, then fLock only for the state line (never at the same time).
++ */
++static size_t
++sweet_fb_trace_render(char *out, size_t len, const char *why)
++{
++	size_t off = 0;
++	unsigned n = 0, first = 0;
++	uint64_t boot = 0;
++#define TADD(...) do { \
++	if (off + 1 < len) { \
++		int r_ = snprintf(out + off, len - off, __VA_ARGS__); \
++		if (r_ > 0) { off += (size_t)r_; if (off >= len) { off = len - 1; } } \
++	} \
++} while (0)
++
++	if (out == NULL || len < 2) {
++		return 0;
++	}
++	out[0] = 0;
++	if (sweet_fb_trace_lock != NULL) {
++		IOLockLock(sweet_fb_trace_lock);
++		n = sweet_fb_trace.count;
++		first = (sweet_fb_trace.next + SWEET_FB_TRACE_ENTRIES - n) % SWEET_FB_TRACE_ENTRIES;
++		boot = sweet_fb_trace.boot;
++		TADD("SWEET FB: trace: %s: %u entries; t = ms since the first entry; c = GPU completed, "
++		    "s = GPU last submitted seqno\n", why, n);
++		for (unsigned i = 0; i < n; i++) {
++			struct sweet_fb_trace_ent *e = &sweet_fb_trace.ent[(first + i) % SWEET_FB_TRACE_ENTRIES];
++			unsigned long long ms = boot != 0 && e->t >= boot ? (e->t - boot) / 1000000 : 0;
++			unsigned long long us = boot != 0 && e->t >= boot ? ((e->t - boot) / 1000) % 1000 : 0;
++			switch (e->kind) {
++			case SWEET_FB_TR_BEGIN:
++				TADD("SWEET FB: trace: t=%llu.%03llu BEGIN id=%u ser=%llu ep=%u q=%u pid=%d c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->epoch, e->ok, e->pid,
++				    e->done, e->submit);
++				break;
++			case SWEET_FB_TR_ADMIT:
++				TADD("SWEET FB: trace: t=%llu.%03llu ADMIT id=%u ser=%llu pid=%d %s reason=%u ms=%u "
++				    "cand=%u tok=%u wr=%u avail=%u mask=%#x layers=%u c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->pid,
++				    sweet_fb_trace_outcome(e->ok), e->latch, e->a, e->b, e->c,
++				    e->d & 1u, (e->d >> 1) & 1u, e->flush, e->shown, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_ACCEPT:
++				TADD("SWEET FB: trace: t=%llu.%03llu ACCEPT id=%u ser=%llu ep=%u mode=%s accepted=%u "
++				    "waiting=%u busy=%u q=%u tickets=%#x seq=%u,%u,%u,%u mask=%#x c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->epoch,
++				    e->a == 1 ? "queue" : "sync", e->accepted, e->waiting, e->busy,
++				    e->status, e->b, e->seq[0], e->seq[1], e->seq[2], e->seq[3],
++				    e->mask, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_ENTER:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-ENTER id=%u ser=%llu ep=%u age=%u ms tickets=%#x "
++				    "seq=%u,%u,%u,%u c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->epoch, e->a, e->b,
++				    e->seq[0], e->seq[1], e->seq[2], e->seq[3], e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_TICKET_WAIT:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-TICKET-WAIT id=%u ser=%llu done=%u wait=%u ms "
++				    "lag=%#x tickets=%#x seq=%u,%u,%u,%u c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->a, e->c, e->b, e->d,
++				    e->seq[0], e->seq[1], e->seq[2], e->seq[3], e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_TICKET:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-TICKET id=%u ser=%llu ready=%u err=%#x wait=%u ms "
++				    "lag=%#x tickets=%#x c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->ok, e->c, e->a, e->b,
++				    e->d, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_LATCH:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-LATCH id=%u ser=%llu got=%u wait=%u ms pending=%u "
++				    "latch=%u ctl=%#x flush=%#x shown=%u end=%u latched=%llu program=%llu c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->ok, e->a, e->b, e->latch,
++				    e->ctl, e->flush, e->shown, e->end, (unsigned long long)e->latched,
++				    (unsigned long long)e->program, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_PROG:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-PROG id=%u ser=%llu surf=%u seq=%u pa=%#llx "
++				    "stride=%u ms=%u ctl=%#x c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->b, e->c,
++				    (unsigned long long)e->addr, e->d, e->a, e->ctl, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_DROP:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-DROP id=%u ser=%llu reason=%u ready=%u "
++				    "cancelled=%u latched=%u epochok=%u c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->latch, e->b, e->c,
++				    e->d, e->ok, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_CANCEL:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-CANCEL id=%u ser=%llu cancelled=%u quiesced=%u "
++				    "wait=%u ms tickets=%#x c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->b, e->c, e->a, e->d,
++				    e->done, e->submit);
++				break;
++			case SWEET_FB_TR_QP_EXIT:
++				TADD("SWEET FB: trace: t=%llu.%03llu QP-EXIT id=%u ser=%llu reason=%u valid=%u "
++				    "ready=%u cancelled=%u quiesced=%u latched=%u epochok=%u terminal=%u "
++				    "active=%u accepted=%u waiting=%u busy=%u wait=%u ms tickets=%#x "
++				    "shown=%u end=%u latch=%u latchedSer=%llu program=%llu mask=%#x c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->a, e->ok,
++				    (e->b >> 1) & 1u, (e->b >> 2) & 1u, (e->b >> 3) & 1u,
++				    (e->b >> 4) & 1u, (e->b >> 5) & 1u, (e->b >> 6) & 1u,
++				    e->status, e->accepted, e->waiting, e->busy, e->d, e->c >> 8,
++				    e->shown, e->end, e->latch, (unsigned long long)e->latched,
++				    (unsigned long long)e->program, e->mask, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_NOTE:
++				TADD("SWEET FB: trace: t=%llu.%03llu NOTE id=%u ser=%llu end=%u latchValid=%u shownValid=%u "
++				    "latch=%u ctl=%#x flush=%#x latched=%llu program=%llu c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->end, e->a, e->b, e->latch,
++				    e->ctl, e->flush, (unsigned long long)e->latched,
++				    (unsigned long long)e->program, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_RETIRE_WAIT:
++				TADD("SWEET FB: trace: t=%llu.%03llu RETIRE-WAIT id=%u ser=%llu wait=%u ms retry=%u "
++				    "pending=%u latchValid=%u ctl=%#x flush=%#x shown=%u end=%u latched=%llu "
++				    "program=%llu c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->a, e->b, e->ok, e->d,
++				    e->ctl, e->flush, e->shown, e->end, (unsigned long long)e->latched,
++				    (unsigned long long)e->program, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_RETIRE_OK:
++				TADD("SWEET FB: trace: t=%llu.%03llu RETIRE-OK id=%u ser=%llu by=%s wait=%u ms ctl=%#x "
++				    "flush=%#x latchValidNow=%u latch=%u shown=%u end=%u latched=%llu program=%llu "
++				    "c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->ok ? "ctl-clear" : "timeout",
++				    e->a, e->ctl, e->flush, e->d, e->latch, e->shown, e->end,
++				    (unsigned long long)e->latched, (unsigned long long)e->program,
++				    e->done, e->submit);
++				break;
++			case SWEET_FB_TR_FALLBACK:
++				TADD("SWEET FB: trace: t=%llu.%03llu FALLBACK reason=%u swap=%u ser=%llu ep=%u "
++				    "latchValid=%u latch=%u ctl=%#x flush=%#x shown=%u end=%u latched=%llu "
++				    "program=%llu accepted=%u waiting=%u busy=%u c=%u s=%u\n",
++				    ms, us, e->a, e->latch, (unsigned long long)e->serial, e->epoch, e->d,
++				    e->b, e->ctl, e->flush, e->shown, e->end, (unsigned long long)e->latched,
++				    (unsigned long long)e->program, e->accepted, e->waiting, e->busy,
++				    e->done, e->submit);
++				break;
++			case SWEET_FB_TR_PRESENTER:
++				TADD("SWEET FB: trace: t=%llu.%03llu PRESENTER phase=%u cond=%u proto=%u accepted=%u "
++				    "waiting=%u busy=%u fSerial=%u ep=%u shown=%u end=%u latch=%u latched=%llu "
++				    "program=%llu c=%u s=%u\n",
++				    ms, us, e->a, e->b, e->ok, e->accepted, e->waiting, e->busy, e->status,
++				    e->epoch, e->shown, e->end, e->latch, (unsigned long long)e->latched,
++				    (unsigned long long)e->program, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_WAITLATCH:
++				TADD("SWEET FB: trace: t=%llu.%03llu WAITLATCH id=%u ser=%llu phase=%u got=%u "
++				    "pending=%u latch=%u ctl=%#x flush=%#x wait=%u ms waiting=%u busy=%u "
++				    "shown=%u end=%u latched=%llu program=%llu c=%u s=%u\n",
++				    ms, us, e->id, (unsigned long long)e->serial, e->a, e->ok, e->b, e->latch,
++				    e->ctl, e->flush, e->d, e->waiting, e->busy, e->shown, e->end,
++				    (unsigned long long)e->latched, (unsigned long long)e->program,
++				    e->done, e->submit);
++				break;
++			case SWEET_FB_TR_POWER:
++				TADD("SWEET FB: trace: t=%llu.%03llu POWER phase=%u off=%u changed=%u owned=%u ret=%#x "
++				    "powerOff=%u ep=%u active=%u busy=%u waiting=%u accepted=%u suspended=%u "
++				    "tokens=%u qtickets=%u repoch=%u shown=%u end=%u latchValid=%u latch=%u latched=%llu "
++				    "program=%llu ctl=%#x flush=%#x c=%u s=%u\n",
++				    ms, us, e->a, e->ok, e->b & 1u, (e->b >> 1) & 1u, e->status, e->mask,
++				    e->epoch, e->c, e->busy, e->waiting, e->accepted, e->d, e->seq[0],
++				    e->seq[1], e->seq[2], e->shown, e->end, e->latchValid, e->latch,
++				    (unsigned long long)e->latched, (unsigned long long)e->program,
++				    e->ctl, e->flush, e->done, e->submit);
++				break;
++			case SWEET_FB_TR_DRAIN:
++				TADD("SWEET FB: trace: t=%llu.%03llu DRAIN phase=%u busy=%u waiting=%u accepted=%u "
++				    "latchValid=%u latch=%u wait=%u ms ctl=%#x flush=%#x c=%u s=%u\n",
++				    ms, us, e->a, e->b, e->waiting, e->accepted, e->latchValid, e->latch,
++				    e->d, e->ctl, e->flush, e->done, e->submit);
++				break;
++			default:
++				TADD("SWEET FB: trace: t=%llu.%03llu event=%u id=%u c=%u s=%u\n",
++				    ms, us, e->kind, e->id, e->done, e->submit);
++				break;
++			}
++		}
++		IOLockUnlock(sweet_fb_trace_lock);
++	}
++	AppleCLCD *fb = sweet_fb_main;
++	if (fb != NULL) {
++		uint32_t shown, end, swap, latch, epoch, ctl = 0, flush, vig = 0, stride = 0;
++		uint32_t tokens = 0, qtickets = 0;
++		uint64_t latched, program, accepted, latchAt = 0, ns = 0;
++		bool shownValid, latchValid, queueActive, queueWaiting, presentBusy, powerOff, suspended;
++		IOLockLock(fb->fLock);
++		shown = fb->fShownID;
++		end = fb->fEndID;
++		swap = fb->fSwapID;
++		latch = fb->fLatchID;
++		epoch = fb->fEpoch;
++		latched = fb->fLatchedSerial;
++		program = fb->fProgramSerial;
++		accepted = fb->fAcceptedSerial;
++		shownValid = fb->fShownValid;
++		latchValid = fb->fLatchValid;
++		queueActive = fb->fQueueActive;
++		queueWaiting = fb->fQueueWaiting;
++		presentBusy = fb->fPresentBusy;
++		powerOff = fb->fPowerOff;
++		suspended = sweet_ticket_suspended;
++		latchAt = fb->fLatchAt;
++		flush = fb->fFlushMask;
++		for (unsigned i = 0; i < 128; i++) { if (fb->fTokens[i].owner != NULL) { tokens++; } }
++		for (unsigned i = 0; i < 4; i++) { if (fb->fQueueTicket[i] != NULL) { qtickets++; } }
++		if (fb->fCtl0 != NULL) { ctl = fb->fCtl0[0x18 / 4]; }
++		if (fb->fVig0 != NULL) { vig = fb->fVig0[0x14 / 4]; stride = fb->fVig0[0x24 / 4]; }
++		IOLockUnlock(fb->fLock);
++		if (latchAt != 0 && mach_absolute_time() > latchAt) {
++			absolutetime_to_nanoseconds(mach_absolute_time() - latchAt, &ns);
++		}
++		TADD("SWEET FB: trace: state q=%u wait=%u busy=%u ep=%u shown=%u end=%u swap=%u shownValid=%u "
++		    "latchValid=%u latch=%u latchAge=%llu ms latched=%llu program=%llu accepted=%llu "
++		    "powerOff=%u susp=%u tokens=%u qtickets=%u "
++		    "ctl=%#x flush=%#x vig=%#x stride=%u c=%u s=%u\n",
++		    queueActive, queueWaiting, presentBusy, epoch, shown, end, swap, shownValid,
++		    latchValid, latch, (unsigned long long)(ns / NSEC_PER_MSEC),
++		    (unsigned long long)latched, (unsigned long long)program, (unsigned long long)accepted,
++		    powerOff, suspended, tokens, qtickets,
++		    ctl, flush, vig, stride, sweet_gpu_completed(), sweet_gpu_seqno());
++	}
++#undef TADD
++	return off < len ? off : len - 1;
++}
++
++static void
++sweet_fb_trace_dump(const char *why, bool stuck)
++{
++	if (sweet_fb_trace_out_lock == NULL) {
++		return;
++	}
++	IOLockLock(sweet_fb_trace_out_lock);
++	if (sweet_fb_trace_render(sweet_fb_trace_text, sizeof(sweet_fb_trace_text), why) != 0) {
++		char *line = sweet_fb_trace_text;
++		while (*line != 0) {
++			char *nl = strchr(line, '\n');
++			if (nl != NULL) {
++				*nl = 0;
++			}
++			IOLog("%s\n", line);
++			if (nl == NULL) {
++				break;
++			}
++			line = nl + 1;
++		}
++	}
++	IOLockUnlock(sweet_fb_trace_out_lock);
++	(void)stuck;
++}
++
++/* Called without fLock; prints if a queueFallback (or the first stuck SwapWait) asked for it. */
++static void
++sweet_fb_trace_service(void)
++{
++	if (__atomic_exchange_n(&sweet_fb_trace.dump_req, 0, __ATOMIC_RELAXED) != 0) {
++		sweet_fb_trace_dump("queueFallback", false);
++	}
++}
++
++static void
++sweet_fb_trace_stuck(void)
++{
++	if (__atomic_exchange_n(&sweet_fb_trace.stuck_done, 1, __ATOMIC_RELAXED) == 0) {
++		sweet_fb_trace_dump("swapWait stuck", true);
++	}
++}
++
++/* "fb trace" (bsd/dev/sweet_usb.c): the command port calls this with no lock held. */
++extern "C" const char *
++sweet_fb_trace_cmd(const char *line)
++{
++	static char reply[SWEET_FB_TRACE_TEXT];
++	if (strcmp(line, "fb trace") != 0) {
++		return NULL;
++	}
++	if (sweet_fb_main == NULL || sweet_fb_trace_render(reply, sizeof(reply), "fb trace") == 0) {
++		return "fb trace: no trace\n";
++	}
++	return reply;
++}
++
+ /* Copy each enabled layer's surface into the panel memory (no scaling). */
+ /*
+  * A swap only records the frame: copying 10 MB into the panel on every
+@@ -1642,6 +2543,21 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	sweet_fb_diag_note(this, rec);
+ 	SweetSurface *held[4] = {};
+ 	uint32_t mask = get32(rec, 0x104);
++	uint64_t trace_t0 = mach_absolute_time();
++	uint32_t trace_id = get32(rec, 0x50), trace_layers = 0;
++	uint64_t trace_serial = 0;
++	bool trace_cand = false, trace_token = false, trace_writers = false, trace_avail = false;
++	bool syncTimedOut = false;
++	sweet_fb_trace_end_at(trace_id, trace_t0, 0);
++	for (uint32_t i = 0; i < 4 && i < SWEET_FB_LAYERS; i++) {
++		uint32_t sid = get32(rec, 0x54 + 4 * i);
++		if ((mask & (1u << i)) && sid != 0) {
++			trace_layers++;
++		}
++	}
++#define SWEET_FB_TRACE_ADMIT(outcome, why) \
++	sweet_fb_trace_admit(trace_id, trace_serial, fEpoch, outcome, why, trace_t0, trace_cand, \
++	    trace_token, trace_writers, trace_avail, mask, trace_layers)
+ 	for (uint32_t i = 0; i < 4 && i < SWEET_FB_LAYERS; i++) {
+ 		uint32_t sid = get32(rec, 0x54 + 4 * i);
+ 		if ((mask & (1u << i)) && sid != 0 && (held[i] = sweet_surface_copy(sid)) != NULL) {
+@@ -1668,6 +2584,8 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			}
+ 			if (!token || (fQueueActive && serial <= fAcceptedSerial)) {
+ 				IOLockUnlock(fLock);
++				trace_serial = serial;
++				SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_REJECT, 11);
+ 				rejectFrame(get32(rec, 0x50), 11, kIOReturnAborted);
+ 				continue;
+ 			}
+@@ -1675,8 +2593,14 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			bool writers = false;
+ 			for (unsigned i = 0; i < 4; i++) { writers = writers || (held[i] && held[i]->displayWriters); }
+ 			bool available = !fPresentBusy && !fQueueWaiting && (!fQueueActive || !writers);
++			trace_token = token;
++			trace_serial = serial;
++			trace_cand = queued;
++			trace_writers = writers;
++			trace_avail = available;
+ 			if (terminal()) {
+ 				IOLockUnlock(fLock);
++				SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_ABORT, 0);
+ 				sweet_hold_set(held, false);
+ 				return kIOReturnAborted;
+ 			}
+@@ -1693,23 +2617,28 @@ AppleCLCD::swap(const uint8_t *rec)
+ 				fQueueWaiting = true;
+ 				fAdmissions++;
+ 				fAdmissionUS += ns / 1000;
++				sweet_fb_trace_accept(this, trace_id, serial, fEpoch, mask, held, true);
+ 				sweet_bench_event(32, get32(rec, 0x50), fEpoch, 1, 0);
+ 				IOLockWakeup(fLock, fQueueRec, true);
+ 				IOLockUnlock(fLock);
++				SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_QUEUED, 0);
+ 				sweet_bench_event(12, get32(rec, 0x50), 1, 0, 0);
+ 				return kIOReturnSuccess;
+ 			}
+ 			if (available) {
+ 				if (fQueueActive) { fAcceptedSerial = serial; }
++				sweet_fb_trace_accept(this, trace_id, serial, fEpoch, mask, held, false);
+ 				fPresentBusy = scope.owned = true;
+ 				memcpy(fSyncHold, held, sizeof(fSyncHold));
+ 				IOLockUnlock(fLock);
+-				if (!waitLatch()) {
++				if (!waitLatch(trace_id)) {
++					SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_LATCH_FAIL, 0);
+ 					sweet_hold_set(held, false);
+ 					return kIOReturnAborted;
+ 				}
+ 				for (unsigned i = 0; i < 4; i++) {
+ 					if (sweet_tickets_enabled() && held[i] && sweet_surface_cpu_access(held[i], true) != kIOReturnSuccess) {
++						SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_TICKET_FAIL, 16);
+ 						rejectFrame(get32(rec, 0x50), 16, kIOReturnAborted);
+ 						sweet_hold_set(held, false);
+ 						return kIOReturnSuccess;
+@@ -1725,6 +2654,8 @@ AppleCLCD::swap(const uint8_t *rec)
+ 					}
+ 					if (ready) { break; }
+ 					if (mach_absolute_time() >= until) {
++						syncTimedOut = true;
++						SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_SYNC_TIMEOUT, 2);
+ 						rejectFrame(get32(rec, 0x50), 2, kIOReturnTimeout);
+ 						break;
+ 					}
+@@ -1736,9 +2667,11 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+ 			if (ns >= 200 * NSEC_PER_MSEC) {
+ 				if (fellBack) {
++					SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_ABORT, 1);
+ 					sweet_hold_set(held, false);    /* (the presenter is stuck: this frame is lost) */
+ 					return kIOReturnSuccess;
+ 				}
++				SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_REJECT, 1);
+ 				rejectFrame(get32(rec, 0x50), 1, kIOReturnTimeout);
+ 				fellBack = true;
+ 				start = mach_absolute_time();
+@@ -1802,6 +2735,9 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			frames = scaled = sweet_fb_wait_calls = sweet_fb_wait_busy = 0;
+ 			sweet_fb_wait_us = 0;
+ 		}
++		if (!syncTimedOut) {
++			SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_SYNC, 0);
++		}
+ 		return kIOReturnSuccess;
+ 	}
+ 	if (directEligible(rec, held) && fQLock != NULL) {
+@@ -1811,6 +2747,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		while (fQWaiting >= 2) {
+ 			if (IOLockSleepDeadline(fQLock, &fQWaiting, deadline, THREAD_UNINT) == THREAD_TIMED_OUT && fQWaiting >= 2) {
+ 				IOLockUnlock(fQLock);
++				SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_ABORT, 0);
+ 				sweet_hold_set(held, false);    /* (the presenter is stuck: this frame is lost) */
+ 				return kIOReturnSuccess;
+ 			}
+@@ -1821,14 +2758,18 @@ AppleCLCD::swap(const uint8_t *rec)
+ 		fQWaiting++;
+ 		IOLockWakeup(fQLock, fQRec, true);
+ 		IOLockUnlock(fQLock);
++		SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_DIRECT, 0);
+ 		return kIOReturnSuccess;
+ 	}
+ 	if (directEligible(rec, held)) {
+ 		showDirect(rec, held);
++		SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_DIRECT, 0);
+ 		return kIOReturnSuccess;
+ 	}
+ 	showPending(rec, held);
++	SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_PENDING, 0);
+ 	return kIOReturnSuccess;
++#undef SWEET_FB_TRACE_ADMIT
+ }
+ 
+ /* Only whole jasmine scaler frames use the asynchronous path. */
+@@ -1863,22 +2804,25 @@ AppleCLCD::rejectFrame(uint32_t id, uint32_t reason, IOReturn error)
+ 	sweet_bench_event(34, id, fEpoch, reason, 0);
+ 	/* Ticket readiness/epoch rejection is a dropped transaction, not permission
+ 	 * to scan a frame still being written. Keep the previous frame and queue. */
+-	if (!(sweet_tickets_enabled() && reason == 16)) { queueFallback(reason); }
++	if (!(sweet_tickets_enabled() && reason == 16)) { queueFallback(reason, id); }
+ 	IOLockUnlock(fLock);
++	sweet_fb_trace_service();
+ 	return error;
+ }
+ 
+ void
+-AppleCLCD::queueFallback(uint32_t reason)
++AppleCLCD::queueFallback(uint32_t reason, uint32_t swap)
+ {
+ 	if (fQueueActive) {
++		sweet_fb_trace_fallback(this, reason, swap);
+ 		fQueueActive = false;
+ 		fSwapWait = 1;
+ 		fEpoch++;
+ 		fFallbacks++;
+ 		sweet_fb_force_sync = true;
+ 		sweet_bench_event(35, fEpoch, reason, 0, 0);
+-		IOLog("SWEET FB: QUEUE FALLBACK reason %u, epoch %u; synchronous for rest of boot\n", reason, fEpoch);
++		IOLog("SWEET FB: QUEUE FALLBACK reason %u swap %u, epoch %u; synchronous for rest of boot\n",
++		    reason, swap, fEpoch);
+ 		IOLockWakeup(fLock, fQueueRec, false);
+ 	}
+ }
+@@ -1898,32 +2842,58 @@ bool
+ AppleCLCD::drainPresent(void)
+ {
+ 	uint64_t until;
++	uint64_t start = mach_absolute_time(), lastLog = 0;
+ 	clock_interval_to_deadline(200, kMillisecondScale, &until);
+ 	for (;;) {
+ 		IOLockLock(fLock);
+ 		if (!fPresentBusy && !fQueueWaiting) {
+ 			fPresentBusy = true;
+ 			IOLockUnlock(fLock);
+-			if (waitLatch()) { return true; }
++			sweet_fb_trace_drain(this, 1, mach_absolute_time() - start);
++			if (waitLatch()) {
++				sweet_fb_trace_drain(this, 2, mach_absolute_time() - start);
++				return true;
++			}
+ 			releasePresent();
++			sweet_fb_trace_drain(this, 3, mach_absolute_time() - start);
+ 			return false;
+ 		}
+ 		IOLockUnlock(fLock);
+-		if (mach_absolute_time() >= until) { return false; }
++		uint64_t now = mach_absolute_time();
++		if (lastLog == 0 || now - lastLog >= 50 * NSEC_PER_MSEC) {
++			lastLog = now;
++			sweet_fb_trace_drain(this, 0, now - start);
++		}
++		if (now >= until) {
++			sweet_fb_trace_drain(this, 4, now - start);
++			return false;
++		}
+ 		sweet_fb_pause(1000);
+ 	}
+ }
+ 
+ bool
+-AppleCLCD::waitLatch(void)
++AppleCLCD::waitLatch(uint32_t id)
+ {
++	uint64_t start = mach_absolute_time(), last = 0, ns = 0;
++	sweet_fb_trace_waitlatch(this, id, 0, false, 0);
+ 	for (;;) {
+ 		retireLatched();
+ 		IOLockLock(fLock);
+ 		bool pending = fLatchValid;
+ 		bool stopped = terminal();
+ 		IOLockUnlock(fLock);
+-		if (!pending || stopped) { return !stopped; }
++		if (!pending || stopped) {
++			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++			sweet_fb_trace_waitlatch(this, id, 2, !stopped, ns);
++			return !stopped;
++		}
++		uint64_t now = mach_absolute_time();
++		if (last == 0 || now - last >= 100 * NSEC_PER_MSEC) {
++			last = now;
++			absolutetime_to_nanoseconds(now - start, &ns);
++			sweet_fb_trace_waitlatch(this, id, 1, false, ns);
++		}
+ 		sweet_fb_pause(1000);
+ 	}
+ }
+@@ -1939,7 +2909,9 @@ AppleCLCD::queuePresent(void)
+ 	uint32_t seq[4], epoch;
+ 	IOLockLock(fLock);
+ 	while (!fQueueWaiting || fPresentBusy) {
++		sweet_fb_trace_presenter(this, SWEET_FB_TR_PRES_PARK, true);
+ 		IOLockSleep(fLock, fQueueRec, THREAD_UNINT);
++		sweet_fb_trace_presenter(this, SWEET_FB_TR_PRES_WAKE, true);
+ 	}
+ 	fPresentBusy = true;
+ 	memcpy(rec, fQueueRec, sizeof(rec));
+@@ -1947,7 +2919,11 @@ AppleCLCD::queuePresent(void)
+ 	memcpy(seq, fQueueSeq, sizeof(seq));
+ 	memcpy(tickets, fQueueTicket, sizeof(tickets));
+ 	epoch = fQueueEpoch;
++	uint32_t qid = get32(rec, 0x50);
++	uint64_t qpStart = mach_absolute_time();
++	uint32_t dropReason = 0;
+ 	IOLockUnlock(fLock);
++	sweet_fb_trace_qp_enter(qid, epoch, tickets, seq);
+ 	SweetPresentScope scope = { this, true };
+ 	uint64_t until;
+ 	bool tracked = false;
+@@ -1958,24 +2934,38 @@ AppleCLCD::queuePresent(void)
+ 	clock_interval_to_deadline(tracked ? 1000 : 100, kMillisecondScale, &until);
+ 	bool ready = false;
+ 	IOReturn ticketError = kIOReturnSuccess;
+-	uint64_t ticketStart = mach_absolute_time();
++	uint32_t lag = 0, tmask = 0;
++	for (unsigned i = 0; i < 4; i++) { if (tickets[i] != NULL) { tmask |= 1u << i; } }
++	uint64_t ticketStart = mach_absolute_time(), lastTicketLog = 0;
++	uint32_t lastLag = 0;
++	bool firstPoll = true;
+ 	while (!terminal()) {
+ 		uint32_t done = sweet_gpu_completed();
++		uint32_t iterLag = 0;
+ 		ready = true;
+ 		if (tracked) { IOLockLock(fLock); }
+ 		for (unsigned i = 0; i < 4; i++) {
+ 			if (tickets[i]) {
+ 				IOReturn r = sweet_ticket_ready(tickets[i], done, &seq[i]);
+-				if (r != kIOReturnSuccess) { ready = false; }
++				if (r != kIOReturnSuccess) { ready = false; iterLag |= 1u << i; }
+ 				if (r != kIOReturnSuccess && r != kIOReturnNotReady) { ticketError = r; }
+-			} else if (seq[i] && (int32_t)(done - seq[i]) < 0) { ready = false; }
++			} else if (seq[i] && (int32_t)(done - seq[i]) < 0) { ready = false; iterLag |= 1u << i; }
+ 		}
+ 		if (tracked) { IOLockUnlock(fLock); }
+-		if (ready || ticketError != kIOReturnSuccess || mach_absolute_time() >= until) { break; }
++		lag = iterLag;
++		uint64_t now = mach_absolute_time();
++		if (firstPoll || iterLag != lastLag || now - lastTicketLog >= 100 * NSEC_PER_MSEC) {
++			sweet_fb_trace_ticket_wait(qid, done, iterLag, tmask, seq, now - ticketStart);
++			lastTicketLog = now;
++			lastLag = iterLag;
++			firstPoll = false;
++		}
++		if (ready || ticketError != kIOReturnSuccess || now >= until) { break; }
+ 		sweet_fb_pause(1000);
+ 	}
+ 	uint64_t ticketNS = 0;
+ 	absolutetime_to_nanoseconds(mach_absolute_time() - ticketStart, &ticketNS);
++	sweet_fb_trace_qp_ticket(qid, ready, ticketError, ticketNS, lag, tmask);
+ 	for (unsigned i = 0; i < 4; i++) {
+ 		if (tickets[i]) { sweet_ticket_metadata(tickets[i]); sweet_bench_event(39, get32(rec, 0x50), (uint32_t)tickets[i]->generation,
+ 		    ready ? 0 : (uint32_t)(ticketError == kIOReturnSuccess ? kIOReturnTimeout : ticketError), (uint32_t)(ticketNS / 1000)); }
+@@ -1988,6 +2978,7 @@ AppleCLCD::queuePresent(void)
+ 	}
+ 	bool cancelQuiesced = false;
+ 	if (cancelled) {
++		uint64_t cancelStart = mach_absolute_time(), cancelNS = 0;
+ 		clock_interval_to_deadline(100, kMillisecondScale, &until);
+ 		for (;;) {
+ 			uint32_t done = sweet_gpu_completed();
+@@ -2001,11 +2992,17 @@ AppleCLCD::queuePresent(void)
+ 			if (cancelQuiesced || terminal() || mach_absolute_time() >= until) { break; }
+ 			sweet_fb_pause(1000);
+ 		}
++		absolutetime_to_nanoseconds(mach_absolute_time() - cancelStart, &cancelNS);
++		sweet_fb_trace_qp_cancel(qid, cancelled, cancelQuiesced, cancelNS, tmask);
+ 	}
+-	bool latched = waitLatch();
++	uint64_t latchStart = mach_absolute_time(), latchNS = 0;
++	bool latched = waitLatch(qid);
++	absolutetime_to_nanoseconds(mach_absolute_time() - latchStart, &latchNS);
+ 	IOLockLock(fLock);
+-	bool valid = ready && !cancelled && latched && !terminal() && fQueueActive && epoch == fEpoch && queueCandidate(rec, held);
+-	if (!valid && fQueueActive && !(cancelled && cancelQuiesced)) { queueFallback(ready ? 3 : 2); }
++	bool epochok = epoch == fEpoch;
++	bool valid = ready && !cancelled && latched && !terminal() && fQueueActive && epochok && queueCandidate(rec, held);
++	sweet_fb_trace_qp_latch(this, qid, latched, latchNS);
++	if (!valid && fQueueActive && !(cancelled && cancelQuiesced)) { queueFallback(ready ? 3 : 2, qid); }
+ 	IOLockUnlock(fLock);
+ 	if (valid) {
+ 		unsigned layer = 0;
+@@ -2014,8 +3011,22 @@ AppleCLCD::queuePresent(void)
+ 		/* Pool storage is stable under this retain; do not resolve its ID again. */
+ 		sweet_surface_cpu_access(source, false);
+ 		sweet_bench_event(13, get32(rec, 0x50), source->id, seq[layer], 1);
+-		scanScaled(source->scanoutPhys + source->offset, source->bytesPerRow);
+-		if (terminal()) { return; }
++		uint64_t pa = source->scanoutPhys + source->offset;
++		uint64_t scanStart = mach_absolute_time();
++		scanScaled(pa, source->bytesPerRow);
++		uint64_t progNS = 0;
++		absolutetime_to_nanoseconds(mach_absolute_time() - scanStart, &progNS);
++		sweet_fb_trace_qp_prog(qid, source->id, seq[layer], pa, source->bytesPerRow, progNS,
++		    fCtl0 != NULL ? fCtl0[0x18 / 4] : 0);
++		if (terminal()) {
++			uint64_t qpNS = 0;
++			absolutetime_to_nanoseconds(mach_absolute_time() - qpStart, &qpNS);
++			IOLockLock(fLock);
++			sweet_fb_trace_qp_exit(this, qid, 20, true, ready, cancelled, cancelQuiesced,
++			    latched, epochok, true, qpNS, get32(rec, 0x104), tmask, held);
++			IOLockUnlock(fLock);
++			return;
++		}
+ 		IOLockLock(fLock);
+ 		memcpy(fRetireHold, fShowHold, sizeof(fRetireHold));
+ 		memcpy(fShowHold, held, sizeof(fShowHold));
+@@ -2023,6 +3034,8 @@ AppleCLCD::queuePresent(void)
+ 		noteShown(get32(rec, 0x50));
+ 	} else {
+ 		uint32_t reason = cancelled && cancelQuiesced ? 13 : ready ? 3 : 2;
++		dropReason = reason;
++		sweet_fb_trace_qp_drop(qid, reason, ready, cancelled, latched, epochok);
+ 		sweet_bench_event(34, get32(rec, 0x50), epoch, reason, 0);
+ 		IOLockLock(fLock);
+ 		fDrops++;
+@@ -2049,6 +3062,10 @@ AppleCLCD::queuePresent(void)
+ 	bzero(fQueueTicket, sizeof(fQueueTicket));
+ 	fQueueWaiting = false;
+ 	IOLockWakeup(fLock, fQueueRec, false);
++	uint64_t qpNS = 0;
++	absolutetime_to_nanoseconds(mach_absolute_time() - qpStart, &qpNS);
++	sweet_fb_trace_qp_exit(this, qid, valid ? 0 : dropReason, valid, ready, cancelled,
++	    cancelQuiesced, latched, epochok, terminal(), qpNS, get32(rec, 0x104), tmask, held);
+ 	if (fAdmissions && fAdmissions % 600 == 0) {
+ 		IOLog("SWEET FB: queue admitted %u depth 0 high-water 1, drops %u fallback %u, admission %llu us; guard q/s/r %u/%u/%u; sleep %llu spin %llu us\n",
+ 		    fAdmissions, fDrops, fFallbacks, fAdmissionUS, fGuard[1], fGuard[2], fGuard[3], sweet_fb_slept_us, sweet_fb_spun_us);
+@@ -2058,6 +3075,7 @@ AppleCLCD::queuePresent(void)
+ 		sweet_ticket_stats();
+ 	}
+ 	IOLockUnlock(fLock);
++	sweet_fb_trace_service();
+ 	for (unsigned i = 0; i < 4; i++) { OSSafeReleaseNULL(tickets[i]); }
+ }
+ 
+@@ -2090,8 +3108,9 @@ sweet_fb_write_begin(SweetSurface **surfaces, uint32_t count)
+ 		if (state == 4 || fb->terminal()) {
+ 			if (state) { fb->fGuard[state]++; fb->fGuardReject[state]++; }
+ 			sweet_bench_event(36, surfaces[i] ? surfaces[i]->id : 0, state, 1, 0);
+-			fb->queueFallback(5);
++			fb->queueFallback(5, 0);
+ 			IOLockUnlock(fb->fLock);
++			sweet_fb_trace_service();
+ 			return -1;
+ 		}
+ 	}
+@@ -2120,8 +3139,9 @@ sweet_fb_submit_fault(uint32_t reason)
+ 	AppleCLCD *fb = sweet_fb_main;
+ 	if (!fb || !fb->fProtocol) { return; }
+ 	IOLockLock(fb->fLock);
+-	fb->queueFallback(reason);
++	fb->queueFallback(reason, 0);
+ 	IOLockUnlock(fb->fLock);
++	sweet_fb_trace_service();
+ }
+ 
+ extern "C" uint32_t
+@@ -2171,9 +3191,21 @@ AppleCLCD::presenterMain(void *self, wait_result_t result __unused)
+ 	((AppleCLCD *)self)->presenter();
+ }
+ 
++static void
++sweet_fb_trace_presenter_q(uint32_t phase, uint32_t waiting)
++{
++	struct sweet_fb_trace_ent e;
++	sweet_fb_trace_z(&e, SWEET_FB_TR_PRESENTER, 0);
++	e.a = phase;
++	e.b = waiting ? 1u : 0u;
++	e.waiting = waiting;
++	sweet_fb_trace_put(&e);
++}
++
+ void
+ AppleCLCD::presenter(void)
+ {
++	sweet_fb_trace_presenter(this, SWEET_FB_TR_PRES_ENTER, false);
+ 	if (fProtocol) {
+ 		for (;;) { queuePresent(); }
+ 	}
+@@ -2183,7 +3215,9 @@ AppleCLCD::presenter(void)
+ 	for (;;) {
+ 		IOLockLock(fQLock);
+ 		while (fQWaiting == 0) {
++			sweet_fb_trace_presenter_q(SWEET_FB_TR_PRES_QPARK, fQWaiting);
+ 			IOLockSleep(fQLock, fQRec, THREAD_UNINT);
++			sweet_fb_trace_presenter_q(SWEET_FB_TR_PRES_QWAKE, fQWaiting);
+ 		}
+ 		memcpy(rec, fQRec[fQFirst], sizeof(rec));
+ 		memcpy(held, fQHeld[fQFirst], sizeof(held));
+@@ -2325,6 +3359,7 @@ AppleCLCD::noteShown(uint32_t id)
+ 		for (unsigned i = 0; i < 4; i++) { if (fQueueHold[i]) { seq = fQueueSeq[i]; } }
+ 		sweet_bench_event(33, id, fQueueEpoch, seq, 1);
+ 	}
++	sweet_fb_trace_note(this, id);
+ 	IOLockUnlock(fLock);
+ }
+ 
+@@ -2349,9 +3384,10 @@ AppleCLCD::retireLatched(void)
+ 			if (retry > fLatchRetries) {
+ 				fLatchRetries = retry;
+ 				fLatchTimeoutChecks++;
++				sweet_fb_trace_retire(this, SWEET_FB_TR_RETIRE_WAIT, ns, ctl, retry, fLatchID);
+ 				IOLog("SWEET FB: latch still pending after %llu ms, holds kept\n", ns / NSEC_PER_MSEC);
+ 			}
+-			if (ns >= 150 * NSEC_PER_MSEC) { queueFallback(6); }
++			if (ns >= 150 * NSEC_PER_MSEC) { queueFallback(6, fLatchID); }
+ 		}
+ 	}
+ 	uint64_t limit = fQueueActive ? 150 * NSEC_PER_MSEC : 50 * NSEC_PER_MSEC;
+@@ -2360,6 +3396,7 @@ AppleCLCD::retireLatched(void)
+ 		return;
+ 	}
+ 	sweet_bench_event((ctl & fFlushMask) ? 15 : 14, fLatchID, fShownID, (uint32_t)(ns / 1000), ctl);
++	uint32_t retired = fLatchID;
+ 	if (!(ctl & fFlushMask)) {
+ 		fLatchedSerial = fProgramSerial;
+ 		fShownValid = true;
+@@ -2367,10 +3404,12 @@ AppleCLCD::retireLatched(void)
+ 	fShownID = fLatchID;
+ 	fLatchID = 0;
+ 	fLatchValid = false;
++	sweet_fb_trace_retire(this, SWEET_FB_TR_RETIRE_OK, ns, ctl, fLatchRetries, retired);
+ 	memcpy(gone, fRetireHold, sizeof(gone));
+ 	bzero(fRetireHold, sizeof(fRetireHold));
+ 	IOLockUnlock(fLock);
+ 	sweet_hold_set(gone, false);
++	sweet_fb_trace_service();
+ }
+ 
+ /* timeout: the top bit set for CoreAnimation's polls, the rest ms (0x80000001: up to 1 ms) */
+@@ -2451,6 +3490,7 @@ AppleCLCD::swapWait(uint32_t id, uint32_t timeout, IOMobileFramebufferUserClient
+ 				uint32_t streak = __atomic_add_fetch(&client->fSwapWaitTimeouts, 1, __ATOMIC_RELAXED);
+ 				if (streak == 30 || (streak > 30 && (streak - 30) % 300 == 0)) {
+ 					sweet_fb_diag_stuck(this, asked, serial, client->fNewestSerial, streak);
++					sweet_fb_trace_stuck();
+ 				}
+ 			}
+ 			return done ? kIOReturnSuccess : kIOReturnTimeout;
+@@ -3096,7 +4136,9 @@ IOMobileFramebufferUserClient::clientClose(void)
+ 			bool owned = drain && fFB->drainPresent();
+ 			if (drain && !owned) { sweet_fb_submit_fault(7); owned = fFB->drainPresent(); }
+ 			IOLockLock(fFB->fLock);
+-			if (drain && !owned) { fFB->queueFallback(7); }
++			if (drain && !owned) {
++				fFB->queueFallback(7, fFB->fQueueWaiting ? get32(fFB->fQueueRec, 0x50) : 0);
++			}
+ 			sweet_bench_event(35, fFB->fEpoch, 7, 0, 0);
+ 			for (unsigned i = 0; i < 128; i++) {
+ 				if (fFB->fTokens[i].owner == this) {
+@@ -3105,6 +4147,7 @@ IOMobileFramebufferUserClient::clientClose(void)
+ 				}
+ 			}
+ 			IOLockUnlock(fFB->fLock);
++			sweet_fb_trace_service();
+ 			if (owned) { fFB->releasePresent(); }
+ 		}
+ 		fFB->removeClient(this);
+@@ -3191,6 +4234,8 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		sweet_fb_diag.beginEpoch = fFB->fEpoch;
+ 		sweet_fb_diag.beginSerial = fFB->fQueueActive ? fFB->fSerial : 0;
+ 		sweet_fb_diag.beginValid = true;
++		sweet_fb_trace_begin((uint32_t)out[0], fFB->fQueueActive ? fFB->fSerial : 0,
++		    fFB->fEpoch, fFB->fQueueActive);
+ 		sweet_bench_event(10, (uint32_t)out[0], 0, 0, 0);
+ 		IOLockUnlock(fFB->fLock);
+ 		outCount = 1;
+@@ -3273,16 +4318,22 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			 */
+ 			int stayon = 0;
+ 			if (off && PE_parse_boot_argn("sweetfb_stayon", &stayon, sizeof(stayon)) && stayon) {
++				sweet_fb_trace_power(fFB, off, SWEET_FB_TR_PWR_IGNORED, false, false, kIOReturnSuccess);
+ 				IOLog("SWEET FB: display off ignored (sweetfb_stayon)\n");
+ 				break;
+ 			}
++			sweet_fb_trace_power(fFB, off, SWEET_FB_TR_PWR_ENTER, false, false, kIOReturnSuccess);
+ 			SweetPresentScope scope = { fFB, false };
+ 			if (!off) { sweet_ddrgov_display(1); }  /* full DDR and buses before the redraw (j0114) */
+ 			if (off) { sweet_ticket_cancel(NULL); }
+ 			if (fFB->fProtocol) {
+ 				scope.owned = fFB->drainPresent();
+ 				if (!scope.owned) { sweet_fb_submit_fault(8); scope.owned = fFB->drainPresent(); }
+-				if (!scope.owned) { ret = kIOReturnTimeout; break; }
++				if (!scope.owned) {
++					sweet_fb_trace_power(fFB, off, SWEET_FB_TR_PWR_FAIL, true, false, kIOReturnTimeout);
++					ret = kIOReturnTimeout;
++					break;
++				}
+ 			}
+ 			IOLockLock(fFB->fLock);
+ 			bool changed = off != fFB->fPowerOff;
+@@ -3304,6 +4355,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				}
+ 			}
+ 			if (off) { sweet_ddrgov_display(0); }
++			sweet_fb_trace_power(fFB, off, SWEET_FB_TR_PWR_EXIT, changed, scope.owned, ret);
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
+ 		}
+ 		break;
