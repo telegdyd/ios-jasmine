@@ -1,3 +1,18 @@
+### 2026-11-05 ~19:00: idle CPU census (home screen, display on, USB charging; observation only, nothing changed)
+- `prof.py fetch` 20 s at 2 ms (research/cpu-idle-20261105/idle1.*, report1.txt; kernel slow135, libs ycc152).
+  Total ~580 ms/s of 8000 (Silver 361, Gold 216). backboardd 236 (display thread 130: vsync_callback ->
+  render_for_time every frame, ~18 bursts/s), kernel_task 133, SpringBoard 53 (main: DisplayLink + NSFireDelayedPerform
+  -> CA commit), wifid 47, launchd 16, dasd 9, logd 8, rest small.
+- Port-made (candidates to remove): (1) modem_watch (TopazModem.cpp) loops IOSleep(1) forever doing glink_poll +
+  radio_poll = 1000 wakeups/s, 44 ms/s; (2) sweet_usb ud_thread polls GEVNTCOUNT with ud_sleep_ms(1), 1000 wakeups/s,
+  28 ms/s (mostly block/wake overhead); (3) dvfs_worker PMIC read-back busy-wait (dvfs_rail_read, sym shows
+  keys_thread) 30 ms/s, known since task 19. Fix idea: interrupt-driven or adaptive backoff (1 ms only while traffic
+  flowed in the last ~100 ms, else 10-20 ms).
+- Unclear: wifid 47 ms/s over ~10 workqueue threads (WiFiUsageMonitor updateLinkQuality, CWFLog formatting,
+  skywalk pbufpool); our redwood_sta posts events only on state changes, so wifid polls/retries something itself.
+- Natural: home screen redraws continuously because of the Clock icon's live second hand (guess, not tested by moving
+  the icon); ikm_sign SHA-256 in every mach_msg (~6 % of bb/SB main threads) is stock XNU.
+
 ### 2026-11-05 ~14:35: App switcher cards FIXED on device (Metal e9d181b, build xnu/out-mesa-ycc152 in backboardd)
 - Installed: /usr/local/bin/libbgmtl.dylib = ycc152 (sha 29498766, was dump146 23246229; backup
   research/ycc147/backup-bb-libbgmtl.dylib, `python research/ycc147/install.py restore` puts it back). libbgair and
