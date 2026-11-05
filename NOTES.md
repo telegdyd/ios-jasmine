@@ -1,3 +1,17 @@
+### 2026-11-05 ~23:50: j0143 FG SRAM reader: battery = Coslight, stock profile IS loaded (no-profile guess wrong)
+- xnu/patches/j0143-jasmine-fg-sram-read.patch (kernel fg143 = j0139 off + j0140..j0143, image
+  shim/out/shim-boot-fg143-tmp.img, temp boot): `fg sram WORD [N]`, `fg profile`, `fg id`, `fg memif` (IMA single
+  mode as stock fg-memif.c for PM660). Its first access runs fg_ima_init's clear: this cleared the stale mem-xcp
+  (int_rt 0x2 -> 0) and DMA read-error log (0x4 -> 0), and IMA_CTL 0x40 -> 0. No gauge parameters written.
+- `fg id`: 97656 ohm (codes 198/600/1023) -> Coslight 100k profile. `fg sram 79` = 00000003 (PROFILE_LOAD set).
+  `fg profile` words 24..79 = the stock DT coslight fg-profile-data byte for byte (f61f3705 b10a2b06 ...).
+  So the SOC jumps are not a missing profile. Gauge SOC read 74 % at 4.10 V (+0.4 A) right after (was 48 % ~25 min
+  earlier): it keeps re-anchoring toward the voltage; guess: weeks of 3.95 V float (never full, no full/empty
+  calibration point) left its learned state off, or the SRAM parameters (cutoff 3400, empty, term currents 200/300,
+  recharge 4340, cc-cv 4390) are not stock. BATT_TEMP still 39.3 C (separate cause, RRADC BATT_THERM data 0x0181).
+- Next: dump the fg-gen3 SRAM parameter words (pmi8998_v2_sram_params) and compare with stock DT values; look at
+  how RRADC BATT_THERM conversions are triggered (FREQ 0x4576 = 0).
+
 ### 2026-11-05 ~23:45: fuel gauge diagnosis started (user: "Fix the gauge"); read-only, nothing written
 - Live reads (`spmi 0 ADDR N`, aicl142 boot): BATT_INFO BATT_TEMP 0x4150 = e1 04 (312.25 K = 39.1 C), unchanged;
   BATT_TEMP_CFG 0x4156 = 0x20, TMPR_INTR 0x4159 = 01, THERM_C1..C3 0x415c = 9d 50 ff, half range 0x6e (no therm

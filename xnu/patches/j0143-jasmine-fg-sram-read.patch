@@ -1,0 +1,329 @@
+Subject: [PATCH] jasmine-j0143: read-only fuel gauge SRAM (IMA) and battery ID on the command port
+
+Diagnosis for the gauge (SOC jumps, BATT_TEMP stuck): stock fg-gen3 loads a battery profile
+into FG SRAM by battery ID; nothing does under XNU. This ports stock fg-memif.c's IMA read path
+in PM660 single mode (access request, IACS_RDY, per-word address, RD_DATA0..3, exception
+check and the IACS clear sequence, beat-count retry) plus fg_ima_init's error clearing. No
+gauge configuration is written. Commands: `fg sram WORD [N]`, `fg profile` (words 24..79,
+the 224-byte profile), `fg sram 79` (integrity word, PROFILE_LOAD bit), `fg id` (RRADC
+battery ID from the last conversion), `fg memif` (interface status).
+---
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -722,6 +722,286 @@
+ 	return 0;
+ }
+ 
++/*
++ * j0143: FG SRAM reads over IMA, single mode as stock fg-memif.c uses on PM660
++ * (use_ima_single_mode): request access (MEM_INTF_CFG 0x50 MEM_ACCESS_REQ|IACS_SLCT),
++ * IMA_CTL 0x51 = read/single, wait IACS_RDY (OPR_STS 0x54 bit 1), per word ADDR
++ * 0x61/0x62, RD_DATA0..3 0x67..0x6a, error check (EXP_STS 0x55), release. Before
++ * the first access the same init as fg_ima_init (IACS interrupt source, DMA and IMA
++ * error clear). The gauge's configuration is not written. `fg ...` command port.
++ */
++static volatile uint32_t *fg_mem_rd, *fg_mem_wr, *fg_rr_rd;
++static bool fg_ima_ready;
++
++static int
++fgm_rd(uint32_t off, uint32_t *v)
++{
++	if (fg_mem_rd == NULL) {
++		return -1;
++	}
++	lck_spin_lock(&sweet_pmic_lock);
++	int r = pmic_read(fg_mem_rd, fg_base + 0x400 + off, 1, v);
++	lck_spin_unlock(&sweet_pmic_lock);
++	return r;
++}
++
++static __attribute__((noinline)) int
++fgm_wr(uint32_t off, uint32_t v)
++{
++	if (fg_mem_wr == NULL) {
++		return -1;
++	}
++	lck_spin_lock(&sweet_pmic_lock);
++	int r = pmic_write(fg_mem_wr, fg_base + 0x400 + off, (uint8_t)v);
++	lck_spin_unlock(&sweet_pmic_lock);
++	return r;
++}
++
++static int
++fgm_upd(uint32_t off, uint32_t mask, uint32_t val)
++{
++	uint32_t old = 0;
++	int r = fgm_rd(off, &old);
++	if (r != 0) {
++		return r;
++	}
++	return fgm_wr(off, (old & ~mask) | (val & mask));
++}
++
++static int
++fgm_iacs_ready(void)
++{
++	uint32_t st = 0;
++	delay(35);
++	for (int i = 0; i < 250; i++) {
++		if (fgm_rd(0x54, &st) != 0) {
++			return -1;
++		}
++		if (st & 0x02) {
++			return 0;
++		}
++		delay(5000);
++	}
++	return -2;
++}
++
++/* fg_run_iacs_clear_sequence */
++static void
++fgm_iacs_clear(void)
++{
++	uint32_t hw = 0, exp = 0, d = 0;
++	(void)fgm_upd(0x52, 0x14, 0x14);        /* IACS_CLR | STATIC_CLK_EN */
++	(void)fgm_upd(0x51, 0xC0, 0x00);        /* read, single */
++	(void)fgm_upd(0x50, 0xA0, 0xA0);
++	delay(40);
++	for (int tries = 250; tries > 0; ) {
++		(void)fgm_wr(0x62, d);          /* ADDR_MSB */
++		(void)fgm_wr(0x66, d);          /* WR_DATA3 */
++		(void)fgm_rd(0x6A, &d);         /* RD_DATA3 */
++		d = 0;
++		delay(40);
++		(void)fgm_rd(0x56, &hw);
++		if (hw != 0) {
++			continue;
++		}
++		(void)fgm_rd(0x55, &exp);
++		if (exp == 0 || !(--tries)) {
++			break;
++		}
++	}
++	(void)fgm_upd(0x52, 0x04, 0x00);
++	delay(5);
++	(void)fgm_upd(0x50, 0xA0, 0x00);
++	delay(40);
++}
++
++/* fg_clear_ima_errors_if_any: 1 = cleared (retry), 0 = none */
++static int
++fgm_check_errors(bool check_hw)
++{
++	uint32_t exp = 0, hw = 0;
++	(void)fgm_rd(0x55, &exp);
++	(void)fgm_rd(0x56, &hw);
++	if ((exp & 0xBB) || (check_hw && (hw & 0x0F) != (hw >> 4))) {
++		fgm_iacs_clear();
++		return 1;
++	}
++	return 0;
++}
++
++static int
++fg_sram_read_words(uint32_t word, unsigned n, uint8_t *out)
++{
++	uint32_t cfg = 0, b0 = 0, b1 = 0, v = 0;
++	if (fg_mem_rd == NULL || fg_mem_wr == NULL || word + n > 256) {
++		return -1;
++	}
++	if (!fg_ima_ready) {
++		(void)fgm_upd(0x52, 0x08, 0x08);        /* IACS_INTR_SRC_SLCT */
++		uint32_t dma = 0;
++		(void)fgm_rd(0x70, &dma);
++		(void)fgm_upd(0x71, 0x01, (dma & 0x06) ? 0x01 : 0x00);  /* DMA_CLEAR_LOG */
++		(void)fgm_check_errors(true);
++		fg_ima_ready = true;
++	}
++	for (int attempt = 0; attempt < 3; attempt++) {
++		int err = 0;
++		for (int t = 0; t < 5; t++) {
++			if (fgm_rd(0x50, &cfg) != 0) {
++				return -1;
++			}
++			if (!(cfg & 0x80)) {
++				break;
++			}
++			delay(4000);
++		}
++		if (cfg & 0x80) {
++			return -16;     /* EBUSY: someone holds the memory interface */
++		}
++		(void)fgm_upd(0x50, 0xA0, 0xA0);
++		(void)fgm_upd(0x51, 0xC0, 0x00);
++		if (fgm_iacs_ready() != 0) {
++			err = -2;
++		}
++		(void)fgm_rd(0x57, &b0);
++		for (unsigned i = 0; i < n && err == 0; i++) {
++			uint32_t zero = 0;
++			(void)fgm_wr(0x61, (word + i) & 0xFF);
++			(void)fgm_wr(0x62, zero);
++			if (fgm_iacs_ready() != 0) {
++				err = -3;
++				break;
++			}
++			for (unsigned k = 0; k < 4; k++) {
++				if (fgm_rd(0x67 + k, &v) != 0) {
++					err = -4;
++					break;
++				}
++				out[4 * i + k] = (uint8_t)v;
++			}
++			if (err == 0 && fgm_check_errors(false)) {
++				err = -11;      /* EAGAIN: error cleared, retry */
++				break;
++			}
++		}
++		(void)fgm_rd(0x57, &b1);
++		(void)fgm_upd(0x50, 0xA0, 0x00);        /* release */
++		if (err == 0 && (b0 & 0x0F) == (b1 & 0x0F)) {
++			return 0;
++		}
++		if (err != 0 && err != -11) {
++			return err;
++		}
++		delay(1000);
++	}
++	return -5;      /* beat count kept changing */
++}
++
++/* RRADC battery ID from the last conversion (5/15/150 uA codes, 10 bits, 2.5 V FS) */
++static int
++fg_batt_id_ohms(uint32_t raw[3])
++{
++	static const uint32_t ua[3] = { 5, 15, 150 };
++	if (fg_rr_rd == NULL) {
++		return -1;
++	}
++	for (int i = 0; i < 3; i++) {
++		uint32_t v = 0;
++		lck_spin_lock(&sweet_pmic_lock);
++		int r = pmic_read(fg_rr_rd, fg_base + 0x566 + 2 * i, 2, &v);
++		lck_spin_unlock(&sweet_pmic_lock);
++		if (r != 0) {
++			return -1;
++		}
++		raw[i] = v;
++	}
++	int pick = raw[2] <= 820 ? 2 : raw[1] <= 820 ? 1 : 0;
++	return (int)((uint64_t)raw[pick] * 2500 * 1000 / (1024 * ua[pick]));
++}
++
++/* `fg sram WORD [N]` (N words, max 32), `fg profile`, `fg id`, `fg memif` */
++int sweet_fg_command(const char *args, char *out, size_t len);
++int
++sweet_fg_command(const char *args, char *out, size_t len)
++{
++	int n = 0;
++	const char *p = args;
++	while (*p == ' ') {
++		p++;
++	}
++	if (strncmp(p, "id", 2) == 0) {
++		uint32_t raw[3] = { 0 };
++		int ohms = fg_batt_id_ohms(raw);
++		n = snprintf(out, len, "fg id: %d ohm (codes 5uA %u, 15uA %u, 150uA %u); stock profiles: sunwoda 68k, coslight 100k\n",
++		    ohms, raw[0], raw[1], raw[2]);
++	} else if (strncmp(p, "memif", 5) == 0) {
++		uint32_t r[8] = { 0 };
++		const uint32_t off[8] = { 0x10, 0x40, 0x50, 0x51, 0x52, 0x54, 0x55, 0x56 };
++		for (int i = 0; i < 8; i++) {
++			(void)fgm_rd(off[i], &r[i]);
++		}
++		uint32_t errsts = 0, beat = 0, dma = 0;
++		(void)fgm_rd(0x5F, &errsts);
++		(void)fgm_rd(0x57, &beat);
++		(void)fgm_rd(0x70, &dma);
++		n = snprintf(out, len, "fg memif: int_rt %#x arb %#x intf_cfg %#x ima_ctl %#x ima_cfg %#x opr %#x exp %#x hw %#x err %#x beat %#x dma %#x\n",
++		    r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], errsts, beat, dma);
++	} else {
++		uint32_t word = 79, cnt = 1;
++		boolean_t prof = strncmp(p, "profile", 7) == 0;
++		if (prof) {
++			word = 24;
++			cnt = 56;       /* PROFILE_LOAD_WORD 24, PROFILE_LEN 224 bytes */
++		} else if (strncmp(p, "sram", 4) == 0) {
++			p += 4;
++			while (*p == ' ') {
++				p++;
++			}
++			word = 0;
++			for (; *p >= '0' && *p <= '9'; p++) {
++				word = word * 10 + (uint32_t)(*p - '0');
++			}
++			while (*p == ' ') {
++				p++;
++			}
++			if (*p >= '0' && *p <= '9') {
++				cnt = 0;
++				for (; *p >= '0' && *p <= '9'; p++) {
++					cnt = cnt * 10 + (uint32_t)(*p - '0');
++				}
++			}
++			cnt = cnt == 0 ? 1 : cnt > 32 ? 32 : cnt;
++		} else {
++			return snprintf(out, len, "fg: use fg sram WORD [N] | fg profile | fg id | fg memif\n");
++		}
++		static uint8_t buf[56 * 4];
++		int r = 0;
++		for (uint32_t done = 0; done < cnt && r == 0; done += 8) {
++			uint32_t k = cnt - done > 8 ? 8 : cnt - done;
++			r = fg_sram_read_words(word + done, k, buf + 4 * done);
++		}
++		if (r != 0) {
++			n = snprintf(out, len, "fg sram: read of word %u failed (%d)\n", word, r);
++		} else {
++			n = snprintf(out, len, "fg sram word %u x%u:%s\n", word, cnt,
++			    word == 79 && cnt >= 1 ? (buf[3] & 1 ? " (integrity word: PROFILE_LOAD bit SET)" : " (integrity word: PROFILE_LOAD bit clear)") : "");
++			for (uint32_t i = 0; i < cnt && n > 0 && (size_t)n < len; i++) {
++				n += snprintf(out + n, len - (size_t)n, "%s%02x%02x%02x%02x", i % 8 == 0 ? (i ? "\n  " : "  ") : " ",
++				    buf[4 * i], buf[4 * i + 1], buf[4 * i + 2], buf[4 * i + 3]);
++			}
++			if (n > 0 && (size_t)n < len) {
++				n += snprintf(out + n, len - (size_t)n, "\n");
++			}
++		}
++	}
++	if (n < 0) {
++		n = 0;
++	} else if ((size_t)n >= len) {
++		n = (int)len - 1;
++	}
++	return n;
++}
++
+ static void
+ pmic_fg_init(DTEntry node)
+ {
+@@ -734,6 +1014,12 @@
+ 	fg_base = fg[1];
+ 	fg_soc_ch = pmic_channel(fg[0], fg[1], NULL);          /* BATT_SOC 0x40 */
+ 	fg_info_ch = pmic_channel(fg[0], fg[1] + 0x100, NULL); /* BATT_INFO 0x41 */
++	{
++		uint16_t apid = PMIC_NO_APID;
++		fg_mem_rd = pmic_channel(fg[0], fg[1] + 0x400, &apid); /* MEM_IF 0x44 (j0143) */
++		fg_mem_wr = fg_mem_rd ? pmic_wchannel(apid) : NULL;
++		fg_rr_rd = pmic_channel(fg[0], fg[1] + 0x500, NULL);  /* RRADC 0x45 */
++	}
+ 	struct sweet_fg f;
+ 	if (sweet_fg_read(&f) == 0) {
+ 		printf("SWEET FG: %d mV %d mA %d.%d C, gauge SOC %d%%, usb %d charging %d full %d\n",
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -2023,6 +2023,12 @@
+ 			}
+ 			snprintf(idle_reply, sizeof(idle_reply), "OK idle poll: modem %u ms, usb %u ms\n", sweet_modem_idle_ms, sweet_usb_idle_ms);
+ 			prof = idle_reply;
++		} else if (prof == NULL && !reboot && strncmp(line, "fg ", 3) == 0) {
++			/* j0143: fuel gauge SRAM / battery ID reads (bsd/dev/sweet_pmic.c) */
++			extern int sweet_fg_command(const char *args, char *out, size_t len);
++			static char fg_reply[2048];
++			sweet_fg_command(line + 3, fg_reply, sizeof(fg_reply));
++			prof = fg_reply;
+ 		} else if (prof == NULL && !reboot && strncmp(line, "cpuidle", 7) == 0 && (line[7] == 0 || line[7] == ' ')) {
+ 			/* j0139: PSCI CPU idle states (osfmk/arm64/cpu.c) */
+ 			extern int sweet_cpuidle_command(const char *args, char *out, size_t len);
