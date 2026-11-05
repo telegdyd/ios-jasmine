@@ -1,3 +1,23 @@
+### 2026-11-05 ~15:00: App switcher shows only the last app = format-500 (YCbCr 4:2:0) textures refused (diagnosis, no fix yet)
+- User: switcher draws only the last used app; cards behind it are just shadow/transparent.
+- Snapshots on disk are fine: e.g. Maps/Messages/AppStore under
+  Containers/Data/Application/*/Library/SplashBoard/Snapshots/sceneID:*/*.jpeg (pulled and viewed: correct
+  content), all baseline JPEG 4:2:0 (Y 2x2, 1125x2436 @3x or 828x1792 @2x). The last app's card is the live
+  in-memory BGRA snapshot; older cards come from these JPEGs, which decode into '420f' bi-planar IOSurfaces.
+- QuartzCore (~/ios-work/qc/QuartzCore, disassembly ~/ios-work/qc/all.dis): CA::OGL::four_cc_to_mtl_format
+  (0x1882d69f4) maps '420f'/'420v' -> MTLPixelFormat 500 (0x1f4, private YCbCr 8-bit 4:2:0 two-plane) when
+  MetalContext+0xa3c flag 0x4 is set, else 0. MetalContext init (~0x188488780) sets 0x1|0x4|0x8 iff
+  [device supportsFamily:1001] (Apple1), which bgmtl answers YES. So CA asks for format 500, bgmtl refuses
+  ("texture refused: pixel format 500 ...", ~50 per 5 s in logs/netlog-fixed.txt), the image layer draws
+  nothing and only the card shadow shows. Same refusals seen since M2 (1105x1160 caller) - same cause.
+  Other flags there: 0x20 supportsYCBCRFormats12, 0x40 supportsYCBCRPackedFormats12, 0x2/0x400/0x10/0x200
+  supportsFamily:1002, 0x100 :1003, 0x80 :1005.
+- Fix options (not done): (a) implement format 500 in bgmtl for IOSurface-backed textures as an RGBA8 texture
+  holding (Y, Cb, Cr, 1) with chroma upsampled, converted on creation/when the surface seed changes; CA's
+  shader then applies its YCbCr matrix (needs_ycbcr_matrices). Channel order to be verified on device.
+  (b) real two-plane sampling via shader variants (R8 + RG8, like Mesa's lower_y_uv_external): correct for
+  video, much more work. Answering supportsFamily:1001 NO is not an option (drives many other CA paths).
+
 ### 2026-11-05 ~14:00: framebench on the current phone state: Home -6 %, CC -12 % vs M11 (m11fb1); cause not isolated
 - Runs research/metal-m10/fb-detach1, fb-detach2 (logs/fb-detach1.txt, fb-detach2.txt), both complete, no timeouts.
   Phone state: kernel slow135 (temp boot), dump146 libs in /usr/local/bin (debug sampling off), bgmtl-bb.env
