@@ -1,0 +1,104 @@
+Subject: [PATCH] jasmine-j0141: charge to 4.3 V at up to 2 A, battery temperature guard
+
+The iOS charger setup still used the early Nura limits: float 3950 mV (the battery stopped at
+~60 %) and 1000 mA fast-charge current (clamp 1500). Stock: fv-max 4400 mV, fcc-max 2900 mA.
+Now float 4300 mV (the user's charge-shell default), fcc 2000 mA (chgfcc= up to 2900).
+New guard after stock's sw-jeita thresholds (0/15/45/60 C): <0 C or >=55 C charging off,
+0-15 C <=1000 mA, 45-55 C half the current, 3 C hysteresis; zone changes logged as
+`SWEET CHG: temp ...`. Input limits unchanged (DCP/CDP 1.5 A, SDP 0.5 A); HVDCP still off.
+---
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -284,9 +284,10 @@
+  * override and an AICL restart above 500 mA, no skin/die ADC thermal
+  * regulation sources, float voltage rounded down). Without it the stock
+  * state charges at most 500 mA and the phone ran flat under iOS.
+- * Boot-args: chgmv= float voltage in mV (default 3950, the Nura limit;
+- * 3600..4400), chgfcc= fast-charge current in mA (default 1000, Linux's cap;
+- * 100..1500), chgicl= wall-charger input limit in mA (default 1500;
++ * Boot-args: chgmv= float voltage in mV (default 4300 since j0141, was the
++ * Nura 3950 = ~60 % full; stock fv-max 4400; 3600..4400), chgfcc= fast-charge
++ * current in mA (default 2000 since j0141, was 1000; stock fcc-max 2900;
++ * 100..2900), chgicl= wall-charger input limit in mA (default 1500;
+  * 500..2000), sweetchg=0 leaves the charger alone. Registers are offsets
+  * from the charger base, as in qcom_smbx.c.
+  */
+@@ -469,13 +470,43 @@
+ 	    chg_states[st1 & 7], icl * 25, (3487500 + fv * 7500) / 1000, st2, f.mv, f.ma, fgok ? "" : " (no gauge)");
+ }
+ 
++/*
++ * j0141: battery temperature guard on the fast-charge current, in the spirit of
++ * stock's sw-jeita (fg-jeita-thresholds 0/15/45/60 C): below 0 C or from 55 C no
++ * charging, 0-15 C at most 1000 mA, 45-55 C half the current, else the full
++ * chgfcc. 3 C hysteresis on the way back. The die-temperature regulation of the
++ * charger itself stays on. Zone changes are logged as `SWEET CHG: temp ...`.
++ */
++enum { CHG_T_NORMAL, CHG_T_COOL, CHG_T_WARM, CHG_T_OFF };
++static const char *const chg_t_names[] = { "normal", "cool (<15 C)", "warm (>=45 C)", "off (<0 C or >=55 C)" };
++
++static int
++chg_temp_zone(int dc, int prev)
++{
++	int h = 30;     /* 3.0 C hysteresis when leaving a zone */
++	if (dc < 0 || dc >= 550) {
++		return CHG_T_OFF;
++	}
++	if (prev == CHG_T_OFF && (dc < 0 + h || dc >= 550 - h)) {
++		return CHG_T_OFF;
++	}
++	if (dc >= 450 || (prev == CHG_T_WARM && dc >= 450 - h)) {
++		return CHG_T_WARM;
++	}
++	if (dc < 150 || (prev == CHG_T_COOL && dc < 150 + h)) {
++		return CHG_T_COOL;
++	}
++	return CHG_T_NORMAL;
++}
++
+ extern volatile bool sweet_usb_phy_done;     /* bsd/dev/sweet_usb.c */
+ extern void sweet_usb_vbus(bool on);
+ 
+ static void
+ pmic_charger_thread(void *arg, wait_result_t result)
+ {
+-	uint32_t icl_wall = 1500, fcc = 1000, last_type = ~0u;
++	uint32_t icl_wall = 1500, fcc = 2000, last_type = ~0u;
++	int tzone = -1;
+ 	unsigned ticks = 0;
+ 	bool online = false, reran = false;
+ 	const char *tname = "SDP";
+@@ -484,9 +515,22 @@
+ 	(void)PE_parse_boot_argn("chgicl", &icl_wall, sizeof(icl_wall));
+ 	(void)PE_parse_boot_argn("chgfcc", &fcc, sizeof(fcc));
+ 	icl_wall = icl_wall < 500 ? 500 : (icl_wall > 2000 ? 2000 : icl_wall);
+-	fcc = fcc < 100 ? 100 : (fcc > 1500 ? 1500 : fcc);
++	fcc = fcc < 100 ? 100 : (fcc > 2900 ? 2900 : fcc);
+ 	(void)chg_update(CHG_FAST_CURRENT, 0xff, (uint8_t)(fcc * 1000 / 25000));
+ 	for (;;) {
++		struct sweet_fg tf;
++		if (sweet_fg_read(&tf) == 0) {
++			int z = chg_temp_zone(tf.temp_dc, tzone);
++			if (z != tzone) {
++				uint32_t ma = z == CHG_T_COOL ? (fcc < 1000 ? fcc : 1000) : z == CHG_T_WARM ? fcc / 2 : fcc;
++				(void)chg_update(CHG_FAST_CURRENT, 0xff, (uint8_t)(ma * 1000 / 25000));
++				(void)chg_update(CHG_ENABLE_CMD, 0x01, z == CHG_T_OFF ? 0x00 : 0x01);
++				printf("SWEET CHG: temp %d.%d C -> %s, charge current %u mA%s\n", tf.temp_dc / 10,
++				    (tf.temp_dc < 0 ? -tf.temp_dc : tf.temp_dc) % 10, chg_t_names[z], z == CHG_T_OFF ? 0 : ma,
++				    z == CHG_T_OFF ? " (charging disabled)" : "");
++				tzone = z;
++			}
++		}
+ 		if (icl_test_ua != 0 && mach_absolute_time() >= icl_test_until) {
+ 			icl_test_ua = 0;
+ 			if (last_type != ~0u && last_type != 0) {
+@@ -570,7 +614,7 @@
+ {
+ 	uint32_t const *chg = NULL;
+ 	unsigned int size = 0;
+-	uint32_t on = 1, mv = 3950;
++	uint32_t on = 1, mv = 4300;
+ 	thread_t thread;
+ 
+ 	(void)PE_parse_boot_argn("sweetchg", &on, sizeof(on));

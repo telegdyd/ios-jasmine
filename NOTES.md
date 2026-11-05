@@ -1,3 +1,18 @@
+### 2026-11-05 ~22:50: j0141 charge to 4.3 V at up to 2 A + temperature guard (user: "Yes, build it"); temp-booted
+- Found: iOS charger setup (sweet_pmic.c, j0009) still had the Nura limits: float 3945 mV (battery stopped at ~60 %),
+  fcc 1000 mA (clamp 1500), HVDCP off. Stock DT qpnp-smb2: fv-max 4400 mV, fcc-max / usb-icl 2900 mA, sw-jeita.
+  ABL leaves float at 4395 mV (`SWEET CHG: before` line).
+- xnu/patches/j0141-jasmine-charge-full-2a.patch: chgmv default 4300 (user's charge-shell value), chgfcc default 2000
+  (clamp 2900), guard on FG temperature: <0 or >=55 C charging off, 0-15 C <=1000 mA, 45-55 C half, 3 C hysteresis.
+  Input limits unchanged (DCP/CDP 1.5 A). Charger watchdog stays off (as before): a kernel hang stops the guard;
+  the charger's die-temperature regulation remains.
+- Kernel xnu/out-jasmine-chg141 (j0139 off + j0140 + j0141), image shim/out/shim-boot-chg141-tmp.img (scan138 recipe).
+  Observed on the PC port: float 4297 mV, `temp 39.3 C -> normal, charge current 2000 mA`, +590 mA at 3.80 V (port/
+  APSD-limited; SDP after re-run). 2 A on a wall charger NOT verified yet. FG temperature updates slowly/coarsely
+  (34-41 C values across logs, 39.3 for hours) - watch it under 2 A.
+- Next: wall-charger check (DCP, `batt` current, `SWEET CHG: temp` lines), then QC 2/3 (HVDCP) once the user names
+  the charger; slot-b image with j0140+j0141 needs the user's OK.
+
 ### 2026-11-05 ~22:40: j0140 iOS battery percent = PM660 gauge SOC (user: "Yes, do that"); temp-booted, not flashed
 - Why iOS and the charger tool / `batt` disagreed: SweetBattery::pollJasmine published a generic voltage-curve
   estimate (V - 0.11 Ohm * I, averaged, 1 %/30 s steps) and only logged the gauge SOC (e.g. iOS 16 % vs gauge 7 %;
