@@ -1,3 +1,13 @@
+### 2026-11-05 ~21:00: battery drain review (diagnosis only, nothing changed)
+- Live read-only port queries (scan138 boot, display on, on USB): `batt` 3640 mV -107 mA net while charging, soc 4 %;
+  ddrgov residency full 94 % / idle-on 4 % / idle-off 1 % of 2191 s, raises cpu 506 (of 515); gpu pc GX off 83 %;
+  dvfs Gold/Silver at 300 MHz (692/612 mV), busy 15 % / 32 %; idlepoll 5/5.
+- Done so far vs jasmine/POWER-PLAN-20261029.md: items 1 (DDR, -11 mA screen off) and 2 (GPU, -60/-70 mA), CPU DVFS.
+  Never started: 3 CPU power collapse (idle is WFI only), 4 system sleep (XO shutdown / VDD min, CX stays 860 mV),
+  5 display pipeline off, 6 Wi-Fi screen-off scan back-off, 7 touch/keys IRQ-driven, 8 USB off when unplugged.
+  Conclusion (guess, not measured): the floor is the SoC never sleeping (items 3+4, with 5/7 as prerequisites);
+  no screen-off FG measurement since j0116. Next: re-measure screen-off floor unplugged, then item 3.
+
 ### 2026-11-05 ~20:40: Weather shows no data = FairPlay (Mescal) signing fails, not the network (diagnosis only)
 - sweet_oslog 1800 s Weather,WeatherWidget,weatherd on scan138: location OK (whenInUse, reverse geocode OK), request
   built ("Fetching: currentWeather, forecastNextHour, ..."), then `Encountered an error when fetching weather data
