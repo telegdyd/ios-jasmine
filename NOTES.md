@@ -1,3 +1,14 @@
+### 2026-11-05 ~23:05: chg141 wall-charger check (log ring, logs/netlog-chg141-after-wall.txt)
+- Command port over Wi-Fi (192.168.1.186, ping OK 6 ms) never answered, 5140/5141 time out (guess: NECP drops
+  inbound to kernel sockets; not investigated). tools/g2/wifiwatch.py polled; logs/wallcharge-chg141.txt.
+- Wall charger (user's, unknown rating): DCP, limit 1500 mA, but AICL brought the input down to 1050 mA at once;
+  battery only +440..470 mA (display off). PC port in the same boot: SDP after re-run yet input 1500, +860..890 mA.
+  So the wall setup charged SLOWER than the PC; the 2000 mA fcc is never the limit. Unplugged, display off: -463 /
+  -616 mA (the standby floor again).
+- FG temperature read 39.3 C in every sample of this boot (and most of tonight): likely stale, not a live reading.
+  The j0141 guard depends on it -> must be fixed/verified before relying on the guard.
+- Phone: back on the PC, temp boot chg141.
+
 ### 2026-11-05 ~22:50: j0141 charge to 4.3 V at up to 2 A + temperature guard (user: "Yes, build it"); temp-booted
 - Found: iOS charger setup (sweet_pmic.c, j0009) still had the Nura limits: float 3945 mV (battery stopped at ~60 %),
   fcc 1000 mA (clamp 1500), HVDCP off. Stock DT qpnp-smb2: fv-max 4400 mV, fcc-max / usb-icl 2900 mA, sw-jeita.
