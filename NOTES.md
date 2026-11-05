@@ -1,3 +1,13 @@
+### 2026-11-05 ~20:40: Weather shows no data = FairPlay (Mescal) signing fails, not the network (diagnosis only)
+- sweet_oslog 1800 s Weather,WeatherWidget,weatherd on scan138: location OK (whenInUse, reverse geocode OK), request
+  built ("Fetching: currentWeather, forecastNextHour, ..."), then `Encountered an error when fetching weather data
+  ... AMSErrorDomain Code=12 "Mescal Failed" ... Failed to fetch hardware info`; AMSFairPlayGetHardwareInfo /
+  GetDeviceType error -42184 every try. Widget then serves `noWeatherData`, retries every 5 min. TLS/DNS to Apple
+  hosts work (analytics upload reaches weather-analytics-events.apple.com, gets 401 for the same missing signature).
+- Likely cause (not proven): com.apple.fairplayd.H2 is deleted from launchd by tools/sweet-root-tweaks.py (it exited
+  at once, "no hardware", 2026-10-21) and there is no FairPlay kernel side; adid runs but logs nothing. Same failure
+  would hit anything that needs an AMS/Mescal signature (App Store, WeatherKit). No fix attempted.
+
 ### 2026-11-05 ~20:20: j0138 passive scan dwell 110 ms + `wscan`; phone temp-booted on scan138 (set to 110 50 500)
 - xnu/patches/j0138-jasmine-wifi-scan-times.patch: passive dwell 110 ms when wifid gives none (was 150); min/max rest
   stay 50/500 (tried 25/150: no measurable effect). `wscan [DWELL_P MIN_REST MAX_REST]` on the command port.
