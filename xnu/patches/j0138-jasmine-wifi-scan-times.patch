@@ -1,0 +1,92 @@
+Subject: [PATCH] jasmine-j0138: Wi-Fi passive scan dwell 110 ms, `wscan` to tune scan times
+
+After j0137 the 5 GHz pass of Settings > Wi-Fi (24 channels, 20 of them listen-only) took 5.5 s.
+Passive dwell when wifid gives none: 110 ms instead of ath10k's 150 (still > one 102.4 ms beacon
+interval). Rest back on the joined AP's channel stays at ath10k's 50-500 ms: 25-150 made no
+measurable difference. Command port `wscan [DWELL_P MIN_REST MAX_REST]` (ms) shows / sets them.
+
+A/B with Settings > Wi-Fi open, same boot (logs/scanab-*.txt, research/cpu-idle-20261105/scanab.py):
+24 ch 5.46-5.56 s -> 4.60-4.68 s, 13 ch 1.25-1.34 -> 1.17-1.25 s; results read by wifid 3-6 per
+scan with both settings (no networks lost).
+
+---
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -5250,6 +5250,9 @@
+ 	uint8_t ssid[32], ssid_len;
+ };
+ static struct w_scan_req api_scan_req, cur_scan_req;
++/* j0138: listen time on passive channels when wifid gives none, and the time back on the joined AP's channel
++ * between scanned channels (min, up to max while traffic flows); `wscan` on the command port changes them */
++extern "C" { unsigned sweet_wscan_dwell_p = 110, sweet_wscan_min_rest = 50, sweet_wscan_max_rest = 500; }
+ 
+ static bool
+ w_active_ok(uint32_t f)
+@@ -5293,7 +5296,7 @@
+ 	}
+ 	bool active = !q->passive && any_active;
+ 	uint32_t dwell_a = q->dwell_ms ? MAX(20u, MIN(q->dwell_ms, 120u)) : 50;
+-	uint32_t dwell_p = q->dwell_ms ? MAX(110u, MIN(q->dwell_ms, 300u)) : 150;
++	uint32_t dwell_p = q->dwell_ms ? MAX(110u, MIN(q->dwell_ms, 300u)) : MAX(60u, MIN(sweet_wscan_dwell_p, 300u));
+ 	uint32_t nssid = active ? 1 : 0;
+ 	c = wmi_put_tlv(p, TAG_START_SCAN_CMD, 100);
+ 	c = put32(c, 0xA000 | (scans + 1));         /* scan_id */
+@@ -5303,8 +5306,8 @@
+ 	c = put32(c, 0x001 | 0x002 | 0x004 | 0x008 | 0x100 | 0x010);   /* events */
+ 	c = put32(c, dwell_a);                      /* dwell active */
+ 	c = put32(c, dwell_p);                      /* dwell passive */
+-	c = put32(c, 50);                           /* min rest */
+-	c = put32(c, 500);                          /* max rest */
++	c = put32(c, MAX(10u, MIN(sweet_wscan_min_rest, 500u)));                   /* min rest (ath10k 50) */
++	c = put32(c, MAX(sweet_wscan_min_rest, MIN(sweet_wscan_max_rest, 1000u))); /* max rest (ath10k 500) */
+ 	c = put32(c, 0);
+ 	c = put32(c, 0);
+ 	c = put32(c, 0);
+@@ -5334,8 +5337,8 @@
+ 	memset(c, 0xFF, 6);
+ 	p = wmi_put_tlv(c + 8, TAG_ARRAY_BYTE, 0);
+ 	if (q->nfreq != 0 || active) {
+-		LOG("t=%u ms: scan: %s, %u channels, dwell %u/%u ms%s", g_ms, active ? "active" : "passive", nf, dwell_a, dwell_p,
+-		    q->ssid_len ? ", one name" : "");
++		LOG("t=%u ms: scan: %s, %u channels, dwell %u/%u ms, rest %u-%u ms%s", g_ms, active ? "active" : "passive", nf,
++		    dwell_a, dwell_p, sweet_wscan_min_rest, sweet_wscan_max_rest, q->ssid_len ? ", one name" : "");
+ 	}
+ 	return wmi_send(CMD_START_SCAN, m, (uint32_t)(p - m));
+ }
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1298,6 +1298,7 @@
+ 
+ unsigned sweet_usb_idle_ms = 5;                 /* j0136 */
+ extern unsigned sweet_modem_idle_ms;            /* iokit/Kernel/arm/TopazModem.cpp (j0136) */
++extern unsigned sweet_wscan_dwell_p, sweet_wscan_min_rest, sweet_wscan_max_rest;     /* (j0138) */
+ 
+ static void
+ ud_thread(void *arg __unused, wait_result_t wr __unused)
+@@ -1983,6 +1984,24 @@
+ 		if (prof == NULL && !reboot && (strcmp(line, "pollE 0") == 0 || strcmp(line, "pollE 1") == 0)) {
+ 			sweet_poll_e = line[6] - '0';           /* j0120: the polling threads follow on their next poll */
+ 			prof = sweet_poll_e ? "OK polling threads to the E cluster\n" : "OK polling threads unbound\n";
++		} else if (prof == NULL && !reboot && strncmp(line, "wscan", 5) == 0) {
++			/* j0138: `wscan` shows, `wscan DWELL_P MIN_REST MAX_REST` sets the Wi-Fi scan times (ms) */
++			static char wscan_reply[96];
++			const char *p = line + 5;
++			unsigned v[3] = { sweet_wscan_dwell_p, sweet_wscan_min_rest, sweet_wscan_max_rest };
++			for (int k = 0; k < 3 && *p == ' '; k++) {
++				unsigned x = 0;
++				for (p++; *p >= '0' && *p <= '9'; p++) {
++					x = x * 10 + (unsigned)(*p - '0');
++				}
++				v[k] = x;
++			}
++			sweet_wscan_dwell_p = v[0];
++			sweet_wscan_min_rest = v[1];
++			sweet_wscan_max_rest = v[2];
++			snprintf(wscan_reply, sizeof(wscan_reply), "OK wifi scan: passive dwell %u ms, rest %u-%u ms\n",
++			    sweet_wscan_dwell_p, sweet_wscan_min_rest, sweet_wscan_max_rest);
++			prof = wscan_reply;
+ 		} else if (prof == NULL && !reboot && strncmp(line, "idlepoll", 8) == 0) {
+ 			/* j0136: `idlepoll` shows, `idlepoll MODEM_MS USB_MS` sets the idle poll steps (0 or 1 = every 1 ms) */
+ 			static char idle_reply[96];

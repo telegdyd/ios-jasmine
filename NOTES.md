@@ -1,3 +1,13 @@
+### 2026-11-05 ~20:20: j0138 passive scan dwell 110 ms + `wscan`; phone temp-booted on scan138 (set to 110 50 500)
+- xnu/patches/j0138-jasmine-wifi-scan-times.patch: passive dwell 110 ms when wifid gives none (was 150); min/max rest
+  stay 50/500 (tried 25/150: no measurable effect). `wscan [DWELL_P MIN_REST MAX_REST]` on the command port.
+- Kernel scan138 (booted ~20:10, image shim/out/shim-boot-scan138-tmp.img; its built-in rest default was 25/150, set
+  at run time to `wscan 110 50 500` = the final default). scan138b = final patch, built (no skipped patches), NOT booted.
+- A/B same boot, Settings > Wi-Fi open (logs/scanab-*.txt, research/cpu-idle-20261105/scanab.py; parse by the
+  "rest X-Y" label, the netlog replays from boot): 24 ch 5.5 -> 4.6 s, 13 ch 1.3 -> 1.2 s, results 3-6 either way.
+  "110 10 25" run inconclusive (no scans: Settings stopped scanning, screen probably dimmed).
+- Unexplained ~90 ms per channel on top of dwell (firmware switch/home-channel time, not our rest values).
+
 ### 2026-11-05 ~20:05: j0137 Wi-Fi scans as wifid asks (channels, dwell, active); phone temp-booted on scan137b
 - xnu/patches/j0137-jasmine-wifi-scan-as-asked.patch (on j0136): topaz_sta.c passes redwood_sta_scan to the new
   topaz_wlan_scan_on(); scan_send_start uses its channels (unknown dropped, none = all), dwell (active 20-120,
