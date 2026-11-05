@@ -1,3 +1,17 @@
+### 2026-11-05 ~14:00: framebench on the current phone state: Home -6 %, CC -12 % vs M11 (m11fb1); cause not isolated
+- Runs research/metal-m10/fb-detach1, fb-detach2 (logs/fb-detach1.txt, fb-detach2.txt), both complete, no timeouts.
+  Phone state: kernel slow135 (temp boot), dump146 libs in /usr/local/bin (debug sampling off), bgmtl-bb.env
+  BGMTL_ASYNC=1 + BGMTL_UBWC=1 + CA_DISABLE_DETACHED=1. GPU 588, DDR 1804, all jobs complete, tsens ~46 C (cooler
+  than the M11 runs, ~54 C: not thermal).
+- Swap arrivals/s (detach1 / detach2) vs m11fb1 fb-fb1 / fb-fb1c (2026-11-04):
+  Home A -/36.1 (detach1 home-a 0.5 = known first-phase artifact, as in fb-base1/2) vs 37.7/38.5;
+  Home B 35.9/36.5 vs 38.3/38.8; CC A 30.3/29.2 vs 33.1/33.9; CC B 29.4/29.5 vs 32.6/34.0;
+  Spotlight repeat 26.7/27.4 vs 23.9/27.4 (noisy, unchanged). CC median 31.6-32.3 ms (M11: 27.3-28.3).
+- Still above m9ubwc9 (Home B 30.8, CC 28.2-28.4). Candidates (not measured): CA_DISABLE_DETACHED=1 (more
+  compositing in backboardd), dump146 lib changes (FORCE_1X/MAX_BINDINGS/Clear fixes + sampler hooks), kernel
+  slow135 bounds. Cheapest isolation: one framebench with CA_DISABLE_DETACHED removed (restart backboardd, Maps
+  breaks meanwhile), then with the m11fb1 libs.
+
 ### 2026-11-05 ~13:30: Maps black map FIXED by CA_DISABLE_DETACHED=1 in bgmtl-bb.env (user: "you just solved it")
 - Fix: /private/var/tmp/bgmtl-bb.env = `BGMTL_ASYNC=1
 BGMTL_UBWC=1
