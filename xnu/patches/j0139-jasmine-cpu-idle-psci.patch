@@ -1,0 +1,714 @@
+Subject: [PATCH] jasmine-j0139: CPU idle states through PSCI CPU_SUSPEND (power plan item 3)
+
+The cores only ever did WFI. This adds the stock sdm660 lpm-levels states through PSCI
+CPU_SUSPEND (extended StateID: cpu ret 0x2, cpu pc 0x40000003, cpu + L2 pc 0x41000043),
+default off. A power-collapsed core resumes through sweet_secondary_entry -> reset_vector ->
+resume_idle_cpu -> arm_init_idle_cpu -> cpu_idle_exit(TRUE) (XNU's non-retention idle path);
+sweet_cpu_idle_resumed restores the GIC CPU interface and the timer compare. The core's timer
+is lost in pc, so the QTimer frame 0 physical timer (SPI 8 = INTID 40, routed to the first
+Silver core) is a broadcast timer: a core going down publishes its deadline, the handler
+IPIs it when due. pc only when the next timer is >= PC_US away (default 2000) and the CPU is
+in the pc mask (default 0xFE: not the boot CPU).
+
+Also: mode 0 can skip XNU's L1 flush before every WFI (platform_cache_idle_enter, meant for
+non-coherent ARMv7), `cpuidle flush 0|1`, default 1 = old behaviour.
+
+Command port: `cpuidle` shows mode, per-CPU entries/time per state, PSCI results and
+broadcast counters; `cpuidle MODE [PC_US [MASK]] [force]` (0 wfi, 1 ret, 2 + core pc,
+3 + core and L2 pc), `cpuidle flush 0|1`, `cpuidle reset`.
+---
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -2023,6 +2023,12 @@
+ 			}
+ 			snprintf(idle_reply, sizeof(idle_reply), "OK idle poll: modem %u ms, usb %u ms\n", sweet_modem_idle_ms, sweet_usb_idle_ms);
+ 			prof = idle_reply;
++		} else if (prof == NULL && !reboot && strncmp(line, "cpuidle", 7) == 0 && (line[7] == 0 || line[7] == ' ')) {
++			/* j0139: PSCI CPU idle states (osfmk/arm64/cpu.c) */
++			extern int sweet_cpuidle_command(const char *args, char *out, size_t len);
++			static char cpuidle_reply[2048];
++			sweet_cpuidle_command(line + 7, cpuidle_reply, sizeof(cpuidle_reply));
++			prof = cpuidle_reply;
+ 		} else if (prof == NULL && !reboot && (strcmp(line, "fbcon 0") == 0 || strcmp(line, "fbcon 1") == 0)) {
+ 			sweet_console_muted = line[6] == '0';   /* j0120: kernel console drawn into the boot framebuffer or not */
+ 			prof = sweet_console_muted ? "OK console no longer drawn\n" : "OK console drawn\n";
+diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -79,6 +79,11 @@
+ 
+ 
+ #include <libkern/section_keywords.h>
++#if defined(SWEET)
++#include <string.h>
++#include <kern/clock.h>
++#include <kern/misc_protos.h>
++#endif
+ 
+ extern boolean_t        idle_enable;
+ extern uint64_t         wake_abstime;
+@@ -111,6 +116,14 @@
+ extern void arm64_retention_wfi(void);
+ #endif
+ 
++#if defined(SWEET)
++/* j0139: PSCI CPU idle states (below cpu_timebase_init). */
++static void sweet_cpu_idle_enter(cpu_data_t *cdp);
++static void sweet_cpu_idle_resumed(cpu_data_t *cdp);
++extern unsigned sweet_cpuidle_mode;
++extern unsigned sweet_idle_flush;
++#endif
++
+ sysreg_restore_t sysreg_restore __attribute__((section("__DATA, __const"))) = {
+ 	.tcr_el1 = TCR_EL1_BOOT,
+ };
+@@ -568,7 +581,13 @@
+ #endif /* MONOTONIC */
+ 
+ 	if (wfi) {
+-#if !defined(APPLE_ARM64_ARCH_FAMILY)
++#if defined(SWEET)
++		/* j0139: the L1 flush is for non-coherent ARMv7 cores; WFI and the PSCI
++		 * states keep (ret) or clean (pc, firmware) the caches. `cpuidle flush`. */
++		if (sweet_idle_flush && sweet_cpuidle_mode == 0) {
++			platform_cache_idle_enter();
++		}
++#elif !defined(APPLE_ARM64_ARCH_FAMILY)
+ 		platform_cache_idle_enter();
+ #endif
+ 
+@@ -587,6 +606,9 @@
+ 		__builtin_arm_dsb(DSB_SY);
+ #if HAS_RETENTION_STATE
+ 		arm64_retention_wfi();
++#elif defined(SWEET)
++		/* WFI, PSCI retention, or power collapse resuming in cpu_idle_exit(TRUE) */
++		sweet_cpu_idle_enter(cpu_data_ptr);
+ #else
+ 		__builtin_arm_wfi();
+ #endif
+@@ -641,6 +663,10 @@
+ 	/* Back from WFI, unlock OSLAR and EDLAR. */
+ 	if (from_reset) {
+ 		configure_coresight_registers(cpu_data_ptr);
++#if defined(SWEET)
++		/* j0139: power collapse lost the GIC CPU interface and the timer compare */
++		sweet_cpu_idle_resumed(cpu_data_ptr);
++#endif
+ 	}
+ 
+ #if KPC
+@@ -975,6 +1001,482 @@
+ 	cpu_data_t *cdp = CpuDataEntries[cpu].cpu_data_vaddr;
+ 	return cdp != NULL && !(os_atomic_load(&cdp->cpu_signal, acquire) & SIGPdisabled);
+ }
++
++/*
++ * j0139: CPU idle states through PSCI CPU_SUSPEND, encoded as the stock sdm660
++ * lpm-levels driver does (extended StateID): cpu mode in bits 0-3 (wfi 1, ret 2,
++ * pc 3), L2 mode in bits 4-7 (wfi 1, dynret 2, ret 3, pc 4), affinity level in
++ * bits 24-25, power down in bit 30. Platform-coordinated: the firmware takes the
++ * L2 down only when every core of the cluster asks for it.
++ *
++ * Power collapse loses the core's timer (stock: qcom,use-broadcast-timer), so a
++ * core going down publishes its next timer deadline and the QTimer frame 0
++ * physical timer (SPI 8 = INTID 40, routed to one Silver core) fires at the
++ * earliest one; its handler sends the sleeper an IPI. The core comes back
++ * through sweet_secondary_entry -> reset_vector -> resume_idle_cpu ->
++ * arm_init_idle_cpu -> cpu_idle_exit(TRUE), XNU's own non-retention idle path.
++ *
++ * Default mode 0 = WFI as before. `cpuidle` on the command port.
++ */
++#define SWEET_PSCI_CPU_SUSPEND  0xC4000001ULL
++#define SWEET_PSCI_FEATURES     0x8400000AULL
++#define SWEET_IDLE_RET          0x00000002U
++#define SWEET_IDLE_PC           0x40000003U
++#define SWEET_IDLE_PC_L2        0x41000043U
++#define SWEET_BC_FRAME_PA       0x17921000UL
++#define SWEET_BC_INTID          40U
++#define SWEET_BC_TARGET_MPIDR   0x0ULL          /* first Silver core */
++#define QT_CNTPCT_LO            0x00
++#define QT_CNTPCT_HI            0x04
++#define QT_CNTFRQ               0x10
++#define QT_CNTP_TVAL            0x28
++#define QT_CNTP_CTL             0x2C
++#define QT_CNTV_TVAL            0x38
++#define QT_CNTV_CTL             0x3C
++
++unsigned sweet_cpuidle_mode;            /* 0 WFI, 1 ret, 2 + core pc, 3 + core and L2 pc */
++unsigned sweet_idle_flush = 1;          /* mode 0: XNU's L1 flush before WFI (old behaviour) */
++static uint32_t sweet_cpuidle_pc_us = 2000;
++static uint64_t sweet_cpuidle_pc_abs;
++static uint32_t sweet_cpuidle_pc_mask = 0xFE;   /* CPUs allowed to collapse: not the boot CPU */
++static int32_t sweet_cpuidle_features = -99;
++static uint64_t sweet_cpuidle_entry_pa;
++static boolean_t sweet_cpuidle_ready;
++
++struct sweet_idle_stat {
++	uint64_t n[4];          /* entries: wfi, ret, pc, pc+L2 */
++	uint64_t t[4];          /* abs time spent */
++	uint64_t pc_ret;        /* pc call returned without collapsing (wake pending) */
++	uint64_t fail;          /* negative PSCI result */
++	int32_t  last_rc;
++	uint32_t cur;           /* state of the collapse in flight */
++	uint64_t enter_t;
++} __attribute__((aligned(64)));
++static struct sweet_idle_stat sweet_idle_stats[MAX_CPUS];
++
++static vm_offset_t sweet_bc_frame;
++static uint32_t sweet_bc_intid;                 /* 40 physical or 39 virtual timer of frame 0, 0 = none */
++static uint32_t sweet_bc_tval = QT_CNTP_TVAL, sweet_bc_ctl = QT_CNTP_CTL;
++static uint32_t sweet_bc_group1[3];             /* GICD_IGROUPR1 before / after our write, GICD_CTLR */
++static uint32_t sweet_bc_lock;
++static uint64_t sweet_bc_deadline[MAX_CPUS];    /* system counter ticks, 0 = not sleeping */
++static uint64_t sweet_bc_irqs, sweet_bc_wakes, sweet_bc_late_max, sweet_bc_spurious;
++/*
++ * Mode 3, OS-initiated PSCI (CPU_SUSPEND with an L2 state from a core that is not the
++ * last one awake returns DENIED): cores in pc are tracked here under sweet_bc_lock and
++ * only the last core of a cluster asks for the L2 state.
++ */
++static uint32_t sweet_pc_now;                   /* CPUs in (or entering) power collapse */
++static uint32_t sweet_cluster_cpus[4];          /* CPU mask per cpu_cluster_id */
++static uint64_t sweet_l2_denied;
++static int32_t sweet_psci_mode_rc = -99;
++
++extern void sweet_gic_cpu_resume(void);
++extern int sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3]);
++
++static int32_t
++sweet_psci_call(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
++{
++	register uint64_t x0 __asm__("x0") = fn;
++	register uint64_t x1 __asm__("x1") = a1;
++	register uint64_t x2 __asm__("x2") = a2;
++	register uint64_t x3 __asm__("x3") = a3;
++	__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++                 "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
++                 "x16", "x17", "memory");
++	return (int32_t)x0;
++}
++
++static inline uint32_t
++qt_read(uint32_t off)
++{
++	return *(volatile uint32_t *)(sweet_bc_frame + off);
++}
++
++extern void sweet_mmio_w32(vm_offset_t addr, uint32_t v);
++
++static inline void
++qt_write(uint32_t off, uint32_t v)
++{
++	__asm__ volatile ("str %w1, [%0]" : : "r"(sweet_bc_frame + off), "r"(v) : "memory");
++}
++
++static uint64_t
++qt_now(void)
++{
++	uint32_t hi, lo, hi2;
++	do {
++		hi = qt_read(QT_CNTPCT_HI);
++		lo = qt_read(QT_CNTPCT_LO);
++		hi2 = qt_read(QT_CNTPCT_HI);
++	} while (hi != hi2);
++	return ((uint64_t)hi << 32) | lo;
++}
++
++static inline void
++sweet_bc_acquire(void)
++{
++	while (!os_atomic_cmpxchg(&sweet_bc_lock, 0, 1, acquire)) {
++		while (os_atomic_load(&sweet_bc_lock, relaxed)) {
++			__builtin_arm_yield();
++		}
++	}
++}
++
++static inline void
++sweet_bc_release(void)
++{
++	os_atomic_store(&sweet_bc_lock, 0, release);
++}
++
++/* Lock held: program frame 0 for the earliest sleeper, or switch it off. */
++static void
++sweet_bc_program_locked(uint64_t now)
++{
++	uint64_t min = 0;
++	for (unsigned i = 0; i < MAX_CPUS; i++) {
++		uint64_t d = sweet_bc_deadline[i];
++		if (d != 0 && (min == 0 || d < min)) {
++			min = d;
++		}
++	}
++	if (min == 0) {
++		qt_write(sweet_bc_ctl, 0);
++		return;
++	}
++	int64_t dt = (int64_t)(min - now);
++	if (dt < 1) {
++		dt = 1;
++	} else if (dt > 0x7FFFFFFF) {
++		dt = 0x7FFFFFFF;
++	}
++	qt_write(sweet_bc_tval, (uint32_t)dt);
++	qt_write(sweet_bc_ctl, 1);
++	__builtin_arm_dsb(DSB_SY);
++}
++
++static void
++sweet_bc_cancel(unsigned cpu)
++{
++	if (os_atomic_load(&sweet_bc_deadline[cpu], relaxed) == 0) {
++		return;         /* the broadcast handler woke us and cleared it */
++	}
++	sweet_bc_acquire();
++	sweet_bc_deadline[cpu] = 0;
++	sweet_bc_program_locked(qt_now());
++	sweet_bc_release();
++}
++
++/* sleh_irq, INTID 39/40, interrupts masked. */
++uint32_t sweet_bc_irq_intid(void);
++uint32_t
++sweet_bc_irq_intid(void)
++{
++	return sweet_bc_intid;
++}
++
++void sweet_bc_irq(void);
++void
++sweet_bc_irq(void)
++{
++	uint32_t wake = 0;
++	unsigned self = cpu_number();
++
++	if (sweet_bc_frame == 0) {
++		return;
++	}
++	sweet_bc_acquire();
++	uint64_t now = qt_now();
++	for (unsigned i = 0; i < MAX_CPUS; i++) {
++		uint64_t d = sweet_bc_deadline[i];
++		if (d != 0 && d <= now + 20) {          /* ~1 us early is fine */
++			if (now > d && now - d > sweet_bc_late_max) {
++				sweet_bc_late_max = now - d;
++			}
++			sweet_bc_deadline[i] = 0;
++			wake |= 1U << i;
++		}
++	}
++	sweet_bc_program_locked(now);           /* also drops the level-triggered line */
++	sweet_bc_release();
++	sweet_bc_irqs++;
++	if (wake == 0) {
++		sweet_bc_spurious++;
++	}
++	for (unsigned i = 0; i < MAX_CPUS; i++) {
++		if ((wake & (1U << i)) && i != self) {
++			cpu_data_t *t = CpuDataEntries[i].cpu_data_vaddr;
++			if (t != NULL) {
++				cpu_signal(t, SIGPnop, NULL, NULL);
++				sweet_bc_wakes++;
++			}
++		}
++	}
++}
++
++/* Data the reset vector and start_cpu read with the MMU off must be at PoC. */
++static void
++sweet_cpuidle_clean_reset_data(void)
++{
++	extern uint8_t bootstrap_pagetables[BOOTSTRAP_TABLE_SIZE];
++	CleanPoC_DcacheRegion_Force((vm_offset_t)CpuDataEntries, sizeof(CpuDataEntries));
++	for (unsigned i = 0; i < MAX_CPUS; i++) {
++		cpu_data_t *c = CpuDataEntries[i].cpu_data_vaddr;
++		if (c != NULL) {
++			CleanPoC_DcacheRegion_Force((vm_offset_t)c, sizeof(cpu_data_t));
++		}
++	}
++	CleanPoC_DcacheRegion_Force((vm_offset_t)&ResetHandlerData, sizeof(ResetHandlerData));
++	CleanPoC_DcacheRegion_Force((vm_offset_t)BootArgs, sizeof(*BootArgs));
++	CleanPoC_DcacheRegion_Force((vm_offset_t)&sysreg_restore, sizeof(sysreg_restore));
++	CleanPoC_DcacheRegion_Force((vm_offset_t)&cpu_ttep, sizeof(cpu_ttep));
++	CleanPoC_DcacheRegion_Force((vm_offset_t)bootstrap_pagetables, BOOTSTRAP_TABLE_SIZE);
++	__builtin_arm_dsb(DSB_SY);
++}
++
++/* Thread context, first `cpuidle N` with N >= 1. */
++static const char *
++sweet_cpuidle_setup(boolean_t force, boolean_t need_bc)
++{
++	extern void sweet_secondary_entry(void);
++	extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++
++	if (sweet_cpuidle_features == -99) {
++		sweet_cpuidle_features = sweet_psci_call(SWEET_PSCI_FEATURES, SWEET_PSCI_CPU_SUSPEND, 0, 0);
++	}
++	if (!force && (sweet_cpuidle_features < 0 || (sweet_cpuidle_features & 1) == 0)) {
++		return "PSCI CPU_SUSPEND is not extended-StateID (add `force` to try anyway)";
++	}
++	nanoseconds_to_absolutetime((uint64_t)sweet_cpuidle_pc_us * NSEC_PER_USEC, &sweet_cpuidle_pc_abs);
++	if (!sweet_cpuidle_ready) {
++		for (unsigned i = 0; i < MAX_CPUS; i++) {
++			cpu_data_t *c = CpuDataEntries[i].cpu_data_vaddr;
++			if (c != NULL) {
++				sweet_cluster_cpus[c->cpu_cluster_id & 3] |= 1U << i;
++			}
++		}
++		sweet_cpuidle_entry_pa = ml_static_vtop((vm_offset_t)&sweet_secondary_entry);
++		sweet_cpuidle_clean_reset_data();
++		sweet_cpuidle_ready = TRUE;     /* enough for ret (mode 1) */
++	}
++	if (!need_bc || sweet_bc_intid != 0) {
++		return NULL;
++	}
++	if (sweet_bc_frame == 0) {
++		sweet_bc_frame = ml_io_map(SWEET_BC_FRAME_PA, 0x1000);
++		if (sweet_bc_frame == 0) {
++			return "cannot map QTimer frame 0";
++		}
++	}
++	uint64_t a = qt_now();
++	delay(10);
++	uint64_t b = qt_now();
++	if (b <= a) {
++		return "QTimer frame 0 counter does not run (no access?)";
++	}
++	qt_write(QT_CNTP_CTL, 0);
++	qt_write(QT_CNTV_CTL, 0);
++	/* Physical timer (SPI 8) first, else the virtual one (SPI 7) if frame 0's CNTVOFF
++	 * is 0 (both then compare against the same count). Each is tested: fire in 1 ms,
++	 * the handler must count it within 20 ms. */
++	for (int k = 0; k < 2; k++) {
++		uint32_t intid = SWEET_BC_INTID - (uint32_t)k;
++		if (k == 1 && (qt_read(0x18) != 0 || qt_read(0x1C) != 0)) {
++			break;
++		}
++		if (sweet_gic_spi_route(intid, SWEET_BC_TARGET_MPIDR, sweet_bc_group1) != 0) {
++			continue;
++		}
++		sweet_bc_tval = k ? QT_CNTV_TVAL : QT_CNTP_TVAL;
++		sweet_bc_ctl = k ? QT_CNTV_CTL : QT_CNTP_CTL;
++		uint64_t before = os_atomic_load(&sweet_bc_irqs, relaxed);
++		sweet_bc_intid = intid;
++		qt_write(sweet_bc_tval, 19200);
++		qt_write(sweet_bc_ctl, 1);
++		for (int w = 0; w < 20 && os_atomic_load(&sweet_bc_irqs, relaxed) == before; w++) {
++			delay(1000);
++		}
++		qt_write(sweet_bc_ctl, 0);
++		if (os_atomic_load(&sweet_bc_irqs, relaxed) != before) {
++			return NULL;
++		}
++		sweet_bc_intid = 0;
++	}
++	return "QTimer frame 0 interrupt (INTID 40 / 39) never arrived";
++}
++
++/* cpu_idle, interrupts masked, after the DSB; replaces the WFI. */
++static void
++sweet_cpu_idle_enter(cpu_data_t *cdp)
++{
++	unsigned mode = os_atomic_load(&sweet_cpuidle_mode, relaxed);
++	unsigned cpu = cdp->cpu_number;
++	struct sweet_idle_stat *st = &sweet_idle_stats[cpu];
++	uint64_t t0 = mach_absolute_time();
++
++	if (mode == 0 || !sweet_cpuidle_ready) {
++		__builtin_arm_wfi();
++		st->n[0]++;
++		st->t[0] += mach_absolute_time() - t0;
++		return;
++	}
++
++	uint32_t state = SWEET_IDLE_RET;
++	unsigned idx = 1;
++	if (mode >= 2 && sweet_bc_intid != 0 && (sweet_cpuidle_pc_mask & (1U << cpu))) {
++		uint64_t pop = cdp->cpu_idle_pop ? cdp->cpu_idle_pop : cdp->rtcPop;
++		if (pop > t0 && pop - t0 >= sweet_cpuidle_pc_abs && !ml_get_timer_pending()) {
++			uint32_t cl = cdp->cpu_cluster_id & 3;
++			sweet_bc_acquire();
++			uint64_t now = qt_now();
++			sweet_bc_deadline[cpu] = now + (pop - t0);
++			sweet_bc_program_locked(now);
++			sweet_pc_now |= 1U << cpu;
++			boolean_t last = (sweet_pc_now & sweet_cluster_cpus[cl]) == sweet_cluster_cpus[cl] &&
++			    (sweet_cluster_cpus[cl] & ~sweet_cpuidle_pc_mask) == 0;
++			sweet_bc_release();
++			state = SWEET_IDLE_PC;
++			idx = 2;
++			if (mode >= 3 && last) {
++				state = SWEET_IDLE_PC_L2;
++				idx = 3;
++			}
++		}
++	}
++	st->cur = idx;
++	st->enter_t = t0;
++	int32_t rc = sweet_psci_call(SWEET_PSCI_CPU_SUSPEND, state, sweet_cpuidle_entry_pa, 0);
++	if (rc < 0 && idx == 3) {
++		/* A sibling woke between our check and the call: core-only collapse. */
++		sweet_l2_denied++;
++		st->last_rc = rc;
++		idx = 2;
++		st->cur = 2;
++		rc = sweet_psci_call(SWEET_PSCI_CPU_SUSPEND, SWEET_IDLE_PC, sweet_cpuidle_entry_pa, 0);
++	}
++	/* Back without a reset: retention woke, or a wake was already pending. */
++	if (idx >= 2) {
++		os_atomic_andnot(&sweet_pc_now, 1U << cpu, relaxed);
++		sweet_bc_cancel(cpu);
++		if (rc == 0) {
++			st->pc_ret++;
++		}
++	}
++	if (rc < 0) {
++		st->fail++;
++		st->last_rc = rc;
++		__builtin_arm_wfi();
++	}
++	st->n[idx]++;
++	st->t[idx] += mach_absolute_time() - t0;
++}
++
++/* cpu_idle_exit(TRUE): back through the reset vector after a power collapse. */
++static void
++sweet_cpu_idle_resumed(cpu_data_t *cdp)
++{
++	unsigned cpu = cdp->cpu_number;
++	struct sweet_idle_stat *st = &sweet_idle_stats[cpu];
++
++	sweet_gic_cpu_resume();
++	os_atomic_andnot(&sweet_pc_now, 1U << cpu, relaxed);
++	sweet_bc_cancel(cpu);
++	unsigned idx = st->cur >= 2 ? st->cur : 2;
++	st->n[idx]++;
++	if (st->enter_t != 0) {
++		st->t[idx] += mach_absolute_time() - st->enter_t;
++	}
++	/* The compare value is gone: program the pending pop again (fires at once if due). */
++	ClearIdlePop(FALSE);
++}
++
++/* `cpuidle [MODE [PC_US [MASK]]] [force]`, `cpuidle flush 0|1`, `cpuidle reset` */
++int sweet_cpuidle_command(const char *args, char *out, size_t len);
++int
++sweet_cpuidle_command(const char *args, char *out, size_t len)
++{
++	const char *err = NULL;
++	const char *p = args;
++	while (*p == ' ') {
++		p++;
++	}
++	if (strncmp(p, "gic", 3) == 0) {
++		extern int sweet_gic_dump(char *out, size_t len);
++		int m = snprintf(out, len, "cpuidle gic:\n");
++		m += sweet_gic_dump(out + m, len - (size_t)m);
++		return m < (int)len ? m : (int)len - 1;
++	} else if (strncmp(p, "psci ", 5) == 0 && (p[5] == '0' || p[5] == '1')) {
++		/* PSCI_SET_SUSPEND_MODE: 0 platform-coordinated, 1 OS-initiated */
++		sweet_psci_mode_rc = sweet_psci_call(0x8400000FULL, (uint64_t)(p[5] - '0'), 0, 0);
++	} else if (strncmp(p, "reset", 5) == 0) {
++		bzero(sweet_idle_stats, sizeof(sweet_idle_stats));
++		sweet_bc_irqs = sweet_bc_wakes = sweet_bc_late_max = sweet_bc_spurious = 0;
++		sweet_l2_denied = 0;
++	} else if (strncmp(p, "flush ", 6) == 0) {
++		sweet_idle_flush = p[6] == '1';
++	} else if (*p >= '0' && *p <= '3') {
++		unsigned mode = (unsigned)(*p++ - '0');
++		uint32_t v[2] = { sweet_cpuidle_pc_us, sweet_cpuidle_pc_mask };
++		for (int k = 0; k < 2 && *p == ' ' && p[1] >= '0' && p[1] <= '9'; k++) {
++			uint32_t x = 0;
++			boolean_t hex = (p[1] == '0' && p[2] == 'x');
++			for (p += hex ? 3 : 1; ; p++) {
++				if (*p >= '0' && *p <= '9') {
++					x = x * (hex ? 16 : 10) + (uint32_t)(*p - '0');
++				} else if (hex && *p >= 'a' && *p <= 'f') {
++					x = x * 16 + (uint32_t)(*p - 'a' + 10);
++				} else {
++					break;
++				}
++			}
++			v[k] = x;
++		}
++		boolean_t force = FALSE;
++		for (const char *q = p; *q; q++) {
++			if (strncmp(q, "force", 5) == 0) {
++				force = TRUE;
++			}
++		}
++		sweet_cpuidle_pc_us = v[0] < 200 ? 200 : v[0];
++		sweet_cpuidle_pc_mask = v[1] & 0xFF;
++		if (mode == 0) {
++			os_atomic_store(&sweet_cpuidle_mode, 0, relaxed);
++		} else if ((err = sweet_cpuidle_setup(force, mode >= 2)) == NULL) {
++			os_atomic_store(&sweet_cpuidle_mode, mode, relaxed);
++		}
++	}
++
++	static const char *names[4] = { "wfi", "ret", "pc", "pcL2" };
++	int n = snprintf(out, len, "%scpuidle: mode %u (%s), pc from %u us, pc mask 0x%02x, flush %u, "
++	    "PSCI features %d, clusters 0x%02x 0x%02x, ready %d; broadcast INTID %u (IGROUPR1 0x%08x ISENABLER1 0x%08x GICD_CTLR 0x%08x) irqs %llu wakes %llu spurious %llu late max %llu us; L2 denied %llu, set-mode rc %d\n",
++	    err ? "ERROR " : "OK ", sweet_cpuidle_mode, names[sweet_cpuidle_mode & 3], sweet_cpuidle_pc_us,
++	    sweet_cpuidle_pc_mask, sweet_idle_flush, sweet_cpuidle_features, sweet_cluster_cpus[0], sweet_cluster_cpus[1], sweet_cpuidle_ready,
++	    sweet_bc_intid, sweet_bc_group1[0], sweet_bc_group1[1], sweet_bc_group1[2], sweet_bc_irqs, sweet_bc_wakes, sweet_bc_spurious, sweet_bc_late_max / 19, sweet_l2_denied, sweet_psci_mode_rc);
++	if (err && n > 0 && (size_t)n < len) {
++		n += snprintf(out + n, len - (size_t)n, "  %s\n", err);
++	}
++	for (unsigned i = 0; i < MAX_CPUS && n > 0 && (size_t)n < len; i++) {
++		struct sweet_idle_stat *st = &sweet_idle_stats[i];
++		if (CpuDataEntries[i].cpu_data_vaddr == NULL) {
++			continue;
++		}
++		uint64_t ms[4];
++		for (int k = 0; k < 4; k++) {
++			uint64_t ns;
++			absolutetime_to_nanoseconds(st->t[k], &ns);
++			ms[k] = ns / NSEC_PER_MSEC;
++		}
++		n += snprintf(out + n, len - (size_t)n,
++		    "  cpu%u: wfi %llu/%llu ms ret %llu/%llu ms pc %llu/%llu ms pcL2 %llu/%llu ms; pc returned %llu, fail %llu (rc %d)\n",
++		    i, st->n[0], ms[0], st->n[1], ms[1], st->n[2], ms[2], st->n[3], ms[3], st->pc_ret, st->fail, st->last_rc);
++	}
++	if (n < 0) {
++		n = 0;
++	} else if ((size_t)n >= len) {
++		n = (int)len - 1;
++	}
++	return n;
++}
+ #endif
+ 
+ 
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1949,6 +1949,8 @@
+ 	 * sweet: TrustZone owns GIC Group 0, so the timer and IPIs that other
+ 	 * ARM64 targets take as FIQs arrive here as Group 1 IRQs.
+ 	 */
++	extern uint32_t sweet_bc_irq_intid(void);
++	extern void sweet_bc_irq(void);
+ 	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+ 	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
+ 
+@@ -1962,6 +1964,11 @@
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++	} else if (intid >= 32 && intid == sweet_bc_irq_intid()) {
++		/* j0139: QTimer broadcast for power-collapsed cores (osfmk/arm64/cpu.c) */
++		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
++		sweet_bc_irq();
++		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 	} else if (intid < 16) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
+ 		/* Ack before handling so an IPI raised meanwhile is not lost */
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -222,6 +222,102 @@
+ 	__builtin_arm_isb(ISB_SY);
+ #endif /* SWEET */
+ }
++
++#if defined(SWEET)
++/*
++ * j0139: after a PSCI power collapse the core's GIC CPU interface (ICC_*) is
++ * reset; the redistributor and distributor keep their state. Same values as
++ * pe_init_fiq, without touching the GICD/GICR.
++ */
++void sweet_gic_cpu_resume(void);
++void
++sweet_gic_cpu_resume(void)
++{
++	uint64_t icc_sre = __builtin_arm_rsr64("ICC_SRE_EL1");
++	__builtin_arm_wsr64("ICC_SRE_EL1", icc_sre | ICC_SRE_SRE);
++	__builtin_arm_isb(ISB_SY);
++	__builtin_arm_wsr64("ICC_BPR1_EL1", 0);
++	__builtin_arm_wsr64("ICC_PMR_EL1", 0xFF);
++	uint64_t icc_ctlr = __builtin_arm_rsr64("ICC_CTLR_EL1");
++	__builtin_arm_wsr64("ICC_CTLR_EL1", icc_ctlr & ~ICC_CTLR_EOIMODE);
++	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
++	__builtin_arm_isb(ISB_SY);
++}
++
++/*
++ * j0139: route one SPI (Group 1 non-secure, set by the secure firmware) to the
++ * core with this MPIDR affinity and enable it. Level/edge config is left as is.
++ * Returns -1 if the SPI is not visible to the non-secure side.
++ */
++extern int snprintf(char *, size_t, const char *, ...) __printflike(3, 4);
++
++/* A 32-bit MMIO store from a real register, never wzr (see sweet_gic_spi_route). */
++void sweet_mmio_w32(vm_offset_t addr, uint32_t v);
++void
++sweet_mmio_w32(vm_offset_t addr, uint32_t v)
++{
++	__asm__ volatile ("str %w1, [%0]" : : "r"(addr), "r"(v) : "memory");
++}
++
++/* j0139 diagnostics: GICD_TYPER, IGROUPR, ISENABLER and IGRPMODR words 0-15 as the
++ * non-secure side reads them. */
++int sweet_gic_dump(char *out, size_t len);
++int
++sweet_gic_dump(char *out, size_t len)
++{
++	if (gicd_base == 0) {
++		return 0;
++	}
++	int n = snprintf(out, len, "  GICD_CTLR 0x%08x TYPER 0x%08x IIDR 0x%08x\n",
++	    gicd_read32(GICD_CTLR), gicd_read32(0x004), gicd_read32(0x008));
++	const uint32_t base[3] = { 0x080, 0x100, 0xD00 };
++	const char *name[3] = { "IGROUPR", "ISENABLER", "IGRPMODR" };
++	for (int r = 0; r < 3 && n > 0 && (size_t)n < len; r++) {
++		n += snprintf(out + n, len - (size_t)n, "  %s:", name[r]);
++		for (int w = 0; w < 16 && (size_t)n < len; w++) {
++			n += snprintf(out + n, len - (size_t)n, " %08x", gicd_read32(base[r] + 4 * w));
++		}
++		if ((size_t)n < len) {
++			n += snprintf(out + n, len - (size_t)n, "\n");
++		}
++	}
++	return n;
++}
++
++int sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3]);
++int
++sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3])
++{
++	if (gicd_base == 0 || intid < 32 || intid >= 1020) {
++		return -1;
++	}
++	/*
++	 * The group registers read 0 from here even for working Group 1 interrupts
++	 * (NOTES hardware facts: RAZ in the non-secure view), so nothing is checked or
++	 * written there; the caller tests delivery. Every store goes through
++	 * sweet_mmio_w32: the hypervisor's emulation hangs on `str wzr`.
++	 */
++	uint32_t word = intid / 32, bit = 1U << (intid % 32);
++	if (group_word != NULL) {
++		group_word[0] = gicd_read32(0x080 + 4 * word);
++		group_word[1] = gicd_read32(0x100 + 4 * word);
++		group_word[2] = gicd_read32(GICD_CTLR);
++	}
++	sweet_mmio_w32(gicd_base + 0x180 + 4 * word, bit);           /* ICENABLER while changing */
++	vm_offset_t prio = gicd_base + 0x400 + (intid & ~3U);         /* IPRIORITYR, 0xA0 as the PPIs */
++	uint32_t shift = 8 * (intid & 3);
++	sweet_mmio_w32(prio, (_gic_read32(prio) & ~(0xFFU << shift)) | (0xA0U << shift));
++	uint64_t aff = mpidr & 0xFF00FFFFFFULL;                       /* IROUTER, IRM = 0 */
++	sweet_mmio_w32(gicd_base + 0x6000 + 8 * intid, (uint32_t)aff);
++	sweet_mmio_w32(gicd_base + 0x6004 + 8 * intid, (uint32_t)(aff >> 32));
++	__builtin_arm_dsb(DSB_SY);
++	sweet_mmio_w32(gicd_base + 0x100 + 4 * word, bit);           /* ISENABLER */
++	while (gicd_read32(GICD_CTLR) & GICD_CTLR_RWP) {
++		;
++	}
++	return 0;
++}
++#endif /* SWEET */
+ #else
+ void
+ pe_init_fiq()

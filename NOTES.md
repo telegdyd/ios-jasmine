@@ -1,3 +1,26 @@
+### 2026-11-05 ~21:40: power plan item 3 - j0139 PSCI CPU idle (ret / core pc / L2 pc) WORKS on temp boots, default off
+- xnu/patches/j0139-jasmine-cpu-idle-psci.patch (kernel xnu/out-jasmine-idle139g, image shim/out/shim-boot-idle139g-tmp.img
+  = scan138 cmdline + jasmine-m7slotb.adt, byte-checked by new tools/g2/tmpimg.sh). User: "Yes, start item 3".
+  States as stock sdm660 lpm-levels (DT dtb0.dts 7419ff): cpu ret 0x2, cpu pc 0x40000003, cpu+L2 pc 0x41000043.
+  Resume = XNU's own non-retention idle path (sweet_secondary_entry -> reset_vector -> resume_idle_cpu ->
+  arm_init_idle_cpu -> cpu_idle_exit(TRUE)) + GIC ICC sysregs + setPop. Broadcast timer = QTimer frame 0
+  (0x17921000) phys timer SPI 8 = INTID 40 routed to MPIDR 0x0 (first Silver core): first SPI ever used by the port.
+  Command `cpuidle [MODE [PC_US [MASK]]]`, `cpuidle gic|reset|flush 0|1|psci 0|1`; new tools/g2/port.py "cmd" N "cmd".
+- Facts found: PSCI_FEATURES(CPU_SUSPEND) = 3 (extended StateID + OSI); firmware is in OS-initiated mode: an L2 request
+  from a non-last core is DENIED (-3), SET_SUSPEND_MODE(0) also -3 -> j0139 does last-man per cluster (topology masks
+  Gold 0x0f / Silver 0xf0). GICD IGROUPR/ISENABLER/IGRPMODR read 0 for every SPI (hypervisor view, as the old note
+  says) - delivery is tested instead (1 ms self-test). All j0139 MMIO stores use a register (no `str wzr`).
+- Observed (idle139e/f/g, display on, USB): modes 1/2/3 run for minutes, 0 PSCI failures, ~45k broadcast wakes,
+  phone answers; cpu1-7 spend most idle time in pc; Silver L2 pc succeeds (hundreds/15 s on idle139f), Gold never
+  (cpu0 excluded: mask 0xFE). L2 denied ~9k in ~6 min (race fallback to core pc works). Broadcast late max up to
+  1.7 ms (target core itself in pc/L2 pc; stock L2 pc exit is 2.1 ms) - latency issue to fix before any default-on.
+- Power A/B (research/cpu-idle-20261105/fgab-idle139g-on.txt, `batt icl 400`, display on, mode 0 vs 3): +94, +262,
+  +11, -8 mA = inconclusive (first cycles overlap post-boot work). Screen-off unplugged not measured (soc 3-4 %).
+- Phone state: temp boot idle139g, `cpuidle 0` (WFI, as before), charging on the PC port, icl restored.
+  boot_b unchanged. Next: charge to >= 30 %, then screen-off unplugged fgab mode 0 vs 2 vs 3; then framebench (no
+  perf regression rule); then mask 0xFF (boot CPU; CNTVOFF assumption) for Gold L2, broadcast target choice /
+  wake-early by exit latency, system level (aff 2, notify-rpm) last.
+
 ### 2026-11-05 ~21:00: battery drain review (diagnosis only, nothing changed)
 - Live read-only port queries (scan138 boot, display on, on USB): `batt` 3640 mV -107 mA net while charging, soc 4 %;
   ddrgov residency full 94 % / idle-on 4 % / idle-off 1 % of 2191 s, raises cpu 506 (of 515); gpu pc GX off 83 %;
