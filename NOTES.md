@@ -1,3 +1,27 @@
+### 2026-11-06 ~00:20: j0144 sound step 1: jasmine ADSP boots (PAS), GLINK/QRTR/pd-mapper up, APR q6core READY
+- Choice (user): sound before camera. The iOS side exists (userland/audio plug-in -> /dev/redwood-audio sink API);
+  camera would need Apple's closed ISP interface emulated. Speaker work = kernel only.
+- Hardware facts (decoded dtb/jasmine.dtb + modem partition backup p58_modem_a.img): remoteproc@15700000
+  qcom,sdm660-adsp-pas, PAS id 1, carveout adsp@92a00000+0x1e00000 (adsp.mdt 25 phdrs span exactly
+  92a00000..94800000), smp2p-adsp smem 443/429 mbox bit 10, glink-edge "lpass" mbox bit 9, remote pid 2; APR
+  (qcom,apr-v2, apr_audio_svc, domain 4: q6core 3, q6afe 4, q6asm 7, q6adm 8). Firmware image/adsp.mdt + b00..b23
+  and ADSPR/ADSPS/ADSPUA.jsn in the modem partition (pd list = topaz's, instance 74). Codec = SDM660 internal:
+  digital msm8916-wcd-digital @0x152c0000, analog pm8916-wcd-analog-codec on PM660L (SPMI usid 3, 0xf000, has
+  speaker PA interrupts cdc_spk_*); no external amp node in this DT (both codecs status disabled, no /sound card).
+- xnu/patches/j0144-jasmine-adsp-boot.patch: TopazAudio carveout/GLINK bit per board; on jasmine registers
+  apr_audio_svc and polls q6core AVCS_CMD_ADSP_EVENT_GET_STATE (0x1290c) instead of topaz's GPR/codec/stream;
+  SweetFramebuffer calls topaz_audio_init() on jasmine (gate: boot-arg adsp=1, default off).
+- Kernel adsp144 (all patches through j0144; VM build), image shim/out/shim-boot-adsp144-tmp.img = fg143 recipe
+  (jasmine-m7slotb.adt, cmdline verified byte-identical by rebuilding payload-fg143-tmp.bin) + " adsp=1" (599/607).
+  Temp-booted 00:19 (logs/netlog-adsp144.txt): PAS init/mem_setup/auth_and_reset all 0, READY+handover 22 ms,
+  ADSP opens glink_ssr, IPCRTR, apr_audio_svc, apr_apps2, fastrpcglink-apps-dsp, LOOPBACK_CTL_LPASS; QRTR node 5,
+  17 services, pd-mapper answered avs/audio; **q6core state = 1 READY** at 1.0 s. iOS boot normal (SpringBoard,
+  backboardd), no fault in 120 s. Phone left in this temp boot; boot_b unchanged.
+- Next (step 2): speaker path. Find jasmine's speaker route (vendor partition backup mixer_paths / downstream
+  sdm660 int codec: SPK PA on PM660L analog codec, maybe boost), then APR: AFE clock set (digital codec core clk +
+  INT0_MI2S bit clock), AFE port start INT0_MI2S_RX, ADM open COPP, ASM open write + mem map + run; digital codec
+  RX1 + analog SPK PA register writes; kernel test tone (as topaz adsp_tone), then connect /dev/redwood-audio.
+
 ### 2026-11-05 ~23:50: j0143 FG SRAM reader: battery = Coslight, stock profile IS loaded (no-profile guess wrong)
 - xnu/patches/j0143-jasmine-fg-sram-read.patch (kernel fg143 = j0139 off + j0140..j0143, image
   shim/out/shim-boot-fg143-tmp.img, temp boot): `fg sram WORD [N]`, `fg profile`, `fg id`, `fg memif` (IMA single

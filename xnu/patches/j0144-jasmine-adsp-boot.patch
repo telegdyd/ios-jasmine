@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 00:15:00 +0100
+Subject: [PATCH] j0144: jasmine ADSP boot (adsp=1): TopazAudio with SDM660
+ carveout 0x92a00000+30M and GLINK bit 9; APR channel apr_audio_svc with a
+ q6core state probe instead of topaz's GPR/codec/stream
+
+---
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -29,6 +29,7 @@ extern "C" void    *topaz_smem_partition(uint16_t a, uint16_t b);
+ extern "C" void    *topaz_smem_get(void *part, uint16_t item, uint32_t *size);
+ extern "C" void    *topaz_smem_alloc(void *part, uint16_t item, uint32_t size);
+ extern "C" void     topaz_apcs_kick(unsigned bit);
++extern "C" int      sweet_board_is(const char *compat);   /* bsd/dev/sweet_board.c */
+ extern "C" uint64_t topaz_scm(uint32_t fn, uint64_t arginfo, uint64_t a, uint64_t b, uint64_t c, uint64_t *res1);
+ extern "C" void    *topaz_pool_alloc(uint64_t size, uint64_t *pa);
+ extern "C" int64_t  topaz_part_fw_size(const char *path);
+@@ -36,13 +37,22 @@ extern "C" bool     topaz_part_fw_read(const char *path, uint64_t off, void *dst
+ 
+ #define ADSP_PID            2                   /* SMEM host / SMP2P / GLINK remote pid */
+ #define ADSP_PAS_ID         1
+-#define ADSP_CARVE_PA       0x53800000u         /* DT pil_adsp_region */
+-#define ADSP_CARVE_SIZE     0x02300000u
++/*
++ * j0144: the board's own (topaz SM6225 by default; jasmine SDM660 from the jasmine DTB in
++ * topaz_audio_thread): carveout = remoteproc@15700000 memory-region adsp@92a00000 (the
++ * adsp.mdt segments span exactly 0x92a00000..0x94800000), GLINK edge mboxes <&apcs_glb 9>.
++ */
++static bool jasmine;
++static uint32_t adsp_carve_pa = 0x53800000u;    /* DT pil_adsp_region */
++static uint32_t adsp_carve_size = 0x02300000u;
++static unsigned adsp_glink_bit = 8;
++#define ADSP_CARVE_PA       adsp_carve_pa
++#define ADSP_CARVE_SIZE     adsp_carve_size
+ #define ITEM_SMP2P_OUT      429                 /* apps -> adsp (DT qcom,smem = <443 429>: in, out) */
+ #define ITEM_SMP2P_IN       443                 /* adsp -> apps */
+ #define ITEM_ADSP_CRASH     423
+ #define ADSP_SMP2P_BIT      10
+-#define ADSP_GLINK_BIT      8
++#define ADSP_GLINK_BIT      adsp_glink_bit
+ #define SMEM_GLOBAL_HOST    0xFFFE
+ 
+ #define SCM_FN(svc, cmd)    (0x42000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
+@@ -1208,6 +1218,99 @@ gpr_poll(void)
+ 	}
+ }
+ 
++/* ---------------------------------------------------------------- APR (jasmine, j0144) */
++
++/*
++ * SDM660's ADSP speaks the older APR (DT glink-edge/apr: qcom,apr-v2, channel apr_audio_svc,
++ * services q6core 3, q6afe 4, q6asm 7, q6adm 8). Step 1: ask q6core whether the audio
++ * framework is up (mainline q6core.c AVCS_CMD_ADSP_EVENT_GET_STATE), log what comes back.
++ */
++#define ACHAN               "apr_audio_svc"
++#define APR_DOMAIN_ADSP     4
++#define APR_DOMAIN_APPS     5
++#define APR_SVC_CORE        3
++#define APR_HDR_FIELD_CMD   0x0150u             /* SEQ_CMD (1) << 8 | 20-byte header (5 words) << 4 */
++#define APR_BASIC_RSP_RESULT            0x000110E8u
++#define AVCS_CMD_ADSP_EVENT_GET_STATE   0x0001290Cu
++#define AVCS_CMD_RSP_ADSP_EVENT_GET_STATE 0x0001290Du
++
++struct apr_hdr {
++	uint16_t hdr_field, pkt_size;
++	uint8_t  src_svc, src_domain;
++	uint16_t src_port;
++	uint8_t  dest_svc, dest_domain;
++	uint16_t dest_port;
++	uint32_t token, opcode;
++} __attribute__((packed));
++
++static uint32_t apr_token = 0x100, apr_state = 0xFFFFFFFFu, apr_asks, apr_rxn;
++static unsigned apr_last_ask;
++
++static void
++apr_send(uint8_t svc, uint32_t opcode, const void *payload, uint32_t len)
++{
++	uint8_t buf[sizeof(struct apr_hdr) + 256];
++	struct apr_hdr *h = (struct apr_hdr *)buf;
++
++	if (len > 256) {
++		return;
++	}
++	bzero(buf, sizeof(buf));
++	h->hdr_field = APR_HDR_FIELD_CMD;
++	h->pkt_size = (uint16_t)(sizeof(struct apr_hdr) + len);
++	h->src_svc = svc;
++	h->src_domain = APR_DOMAIN_APPS;
++	h->src_port = 0;
++	h->dest_svc = svc;
++	h->dest_domain = APR_DOMAIN_ADSP;
++	h->dest_port = 0;
++	h->token = apr_token++;
++	h->opcode = opcode;
++	memcpy(buf + sizeof(struct apr_hdr), payload, len);
++	glink_send(ACHAN, buf, (uint32_t)sizeof(struct apr_hdr) + len);
++}
++
++static void
++apr_rx(const uint8_t *data, uint32_t len)
++{
++	const struct apr_hdr *h = (const struct apr_hdr *)data;
++
++	apr_rxn++;
++	if (len < sizeof(struct apr_hdr)) {
++		LOG("t=%u.%03u apr: short packet %u B", T, len);
++		return;
++	}
++	uint32_t hlen = ((h->hdr_field >> 4) & 0xF) * 4;
++	uint32_t p0 = len >= hlen + 4 ? *(const uint32_t *)(data + hlen) : 0;
++	uint32_t p1 = len >= hlen + 8 ? *(const uint32_t *)(data + hlen + 4) : 0;
++
++	if (h->opcode == AVCS_CMD_RSP_ADSP_EVENT_GET_STATE && len >= hlen + 4) {
++		if (p0 != apr_state) {
++			LOG("t=%u.%03u *** q6core state = %u%s (after %u asks) ***", T, p0, p0 == 1 ? " READY" : "", apr_asks);
++		}
++		apr_state = p0;
++		return;
++	}
++	if (apr_rxn <= 32) {
++		LOG("t=%u.%03u apr rx %u B: hdr %04x svc %u.%u->%u.%u port %x->%x token %x opcode %08x payload %08x %08x", T,
++		    len, h->hdr_field, h->src_domain, h->src_svc, h->dest_domain, h->dest_svc, h->src_port, h->dest_port,
++		    h->token, h->opcode, p0, p1);
++	}
++}
++
++static void
++apr_poll(void)
++{
++	if (!glink_chan_up(ACHAN) || apr_state == 1 || apr_asks >= 120) {
++		return;
++	}
++	if (apr_asks == 0 || ms() - apr_last_ask >= 1000) {
++		apr_last_ask = ms();
++		apr_asks++;
++		apr_send(APR_SVC_CORE, AVCS_CMD_ADSP_EVENT_GET_STATE, NULL, 0);
++	}
++}
++
+ /* ---------------------------------------------------------------- GPR calls (wait for the reply) */
+ 
+ extern "C" bool topaz_rpm_write(uint32_t set, uint32_t type, uint32_t id, uint32_t key, uint32_t value);
+@@ -1880,6 +1983,12 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 	unsigned last_status = 0;
+ 	bool codec_tried = false;
+ 
++	if (sweet_board_is("xiaomi,jasmine")) {
++		jasmine = true;
++		adsp_carve_pa = 0x92A00000u;
++		adsp_carve_size = 0x01E00000u;
++		adsp_glink_bit = 9;
++	}
+ 	if (!topaz_soc_map()) {
+ 		LOG("no SoC mappings (see TopazModem)");
+ 		goto out;
+@@ -1916,13 +2025,21 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 		goto out;
+ 	}
+ 	glink_register(QCHAN, qrtr_rx);
+-	glink_register(GCHAN, gpr_rx);
++	if (jasmine) {
++		glink_register(ACHAN, apr_rx);          /* codec and stream: not yet on SDM660 */
++	} else {
++		glink_register(GCHAN, gpr_rx);
++	}
+ 	for (;;) {
+ 		bool busy = glink_poll();
+ 		qrtr_poll();
+-		gpr_poll();
+-		stream_poll();
+-		if (spf_state == 1 && !codec_tried) {
++		if (jasmine) {
++			apr_poll();
++		} else {
++			gpr_poll();
++			stream_poll();
++		}
++		if (!jasmine && spf_state == 1 && !codec_tried) {
+ 			uint32_t tone = 0;
+ 			codec_tried = true;
+ 			(void)PE_parse_boot_argn("adsp_vol", &vol_db, sizeof(vol_db));
+@@ -1943,7 +2060,8 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 		if (ms() - last_status >= 60000) {
+ 			last_status = ms();
+ 			LOG("t=%u.%03u status: slave-kernel %08x, qrtr node %x hello %u, %u services, %u lookups, pd-mapper %u, "
+-			    "SPF %d", T, *adsp_state, q_node, q_hello_rx, q_services, q_lookups, q_pdreqs, (int)spf_state);
++			    "SPF %d APR %d/%u rx", T, *adsp_state, q_node, q_hello_rx, q_services, q_lookups, q_pdreqs, (int)spf_state,
++			    (int)apr_state, apr_rxn);
+ 			glink_summary();
+ 		}
+ 		if (busy) {
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -610,6 +610,7 @@ AppleCLCD::start(IOService *provider)
+ 		topaz_audio_init();
+ 	} else if (sweet_board_is("xiaomi,jasmine")) {
+ 		topaz_modem_init();                     /* boot-arg modem=1: SDM660 MBA boot (j0080) */
++		topaz_audio_init();                     /* boot-arg adsp=1: SDM660 ADSP PAS boot + APR (j0144) */
+ 	}
+ 	/*
+ 	 * Every board: the AMFI service is software only. Without it ExtensionKit cannot read the
