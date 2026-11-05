@@ -1,4 +1,24 @@
-### 2026-11-05: j0136 per-layer mixed-swap bounds, no fallback for client swaps, requeue (NOT built, NOT booted, not committed)
+### 2026-11-05 ~01:30: j0133-j0136 REVERTED (1b05f3e); back on j0129-j0132; investigating why accepted swaps never reach the panel
+- The four entries below (j0133-j0136) describe workarounds that are now REVERTED: on device each one, once Maps
+  opened, ended in the permanent synchronous QUEUE FALLBACK, where backboardd's render tickets are suspended and
+  every frame goes out ungated (user: "glitch city", everywhere, until reboot). Copies of j0133-j0138 in
+  research/maps-hang/reverted/ (gitignored; j0137/j0138 were written by a DeepSeek run that could not be stopped
+  in time; never part of a build).
+- Clean baseline (kernel swap132 = j0129..j0132, shim/out/shim-boot-swap132-tmp.img, booted 01:19; log
+  logs/netlog-revert.txt 4490+): Maps freeze = `waited id 189 ... shown 189 end 189 swap 191 latched 189;
+  latchValid 0 program 189 accepted 191; queue 1 waiting 0 busy 0 epoch 1`: own-only swaps 190/191 ADMITTED but
+  never programmed, presenter idle, backboardd still submitting ~100 jobs/10 s. Same as netlog-swap132:4837
+  (accepted 248, program 246). netlog-sync136 also had a programmed own swap whose latch never retired.
+- User found: power button off/on unsticks the freeze (display off/on resets it), then `QUEUE FALLBACK reason 1`
+  right after `display on` -> synchronous mode -> glitchy until reboot. So the glitching IS the synchronous
+  fallback mode (pre-existing behaviour), not something Maps draws.
+- Maps env now: BGMTL_POSTER_SDR=1, Maps:BGMTL_LOG_DIR=/private/var/tmp (BGMTL_SYNC for Maps tried, no effect).
+- NEXT: DeepSeek writing xnu/patches/j0133-jasmine-latch-trace.patch (diagnostic only: per-swap trace ring of
+  admission/queuePresent/program/latch/retire + presenter wakeups/early returns + display power transitions;
+  auto-dump on swapWait stuck / queueFallback, `fb trace` command). Build, boot, user opens Maps until freeze,
+  read the trace: find where an accepted frame goes when the presenter is idle.
+
+### 2026-11-05: j0136 per-layer mixed-swap bounds, no fallback for client swaps, requeue (REVERTED in 1b05f3e)
 Result on the j0135 kernel (logs/netlog-gate135.txt:6330-6365): swap 618 was treated
 as a client swap, so backboardd's own layer 6 (behind Maps' GPU work on the single
 ring) got only the 100 ms bounds.  Its ticket/gpuSeqno probe expired and
