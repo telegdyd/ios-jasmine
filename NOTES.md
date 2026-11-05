@@ -1,3 +1,28 @@
+### 2026-11-05 ~14:35: App switcher cards FIXED on device (Metal e9d181b, build xnu/out-mesa-ycc152 in backboardd)
+- Installed: /usr/local/bin/libbgmtl.dylib = ycc152 (sha 29498766, was dump146 23246229; backup
+  research/ycc147/backup-bb-libbgmtl.dylib, `python research/ycc147/install.py restore` puts it back). libbgair and
+  /usr/local/p (poster) unchanged. bb env back to BGMTL_ASYNC=1 / BGMTL_UBWC=1 / CA_DISABLE_DETACHED=1 (byte-exact,
+  research/ycc147/env-bb-saved.bin). backboardd 5060 at the end. Not rebooted; not benchmarked.
+- Three faults, found in turn (screens research/ycc147/*.png, half-size sweet_shot):
+  1. format 500 refused (entry below). Now: an RGBA8 texture over a copy of the '420f'/'420v' planes, converted on
+     the CPU at creation and when the seed moves; CA's own-memory mipmapped copy of it (update_surface:
+     newTextureWithDescriptor: + copyFromTexture: + generateMipmapsForTexture:) also accepted as RGBA8 with
+     -pixelFormat answering 500. Cards went from shadow-only to opaque black.
+  2. Black: no draw ever sampled them. CA's MetalContext::draw binds those units with the SPI
+     setFragmentTexture:atTextureIndex:samplerState:atSamplerIndex:, which bgmtl's fallback logged as
+     "unimplemented, answered with zero" (no-op). Implemented (texture + sampler bind). Content appeared.
+  3. Colours wrong (black -> pink): CA's shader takes a format-500 sample as RGB (the texture unit converts on Apple
+     GPUs), not raw Y/Cb/Cr as guessed from the matrix table. The copy now converts to RGB itself (IOSurfaceYCbCrMatrix
+     601/709/2020, '420f' full / '420v' video range, chroma nearest). Verified: Maps and App Store cards correct.
+- Seen in the switcher: 579x1254 '420f' (downscaled snapshots) and one 1105x1160 '420f' (a widget; the Photos
+  widget still shows "No content available" - not checked). Log: first 12 format-500 textures per process print
+  `YCbCr 420 texture over IOSurface N ...`.
+- Open: the FRONT card (Settings, last app) looked blank light gray in one capture (sw9) - may be a snapshot taken
+  mid-transition, unverified. Video ('420v') goes through the same CPU conversion: correct but CPU-heavy, untested.
+  The SPI fix may also change other CA draws that used it (none seen broken on home/switcher/Today).
+- Tools: research/ycc147/install.py install|restore|shot NAME [N right-swipes] (opens the switcher, sweet_shot
+  828x1792 per surface); research/ycc147/dumpenv.py on|off (BGMTL_DUMP_* for 579x1254 draws).
+
 ### 2026-11-05 ~15:00: App switcher shows only the last app = format-500 (YCbCr 4:2:0) textures refused (diagnosis, no fix yet)
 - User: switcher draws only the last used app; cards behind it are just shadow/transparent.
 - Snapshots on disk are fine: e.g. Maps/Messages/AppStore under
