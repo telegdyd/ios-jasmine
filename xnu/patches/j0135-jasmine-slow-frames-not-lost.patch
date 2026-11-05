@@ -1,0 +1,152 @@
+Subject: [PATCH] jasmine-j0135: a compositor frame that is only slow is never lost
+
+Maps freeze traces (logs/netlog-latch133b.txt, logs/netlog-tkt134.txt): with Apple Maps
+rendering through our Metal, backboardd's own frames wait behind Maps' long GPU jobs on
+the single ring (no preemption). Their render ticket / GPU seqno is not done within the
+display's bounds (100 ms ticket, j0134's 1000 ms retry, 100 ms gpuSeqno, 200 ms present
+scope, 1000 ms queue admission), so the frame was dropped without presenting (freeze:
+SwapWait on the previous page never completes) or the queue was switched off for the boot
+(QUEUE FALLBACK, render tickets suspended, ungated frames).
+
+Each of those bounds now keeps waiting while the GPU is still completing work: until no
+GPU job has completed for 3 s (a hung GPU, or a ticket userspace never seals), after which
+the old path runs unchanged. terminal() (display off / closing) still ends the waits.
+Logged: "SWEET FB: slow frame: N waits extended past their bound" (1st, every 50th).
+Default on; boot-arg sweetfb_slow=0 restores j0134 behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index db08992..65a45d1 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -169,6 +169,46 @@ sweet_fb_ticketgpu(void)
+ {
+ 	return sweet_fb_ticketgpu_on;
+ }
++/*
++ * j0135 (default on, boot-arg sweetfb_slow=0 off): a frame that is only slow is never lost.
++ * The GPU has one ring and no preemption, so a compositor frame can sit behind another app's
++ * long jobs (Apple Maps) for seconds; every bounded wait below dropped it or switched the
++ * queue off for the boot (the Maps freeze: netlog-latch133b / netlog-tkt134). A wait that
++ * reaches its bound keeps going while the GPU is still completing work: until no job has
++ * completed for SWEET_FB_SLOW_STALL_MS (a hung GPU, or a ticket userspace never seals),
++ * then the old path runs unchanged.
++ */
++#define SWEET_FB_SLOW_STALL_MS 3000
++static bool sweet_fb_slow_on = true;
++struct SweetSlowWait {
++	uint32_t lastDone;
++	uint64_t lastProgress;
++	uint32_t extended;
++};
++static uint64_t sweet_fb_slow_extended;
++/* true: keep waiting past the bound (the GPU completed a job in the last 3 s) */
++static bool
++sweet_fb_still_slow(SweetSlowWait *w)
++{
++	if (!sweet_fb_slow_on) { return false; }
++	uint32_t done = sweet_gpu_completed();
++	uint64_t now = mach_absolute_time(), ns = 0;
++	if (w->lastProgress == 0 || done != w->lastDone) {
++		w->lastDone = done;
++		w->lastProgress = now;
++	}
++	absolutetime_to_nanoseconds(now - w->lastProgress, &ns);
++	if (ns >= (uint64_t)SWEET_FB_SLOW_STALL_MS * NSEC_PER_MSEC) { return false; }
++	if (w->extended++ == 0) {
++		uint64_t n = __atomic_add_fetch(&sweet_fb_slow_extended, 1, __ATOMIC_RELAXED);
++		/* callers hold no lock here; first and every 50th, so a long Maps session cannot flood */
++		if (n == 1 || n % 50 == 0) {
++			IOLog("SWEET FB: slow frame: %llu waits extended past their bound (GPU still completing, done %u)\n",
++			    (unsigned long long)n, done);
++		}
++	}
++	return true;
++}
+ static uint64_t sweet_fb_slept_us, sweet_fb_spun_us;
+ 
+ /*
+@@ -795,6 +835,9 @@ AppleCLCD::start(IOService *provider)
+ 	uint32_t wait0 = 1;
+ 	PE_parse_boot_argn("sweetfb_wait0", &wait0, sizeof(wait0));
+ 	sweet_fb_wait0 = wait0 != 0;
++	uint32_t slow = 1;
++	PE_parse_boot_argn("sweetfb_slow", &slow, sizeof(slow));
++	sweet_fb_slow_on = slow != 0;
+ 	uint32_t ticketgpu = 1;
+ 	PE_parse_boot_argn("sweetfb_ticketgpu", &ticketgpu, sizeof(ticketgpu));
+ 	sweet_fb_ticketgpu_on = ticketgpu != 0;
+@@ -2676,6 +2719,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	if (fProtocol) {
+ 		uint64_t start = mach_absolute_time(), ns = 0;
+ 		bool fellBack = false;
++		SweetSlowWait slowScope = {};           /* j0135 */
+ 		for (;;) {
+ 			IOLockLock(fLock);
+ 			bool token = !fQueueActive;
+@@ -2746,6 +2790,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 				 * the existing rejectFrame(16) path.
+ 				 */
+ 				uint64_t ticketUntil = 0;
++				SweetSlowWait slowTicket = {};      /* j0135 */
+ 				if (sweet_tickets_enabled() && sweet_fb_ticketgpu()) {
+ 					clock_interval_to_deadline(1000, kMillisecondScale, &ticketUntil);
+ 				}
+@@ -2764,8 +2809,8 @@ AppleCLCD::swap(const uint8_t *rec)
+ 							}
+ 							break;
+ 						}
+-						if (ticketReady != kIOReturnTimeout || !sweet_fb_ticketgpu() ||
+-						    mach_absolute_time() >= ticketUntil) {
++						if (ticketReady != kIOReturnTimeout || !sweet_fb_ticketgpu() || terminal() ||
++						    (mach_absolute_time() >= ticketUntil && !sweet_fb_still_slow(&slowTicket))) {
+ 							if (sweet_fb_ticketgpu()) {
+ 								sweet_fb_trace_ticket_surface(trace_id, i, held[i],
+ 								    SWEET_FB_TR_TICKET_FAIL);
+@@ -2785,6 +2830,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 					}
+ 				}
+ 				uint64_t until;
++				SweetSlowWait slowSeq = {};         /* j0135 */
+ 				clock_interval_to_deadline(100, kMillisecondScale, &until);
+ 				for (;;) {
+ 					bool ready = true;
+@@ -2793,7 +2839,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 						if (held[i] && held[i]->gpuSeqno && (int32_t)(completed - held[i]->gpuSeqno) < 0) { ready = false; }
+ 					}
+ 					if (ready) { break; }
+-					if (mach_absolute_time() >= until) {
++					if (mach_absolute_time() >= until && (terminal() || !sweet_fb_still_slow(&slowSeq))) {
+ 						syncTimedOut = true;
+ 						SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_SYNC_TIMEOUT, 2);
+ 						rejectFrame(get32(rec, 0x50), 2, kIOReturnTimeout);
+@@ -2805,7 +2851,9 @@ AppleCLCD::swap(const uint8_t *rec)
+ 			}
+ 			IOLockUnlock(fLock);
+ 			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+-			if (ns >= 200 * NSEC_PER_MSEC) {
++			/* j0135: the presenter (or a previous frame) waiting on a GPU that is still
++			 * completing work is slow, not stuck: no rejectFrame(1) / queue fallback yet. */
++			if (ns >= 200 * NSEC_PER_MSEC && !sweet_fb_still_slow(&slowScope)) {
+ 				if (fellBack) {
+ 					SWEET_FB_TRACE_ADMIT(SWEET_FB_TR_OUT_ABORT, 1);
+ 					sweet_hold_set(held, false);    /* (the presenter is stuck: this frame is lost) */
+@@ -3079,6 +3127,7 @@ AppleCLCD::queuePresent(void)
+ 	uint64_t ticketStart = mach_absolute_time(), lastTicketLog = 0;
+ 	uint32_t lastLag = 0;
+ 	bool firstPoll = true, gpuDoneLogged[4] = {};
++	SweetSlowWait slowQueue = {};               /* j0135 */
+ 	while (!terminal()) {
+ 		uint32_t done = sweet_gpu_completed();
+ 		uint32_t iterLag = 0;
+@@ -3115,7 +3164,8 @@ AppleCLCD::queuePresent(void)
+ 			lastLag = iterLag;
+ 			firstPoll = false;
+ 		}
+-		if (ready || ticketError != kIOReturnSuccess || now >= until) { break; }
++		/* j0135: past the bound, keep waiting while the GPU is still completing work */
++		if (ready || ticketError != kIOReturnSuccess || (now >= until && !sweet_fb_still_slow(&slowQueue))) { break; }
+ 		sweet_fb_pause(1000);
+ 	}
+ 	uint64_t ticketNS = 0;
