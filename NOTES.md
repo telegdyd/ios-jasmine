@@ -1,3 +1,12 @@
+### 2026-11-05 ~22:40: j0140 iOS battery percent = PM660 gauge SOC (user: "Yes, do that"); temp-booted, not flashed
+- Why iOS and the charger tool / `batt` disagreed: SweetBattery::pollJasmine published a generic voltage-curve
+  estimate (V - 0.11 Ohm * I, averaged, 1 %/30 s steps) and only logged the gauge SOC (e.g. iOS 16 % vs gauge 7 %;
+  optimistic near empty, likely the "died at 11 %" of 10-27). xnu/patches/j0140-jasmine-battery-gauge-soc.patch
+  publishes fg_soc (curve = fallback if the gauge fails), property SweetBatterySOCFromGauge.
+- Kernel xnu/out-jasmine-batt140 (= j0139 default off + j0140), image shim/out/shim-boot-batt140-tmp.img (scan138
+  cmdline/ADT). Observed: log `-> 8% (gauge 8%)`, `batt` soc 8 %. Status bar not checked by me (no screen access).
+- Phone state: temp boot batt140, display off, charging on USB. boot_b unchanged (needs a slot-b image + user OK).
+
 ### 2026-11-05 ~21:40: power plan item 3 - j0139 PSCI CPU idle (ret / core pc / L2 pc) WORKS on temp boots, default off
 - xnu/patches/j0139-jasmine-cpu-idle-psci.patch (kernel xnu/out-jasmine-idle139g, image shim/out/shim-boot-idle139g-tmp.img
   = scan138 cmdline + jasmine-m7slotb.adt, byte-checked by new tools/g2/tmpimg.sh). User: "Yes, start item 3".
