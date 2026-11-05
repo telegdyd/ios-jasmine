@@ -1,3 +1,13 @@
+### 2026-11-05 ~23:25: j0142 wall check PASS: 120 W Xiaomi charger (DCP) now 1800 mA in, ~+1150 mA into the battery
+- Kernel aicl142 (j0139 off + j0140 + j0141 + j0142), image shim/out/shim-boot-aicl142-tmp.img, temp boot. ABL leaves
+  USBIN 5V/cont AICL thresholds at 0 (we wrote 0x3 before) and AICL options 0xc4.
+- Wall (logs/netlog-aicl142-after-wall.txt, ~11 min, display off): DCP, input limit stayed 1800 mA, AICL status 0xc0,
+  battery +1142..1171 mA (one dip 789) at 3.98 -> 4.13 V. Before (chg141): input 1050, +450 mA. ~2.5x.
+- Gauge SOC went 20 -> 48 % in that time although ~230 mAh (~8 %) went in: the FG SOC re-anchors (jumps), so it is not
+  a reliable coulomb count either; FG temperature 39.3 C in all 22 samples. Guess: the FG is not fully set up under
+  XNU (Linux fg-gen3 loads the battery profile / configures temperature measurement); not verified.
+- Phone: back on the PC (SDP after re-run, +600 mA), temp boot aicl142. boot_b unchanged.
+
 ### 2026-11-05 ~23:05: chg141 wall-charger check (log ring, logs/netlog-chg141-after-wall.txt)
 - Command port over Wi-Fi (192.168.1.186, ping OK 6 ms) never answered, 5140/5141 time out (guess: NECP drops
   inbound to kernel sockets; not investigated). tools/g2/wifiwatch.py polled; logs/wallcharge-chg141.txt.
