@@ -1,0 +1,254 @@
+Subject: [PATCH] jasmine-j0136: modem and USB poll loops back off when idle
+
+Idle census 2026-11-05 (research/cpu-idle-20261105): modem_watch (glink + Wi-Fi radio) and
+sweet_usb's ud_thread each slept 1 ms per iteration forever, 2000 wakeups/s together,
+44 + 28 ms/s CPU on a still home screen, and no deep idle for the CPUs.
+
+modem_watch: time is now real (mach_absolute_time) instead of counted iterations, so the
+g_ms timeouts stay right with longer steps. It polls every 1 ms while glink or Wi-Fi
+counters move, frames are queued, or a bring-up / scan / join / leave / cap retry is
+pending, and during the first 30 s; after 50 ms of quiet every modem_idle_ms (default
+5, 0 = old behaviour). topaz_wlan_transmit wakes a long sleep at once. The 60 s "modem
+alive" line now also prints polls (idle polls).
+
+ud_thread: 1 ms while a transmit is in flight or queued (its completion event starts the
+next one) or events came in the last 100 ms, else every sweetusb_idle_ms (default 5,
+0 = old behaviour). The 30 s / 300 s link checks are time based.
+
+Command port: `idlepoll` shows both steps, `idlepoll MODEM_MS USB_MS` sets them at run time
+(0 = every 1 ms as before, for A/B on one boot; the boot command line has no room left).
+
+
+A/B on one boot (research/cpu-idle-20261105/ab1-*, ab2-*): kernel_task 134 -> ~80-90 ms/s at
+idle; USB ping 1 -> 3 ms average (a packet after quiet waits for the next 5 ms poll); Wi-Fi
+ping 5-9 ms either way (noise larger than the difference).
+---
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -24,6 +24,8 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOMemoryDescriptor.h>
+ #include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <kern/clock.h>
+ #include <pexpert/pexpert.h>
+ #include <libkern/crc.h>
+ #include <sys/param.h>
+@@ -7015,6 +7017,8 @@
+ static volatile uint32_t etxq_head, etxq_tail;
+ static IOSimpleLock *etxq_lock;
+ 
++static void mw_kick(void);                  /* j0136, below */
++
+ bool
+ topaz_wlan_transmit(const uint8_t *frame, size_t length)
+ {
+@@ -7034,6 +7038,7 @@
+ 	if (!ok) {
+ 		tx_drop++;
+ 	}
++	mw_kick();                                  /* j0136: the watch loop may be in a long sleep */
+ 	return ok;
+ }
+ 
+@@ -7320,6 +7325,46 @@
+ 
+ extern "C" void sweet_poll_thread_to_e(bool *on_e);     /* osfmk/kern/sched_prim.c, j0120 */
+ 
++/*
++ * j0136: the watch loop polls every 1 ms only while something is going on (glink messages, Wi-Fi
++ * frames, queued transmits, bring-up, scans, joins, leaves, the first 30 s); after 50 ms of quiet it
++ * polls every modem_idle_ms (default 5; 0 = always 1 ms as before). A Wi-Fi transmit wakes it at once.
++ */
++extern "C" { unsigned sweet_modem_idle_ms = 5; }     /* `idlepoll` on the command port */
++#define mw_idle_ms sweet_modem_idle_ms
++static int mw_chan;
++static volatile bool mw_sleeping_long;
++static uint32_t mw_polls, mw_idle_polls;
++
++static void
++mw_kick(void)
++{
++	if (mw_sleeping_long) {
++		thread_wakeup((event_t)&mw_chan);
++	}
++}
++
++static bool
++mw_busy(void)
++{
++	if (etxq_head != etxq_tail || api_scan_asked || scanning || w_cap_retry_ms != 0) {
++		return true;
++	}
++	if (w_off_asked && !w_off_done) {
++		return true;
++	}
++	if (ce_up && (!api_ready || (s_state != S_IDLE && s_state != S_UP))) {
++		return true;
++	}
++	return false;
++}
++
++static uint32_t
++mw_activity(void)
++{
++	return g_rx_msgs + g_tx_msgs + rx_data + tx_done + tx_sent + htt_msdus + etxq_tail;
++}
++
+ static void
+ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ {
+@@ -7340,7 +7385,12 @@
+ 	}
+ 	bool glink = false;
+ 	bool on_e = false;
+-	for (unsigned ms = 0; seconds == 0 || ms < seconds * 1000; ms++) {
++	bool said3 = false, said20 = false;
++	unsigned next_alive = 60000, quiet_since = 0;
++	uint32_t act_last = 0;
++	uint64_t t0 = mach_absolute_time();
++	(void)PE_parse_boot_argn("modem_idle_ms", &mw_idle_ms, sizeof(mw_idle_ms));
++	for (unsigned ms = 0; seconds == 0 || ms < seconds * 1000;) {
+ 		sweet_poll_thread_to_e(&on_e);
+ 		if (mss_stopping) {
+ 			break;                          /* topaz_modem_stop: the reboot takes it from here */
+@@ -7355,11 +7405,15 @@
+ 			glink_poll(part, ms);
+ 			radio_poll(ms);
+ 		}
+-		if (glink && (ms == 3000 || ms == 20000)) {
++		if (glink && ((ms >= 3000 && !said3) || (ms >= 20000 && !said20))) {
++			said20 = ms >= 20000;
++			said3 = true;
+ 			glink_summary();                /* early, before the iOS UI covers the console */
+ 		}
+-		if (glink && ms % 60000 == 0 && ms != 0) {
+-			LOG("t=%u ms: modem alive: slave-kernel %08x, glink rx %u msgs, diag cntl %u", ms, sk_last, g_rx_msgs, diag_q_cntl);
++		if (glink && ms >= next_alive) {
++			next_alive += 60000;
++			LOG("t=%u ms: modem alive: slave-kernel %08x, glink rx %u msgs, diag cntl %u; polls %u (%u idle)", ms, sk_last,
++			    g_rx_msgs, diag_q_cntl, mw_polls, mw_idle_polls);
+ 		}
+ 		if (in == NULL) {
+ 			uint32_t sz = 0;
+@@ -7418,7 +7472,30 @@
+ 			}
+ 			ipa_last = v;
+ 		}
+-		IOSleep(1);
++		/* j0136: next poll in 1 ms while busy, else in mw_idle_ms (a Wi-Fi transmit wakes it) */
++		uint32_t act = mw_activity();
++		if (act != act_last || mw_busy() || !glink || ms < 30000) {
++			act_last = act;
++			quiet_since = ms;
++		}
++		unsigned step = (mw_idle_ms > 1 && ms - quiet_since >= 50) ? mw_idle_ms : 1;
++		mw_polls++;
++		if (step > 1) {
++			uint64_t deadline;
++			mw_idle_polls++;
++			clock_interval_to_deadline(step, NSEC_PER_MSEC, &deadline);
++			mw_sleeping_long = true;
++			if (etxq_head == etxq_tail) {          /* (a frame queued in between: at most one step late) */
++				(void)assert_wait_deadline((event_t)&mw_chan, THREAD_UNINT, deadline);
++				(void)thread_block(THREAD_CONTINUE_NULL);
++			}
++			mw_sleeping_long = false;
++		} else {
++			IOSleep(1);
++		}
++		uint64_t ns;
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		ms = (unsigned)(ns / NSEC_PER_MSEC);
+ 	}
+ 	LOG("watch done: slave-kernel %08x, %s", sk_last, ready ? "READY" : "NOT ready");
+ 	if (glink) {
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1296,15 +1296,27 @@
+ extern int sweet_poll_e;
+ extern int sweet_console_muted;                     /* osfmk/console/serial_console.c */
+ 
++unsigned sweet_usb_idle_ms = 5;                 /* j0136 */
++extern unsigned sweet_modem_idle_ms;            /* iokit/Kernel/arm/TopazModem.cpp (j0136) */
++
+ static void
+ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+-	uint32_t ticks = 0;
++	/*
++	 * j0136: poll every 1 ms while events came in the last 100 ms or a transmit is in flight or
++	 * queued (its completion starts the next one), else every sweetusb_idle_ms (default 5;
++	 * 0 = always 1 ms as before; `idlepoll` on the command port changes it).
++	 */
++#define idle_ms sweet_usb_idle_ms
++	uint32_t checks = 0;
++	uint64_t now_ms = 0, last_event_ms = 0, next_check_ms = 30000, t0 = mach_absolute_time();
+ 	bool on_e = false;
++	(void)PE_parse_boot_argn("sweetusb_idle_ms", &sweet_usb_idle_ms, sizeof(sweet_usb_idle_ms));
+ 	for (;;) {
+ 		sweet_poll_thread_to_e(&on_e);
+ 		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
+ 		if (count) {
++			last_event_ms = now_ms;
+ 			ud_sync(UD_EVT, UD_EVT_SIZE);
+ 			for (uint32_t done = 0; done < count; done += 4) {
+ 				uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
+@@ -1320,9 +1332,10 @@
+ 			ud_net_check_now = false;
+ 			(void)ud_net_check(true);
+ 		}
+-		if ((++ticks % 30000) == 0) {
++		if (now_ms >= next_check_ms) {
++			next_check_ms += 30000;
+ 			uint32_t net = ud_net_check(true);
+-			if (net != 0x1f || (ticks % 300000) == 0) {
++			if (net != 0x1f || (++checks % 10) == 0) {
+ 				printf("SWEET USB: ue0 IPv4 state %#x (0x1f all ok), %u repairs\n", net, ud_net_repairs);
+ 			}
+ 			uint32_t dsts = dwc_rd(DSTS);
+@@ -1333,8 +1346,13 @@
+ 			    ud.dev_events[1], ud.dev_events[2], ud.dev_events[3], ud.dev_events[4], ud.dev_events[6], ud.dev_events[9],
+ 			    ud.dev_events[11]);
+ 		}
+-		ud_sleep_ms(1);
++		bool busy = ud.tx_busy || ud.txq_count > 0 || ud_net_check_now || now_ms - last_event_ms < 100;
++		ud_sleep_ms(busy || idle_ms <= 1 ? 1 : idle_ms);
++		uint64_t ns;
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		now_ms = ns / NSEC_PER_MSEC;
+ 	}
++#undef idle_ms
+ }
+ 
+ /*
+@@ -1965,6 +1983,27 @@
+ 		if (prof == NULL && !reboot && (strcmp(line, "pollE 0") == 0 || strcmp(line, "pollE 1") == 0)) {
+ 			sweet_poll_e = line[6] - '0';           /* j0120: the polling threads follow on their next poll */
+ 			prof = sweet_poll_e ? "OK polling threads to the E cluster\n" : "OK polling threads unbound\n";
++		} else if (prof == NULL && !reboot && strncmp(line, "idlepoll", 8) == 0) {
++			/* j0136: `idlepoll` shows, `idlepoll MODEM_MS USB_MS` sets the idle poll steps (0 or 1 = every 1 ms) */
++			static char idle_reply[96];
++			unsigned m = sweet_modem_idle_ms, u = sweet_usb_idle_ms;
++			const char *p = line + 8;
++			if (*p == ' ') {
++				m = 0;
++				for (p++; *p >= '0' && *p <= '9'; p++) {
++					m = m * 10 + (unsigned)(*p - '0');
++				}
++				if (*p == ' ') {
++					u = 0;
++					for (p++; *p >= '0' && *p <= '9'; p++) {
++						u = u * 10 + (unsigned)(*p - '0');
++					}
++				}
++				sweet_modem_idle_ms = m > 100 ? 100 : m;
++				sweet_usb_idle_ms = u > 100 ? 100 : u;
++			}
++			snprintf(idle_reply, sizeof(idle_reply), "OK idle poll: modem %u ms, usb %u ms\n", sweet_modem_idle_ms, sweet_usb_idle_ms);
++			prof = idle_reply;
+ 		} else if (prof == NULL && !reboot && (strcmp(line, "fbcon 0") == 0 || strcmp(line, "fbcon 1") == 0)) {
+ 			sweet_console_muted = line[6] == '0';   /* j0120: kernel console drawn into the boot framebuffer or not */
+ 			prof = sweet_console_muted ? "OK console no longer drawn\n" : "OK console drawn\n";

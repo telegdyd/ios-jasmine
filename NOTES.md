@@ -1,3 +1,21 @@
+### 2026-11-05 ~20:00: j0136 idle poll backoff (modem + USB loops), temp-booted; Wi-Fi scan slowness diagnosed
+- xnu/patches/j0136-jasmine-idle-poll-backoff.patch: modem_watch and sweet_usb ud_thread poll every 1 ms only while
+  busy (traffic, queued tx, bring-up/scan/join/leave, first 30 s), else every 5 ms; Wi-Fi transmit wakes the modem
+  loop. Loop time is real (mach_absolute_time). Command port `idlepoll [MODEM_MS USB_MS]` (0 = old 1 ms behaviour);
+  boot-args modem_idle_ms / sweetusb_idle_ms exist but the cmdline is full (592/607).
+- Builds: idle136 (first version, modem 10 ms), idle136b (+ idlepoll, USB 5 ms / 100 ms hold; image
+  shim/out/shim-boot-idle136b-tmp.img = slow135 recipe + jasmine-m7slotb.adt, verified byte-identical recipe),
+  idle136c = final patch (modem default 5 ms), built, NOT booted (differs from idle136b only in that default).
+- Phone: temp-booted idle136b at ~19:40, set to `idlepoll 5 5`. Boot OK, Wi-Fi joined (lease 192.168.1.186), USB fine,
+  no faults seen in logs/netlog-idle136c.txt.
+- A/B same boot (research/cpu-idle-20261105/ab1-*, ab2-*, ab.sh): kernel_task 134-135 ms/s (old) -> 80-94 (new);
+  modem thread 44 -> ~10, USB thread 28 -> <5. USB ping avg 1 -> 3 ms; Wi-Fi ping 5-9 ms old vs 7-9 new (noise from
+  post-boot daemons, trustd/accessoryupdater/dasd up to 500 ms/s, larger than the difference).
+- Wi-Fi scanning slow (user): scan_send_start always sends a passive scan of all 37 channels (150 ms dwell, max rest
+  500 ms when associated) = ~9.5 s per scan (log: STARTED 63.8 s -> done 73.2 s) and ignores wifid's SCAN_REQ
+  (e.g. "2 channels, 110 ms on each"). Fix ideas, not done: honor the requested channels/dwell, active scan on
+  non-DFS channels (2.4 GHz, 5180-5240), shorter rest while associated.
+
 ### 2026-11-05 ~19:00: idle CPU census (home screen, display on, USB charging; observation only, nothing changed)
 - `prof.py fetch` 20 s at 2 ms (research/cpu-idle-20261105/idle1.*, report1.txt; kernel slow135, libs ycc152).
   Total ~580 ms/s of 8000 (Silver 361, Gold 216). backboardd 236 (display thread 130: vsync_callback ->
