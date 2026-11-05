@@ -1,3 +1,19 @@
+### 2026-11-05 ~23:45: fuel gauge diagnosis started (user: "Fix the gauge"); read-only, nothing written
+- Live reads (`spmi 0 ADDR N`, aicl142 boot): BATT_INFO BATT_TEMP 0x4150 = e1 04 (312.25 K = 39.1 C), unchanged;
+  BATT_TEMP_CFG 0x4156 = 0x20, TMPR_INTR 0x4159 = 01, THERM_C1..C3 0x415c = 9d 50 ff, half range 0x6e (no therm
+  coeffs in the stock DT, so these are HW/ABL values). RRADC 0x4570 BATT_THERM ctrl 01 sts 80 cfg 81 data 0x0181
+  (/4 = 96 K: not a plain 0.25 K value on PM660, or stale), freq 00; SKIN 0x4550 = 0x04fc.
+- FG algorithm runs: MEM_IF beat count 0x4457 0x0c -> 0x0e; MEM_INTF_CFG 0x4450 = 0x20 (IACS_SLCT left set, no
+  access request), IMA_CTL 0x40, OPR_STS 0, ERR 0, DMA_STS 0x04; **MEM_IF INT_RT_STS 0x4410 = 0x02 (mem-xcp)**.
+  BATT_SOC 0x4006 ALG_STS 0x80, MSOC 0x85 0x85.
+- Stock fg-gen3 at probe (qpnp-fg-gen3.c): battery ID via RRADC -> profile from DT (sunwoda 68k / coslight 100k,
+  224 bytes at SRAM word 24, integrity word 79 bit0), FG restart, then cutoff 3400 mV, term currents 200/300 mA,
+  recharge 4340 mV, jeita 0/15/45/60, ESR timers, therm/temp-delta config. Under XNU none of this runs; the charge
+  shell's mainline pmi8998_fg does not load a profile either. Guess: FG has no / a stale profile -> SOC jumps;
+  temperature cause still unknown.
+- Next (needs IMA SRAM access = writes to MEM_IF regs): read-only SRAM dump of word 79 + profile area + battery ID;
+  then (user OK, it changes PMIC state) load the matching stock profile + FG restart as fg-gen3 does.
+
 ### 2026-11-05 ~23:25: j0142 wall check PASS: 120 W Xiaomi charger (DCP) now 1800 mA in, ~+1150 mA into the battery
 - Kernel aicl142 (j0139 off + j0140 + j0141 + j0142), image shim/out/shim-boot-aicl142-tmp.img, temp boot. ABL leaves
   USBIN 5V/cont AICL thresholds at 0 (we wrote 0x3 before) and AICL options 0xc4.
