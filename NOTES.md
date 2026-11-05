@@ -7,10 +7,14 @@
   Home A -/36.1 (detach1 home-a 0.5 = known first-phase artifact, as in fb-base1/2) vs 37.7/38.5;
   Home B 35.9/36.5 vs 38.3/38.8; CC A 30.3/29.2 vs 33.1/33.9; CC B 29.4/29.5 vs 32.6/34.0;
   Spotlight repeat 26.7/27.4 vs 23.9/27.4 (noisy, unchanged). CC median 31.6-32.3 ms (M11: 27.3-28.3).
-- Still above m9ubwc9 (Home B 30.8, CC 28.2-28.4). Candidates (not measured): CA_DISABLE_DETACHED=1 (more
-  compositing in backboardd), dump146 lib changes (FORCE_1X/MAX_BINDINGS/Clear fixes + sampler hooks), kernel
-  slow135 bounds. Cheapest isolation: one framebench with CA_DISABLE_DETACHED removed (restart backboardd, Maps
-  breaks meanwhile), then with the m11fb1 libs.
+- Still above m9ubwc9 (Home B 30.8, CC 28.2-28.4). User: the drop is most likely the stock apps installed since
+  (32 system apps restored, more background load); do NOT turn things off to bisect it.
+- Verified no optimization rolled back: phone readback bb AND poster libbgair b1f1cfde / libbgmtl 23246229 =
+  xnu/out-mesa-dump146 (built 12:52 from a Metal tree containing 45edcb3 M9 UBWC, 16236a1 M10 alias, d0aaa02 M10
+  B/C, 4213986 M11 barrier; linear history). Metal diff 4213986..HEAD touches none of their code or off switches
+  (removed lines = MAX_BINDINGS/forwarding-signature/env refactors). bb env has BGMTL_ASYNC=1 + BGMTL_UBWC=1 and no
+  off switch (BGMTL_LINEAR_ALIAS=0 / BGMTL_UNLOCKED_UPLOAD=0 / RWA_FB_BARRIER_UBWC=0 absent). DDR scaling on.
+  research/metal-m8/install.py still says INSTALLED m11fb1 (stale; its guard would refuse the next install).
 
 ### 2026-11-05 ~13:30: Maps black map FIXED by CA_DISABLE_DETACHED=1 in bgmtl-bb.env (user: "you just solved it")
 - Fix: /private/var/tmp/bgmtl-bb.env = `BGMTL_ASYNC=1
