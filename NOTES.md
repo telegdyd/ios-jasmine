@@ -1,3 +1,10 @@
+### 2026-11-06 14:21 local: boot_b = all151 FLASHED (user: "build the image and flash it. Keep cpu sleep off")
+- shim/out/shim-boot-all151-slotb.img = kernel xnu/out-jasmine-exit151c (all patches through j0151: audio
+  j0144-j0150, charger/gauge j0140-j0143, idle poll j0136, PSCI idle j0139 compiled in but default off)
+  + jasmine-m7slotb.adt + shim/out/cmdline-all151-slotb.txt (fg143 cmdline with debug=12 instead of 0xc to fit
+  607 bytes, + adsp=1 abmark=b). Flashed via tools/g2/flash-slotb.sh, rebooted 14:21:39. User asked for no
+  checks: first-boot log logs/netlog-all151-slotb.txt (30 s) not reviewed. Rollback: shim-boot-ui128-slotb.img.
+
 ### 2026-11-06 ~14:00 local: SpringBoard restart on first unlock = iOS ROOT FULL (17 GiB HFS, 1.4 MiB free) - FIXED
 - User: after boot, the first unlock "crashes SpringBoard" once, then unlock works. Not caused by audio
   (same pid 26 -> new SpringBoard in the 12:50/12:56 boots and idle139g).
