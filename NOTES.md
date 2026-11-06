@@ -1,3 +1,20 @@
+### 2026-11-06 16:33 local: boot_b = usb156 FLASHED - USB controller, PHY and clocks off while unplugged (power plan item 8)
+- xnu/patches/j0156-jasmine-usb-off-unplugged.patch (bsd/dev/sweet_usb.c). Before: ud_thread read GEVNTCOUNT every 5 ms
+  (200 wakeups/s) plugged or not, controller, QUSB2 PHY and clocks always on.
+- Now, as Linux dwc3-msm low power with no cable: 500 ms after the charger ends the VBUS session, function reset, Run/Stop
+  off (events acked until halted), QUSB2 PORT_POWERDOWN |= POWER_DOWN, CBCRs off: mock utmi, master, aggre2 axi,
+  cfg-noc axi, clkref (the PHY's CXO reference). GDSC, sleep clock, ahb2phy and the RPM supplies stay on (APSD).
+  ud_thread then sleeps on the VBUS state (10 s fallback). VBUS on: clocks on, usb_phy_init (the boot PHY sequence,
+  now its own function), ud_hw_start (soft reset .. run, split out of gadget start), the host enumerates again.
+  sweet_usb_vbus writes QSCRATCH only with the clocks on. Panic-over-USB skips with the clocks off. Not halted
+  within 500 ms: Run/Stop back on and power-down off for the session. sweetusb_lp=0: as before.
+- Checked: temp boot usb156 (all151-slotb cmdline + ADT): boot APSD re-run cycle, `usb vbusoff 10`, and a real
+  unplug ~30 s + replug (user): down in 13-20 us, up in 2.6-3.4 ms, PLL locked, bus reset, NCM configured, DHCP,
+  log + command ports back; charger SDP after the APSD re-run as before. Master CBCR 0x8000c220 / clkref
+  0x80000002 when off. Flashed shim/out/shim-boot-usb156-slotb.img (= temp image); first boot same. Rollback:
+  irq155-slotb. Power not measured (at the end). Next: Wi-Fi screen-off behaviour, then system sleep.
+- Seen: after a link drop the live log port can take ~1 min to accept again (old TCP connection still open).
+
 ### 2026-11-06 16:02 local: boot_b = irq155 FLASHED - touch and keys on interrupts (power plan item 7)
 - xnu/patches/j0155-jasmine-touch-keys-irq.patch. Before: touch thread read the NT36672A over I2C every 10 ms and the
   key thread read PON + PM660L GPIO7 over SPMI every 20 ms, screen on or off (~150 wakeups/s).
