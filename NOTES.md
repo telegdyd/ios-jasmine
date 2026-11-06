@@ -11,7 +11,8 @@
   playing. Two 15 s sweet_beep runs at -14 dBFS: no fault lines, no recovery. First run (t=18 s, right after
   boot) dropped 33600 frames + paused once mid-beep (guess: writer stalled during boot; second run 0 new drops).
 - Not tested: the recovery path (no fault could be induced). 54 C not cross-checked against another sensor.
-- Next: trim j0146 debug output, first-open latency (~0.5 s), microphone (/dev/redwood-mic).
+- Speaker goal reached; stopped here. Possible follow-ups, only if the user asks: trim j0146 debug output,
+  first-open latency (~0.5 s), microphone (/dev/redwood-mic).
 
 ### 2026-11-06 ~16:30: j0149 TAS2557 Tuning Mode (speaker protection) loads; user confirmed iOS UI sounds play
 - User (16:10): UI sounds play through the speaker (plug148 setup, ROM mode).
