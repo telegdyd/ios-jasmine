@@ -1,3 +1,19 @@
+### 2026-11-06 15:34 local: boot_b = pipe154 FLASHED - screen off sleeps the panel and stops the MDP (power plan item 5)
+- User: do the remaining power items without ranking measurements. xnu/patches/j0154-jasmine-display-pipeline-off.patch:
+  jasmine display off = WLED 0, DCS 0x28, 20 ms, 0x10 sleep in, 120 ms, INTF_1 timing engine (0xc96b800) off (stock
+  off-command of qcom,mdss_dsi_nt36672_tianma_fhd_video, the panel ABL names in mdss_mdp.panel=). On: timing engine on
+  before the redraw, 0x11, 120 ms, 0x29, 20 ms, WLED. Supplies/reset untouched. DSI0 (0xc994000, ctrl 0x1f7 = video)
+  command DMA as topaz, buffer = 16 KiB after flip buffer 0 (0x9e5e8000; DMA address is 32 bits). Timing engine only
+  stops if both commands report done. Touch thread (same NT36672 chip) stops polling while off, re-reads the chip id
+  on display on (reset pulse fallback). `sweetfb_pipeoff=0` = old backlight-only off.
+- Checked: temp boot pipe154 (all151-slotb cmdline + ADT): boot's own off/on cycle "done" both ways, touch back; user
+  pressed Power several times: picture and touch come back correctly. Screen off: ddrgov idle-off, bimc 200 MHz vote
+  (no scanout traffic any more). Flashed shim/out/shim-boot-pipe154-slotb.img (kernel xnu/out-jasmine-pipe154 = all
+  through j0154), first boot same lines + CPUIDLE boot mode 3. Rollback: idle152-slotb.
+- Power not measured (user: measure at the end, not per item). Next items: touch/keys on interrupts, USB off when
+  unplugged, Wi-Fi screen-off behaviour, then system sleep. Not done here: panel supplies (LAB/IBB) off, DSI PHY/PLL
+  and MDSS clocks/GDSC off (needs our own DSI PHY init for the way back).
+
 ### 2026-11-06 15:14 local: CPU idle power measured unplugged, screen off: ~25-35 mA less (~11-15 %)
 - xnu/patches/j0153-jasmine-cpu-idle-ab.patch (diagnostic, runs only on command): `cpuidle ab CYCLES SECS [WAIT]`
   alternates WFI and the current idle mode on the phone itself (no USB needed), gauge current averaged per window
