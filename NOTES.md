@@ -1,3 +1,17 @@
+### 2026-11-06 ~14:30: j0147 **SPEAKER MAKES SOUND** (user heard the 1 kHz tone, temp boot tas147b)
+- xnu/patches/j0147-jasmine-tas2557.patch (on j0146, adsp=1): TAS2557 @ I2C6 0x4c bring-up as Xiaomi tas2557-core.c
+  set_program + enable: GPIO77 reset pulse, SW reset, default data, ASI1 16-bit, program "ROM Mode 1" (index 1,
+  no DSP code / no speaker protection), PLL 1, config 4 (48 kHz) pre block; startup + unmute around the tone,
+  shutdown after. Book/page addressing (page 0 reg 127 / reg 0); QUP I2C writes now up to 40 bytes (j_i2c tags 48).
+- **Firmware is NOT in git**: kernel reads /usr/local/share/firmware/tas2557_uCDSP.bin from the iOS root via VFS
+  (copied there with `tools/sweet-fs.py put <vendor_a /firmware/tas2557_uCDSP.bin> /usr/local/share/firmware/...`;
+  done on this phone; on a fresh root it must be copied again). tools/tas2557-fw.py decodes the PPC3 format
+  (3 PLLs, programs Tuning Mode / ROM Mode 1 / FactoryCalibration ROMMode2, 6 configs).
+- tas147b: fw parsed ok, 87 writes 0 I2C errors, safe guard 5a, PWR_CTRL1 f8 CTRL2 a3; tone 30/30 buffers.
+  The "flags" read in tas_power uses B0 P1 R108/109 (wrong: FLAGS_1/2 are B0 P0 R104/R108) - fix later.
+- ROM mode has no speaker protection: keep levels moderate until Tuning Mode (program 0, CRC-checked blocks) is used.
+- Next: /dev/redwood-audio (iOS audio sink) -> ASM stream on the ADSP, amp power with stream start/stop.
+
 ### 2026-11-06 ~13:30: j0146 **AFE SOLVED: our APR header said CMD_RSP**; PCM now flows to PRI_MI2S (amp not set up yet)
 - **Root cause:** APR_HDR_FIELD_CMD was 0x0150 = msg type 1, which is APR_MSG_TYPE_CMD_RSP (msm apr.h: EVENT 0,
   CMD_RSP 1, SEQ_CMD 2, NSEQ_CMD 3). The ADSP executes such packets but never sends APR_BASIC_RSP_RESULT for a

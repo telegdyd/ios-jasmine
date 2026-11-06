@@ -1,0 +1,505 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 14:00:00 +0100
+Subject: [PATCH] j0146: jasmine: AFE bring-up probes (LPASS SMMU fault dump, glink_ssr/fastrpc
+ channels, AFE retries)
+
+---
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -21,6 +21,9 @@
+ #include <kern/thread.h>
+ #include <pexpert/pexpert.h>
+ #include <sys/param.h>
++#include <sys/vnode.h>
++#include <sys/fcntl.h>
++#include <sys/proc.h>
+ 
+ #define LOG(fmt, ...)       IOLog("TopazAudio: " fmt "\n", ##__VA_ARGS__)
+ 
+@@ -1835,7 +1838,7 @@ qup_state(uint32_t state)
+ static int
+ j_i2c(const uint8_t *wbuf, uint32_t wlen, uint8_t *rbuf, uint32_t rlen)
+ {
+-	uint8_t tags[16];
++	uint8_t tags[48];                           /* j0147: up to 40 bytes written (the QUP output FIFO holds 64) */
+ 	uint32_t nt = 0, got = 0, need = rlen ? rlen + 2 : 0;
+ 	int err = 0;
+ 
+@@ -2478,8 +2481,432 @@ j_mi2s_pins(void)
+ #define J_BUF_FRAMES        4800                /* 100 ms */
+ #define J_BUF_BYTES         (J_BUF_FRAMES * 4)
+ 
++/* ---------------------------------------------------------------- TAS2557 smart amp (j0147) */
++
++/*
++ * TI TAS2557 at I2C6 0x4c (reset GPIO 77 active low). Bring-up as Xiaomi's tas2557-core.c
++ * tas2557_set_program + tas2557_enable, with the vendor PPC3 firmware (tas2557_uCDSP.bin, copied to the
++ * iOS root: it is not in git). Program "ROM Mode 1" (no DSP code, no speaker protection) with its
++ * 48 kHz configuration: SW reset, default data, 16-bit ASI, program block, PLL block, config pre +
++ * coeff blocks, then startup + unmute. Registers: book (page 0 reg 127) / page (reg 0) / reg.
++ */
++#define TAS_FW_PATH         "/usr/local/share/firmware/tas2557_uCDSP.bin"
++#define TAS_ADDR            0x4c
++
++static int tas_book = -1, tas_page = -1;
++static uint32_t tas_errs, tas_writes;
++
++static int
++tas_raw_w(uint8_t reg, const uint8_t *d, uint32_t n)
++{
++	uint8_t b[1 + 24];
++	b[0] = reg;
++	memcpy(b + 1, d, n);
++	j_i2c_addr = TAS_ADDR;
++	int r = j_i2c(b, n + 1, NULL, 0);
++	if (r != 0) {
++		tas_errs++;
++	}
++	tas_writes++;
++	return r;
++}
++
++static int
++tas_bp(uint8_t book, uint8_t page)
++{
++	uint8_t z = 0;
++	if (tas_book != book) {
++		if (tas_raw_w(0, &z, 1) != 0 || tas_raw_w(127, &book, 1) != 0) {
++			tas_book = tas_page = -1;
++			return -1;
++		}
++		tas_book = book;
++		tas_page = 0;
++	}
++	if (tas_page != page) {
++		if (tas_raw_w(0, &page, 1) != 0) {
++			tas_page = -1;
++			return -1;
++		}
++		tas_page = page;
++	}
++	return 0;
++}
++
++static int
++tas_w(uint8_t book, uint8_t page, uint8_t reg, const uint8_t *d, uint32_t n)
++{
++	if (tas_bp(book, page) != 0) {
++		return -1;
++	}
++	for (uint32_t k = 0; k < n; k += 24) {
++		if (tas_raw_w((uint8_t)(reg + k), d + k, MIN(24u, n - k)) != 0) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++static int
++tas_w1(uint8_t book, uint8_t page, uint8_t reg, uint8_t v)
++{
++	return tas_w(book, page, reg, &v, 1);
++}
++
++static int
++tas_r(uint8_t book, uint8_t page, uint8_t reg, uint8_t *v)
++{
++	if (tas_bp(book, page) != 0) {
++		return -1;
++	}
++	j_i2c_addr = TAS_ADDR;
++	return j_i2c(&reg, 1, v, 1);
++}
++
++/* the firmware file, read through the VFS once the root is mounted */
++static uint8_t *tas_fw;
++static uint32_t tas_fw_len;
++
+ static bool
+-jas_tone(unsigned seconds, bool amp)
++tas_fw_load(void)
++{
++	vnode_t vp = NULLVP;
++	vfs_context_t ctx = vfs_context_kernel();
++	struct vnode_attr va;
++	int err;
++
++	if (tas_fw != NULL) {
++		return true;
++	}
++	err = vnode_open(TAS_FW_PATH, FREAD, 0, 0, &vp, ctx);
++	if (err != 0) {
++		return false;
++	}
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_data_size);
++	if (vnode_getattr(vp, &va, ctx) != 0 || va.va_data_size < 104 || va.va_data_size > 256 * 1024) {
++		vnode_close(vp, FREAD, ctx);
++		return false;
++	}
++	uint32_t n = (uint32_t)va.va_data_size;
++	uint8_t *b = (uint8_t *)IOMalloc(n);
++	int resid = 0;
++	err = b != NULL ? vn_rdwr(UIO_READ, vp, (caddr_t)b, (int)n, 0, UIO_SYSSPACE, 0, vfs_context_ucred(ctx), &resid,
++	    current_proc()) : ENOMEM;
++	vnode_close(vp, FREAD, ctx);
++	if (err != 0 || resid != 0) {
++		if (b != NULL) {
++			IOFree(b, n);
++		}
++		return false;
++	}
++	tas_fw = b;
++	tas_fw_len = n;
++	return true;
++}
++
++/* firmware parser (tas2557-core.c fw_parse*): find blocks of one program / one configuration / one PLL */
++struct tas_cur { const uint8_t *p, *end; bool bad; };
++
++static uint32_t
++tc_u8(struct tas_cur *c)
++{
++	if (c->p + 1 > c->end) {
++		c->bad = true;
++		return 0;
++	}
++	return *c->p++;
++}
++
++static uint32_t
++tc_u16(struct tas_cur *c)
++{
++	uint32_t a = tc_u8(c);
++	return a << 8 | tc_u8(c);
++}
++
++static uint32_t
++tc_u32(struct tas_cur *c)
++{
++	uint32_t a = tc_u16(c);
++	return a << 16 | tc_u16(c);
++}
++
++static void
++tc_skip(struct tas_cur *c, uint32_t n)
++{
++	if (c->p + n > c->end) {
++		c->bad = true;
++		c->p = c->end;
++	} else {
++		c->p += n;
++	}
++}
++
++static void
++tc_str(struct tas_cur *c)
++{
++	while (c->p < c->end && *c->p != 0) {
++		c->p++;
++	}
++	tc_skip(c, 1);
++}
++
++struct tas_blk { uint32_t type, n; const uint8_t *cmds; };
++#define TAS_MAXBLK 8
++struct tas_data { uint32_t nb; struct tas_blk b[TAS_MAXBLK]; };
++
++static void
++tc_block(struct tas_cur *c, uint32_t drv, struct tas_blk *b)
++{
++	b->type = tc_u32(c);
++	if (drv >= 0x200) {
++		tc_skip(c, 4);                          /* P/Y checksum present + value: not verified here */
++	}
++	b->n = tc_u32(c);
++	b->cmds = c->p;
++	tc_skip(c, 4 * b->n);
++}
++
++static void
++tc_data(struct tas_cur *c, uint32_t drv, struct tas_data *d)
++{
++	tc_skip(c, 64);
++	tc_str(c);
++	uint32_t nb = tc_u16(c);
++	d->nb = 0;
++	for (uint32_t i = 0; i < nb && !c->bad; i++) {
++		struct tas_blk tmp;
++		tc_block(c, drv, d->nb < TAS_MAXBLK ? &d->b[d->nb] : &tmp);
++		if (d->nb < TAS_MAXBLK) {
++			d->nb++;
++		}
++	}
++}
++
++struct tas_sel { struct tas_data prog, conf; struct tas_blk pll; uint32_t rate, mode; bool ok; };
++
++static struct tas_sel
++tas_fw_select(uint32_t want_prog, uint32_t want_conf)
++{
++	struct tas_sel s;
++	struct tas_cur c = { tas_fw, tas_fw + tas_fw_len, false };
++	struct tas_blk plls[8];
++	uint32_t npll, drv, conf_pll = 0;
++
++	bzero(&s, sizeof(s));
++	if (tas_fw_len < 104 || memcmp(tas_fw, "5552", 4) != 0) {
++		return s;
++	}
++	tc_skip(&c, 16);                            /* magic, size, checksum, PPC version */
++	tc_skip(&c, 4);                             /* FW version */
++	drv = tc_u32(&c);                           /* driver version */
++	tc_skip(&c, 4 + 64);                        /* timestamp, DDC name */
++	tc_str(&c);
++	tc_skip(&c, 8);                             /* device family, device */
++	npll = tc_u16(&c);
++	for (uint32_t i = 0; i < npll && !c.bad; i++) {
++		tc_skip(&c, 64);
++		tc_str(&c);
++		struct tas_blk tmp;
++		tc_block(&c, drv, i < 8 ? &plls[i] : &tmp);
++	}
++	uint32_t nprog = tc_u16(&c);
++	for (uint32_t i = 0; i < nprog && !c.bad; i++) {
++		tc_skip(&c, 64);
++		tc_str(&c);
++		uint32_t mode = tc_u8(&c);
++		tc_skip(&c, 2);
++		struct tas_data d;
++		tc_data(&c, drv, &d);
++		if (i == want_prog) {
++			s.prog = d;
++			s.mode = mode;
++		}
++	}
++	uint32_t nconf = tc_u16(&c);
++	bool found = false;
++	for (uint32_t i = 0; i < nconf && !c.bad; i++) {
++		tc_skip(&c, 64);
++		tc_str(&c);
++		if (drv >= 0x300 || (drv >= 0x101 && drv < 0x200)) {
++			tc_skip(&c, 2);
++		}
++		uint32_t prog = tc_u8(&c), pll = tc_u8(&c), rate = tc_u32(&c);
++		if (drv >= 0x400) {
++			tc_skip(&c, 5);
++		}
++		struct tas_data d;
++		tc_data(&c, drv, &d);
++		if (i == want_conf) {
++			s.conf = d;
++			s.rate = rate;
++			conf_pll = pll;
++			found = prog == want_prog;
++		}
++	}
++	if (!c.bad && found && conf_pll < npll && conf_pll < 8 && want_prog < nprog) {
++		s.pll = plls[conf_pll];
++		s.ok = true;
++	}
++	LOG("tas2557 fw: %u bytes, driver %#x, %u PLLs %u programs %u configs; program %u (mode %u, %u blocks) config %u "
++	    "(%u Hz, PLL %u, %u blocks): %s", tas_fw_len, drv, npll, nprog, nconf, want_prog, s.mode, s.prog.nb, want_conf,
++	    s.rate, conf_pll, s.conf.nb, s.ok ? "ok" : "PARSE FAILED");
++	return s;
++}
++
++/* tas2557_load_block, without the CRC verification */
++static int
++tas_block(const struct tas_blk *b)
++{
++	const uint8_t *d = b->cmds;
++	uint32_t i = 0;
++	while (i < b->n) {
++		const uint8_t *p = d + 4 * i;
++		uint8_t bk = p[0], pg = p[1], off = p[2], v = p[3];
++		i++;
++		if (off <= 0x7F) {
++			if (tas_w(bk, pg, off, &v, 1) != 0) {
++				return -1;
++			}
++		} else if (off == 0x81) {
++			IOSleep((bk << 8) + pg);
++		} else if (off == 0x85) {
++			uint32_t len = (bk << 8) + pg;
++			if (i >= b->n) {
++				return -1;
++			}
++			const uint8_t *q = d + 4 * i;
++			if (len > 1 && 4 * i + 3 + len > 4 * b->n) {
++				return -1;
++			}
++			if (tas_w(q[0], q[1], q[2], q + 3, len > 1 ? len : 1) != 0) {
++				return -1;
++			}
++			i++;
++			if (len >= 2) {
++				i += ((len - 2) / 4) + 1;
++			}
++		}
++	}
++	return 0;
++}
++
++static int
++tas_data_blocks(const struct tas_data *d, uint32_t type)
++{
++	for (uint32_t i = 0; i < d->nb; i++) {
++		if (d->b[i].type == type && tas_block(&d->b[i]) != 0) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++/* {book, page, reg, value}; reg 0xff = delay value * 256 us */
++static void
++tas_seq(const uint8_t (*s)[4], unsigned n)
++{
++	for (unsigned i = 0; i < n; i++) {
++		if (s[i][2] == 0xff) {
++			IODelay(s[i][3] * 256u);
++		} else {
++			(void)tas_w1(s[i][0], s[i][1], s[i][2], s[i][3]);
++		}
++	}
++}
++
++static const uint8_t tas_startup[][4] = {
++	{ 0, 1, 77, 0x15 },     /* GPI: DIN, MCLK, CCI */
++	{ 0, 1, 61, 0x01 },     /* GPIO1 = BCLK */
++	{ 0, 1, 62, 0x01 },     /* GPIO2 = WCLK */
++	{ 0, 0, 5, 0xA0 },      /* Class-D, boost up */
++	{ 0, 0, 5, 0xA3 },      /* + IV sense */
++	{ 0, 0, 4, 0xF8 },      /* PLL, DSP, dividers up */
++	{ 0, 0, 0xff, 8 },      /* ~2 ms */
++	{ 0, 0, 44, 0x2b },     /* clock error detection */
++};
++static const uint8_t tas_unmute[][4] = { { 0, 0, 7, 0x00 }, { 100, 0, 7, 0x00 } };
++static const uint8_t tas_shutdown[][4] = {
++	{ 0, 0, 44, 0x00 }, { 100, 0, 7, 0x01 }, { 0, 0, 0xff, 40 }, { 0, 0, 7, 0x03 }, { 0, 0, 4, 0x60 },
++	{ 0, 0, 0xff, 8 }, { 0, 0, 5, 0x00 }, { 0, 0, 4, 0x00 }, { 0, 1, 61, 0x00 }, { 0, 1, 62, 0x00 }, { 0, 1, 77, 0x00 },
++};
++
++static bool tas_loaded;
++
++/* program + configuration (device stays powered down); waits up to wait_ms for the root file system */
++static bool
++tas_setup(uint32_t prog, uint32_t conf, unsigned wait_ms)
++{
++	for (unsigned t = ms(); !tas_fw_load() && ms() - t < wait_ms;) {
++		for (unsigned w = ms(); ms() - w < 1000;) {
++			if (!glink_poll()) {
++				IOSleep(5);
++			}
++		}
++	}
++	if (tas_fw == NULL) {
++		LOG("tas2557: %s not readable (copy it to the root: tools/sweet-fs.py put)", TAS_FW_PATH);
++		return false;
++	}
++	struct tas_sel s = tas_fw_select(prog, conf);
++	if (!s.ok) {
++		return false;
++	}
++	tas_errs = tas_writes = 0;
++	j_gpio_out(77, false);                      /* hw reset */
++	IOSleep(5);
++	j_gpio_out(77, true);
++	IOSleep(2);
++	tas_book = tas_page = -1;
++	(void)tas_w1(0, 0, 1, 0x01);                /* SW reset */
++	IOSleep(1);
++	tas_book = tas_page = -1;
++	uint8_t rev = 0;
++	int rr = tas_r(0, 0, 3, &rev);
++	(void)tas_w1(0, 0, 21, 0x05);               /* default data: SAR ADC */
++	(void)tas_w1(0, 0, 45, 0x21);
++	(void)tas_w1(0, 0, 46, 0x21);
++	(void)tas_w1(0, 0, 37, 0x5a);               /* safe guard pattern */
++	uint8_t fmt = 0;
++	(void)tas_r(0, 1, 1, &fmt);                 /* ASI1 DAC format: 16-bit (bits 4:3 = 0), DOUT tri-state (bit 0) */
++	(void)tas_w1(0, 1, 1, (uint8_t)((fmt & ~0x18u) | 0x01));
++	int pr = tas_data_blocks(&s.prog, 0x01);     /* PGM_DEV_A */
++	int pl = tas_block(&s.pll);
++	int cp = tas_data_blocks(&s.conf, 0x04);     /* CFG_PRE_DEV_A */
++	int cc = tas_data_blocks(&s.conf, 0x03);     /* CFG_COEFF_DEV_A */
++	uint8_t sg = 0, spk = 0;
++	(void)tas_r(0, 0, 37, &sg);
++	(void)tas_r(0, 0, 6, &spk);
++	LOG("tas2557: rev/pgid %02x (%d), program %d PLL %d config pre %d coeff %d; %u writes %u errors; safe guard %02x, "
++	    "SPK_CTRL %02x", rev, rr, pr, pl, cp, cc, tas_writes, tas_errs, sg, spk);
++	tas_loaded = pr == 0 && pl == 0 && cp == 0 && cc == 0 && tas_errs == 0 && sg == 0x5a;
++	return tas_loaded;
++}
++
++static void
++tas_power(bool on)
++{
++	if (!tas_loaded) {
++		return;
++	}
++	if (on) {
++		tas_seq(tas_startup, sizeof(tas_startup) / sizeof(tas_startup[0]));
++		tas_seq(tas_unmute, sizeof(tas_unmute) / sizeof(tas_unmute[0]));
++		uint8_t p1 = 0, p2 = 0, st1 = 0, st2 = 0;
++		(void)tas_r(0, 0, 4, &p1);
++		(void)tas_r(0, 0, 5, &p2);
++		(void)tas_r(0, 1, 108, &st1);           /* FLAGS_1 / FLAGS_2 (B0 P1 R0x6c/0x6d) */
++		(void)tas_r(0, 1, 109, &st2);
++		LOG("tas2557: powered up: PWR_CTRL1 %02x CTRL2 %02x flags %02x %02x (%u errors)", p1, p2, st1, st2, tas_errs);
++	} else {
++		tas_seq(tas_shutdown, sizeof(tas_shutdown) / sizeof(tas_shutdown[0]));
++		LOG("tas2557: shut down");
++	}
++}
++
++static bool
++jas_tone(unsigned seconds, int amp)
+ {
+ 	uint64_t pa = 0;
+ 	uint32_t bytes = (J_BUFS * J_BUF_BYTES + 0xfff) & ~0xfffu;
+@@ -2545,8 +2972,10 @@ jas_tone(unsigned seconds, bool amp)
+ 			goto close_adm;
+ 		}
+ 	}
+-	if (amp) {
++	if (amp == 0) {
+ 		(void)tfa_start();
++	} else if (amp == 1) {
++		tas_power(true);
+ 	}
+ 	{
+ 		uint32_t sent = 0, want = seconds * 10;     /* 100 ms buffers */
+@@ -2574,7 +3003,10 @@ jas_tone(unsigned seconds, bool amp)
+ 		LOG("t=%u.%03u tone: end, %u sent, %u done, %u underruns -> %s", T, sent, asm_done, asm_underruns,
+ 		    ok ? "the ADSP consumed PCM" : "NOTHING consumed");
+ 	}
+-	if (amp) {
++	if (amp == 1) {
++		tas_power(false);
++	}
++	if (amp == 0) {
+ 		tfa_stop();
+ 	}
+ close_adm:
+@@ -2605,6 +3037,9 @@ jas_speaker(void)
+ 	(void)lpass_smmu_faults("at q6core ready");
+ 	amp = j_i2c_init() ? amp_probe() : -1;
+ 	LOG("speaker: amplifier %s", amp == 0 ? "TFA98xx @34" : amp == 1 ? "TAS2557 @4c" : amp == 2 ? "MAX98927 @3a" : "not found");
++	if (amp == 1 && !tas_setup(1, 4, 60000)) {      /* ROM Mode 1, 48 kHz */
++		LOG("speaker: TAS2557 setup failed; the tone will be silent");
++	}
+ 	j_mi2s_pins();
+ 	srn_register();
+ 	for (unsigned t = ms(); srn_state != SRN_UP && ms() - t < 20000;) {
+@@ -2722,7 +3157,7 @@ jas_speaker(void)
+ 		return;
+ 	}
+ 	if (tone != 0) {
+-		(void)jas_tone(MIN(tone, 10u), amp == 0);
++		(void)jas_tone(MIN(tone, 10u), amp);
+ 	} else if (amp == 0) {
+ 		bool up = tfa_start();
+ 		LOG("tfa: bypass start %s (no tone: adsp_tone=0)", up ? "OK" : "FAILED");
