@@ -1,0 +1,432 @@
+Subject: [PATCH] jasmine-j0152: CPU idle on by default; broadcast follows the earliest sleeper, wakes early by exit latency
+
+j0139's PSCI idle states woke timers up to 1.7 ms late: the QTimer broadcast SPI went to
+one Silver core, which first had to leave its own core / L2 power collapse and then IPI
+the sleeper, which had its own exit latency on top. Now (as Linux's tick broadcast with
+CLOCK_EVT_FEAT_DYNIRQ plus the stock lpm-levels latencies):
+- the SPI is routed to the sleeper whose wake is earliest (GICD_IROUTER, disabled while
+  moved), so the GIC wakes it directly;
+- the broadcast fires the state's exit latency early (stock sdm660 DT: Gold pc 324 us,
+  L2 pc 1654 us; Silver pc 376 us, L2 pc 2118 us); when a cluster's last core takes the
+  L2 down, every sleeper there is fired the L2 exit latency early;
+- states are picked by the stock min residencies: WFI below the ret residency (no SMC),
+  core pc from 621 / 666 us, L2 pc only when the cluster's earliest wake is 2294 / 2918 us
+  away (`cpuidle MODE PC_US` still sets a larger pc floor; 0 = stock);
+- the boot CPU may collapse too (mask 0xFF), so the Gold L2 can go down;
+- per-CPU "late max" / ">1 ms" counters measure how late a core runs after the timer it
+  slept for; reroute count and route in the status line.
+
+Default on: `sweetidle=N` (default 3 = ret + core pc + L2 pc, 0 = WFI only), set by a
+kernel thread 30 s after SweetPlatformExpert starts, once every CPU is registered.
+---
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -32,6 +32,7 @@ extern "C" uint32_t sweet_gold_clock(void);
+ extern "C" void topaz_modem_stop(bool panic);
+ /* osfmk/arm64/sweet_osm.c: Gold clock via OSM + CPRh (sweetosm=) */
+ extern "C" void sweet_osm_init(void);
++extern "C" void sweet_cpuidle_boot(void);
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -257,6 +258,7 @@ SweetPlatformExpert::start(IOService *provider)
+ 	 * lets the other drivers start: SweetBattery and AppleCLCD look for them.
+ 	 */
+ 	sweet_osm_init();               /* sweetosm=: OSM/CPRh probe, before sweetgold changes anything */
++	sweet_cpuidle_boot();           /* j0152: PSCI CPU idle (sweetidle=, default 3) 30 s later */
+ 	(void)sweet_gold_clock();       /* sweetgold=: Gold cluster off GPLL0, before any disk write */
+ 	bool rtc = sweet_pmic_init() != 0;
+ 	sweet_nvt_init();
+diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -1036,9 +1036,20 @@ sweet_cpu_signal_is_enabled(unsigned int cpu)
+ 
+ unsigned sweet_cpuidle_mode;            /* 0 WFI, 1 ret, 2 + core pc, 3 + core and L2 pc */
+ unsigned sweet_idle_flush = 1;          /* mode 0: XNU's L1 flush before WFI (old behaviour) */
+-static uint32_t sweet_cpuidle_pc_us = 2000;
++static uint32_t sweet_cpuidle_pc_us = 0;        /* j0152: 0 = stock min residencies below */
+ static uint64_t sweet_cpuidle_pc_abs;
+-static uint32_t sweet_cpuidle_pc_mask = 0xFE;   /* CPUs allowed to collapse: not the boot CPU */
++static uint32_t sweet_cpuidle_pc_mask = 0xFF;   /* j0152: CPUs allowed to collapse, boot CPU included */
++/*
++ * j0152: stock sdm660 lpm-levels (DT dtb0.dts 7419ff) exit latency and min residency in us,
++ * [0] Gold (perf, MPIDR Aff1 1), [1] Silver (pwr): cpu ret, cpu pc, L2 pc.
++ * A core asks for a state only when its next timer is at least the min residency away, and
++ * the broadcast fires the exit latency early, so the timer pops on time.
++ */
++static const uint32_t sweet_idle_exit_us[2][3] = { { 60, 324, 1654 }, { 63, 376, 2118 } };
++static const uint32_t sweet_idle_res_us[2][3] = { { 181, 621, 2294 }, { 172, 666, 2918 } };
++static uint64_t sweet_idle_exit_abs[2][3], sweet_idle_res_abs[2][3];
++static uint32_t sweet_cpu_gold;                 /* CPU mask of the Gold cores */
++#define SWEET_CPU_KIND(cpu)     ((sweet_cpu_gold & (1U << (cpu))) ? 0 : 1)
+ static int32_t sweet_cpuidle_features = -99;
+ static uint64_t sweet_cpuidle_entry_pa;
+ static boolean_t sweet_cpuidle_ready;
+@@ -1051,6 +1062,9 @@ struct sweet_idle_stat {
+ 	int32_t  last_rc;
+ 	uint32_t cur;           /* state of the collapse in flight */
+ 	uint64_t enter_t;
++	uint64_t pop;           /* j0152: abs time the core's next timer is due */
++	uint64_t late_max;      /* j0152: worst resume after that pop (abs) */
++	uint64_t late_1ms;      /* j0152: resumes more than 1 ms after the pop */
+ } __attribute__((aligned(64)));
+ static struct sweet_idle_stat sweet_idle_stats[MAX_CPUS];
+ 
+@@ -1059,7 +1073,11 @@ static uint32_t sweet_bc_intid;                 /* 40 physical or 39 virtual tim
+ static uint32_t sweet_bc_tval = QT_CNTP_TVAL, sweet_bc_ctl = QT_CNTP_CTL;
+ static uint32_t sweet_bc_group1[3];             /* GICD_IGROUPR1 before / after our write, GICD_CTLR */
+ static uint32_t sweet_bc_lock;
+-static uint64_t sweet_bc_deadline[MAX_CPUS];    /* system counter ticks, 0 = not sleeping */
++static uint64_t sweet_bc_deadline[MAX_CPUS];    /* system counter ticks the core must run again, 0 = not sleeping */
++static uint64_t sweet_bc_lat[MAX_CPUS];         /* j0152: its exit latency (ticks), fired that much early */
++static boolean_t sweet_bc_l2[4];                /* j0152: cluster asked for L2 pc: every core in it exits slower */
++static uint64_t sweet_bc_route = SWEET_BC_TARGET_MPIDR;   /* j0152: MPIDR the SPI is routed to now */
++static uint64_t sweet_bc_reroutes;
+ static uint64_t sweet_bc_irqs, sweet_bc_wakes, sweet_bc_late_max, sweet_bc_spurious;
+ /*
+  * Mode 3, OS-initiated PSCI (CPU_SUSPEND with an L2 state from a core that is not the
+@@ -1071,8 +1089,12 @@ static uint32_t sweet_cluster_cpus[4];          /* CPU mask per cpu_cluster_id *
+ static uint64_t sweet_l2_denied;
+ static int32_t sweet_psci_mode_rc = -99;
+ 
++static uint8_t sweet_cpu_cluster[MAX_CPUS];     /* j0152: cpu_cluster_id & 3 per CPU */
++static uint64_t sweet_cpu_mpidr[MAX_CPUS];      /* j0152: cpu_phys_id (Aff1:Aff0) per CPU */
++
+ extern void sweet_gic_cpu_resume(void);
+ extern int sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3]);
++extern void sweet_gic_spi_retarget(uint32_t intid, uint64_t mpidr);
+ 
+ static int32_t
+ sweet_psci_call(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
+@@ -1129,21 +1151,47 @@ sweet_bc_release(void)
+ 	os_atomic_store(&sweet_bc_lock, 0, release);
+ }
+ 
+-/* Lock held: program frame 0 for the earliest sleeper, or switch it off. */
++/* j0152: lock held: when core i must be woken (ticks), its exit latency early. */
++static inline uint64_t
++sweet_bc_fire_locked(unsigned i)
++{
++	uint64_t lat = sweet_bc_lat[i];
++	if (sweet_bc_l2[sweet_cpu_cluster[i]]) {
++		lat = sweet_idle_exit_abs[SWEET_CPU_KIND(i)][2];
++	}
++	return sweet_bc_deadline[i] - lat;
++}
++
++/*
++ * Lock held: program frame 0 for the earliest sleeper, or switch it off. j0152: the SPI
++ * goes to that sleeper itself (as Linux's tick broadcast with CLOCK_EVT_FEAT_DYNIRQ), so
++ * it wakes straight from the GIC instead of after another core (possibly in L2 pc too)
++ * woke and sent it an IPI.
++ */
+ static void
+ sweet_bc_program_locked(uint64_t now)
+ {
+ 	uint64_t min = 0;
++	unsigned who = 0;
+ 	for (unsigned i = 0; i < MAX_CPUS; i++) {
+-		uint64_t d = sweet_bc_deadline[i];
+-		if (d != 0 && (min == 0 || d < min)) {
+-			min = d;
++		if (sweet_bc_deadline[i] == 0) {
++			continue;
++		}
++		uint64_t f = sweet_bc_fire_locked(i);
++		if (min == 0 || f < min) {
++			min = f;
++			who = i;
+ 		}
+ 	}
+ 	if (min == 0) {
+ 		qt_write(sweet_bc_ctl, 0);
+ 		return;
+ 	}
++	if (sweet_cpu_mpidr[who] != sweet_bc_route) {
++		sweet_bc_route = sweet_cpu_mpidr[who];
++		sweet_gic_spi_retarget(sweet_bc_intid, sweet_bc_route);
++		sweet_bc_reroutes++;
++	}
+ 	int64_t dt = (int64_t)(min - now);
+ 	if (dt < 1) {
+ 		dt = 1;
+@@ -1155,15 +1203,16 @@ sweet_bc_program_locked(uint64_t now)
+ 	__builtin_arm_dsb(DSB_SY);
+ }
+ 
++/* The core runs again: its cluster's L2 is up, it needs no broadcast. */
+ static void
+ sweet_bc_cancel(unsigned cpu)
+ {
+-	if (os_atomic_load(&sweet_bc_deadline[cpu], relaxed) == 0) {
+-		return;         /* the broadcast handler woke us and cleared it */
+-	}
+ 	sweet_bc_acquire();
+-	sweet_bc_deadline[cpu] = 0;
+-	sweet_bc_program_locked(qt_now());
++	sweet_bc_l2[sweet_cpu_cluster[cpu]] = FALSE;
++	if (sweet_bc_deadline[cpu] != 0) {      /* else the broadcast handler woke us and cleared it */
++		sweet_bc_deadline[cpu] = 0;
++		sweet_bc_program_locked(qt_now());
++	}
+ 	sweet_bc_release();
+ }
+ 
+@@ -1188,8 +1237,11 @@ sweet_bc_irq(void)
+ 	sweet_bc_acquire();
+ 	uint64_t now = qt_now();
+ 	for (unsigned i = 0; i < MAX_CPUS; i++) {
+-		uint64_t d = sweet_bc_deadline[i];
+-		if (d != 0 && d <= now + 20) {          /* ~1 us early is fine */
++		if (sweet_bc_deadline[i] == 0) {
++			continue;
++		}
++		uint64_t d = sweet_bc_fire_locked(i);
++		if (d <= now + 20) {                    /* ~1 us early is fine */
+ 			if (now > d && now - d > sweet_bc_late_max) {
+ 				sweet_bc_late_max = now - d;
+ 			}
+@@ -1249,10 +1301,21 @@ sweet_cpuidle_setup(boolean_t force, boolean_t need_bc)
+ 	}
+ 	nanoseconds_to_absolutetime((uint64_t)sweet_cpuidle_pc_us * NSEC_PER_USEC, &sweet_cpuidle_pc_abs);
+ 	if (!sweet_cpuidle_ready) {
++		for (unsigned k = 0; k < 2; k++) {
++			for (unsigned s = 0; s < 3; s++) {
++				nanoseconds_to_absolutetime((uint64_t)sweet_idle_exit_us[k][s] * NSEC_PER_USEC, &sweet_idle_exit_abs[k][s]);
++				nanoseconds_to_absolutetime((uint64_t)sweet_idle_res_us[k][s] * NSEC_PER_USEC, &sweet_idle_res_abs[k][s]);
++			}
++		}
+ 		for (unsigned i = 0; i < MAX_CPUS; i++) {
+ 			cpu_data_t *c = CpuDataEntries[i].cpu_data_vaddr;
+ 			if (c != NULL) {
+ 				sweet_cluster_cpus[c->cpu_cluster_id & 3] |= 1U << i;
++				sweet_cpu_cluster[i] = (uint8_t)(c->cpu_cluster_id & 3);
++				sweet_cpu_mpidr[i] = c->cpu_phys_id;
++				if (c->cpu_phys_id & 0x100) {
++					sweet_cpu_gold |= 1U << i;      /* Kryo 260 Gold: MPIDR Aff1 1 */
++				}
+ 			}
+ 		}
+ 		sweet_cpuidle_entry_pa = ml_static_vtop((vm_offset_t)&sweet_secondary_entry);
+@@ -1323,25 +1386,55 @@ sweet_cpu_idle_enter(cpu_data_t *cdp)
+ 
+ 	uint32_t state = SWEET_IDLE_RET;
+ 	unsigned idx = 1;
+-	if (mode >= 2 && sweet_bc_intid != 0 && (sweet_cpuidle_pc_mask & (1U << cpu))) {
+-		uint64_t pop = cdp->cpu_idle_pop ? cdp->cpu_idle_pop : cdp->rtcPop;
+-		if (pop > t0 && pop - t0 >= sweet_cpuidle_pc_abs && !ml_get_timer_pending()) {
+-			uint32_t cl = cdp->cpu_cluster_id & 3;
+-			sweet_bc_acquire();
+-			uint64_t now = qt_now();
+-			sweet_bc_deadline[cpu] = now + (pop - t0);
+-			sweet_bc_program_locked(now);
+-			sweet_pc_now |= 1U << cpu;
+-			boolean_t last = (sweet_pc_now & sweet_cluster_cpus[cl]) == sweet_cluster_cpus[cl] &&
+-			    (sweet_cluster_cpus[cl] & ~sweet_cpuidle_pc_mask) == 0;
+-			sweet_bc_release();
+-			state = SWEET_IDLE_PC;
+-			idx = 2;
+-			if (mode >= 3 && last) {
++	unsigned kind = SWEET_CPU_KIND(cpu);
++	uint64_t pop = cdp->cpu_idle_pop ? cdp->cpu_idle_pop : cdp->rtcPop;
++	uint64_t idle = pop > t0 ? pop - t0 : 0;
++	if (idle > (1ULL << 40)) {
++		idle = 1ULL << 40;              /* no timer (EndOfAllTime): ~16 h is far enough */
++	}
++	if (idle < sweet_idle_res_abs[kind][0] || ml_get_timer_pending()) {
++		/* j0152: shorter than a retention pays off: plain WFI, no firmware call */
++		__builtin_arm_wfi();
++		st->n[0]++;
++		st->t[0] += mach_absolute_time() - t0;
++		return;
++	}
++	st->pop = t0 + idle;
++	uint64_t pc_min = sweet_idle_res_abs[kind][1];
++	if (sweet_cpuidle_pc_abs > pc_min) {
++		pc_min = sweet_cpuidle_pc_abs;
++	}
++	if (mode >= 2 && sweet_bc_intid != 0 && (sweet_cpuidle_pc_mask & (1U << cpu)) && idle >= pc_min) {
++		uint32_t cl = sweet_cpu_cluster[cpu];
++		sweet_bc_acquire();
++		uint64_t now = qt_now();
++		sweet_bc_deadline[cpu] = now + idle;
++		sweet_bc_lat[cpu] = sweet_idle_exit_abs[kind][1];
++		sweet_pc_now |= 1U << cpu;
++		state = SWEET_IDLE_PC;
++		idx = 2;
++		/*
++		 * L2 pc: last core of the cluster down (OS-initiated firmware denies it
++		 * otherwise), and the cluster's earliest wake far enough for the L2's own
++		 * residency, as the stock lpm-levels cluster prediction.
++		 */
++		if (mode >= 3 && (sweet_pc_now & sweet_cluster_cpus[cl]) == sweet_cluster_cpus[cl] &&
++		    (sweet_cluster_cpus[cl] & ~sweet_cpuidle_pc_mask) == 0) {
++			uint64_t first = 0;
++			for (unsigned i = 0; i < MAX_CPUS; i++) {
++				uint64_t d = sweet_bc_deadline[i];
++				if ((sweet_cluster_cpus[cl] & (1U << i)) && d != 0 && (first == 0 || d < first)) {
++					first = d;
++				}
++			}
++			if (first > now && first - now >= sweet_idle_res_abs[kind][2]) {
+ 				state = SWEET_IDLE_PC_L2;
+ 				idx = 3;
++				sweet_bc_l2[cl] = TRUE;         /* every sleeper here now wakes the L2 exit early */
+ 			}
+ 		}
++		sweet_bc_program_locked(now);
++		sweet_bc_release();
+ 	}
+ 	st->cur = idx;
+ 	st->enter_t = t0;
+@@ -1383,8 +1476,19 @@ sweet_cpu_idle_resumed(cpu_data_t *cdp)
+ 	sweet_bc_cancel(cpu);
+ 	unsigned idx = st->cur >= 2 ? st->cur : 2;
+ 	st->n[idx]++;
++	uint64_t t = mach_absolute_time();
+ 	if (st->enter_t != 0) {
+-		st->t[idx] += mach_absolute_time() - st->enter_t;
++		st->t[idx] += t - st->enter_t;
++	}
++	/* j0152: how late the core runs after the timer it slept for (0 if woken early) */
++	if (st->pop != 0 && t > st->pop) {
++		uint64_t late = t - st->pop;
++		if (late > st->late_max) {
++			st->late_max = late;
++		}
++		if (late > 19200) {             /* 1 ms at 19.2 MHz */
++			st->late_1ms++;
++		}
+ 	}
+ 	/* The compare value is gone: program the pending pop again (fires at once if due). */
+ 	ClearIdlePop(FALSE);
+@@ -1412,6 +1516,7 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 		bzero(sweet_idle_stats, sizeof(sweet_idle_stats));
+ 		sweet_bc_irqs = sweet_bc_wakes = sweet_bc_late_max = sweet_bc_spurious = 0;
+ 		sweet_l2_denied = 0;
++		sweet_bc_reroutes = 0;
+ 	} else if (strncmp(p, "flush ", 6) == 0) {
+ 		sweet_idle_flush = p[6] == '1';
+ 	} else if (*p >= '0' && *p <= '3') {
+@@ -1437,7 +1542,7 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 				force = TRUE;
+ 			}
+ 		}
+-		sweet_cpuidle_pc_us = v[0] < 200 ? 200 : v[0];
++		sweet_cpuidle_pc_us = v[0];     /* j0152: 0 = stock min residency per state */
+ 		sweet_cpuidle_pc_mask = v[1] & 0xFF;
+ 		if (mode == 0) {
+ 			os_atomic_store(&sweet_cpuidle_mode, 0, relaxed);
+@@ -1448,10 +1553,10 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 
+ 	static const char *names[4] = { "wfi", "ret", "pc", "pcL2" };
+ 	int n = snprintf(out, len, "%scpuidle: mode %u (%s), pc from %u us, pc mask 0x%02x, flush %u, "
+-	    "PSCI features %d, clusters 0x%02x 0x%02x, ready %d; broadcast INTID %u (IGROUPR1 0x%08x ISENABLER1 0x%08x GICD_CTLR 0x%08x) irqs %llu wakes %llu spurious %llu late max %llu us; L2 denied %llu, set-mode rc %d\n",
++	    "PSCI features %d, clusters 0x%02x 0x%02x, ready %d; broadcast INTID %u (IGROUPR1 0x%08x ISENABLER1 0x%08x GICD_CTLR 0x%08x) irqs %llu wakes %llu spurious %llu late max %llu us, route 0x%llx reroutes %llu; L2 denied %llu, set-mode rc %d\n",
+ 	    err ? "ERROR " : "OK ", sweet_cpuidle_mode, names[sweet_cpuidle_mode & 3], sweet_cpuidle_pc_us,
+ 	    sweet_cpuidle_pc_mask, sweet_idle_flush, sweet_cpuidle_features, sweet_cluster_cpus[0], sweet_cluster_cpus[1], sweet_cpuidle_ready,
+-	    sweet_bc_intid, sweet_bc_group1[0], sweet_bc_group1[1], sweet_bc_group1[2], sweet_bc_irqs, sweet_bc_wakes, sweet_bc_spurious, sweet_bc_late_max / 19, sweet_l2_denied, sweet_psci_mode_rc);
++	    sweet_bc_intid, sweet_bc_group1[0], sweet_bc_group1[1], sweet_bc_group1[2], sweet_bc_irqs, sweet_bc_wakes, sweet_bc_spurious, sweet_bc_late_max / 19, sweet_bc_route, sweet_bc_reroutes, sweet_l2_denied, sweet_psci_mode_rc);
+ 	if (err && n > 0 && (size_t)n < len) {
+ 		n += snprintf(out + n, len - (size_t)n, "  %s\n", err);
+ 	}
+@@ -1467,8 +1572,9 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 			ms[k] = ns / NSEC_PER_MSEC;
+ 		}
+ 		n += snprintf(out + n, len - (size_t)n,
+-		    "  cpu%u: wfi %llu/%llu ms ret %llu/%llu ms pc %llu/%llu ms pcL2 %llu/%llu ms; pc returned %llu, fail %llu (rc %d)\n",
+-		    i, st->n[0], ms[0], st->n[1], ms[1], st->n[2], ms[2], st->n[3], ms[3], st->pc_ret, st->fail, st->last_rc);
++		    "  cpu%u: wfi %llu/%llu ms ret %llu/%llu ms pc %llu/%llu ms pcL2 %llu/%llu ms; pc returned %llu, fail %llu (rc %d); late max %llu us, >1 ms %llu\n",
++		    i, st->n[0], ms[0], st->n[1], ms[1], st->n[2], ms[2], st->n[3], ms[3], st->pc_ret, st->fail, st->last_rc,
++		    st->late_max / 19, st->late_1ms);
+ 	}
+ 	if (n < 0) {
+ 		n = 0;
+@@ -1477,6 +1583,52 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 	}
+ 	return n;
+ }
++
++/*
++ * j0152: CPU idle on by default. `sweetidle=N` boot-arg (default 3: ret, core pc, L2 pc;
++ * 0 keeps WFI only). Set 30 s after the platform expert starts, once every CPU is up,
++ * from a kernel thread (the broadcast self-test sleeps and takes the interrupt).
++ */
++static uint32_t sweet_cpuidle_boot_mode = 3;
++
++static void
++sweet_cpuidle_boot_thread(void *arg, wait_result_t wr)
++{
++	(void)arg; (void)wr;
++	static char reply[2048];
++	char cmd[4] = { (char)('0' + sweet_cpuidle_boot_mode), 0 };
++	unsigned up = 0;
++	delay_for_interval(30, NSEC_PER_SEC);
++	for (int tries = 0; tries < 30; tries++) {
++		up = 0;
++		for (unsigned i = 0; i < MAX_CPUS; i++) {
++			if (CpuDataEntries[i].cpu_data_vaddr != NULL) {
++				up++;
++			}
++		}
++		if (up >= real_ncpus) {
++			break;
++		}
++		delay_for_interval(1, NSEC_PER_SEC);
++	}
++	sweet_cpuidle_command(cmd, reply, sizeof(reply));
++	printf("SWEET CPUIDLE: boot mode %u (%u of %u CPUs): %s", sweet_cpuidle_boot_mode, up, real_ncpus, reply);
++}
++
++void sweet_cpuidle_boot(void);
++void
++sweet_cpuidle_boot(void)
++{
++	(void)PE_parse_boot_argn("sweetidle", &sweet_cpuidle_boot_mode, sizeof(sweet_cpuidle_boot_mode));
++	if (sweet_cpuidle_boot_mode == 0 || sweet_cpuidle_boot_mode > 3) {
++		printf("SWEET CPUIDLE: sweetidle=%u, WFI only\n", sweet_cpuidle_boot_mode);
++		return;
++	}
++	thread_t thread;
++	if (kernel_thread_start(sweet_cpuidle_boot_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
+ #endif
+ 
+ 
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -284,6 +284,29 @@ sweet_gic_dump(char *out, size_t len)
+ 	return n;
+ }
+ 
++/*
++ * j0152: move an enabled SPI to another core (the QTimer broadcast follows the earliest
++ * sleeper), as Linux gic_set_affinity: disable, wait for RWP, IROUTER, enable.
++ */
++void sweet_gic_spi_retarget(uint32_t intid, uint64_t mpidr);
++void
++sweet_gic_spi_retarget(uint32_t intid, uint64_t mpidr)
++{
++	if (gicd_base == 0 || intid < 32 || intid >= 1020) {
++		return;
++	}
++	uint32_t word = intid / 32, bit = 1U << (intid % 32);
++	uint64_t aff = mpidr & 0xFF00FFFFFFULL;
++	sweet_mmio_w32(gicd_base + 0x180 + 4 * word, bit);           /* ICENABLER */
++	while (gicd_read32(GICD_CTLR) & GICD_CTLR_RWP) {
++		;
++	}
++	sweet_mmio_w32(gicd_base + 0x6000 + 8 * intid, (uint32_t)aff);
++	sweet_mmio_w32(gicd_base + 0x6004 + 8 * intid, (uint32_t)(aff >> 32));
++	__builtin_arm_dsb(DSB_SY);
++	sweet_mmio_w32(gicd_base + 0x100 + 4 * word, bit);           /* ISENABLER */
++}
++
+ int sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3]);
+ int
+ sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3])

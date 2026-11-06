@@ -1,3 +1,28 @@
+### 2026-11-06 14:46 local: boot_b = idle152 FLASHED - CPU idle (PSCI ret / core pc / L2 pc) ON BY DEFAULT
+- User: "Continue our work on cpu sleep until we can enable it". xnu/patches/j0152-jasmine-cpu-idle-default.patch on
+  top of j0139: the QTimer broadcast SPI is routed to the sleeper with the earliest wake (GICD_IROUTER, as Linux
+  DYNIRQ), fired the state's exit latency early (stock DT: Gold pc 324 / L2 1654 us, Silver pc 376 / L2 2118 us;
+  L2 latency for every sleeper of a cluster whose last core took the L2 down); states by stock min residency (WFI
+  under the ret residency, no SMC; L2 only if the cluster's earliest wake is 2294 / 2918 us away); boot CPU allowed
+  (mask 0xFF, so the Gold L2 goes down too); `sweetidle=N` boot-arg (default 3, 0 = WFI only) set by a kernel thread
+  30 s after SweetPlatformExpert starts. New counters: per-CPU late max / >1 ms after the timer slept for, reroutes.
+- shim/out/shim-boot-idle152-slotb.img = kernel xnu/out-jasmine-idle152 + cmdline and ADT byte-identical to
+  payload-all151-slotb (no new boot-arg; the cmdline is at 607 bytes). Tested first as a temp boot of the same image.
+  First boot after the flash: `SWEET CPUIDLE: boot mode 3 (8 of 8 CPUs): OK`, port answers. Rollback: all151-slotb
+  (or a `sweetidle=0` image).
+- Observed (temp boot, ~9 min incl. 3 framebench runs): ~1 M power collapses, 0 PSCI failures; every core spends most
+  of its idle time in pc; Gold L2 pc now ~100 s per core (never before), Silver L2 pc too; L2 denied 38.7k (race ->
+  core pc fallback). Late after the timer: max 1.17 ms, 4 resumes > 1 ms in total (j0139: 1.7 ms typical worst).
+  The broadcast handler itself almost never runs (irqs 1): the routed sleeper wakes from the GIC and its resume
+  reprograms the frame. ~1700 reroutes/s (4 trapped GICD writes each).
+- Framebench A/B on one boot (research/framebench/idle152-on1, -off1, -on2; swap arrivals/s): Home A/B off 36.3 /
+  34.7, on 39.0 / 38.2; Control Center off 28.7 / 30.1, on 34.8 / 33.7. No regression (on1 was the first run after
+  the unlock, home-a had no motion).
+- Power NOT measured: with `batt icl 100` the gauge read -8 mA whatever the load, so a USB A/B is meaningless here.
+  Needs an unplugged screen-off run (user unplugs). Battery 97 %, 47 C after the runs.
+- Open: unplugged power A/B; Silver cores ~0.9 ms late max (resume at low Silver clock is slower than the stock
+  latencies?); system-level (aff 2 / RPM notify) states not used.
+
 ### 2026-11-06 14:21 local: boot_b = all151 FLASHED (user: "build the image and flash it. Keep cpu sleep off")
 - shim/out/shim-boot-all151-slotb.img = kernel xnu/out-jasmine-exit151c (all patches through j0151: audio
   j0144-j0150, charger/gauge j0140-j0143, idle poll j0136, PSCI idle j0139 compiled in but default off)
