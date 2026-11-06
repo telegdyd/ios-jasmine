@@ -1,3 +1,24 @@
+### 2026-11-06 ~11:30: j0146 AFE probes (still silent); phone NOT reachable, needs Power+VolDown
+- xnu/patches/j0146-jasmine-afe-alive-probe.patch (uncommitted-tested, on j0145): LPASS SMMU fault dump
+  (sGFSR/sGFSYNR*, CB1 FSR) at q6core READY, after the AFE stop probe and when AFE stays silent; if an unmatched
+  stream faulted, give it an identity bank and retry AFE. Boots afe146 (bogus-opcode variant), afe146b, afe146c.
+- Observed afe146: unknown opcodes to AFE, ADM **and ASM** get no reply either -> the ADSP drops unknown opcodes
+  silently, so "no reply" alone does not say AFE is hung. QDSP6SS 0x15700000..3c reads 0x00000005 everywhere
+  (xPU-blocked read pattern, no fault). glink apr_audio_svc rx is 4 packets in every boot (state, versions, ASM map,
+  ADM open); intents are reused (RX_DONE_W_REUSE), so not intent starvation. ADM close (dest_port = copp 0) never
+  answers either (consistent with ADM waiting on AFE, unverified).
+- Observed afe146b: at q6core READY sGFSR 0 (no unmatched-stream fault), CB1 FSR 0x400 (= FORMAT field, no fault).
+  Then the TopazAudio thread stalled: reading CB2+ of the LPASS SMMU from the apps side hangs the reading thread.
+  afe146c limits the dump to CB1 but did not boot: after afe146b the command-port reboot never reached fastboot
+  (no fastboot device after 90 s, no ping) -> the stalled MMIO read likely blocks reboot. **User must hold
+  Power+VolDown.**
+- Checked (no lead): pd-mapper answer matches the firmware (modem ADSPUA.jsn: avs/audio in msm/adsp/audio_pd inst
+  74; ADSPR root_pd, ADSPS sensor_pd); stock adsp-loader does nothing after subsystem_get; stock apr.c header fill is
+  identical to ours; CX is already voted (GPU code, 860 mV) so the CX proxy vote is unlikely. Mainline SDM660
+  internal sound card series (2026-02, Redmi Note 7 / Pixel 3a) uses q6afe without any extra setup.
+- Ideas left: DIAG over glink (DIAG_CNTL/DIAG_DATA on lpass) to read the ADSP's F3 log (may be qshrink-hashed);
+  fastrpc listener (adsprpcd) in case the audio PD waits for a dynamic module; sysmon/SSCTL events; glink_ssr.
+
 ### 2026-11-06 ~01:45: j0145 sound step 2 (partial): amp = TAS2557, ASM/ADM answer, AFE never answers (BLOCKER)
 - Speaker path facts (stock Android: backup/boot_a.img dtb -> tools/extract-dtb.py, vendor_a mixer_paths.xml,
   audio_platform_info_intcodec.xml): loudspeaker is NOT on the internal codec; "speaker" = PRI_MI2S_RX to an external

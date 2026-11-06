@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 03:00:00 +0100
+Subject: [PATCH] j0146: jasmine: LPASS SMMU fault dump around the silent AFE
+
+---
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -1986,6 +1986,43 @@ lpass_smmu_identity(uint32_t sid)
+ 	return (smr >> 31) != 0 && (s2cr & 0x3F) == cb;
+ }
+ 
++/*
++ * j0146: did an LPASS master fault in the SMMU (unmatched stream with USFCFG=1, or a context fault on our CB)?
++ * Returns the faulting stream id of an unmatched-stream fault, or ~0u. Clears what it reports.
++ */
++static uint32_t
++lpass_smmu_faults(const char *when)
++{
++	volatile uint8_t *s = (volatile uint8_t *)ml_io_map((vm_offset_t)J_LSMMU_PA, J_LSMMU_SIZE);
++	volatile uint32_t *g = (volatile uint32_t *)s;
++	uint32_t id1 = g[0x24 / 4], ncb = id1 & 0xFF;
++	uint32_t psize = (id1 & (1u << 31)) ? 0x10000 : 0x1000, npage = 1u << (((id1 >> 28) & 7) + 1);
++	uint32_t gfsr = g[0x48 / 4], syn0 = g[0x50 / 4], syn1 = g[0x54 / 4], syn2 = g[0x58 / 4];
++	uint32_t sid = ~0u;
++
++	LOG("lpass smmu %s: sGFSR %08x sGFSYNR0 %08x SYNR1 %08x SYNR2 %08x sGFAR %08x%08x", when, gfsr, syn0, syn1, syn2,
++	    g[0x44 / 4], g[0x40 / 4]);
++	if (gfsr != 0) {
++		if (gfsr & 2) {
++			sid = syn1 & 0xFFFF;
++		}
++		mb();
++		g[0x48 / 4] = gfsr;
++	}
++	/* only CB1 (ours): reading the other banks from here stalls the thread (afe146b) */
++	for (uint32_t i = 1; i < 2 && i < ncb && (uint64_t)(npage + i + 1) * psize <= J_LSMMU_SIZE; i++) {
++		volatile uint32_t *c = (volatile uint32_t *)(s + (uint64_t)npage * psize + (uint64_t)i * psize);
++		uint32_t fsr = c[0x58 / 4] & ~0x600u;   /* FORMAT [10:9] is not a fault */
++		if (fsr != 0) {
++			LOG("lpass smmu %s: CB%u FSR %08x FAR %08x%08x FSYNR0 %08x SCTLR %08x", when, i, fsr, c[0x64 / 4],
++			    c[0x60 / 4], c[0x68 / 4], c[0]);
++			mb();
++			c[0x58 / 4] = fsr;
++		}
++	}
++	return sid;
++}
++
+ /* ---- APR calls: wait for the reply with our token */
+ 
+ static uint32_t acall_token, acall_op, acall_rsp[40], acall_words;
+@@ -2254,6 +2291,7 @@ jas_speaker(void)
+ 
+ 	(void)PE_parse_boot_argn("adsp_tone", &tone, sizeof(tone));
+ 	(void)PE_parse_boot_argn("adsp_msw", &j_msw, sizeof(j_msw));
++	(void)lpass_smmu_faults("at q6core ready");
+ 	amp = j_i2c_init() ? amp_probe() : -1;
+ 	LOG("speaker: amplifier %s", amp == 0 ? "TFA98xx @34" : amp == 1 ? "TAS2557 @4c" : amp == 2 ? "MAX98927 @3a" : "not found");
+ 	j_mi2s_pins();
+@@ -2284,6 +2322,17 @@ jas_speaker(void)
+ 		uint16_t st[2] = { AFE_PORT_PRI_MI2S_RX, 0 };
+ 		acall_op = 0;
+ 		(void)apr_call("afe stop probe", APR_SVC_AFE, 0, AFE_PORT_CMD_DEVICE_STOP, st, sizeof(st), 0);
++		if (acall_op == 0) {
++			/* j0146: an LPASS master stuck on an SMMU fault? Give its stream an identity bank and ask again */
++			uint32_t fsid = lpass_smmu_faults("after afe stop");
++			if (fsid != ~0u && fsid != 1) {
++				LOG("speaker: unmatched stream %#x faulted: identity bank for it", fsid);
++				(void)lpass_smmu_identity(fsid);
++				acall_op = 0;
++				(void)apr_call("afe stop probe (after smmu fix)", APR_SVC_AFE, 0, AFE_PORT_CMD_DEVICE_STOP, st,
++				    sizeof(st), 0);
++			}
++		}
+ 		if (acall_op == 0) {
+ 			afe_chan = "apr_apps2";
+ 			LOG("speaker: apr_apps2 %s; AFE commands go there now", glink_chan_up("apr_apps2") ? "up" : "down");
+@@ -2340,6 +2389,7 @@ jas_speaker(void)
+ 	}
+ 	if (!clk) {
+ 		LOG("t=%u.%03u speaker: AFE silent; trying again in 30 s", T);
++		(void)lpass_smmu_faults("afe silent");
+ 		for (unsigned t = ms(); ms() - t < 30000;) {
+ 			if (!glink_poll()) {
+ 				IOSleep(5);
