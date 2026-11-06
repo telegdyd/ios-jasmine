@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 18:00:00 +0100
+Subject: [PATCH] j0151: SWEET exit() backtrace for SpringBoard, backboardd, PosterBoard; PosterBoard in sweetscan (diagnostic)
+
+SpringBoard ends with exit(1) right after the first unlock after every boot (launchd: "exited due to
+exit(1)") and is relaunched; no crash report because it is not a crash. Print the caller's registers and
+frame-pointer backtrace, as the CRASH lines do, when one of these processes calls exit(), so the code
+that decides to exit can be symbolicated. Lines: "EXIT name[pid] status N", then CRASH name[pid] sig 0
+code <status> ... / pc ... / bt ... (shared cache slide in the first line).
+---
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1433,6 +1433,14 @@
+ exit(proc_t p, struct exit_args *uap, int *retval)
+ {
+ 	p->p_xhighbits = ((uint32_t)(uap->rval) & 0xFF000000) >> 24;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (strcmp(p->p_comm, "SpringBoard") == 0 || strcmp(p->p_comm, "backboardd") == 0 ||
++	    strcmp(p->p_comm, "PosterBoard") == 0) {
++		extern void sweet_crash_log(const char *, int, int, uint64_t, uint64_t);
++		printf("EXIT %s[%d] status %d\n", p->p_comm, proc_getpid(p), uap->rval);
++		sweet_crash_log(p->p_comm, proc_getpid(p), 0, (uint64_t)(uint32_t)uap->rval, 0);
++	}
++#endif
+ 	exit1(p, W_EXITCODE((uint32_t)uap->rval, 0), retval);
+ 
+ 	thread_exception_return();
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -918,6 +918,6 @@
+ 	char last[96] = "";
+ 
+ 	if (!PE_parse_boot_argn("sweetscan", names, sizeof(names))) {
+-		strlcpy(names, "backboardd,SpringBoard", sizeof(names));
++		strlcpy(names, "backboardd,SpringBoard,PosterBoard", sizeof(names));
+ 	}
+ 	size_t n = strlen(name), found = 0;

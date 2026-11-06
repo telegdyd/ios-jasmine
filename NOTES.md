@@ -1,3 +1,31 @@
+### 2026-11-06 ~14:00 local: SpringBoard restart on first unlock = iOS ROOT FULL (17 GiB HFS, 1.4 MiB free)
+- User: after boot, the first unlock "crashes SpringBoard" once, then unlock works. Not caused by audio
+  (same pid 26 -> new SpringBoard in the 12:50/12:56 boots and idle139g).
+- Observed: launchd (unified log, /var/db/diagnostics/Persist, decoded with scratchpad tv3.py + strings):
+  "user/501/com.apple.SpringBoard [26] exited due to exit(1)". No crash report (not a crash).
+- xnu/patches/j0151-sweet-exit-backtrace.patch (diagnostic): `EXIT name[pid] status N` + CRASH-style
+  registers/backtrace when SpringBoard/backboardd/PosterBoard call exit(); PosterBoard added to the sweetscan
+  default. Boot exit151c, user unlocked: `EXIT SpringBoard[26] status 1`, bt (slide 0x4589c000) =
+  libsystem_kernel __exit <- ProactiveSupport -[_PASSqliteDefaultErrorHandler _handle_SQLITE_CORRUPT:onError:db:]
+  <- handleSqliteError <- -[_PASSqliteDatabase runQuery:onRow:onError:] (places ._PAS_db_corruption_marker, exits
+  so the DB is recreated on relaunch).
+- Unified log right before it: `os_unix.c: (28) unixWrite(/private/var/mobile/Library/DuetExpertCenter/
+  _ATXInfoSuggestionStore.db-wal) - No space left on device`, `_PASSqliteDatabaseError sqliteCode=13` (FULL).
+  /bin/df on the phone: /dev/ufsroot0 17Gi size, 17Gi used, 1.4Mi avail, 100%. hfs at mount: "set VeryLowDisk
+  freeblks:47060". logd asserts with 0x1c (ENOSPC). PosterBoard's SIGTRAP (+[PRSPosterPath
+  _temporaryDirectoryURLWithContainerPath:basenamePrefix:] "unexpected mkdtemp result") is most likely the same
+  ENOSPC (guess: errno not captured yet).
+- ios/sweet_du.c (new, installed /usr/local/bin/sweet_du): disk usage by directory. / = 16920 MB: /System 8740,
+  /private/var/db 2391 (diagnostics 1890: Special 1316 MB in 939 files, Persist 497; uuidtext 433),
+  /private/preboot 1623, /usr/local/bin 966 (debug .raw shots, dylib variants), /Applications 723,
+  /private/var/mobile 759, /private/var/root 430 (coresymbolicationd cache 329), /private/var/tmp 356.
+- userdata partition is ~107 GiB (LUN0 sda34) and SWEET UFS reports all of it (DKIOCGETBLOCKCOUNT =
+  nblocks), but the HFS+ volume was made 16-17 GiB by tools/mkiosroot.sh: ~90 GiB unused.
+- Proposed (awaiting user): (1) free space: old unified-log files (Special/Persist), coresymbolicationd cache,
+  /var/tmp NSIRD_lsd_*; (2) grow the HFS+ volume online to the whole partition (fsctl HFSIOC_RESIZE_VOLUME
+  from a small on-device tool) - modifies the root file system, needs explicit OK; (3) find why logd's old
+  logs are never purged (guess: CacheDelete/deleted purge path not working on this port).
+
 ### 2026-11-06 ~17:15: j0150 TAS2557 fault flags + recovery + die temperature (temp boot flt150)
 - User confirmed by ear: the j0149 Tuning Mode beep is audible.
 - xnu/patches/j0150-jasmine-tas2557-faults-die-temp.patch (on j0149), as stock irq_work_routine /
