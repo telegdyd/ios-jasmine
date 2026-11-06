@@ -39,6 +39,11 @@ ios)
 			-dynamiclib -install_name "/usr/local/bin/$name.dylib" -o "$OUT/$name.dylib" "$src"
 		codesign -f -s - "$OUT/$name.dylib"
 	done
+	# CoreAudio HAL plug-in (userland/audio): flat files, assembled on the phone as
+	# /System/Library/Audio/Plug-Ins/HAL/RedwoodAudio.driver/{RedwoodAudio,Info.plist}
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror 		-bundle -framework CoreFoundation -o "$OUT/RedwoodAudio" userland/audio/audio_plugin.c
+	codesign -f -s - "$OUT/RedwoodAudio"
+	cp userland/audio/audio_plugin.plist "$OUT/RedwoodAudio.Info.plist"
 	# injected into SpringBoard (installed as /s.dylib)
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=16.0 -isysroot "$SDK" -O2 -Wall -Werror \
 		-dynamiclib -install_name /s.dylib -lobjc -o "$OUT/sweet_sbshape.dylib" ios/sweet_sbshape.c

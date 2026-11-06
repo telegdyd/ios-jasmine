@@ -27,7 +27,7 @@ done
 ssh "$vm" "echo '$(hostname) $mode $tag' > ~/topaz-xnu-build/.lock/owner"
 trap 'ssh "$vm" "rm -rf ~/topaz-xnu-build/.lock"' EXIT
 
-tar czf - --exclude=__pycache__ mesa ios tools | ssh "$vm" 'rm -rf ~/ios-jasmine/mesa ~/ios-jasmine/ios ~/ios-jasmine/tools && mkdir -p ~/ios-jasmine && tar xzf - -C ~/ios-jasmine'
+tar czf - --exclude=__pycache__ mesa ios tools userland/audio | ssh "$vm" 'rm -rf ~/ios-jasmine/mesa ~/ios-jasmine/ios ~/ios-jasmine/tools ~/ios-jasmine/userland && mkdir -p ~/ios-jasmine && tar xzf - -C ~/ios-jasmine'
 t0=$(date +%s)
 if ! ssh "$vm" "cd ~/ios-jasmine && TASK24_CONTROLS=${TASK24_CONTROLS:-0} SOURCE=$src tools/mesa-local.sh $mode"; then
 	echo "build failed; logs: ssh $vm ls topaz-mesa/*.log" >&2

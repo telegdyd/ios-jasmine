@@ -1,3 +1,15 @@
+### 2026-11-06 ~16:00: **iOS plays through the speaker** (CoreAudio plug-in installed; temp boot of rw148d)
+- tools/mesa-local.sh ios now also builds userland/audio as flat `RedwoodAudio` (+ `RedwoodAudio.Info.plist`);
+  tools/vm-mesa.sh ships userland/audio to the VM. Built xnu/out-ios-plug148.
+- Installed on the phone's root (reversible): /System/Library/Audio/Plug-Ins/HAL/RedwoodAudio.driver/{RedwoodAudio,
+  Info.plist}; VirtualAudio.plugin moved back from /Library/Audio/Plug-Ins/HAL.disabled/ to .../HAL/ (sweet_mv).
+  Undo: rm the driver files, sweet_mv VirtualAudio.plugin back to HAL.disabled.
+- plug148 (120 s): mediaserverd exec'd once (no crash loop), plug-in volume ioctl (0 dB), at t=45.8 s iOS
+  played 148480 frames (~3 s) through ASM -> TAS2557, paused at 49.4 s. Not yet checked by ear which sound.
+- Caution: TAS2557 runs ROM Mode 1 (no speaker protection); iOS applies the iPhone X speaker chain (D22) on top.
+  Keep volume moderate until Tuning Mode (program 0 + calibration) is used.
+- Next: user ear test (keyboard clicks, ringtone preview, a video); Tuning Mode; microphone (/dev/redwood-mic).
+
 ### 2026-11-06 ~15:30: j0148 /dev/redwood-audio plays through the speaker (ASM stream); ios/sweet_beep
 - xnu/patches/j0148-jasmine-redwood-audio-stream.patch (on j0147): jasmine back end for topaz_audio_write/volume:
   1 s ring of 20 ms chunks in pool memory (ASM-mapped once at boot, whole 4 KB pages or ASM says EBADPARAM),
