@@ -1,12 +1,345 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Fri, 6 Nov 2026 03:00:00 +0100
-Subject: [PATCH] j0146: jasmine: LPASS SMMU fault dump around the silent AFE
+Subject: [PATCH] j0146: jasmine: AFE bring-up probes (LPASS SMMU fault dump, glink_ssr/fastrpc
+ channels, AFE retries)
 
 ---
 --- a/iokit/Kernel/arm/TopazAudio.cpp
 +++ b/iokit/Kernel/arm/TopazAudio.cpp
-@@ -1986,6 +1986,43 @@ lpass_smmu_identity(uint32_t sid)
+@@ -516,6 +516,8 @@ add_chan(const char *name)
+ 	return c;
+ }
+ 
++static void send_open(struct chan *c);
++
+ static void
+ glink_register(const char *name, glink_rx_t rx)
+ {
+@@ -525,7 +527,12 @@ glink_register(const char *name, glink_rx_t rx)
+ 	}
+ 	if (c != NULL) {
+ 		c->rx = rx;
+-		c->asm_buf = (uint8_t *)IOMallocZero(OUR_INTENT_SIZE);
++		if (c->asm_buf == NULL) {
++			c->asm_buf = (uint8_t *)IOMallocZero(OUR_INTENT_SIZE);
++		}
++		if (c->remote_open && !c->open_sent) {
++			send_open(c);                   /* j0146: late registration (remote opened first) */
++		}
+ 	}
+ }
+ 
+@@ -780,6 +787,14 @@ rx_one(void)
+ 			return false;
+ 		}
+ 		c = by_rcid(m.p1);
++		{
++			static uint32_t raw_n;
++			if ((c == NULL || (strcmp(c->name, "IPCRTR") != 0)) && raw_n++ < 60) {
++				LOG("t=%u.%03u glink raw %s rcid %u (%s) intent %u chunk %u left %u", T,
++				    m.cmd == CMD_TX_DATA ? "TX_DATA" : "TX_DATA_CONT", m.p1, c != NULL ? c->name : "UNKNOWN", m.p2,
++				    hdr[0], hdr[1]);
++			}
++		}
+ 		if (c != NULL && c->asm_buf != NULL) {
+ 			if (m.cmd == CMD_TX_DATA) {
+ 				c->asm_len = 0;
+@@ -949,6 +964,171 @@ send_ctrl(uint32_t type, uint32_t dst_node, uint32_t dst_port, uint32_t a, uint3
+ 	qrtr_send(type, QRTR_PORT_CTRL, dst_node, dst_port, &m, sizeof(m));
+ }
+ 
++/* ---------------------------------------------------------------- DIAG over QRTR (j0146: read the ADSP's F3 log) */
++
++/*
++ * msm-4.4 drivers/char/diag/diagfwd_socket.c: apps is the server for the LPASS control (svc 0x1001 inst 64) and
++ * data (inst 66) sockets; the ADSP connects, sends its feature mask / SSID ranges on control and HDLC-framed
++ * diag packets (0x79 extended F3 messages with format string and file name) on data.
++ */
++#define SVC_DIAG            0x1001
++#define DIAG_INST_CNTL      64
++#define DIAG_INST_DATA      66
++#define PORT_DIAG_CNTL      0x4010
++#define PORT_DIAG_DATA      0x4011
++
++static uint32_t dg_node = 0xFFFFFFFFu, dg_port, dg_ctrl_n, dg_frames, dg_printed, dg_budget = 1500, dg_other;
++static bool dg_feat_sent, dg_masks_sent;
++static uint8_t dg_frame[4096];
++static uint32_t dg_flen;
++static bool dg_esc;
++
++static void
++diag_cntl_send(const void *p, uint32_t len)
++{
++	if (dg_node != 0xFFFFFFFFu) {
++		qrtr_send(QRTR_TYPE_DATA, PORT_DIAG_CNTL, dg_node, dg_port, p, len);
++	}
++}
++
++static void
++diag_send_f3_all(uint16_t first, uint16_t last)
++{
++	struct __attribute__((packed)) {
++		uint32_t cmd_type, data_len;
++		uint8_t stream_id, status, msg_mode;
++		uint16_t ssid_first, ssid_last;
++		uint32_t msg_mask_size, mask;
++	} m = { 11, 11 + 4, 1, 2 /* ALL_ENABLED */, 0, first, last, 1, 0xFFFFFFFFu };
++	diag_cntl_send(&m, sizeof(m));
++}
++
++static void
++diag_cntl_rx(uint32_t node, uint32_t port, const uint8_t *d, uint32_t n)
++{
++	bool ranges = false;
++
++	dg_node = node;
++	dg_port = port;
++	if (!dg_feat_sent) {
++		struct __attribute__((packed)) { uint32_t id, len, flen; uint8_t f[4]; } fm =
++		{ 8, 4 + 4, 4, { 0x05 /* bits 0, 2 */, 0x28 /* bits 11, 13 */, 0, 0 } };
++		struct __attribute__((packed)) { uint32_t id, len, version, sleep_vote, real_time, nrt, ct, st, stime, drain, stale; } dm =
++		{ 3, 36, 1, 1, 1, 0, 0, 0, 0, 0, 0 };
++		diag_cntl_send(&fm, sizeof(fm));
++		diag_cntl_send(&dm, sizeof(dm));
++		dg_feat_sent = true;
++		LOG("t=%u.%03u diag: ADSP control socket %u:%x connected; sent feature mask + real-time mode", T, node, port);
++	}
++	for (uint32_t o = 0; o + 8 <= n;) {
++		uint32_t id = *(const uint32_t *)(d + o), len = *(const uint32_t *)(d + o + 4);
++		if (o + 8 + len > n) {
++			break;
++		}
++		if (dg_ctrl_n++ < 40) {
++			LOG("t=%u.%03u diag cntl rx: pkt %u len %u: %08x %08x %08x", T, id, len,
++			    len >= 4 ? *(const uint32_t *)(d + o + 8) : 0, len >= 8 ? *(const uint32_t *)(d + o + 12) : 0,
++			    len >= 12 ? *(const uint32_t *)(d + o + 16) : 0);
++		}
++		if (id == 24 && len >= 8) {             /* SSID_RANGE_REPORT: version, count, {u16 first, last}[] */
++			uint32_t count = *(const uint32_t *)(d + o + 12);
++			for (uint32_t i = 0; i < count && 16 + 4 * i + 4 <= len + 8; i++) {
++				uint16_t f = *(const uint16_t *)(d + o + 16 + 4 * i), l = *(const uint16_t *)(d + o + 18 + 4 * i);
++				diag_send_f3_all(f, l);
++			}
++			LOG("t=%u.%03u diag: %u SSID ranges, all F3 messages enabled", T, count);
++			ranges = true;
++			dg_masks_sent = true;
++		}
++		o += 8 + len;
++	}
++	if (!ranges && dg_ctrl_n <= 2) {
++		diag_send_f3_all(0, 0);
++	}
++}
++
++static void
++diag_str(char *out, uint32_t cap, const uint8_t *s, uint32_t avail)
++{
++	uint32_t i = 0;
++	for (; i + 1 < cap && i < avail && s[i] != 0; i++) {
++		out[i] = (s[i] >= 0x20 && s[i] < 0x7F) ? (char)s[i] : '.';
++	}
++	out[i] = 0;
++}
++
++static void
++diag_frame_done(const uint8_t *f, uint32_t n)
++{
++	if (n < 3) {
++		return;
++	}
++	n -= 2;                                     /* CRC */
++	dg_frames++;
++	if (dg_printed >= dg_budget) {
++		return;
++	}
++	if (f[0] == 0x79 && n >= 20) {
++		uint32_t na = f[2], line = *(const uint16_t *)(f + 12), ssid = *(const uint16_t *)(f + 14);
++		uint32_t a[4] = { 0, 0, 0, 0 };
++		for (uint32_t i = 0; i < na && i < 4 && 20 + 4 * i + 4 <= n; i++) {
++			a[i] = *(const uint32_t *)(f + 20 + 4 * i);
++		}
++		uint32_t so = 20 + 4 * na;
++		char fmt[160], file[48];
++		fmt[0] = file[0] = 0;
++		if (so < n) {
++			diag_str(fmt, sizeof(fmt), f + so, n - so);
++			uint32_t fo = so;
++			while (fo < n && f[fo] != 0) {
++				fo++;
++			}
++			fo++;
++			if (fo < n) {
++				diag_str(file, sizeof(file), f + fo, n - fo);
++			}
++		}
++		dg_printed++;
++		LOG("adsp f3 [%x] %s:%u %s | %x %x %x %x", ssid, file, line, fmt, a[0], a[1], a[2], a[3]);
++	} else if ((f[0] == 0x92 || f[0] == 0x99) && n >= 24) {
++		uint32_t na = f[2], line = *(const uint16_t *)(f + 12), ssid = *(const uint16_t *)(f + 14);
++		uint32_t hash = *(const uint32_t *)(f + 20), a[4] = { 0, 0, 0, 0 };
++		for (uint32_t i = 0; i < na && i < 4 && 24 + 4 * i + 4 <= n; i++) {
++			a[i] = *(const uint32_t *)(f + 24 + 4 * i);
++		}
++		dg_printed++;
++		LOG("adsp f3 [%x] line %u hash %08x (%x) | %x %x %x %x", ssid, line, hash, f[0], a[0], a[1], a[2], a[3]);
++	} else if (dg_other++ < 30) {
++		dg_printed++;
++		LOG("adsp diag pkt %02x len %u: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x", f[0], n, f[0], f[1], f[2],
++		    f[3], n > 4 ? f[4] : 0, n > 5 ? f[5] : 0, n > 6 ? f[6] : 0, n > 7 ? f[7] : 0, n > 8 ? f[8] : 0,
++		    n > 9 ? f[9] : 0, n > 10 ? f[10] : 0, n > 11 ? f[11] : 0);
++	}
++}
++
++static void
++diag_data_rx(const uint8_t *d, uint32_t n)
++{
++	for (uint32_t i = 0; i < n; i++) {
++		uint8_t c = d[i];
++		if (c == 0x7E) {
++			diag_frame_done(dg_frame, dg_flen);
++			dg_flen = 0;
++			dg_esc = false;
++		} else if (c == 0x7D) {
++			dg_esc = true;
++		} else {
++			if (dg_esc) {
++				c ^= 0x20;
++				dg_esc = false;
++			}
++			if (dg_flen < sizeof(dg_frame)) {
++				dg_frame[dg_flen++] = c;
++			}
++		}
++	}
++}
++
+ static const struct { const char *svc, *domain; } pd_map[] = {
+ 	{ "tms/servreg", "msm/adsp/root_pd" },
+ 	{ "tms/servreg", "msm/adsp/sensor_pd" },
+@@ -985,7 +1165,7 @@ qm_tlv(uint8_t *m, uint32_t n, uint8_t type, const void *v, uint16_t len)
+ }
+ 
+ static void
+-pdm_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t *d, uint32_t len)
++pdm_answer(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t *d, uint32_t len)
+ {
+ 	uint8_t m[400], list[300];
+ 	char name[80];
+@@ -1035,6 +1215,39 @@ pdm_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t *
+ 	LOG("t=%u.%03u pd-mapper: msg %x \"%s\" -> %u domain(s)", T, msg, name, cnt);
+ }
+ 
++/* j0146: hold pd-mapper answers until the diag link is up, so the ADSP's APR PDR init shows in its F3 log */
++static struct { uint32_t node, port, len; uint16_t txn, msg; uint8_t d[200]; } pdm_q[6];
++static uint32_t pdm_qn;
++
++static void
++pdm_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t *d, uint32_t len)
++{
++	if (!dg_masks_sent && ms() < 3000 && pdm_qn < 6 && len <= sizeof(pdm_q[0].d)) {
++		pdm_q[pdm_qn].node = node;
++		pdm_q[pdm_qn].port = port;
++		pdm_q[pdm_qn].txn = txn;
++		pdm_q[pdm_qn].msg = msg;
++		pdm_q[pdm_qn].len = len;
++		memcpy(pdm_q[pdm_qn].d, d, len);
++		pdm_qn++;
++		return;
++	}
++	pdm_answer(node, port, txn, msg, d, len);
++}
++
++static void
++pdm_flush(void)
++{
++	if (pdm_qn == 0 || !(dg_masks_sent || ms() >= 3000)) {
++		return;
++	}
++	LOG("t=%u.%03u pd-mapper: answering %u held request(s) now", T, pdm_qn);
++	for (uint32_t i = 0; i < pdm_qn; i++) {
++		pdm_answer(pdm_q[i].node, pdm_q[i].port, pdm_q[i].txn, pdm_q[i].msg, pdm_q[i].d, pdm_q[i].len);
++	}
++	pdm_qn = 0;
++}
++
+ /*
+  * j0145: servreg notifier client (mainline pdr_interface.c): the stock kernel waits for the
+  * ADSP's msm/adsp/audio_pd to be UP (audio_notifier -> apr_adsp_up) before AFE/ASM/ADM.
+@@ -1220,6 +1433,10 @@ qrtr_rx(const uint8_t *p, uint32_t len)
+ 			slim_rx(*(const uint16_t *)(p + hlen + 3), p + hlen, size);
+ 		} else if (dst_port == PORT_SRN && size >= 7) {
+ 			srn_rx(p[hlen], *(const uint16_t *)(p + hlen + 3), p + hlen, size);
++		} else if (dst_port == PORT_DIAG_CNTL) {
++			diag_cntl_rx(src_node, src_port, p + hlen, size);
++		} else if (dst_port == PORT_DIAG_DATA) {
++			diag_data_rx(p + hlen, size);
+ 		} else if (dst_port == PORT_PDM && size >= 7 && p[hlen] == QMI_REQ) {
+ 			pdm_rx(src_node, src_port, *(const uint16_t *)(p + hlen + 1), *(const uint16_t *)(p + hlen + 3), p + hlen, size);
+ 		} else if (q_other++ < 16) {
+@@ -1237,12 +1454,24 @@ qrtr_rx(const uint8_t *p, uint32_t len)
+ 	}
+ }
+ 
++static void apr_rx(const uint8_t *data, uint32_t len);
++
+ static void
+ qrtr_poll(void)
+ {
+ 	if (!glink_chan_up(QCHAN)) {
+ 		return;
+ 	}
++	pdm_flush();
++	{
++		static bool apr_reg;
++		if (!apr_reg && jasmine && (dg_masks_sent || ms() >= 3000)) {
++			apr_reg = true;
++			LOG("t=%u.%03u opening apr_audio_svc / apr_apps2 from our side now (diag %s)", T, dg_masks_sent ? "up" : "not up");
++			glink_register("apr_audio_svc", apr_rx);
++			glink_register("apr_apps2", apr_rx);
++		}
++	}
+ 	if (!q_hello_sent) {
+ 		send_ctrl(QRTR_TYPE_HELLO, q_node, QRTR_PORT_CTRL, 0, 0, 0, 0);
+ 		q_hello_sent = true;
+@@ -1252,6 +1481,9 @@ qrtr_poll(void)
+ 		send_ctrl(QRTR_TYPE_NEW_SERVER, q_node, QRTR_PORT_CTRL, SVC_PDM, 0x101, QRTR_NODE_APPS, PORT_PDM);
+ 		q_announced = true;
+ 		LOG("t=%u.%03u announced pd-mapper 0x40", T);
++		send_ctrl(QRTR_TYPE_NEW_SERVER, q_node, QRTR_PORT_CTRL, SVC_DIAG, DIAG_INST_CNTL, QRTR_NODE_APPS, PORT_DIAG_CNTL);
++		send_ctrl(QRTR_TYPE_NEW_SERVER, q_node, QRTR_PORT_CTRL, SVC_DIAG, DIAG_INST_DATA, QRTR_NODE_APPS, PORT_DIAG_DATA);
++		LOG("t=%u.%03u announced diag LPASS cntl/data servers (0x1001 inst 64/66)", T);
+ 	}
+ }
+ 
+@@ -1359,7 +1591,7 @@ gpr_poll(void)
+ #define APR_DOMAIN_ADSP     4
+ #define APR_DOMAIN_APPS     5
+ #define APR_SVC_CORE        3
+-#define APR_HDR_FIELD_CMD   0x0150u             /* SEQ_CMD (1) << 8 | 20-byte header (5 words) << 4 */
++#define APR_HDR_FIELD_CMD   0x0250u             /* SEQ_CMD (2) << 8 | 20-byte header (5 words) << 4 (j0146: was 1 = CMD_RSP) */
+ #define APR_BASIC_RSP_RESULT            0x000110E8u
+ #define AVCS_CMD_ADSP_EVENT_GET_STATE   0x0001290Cu
+ #define AVCS_CMD_RSP_ADSP_EVENT_GET_STATE 0x0001290Du
+@@ -1416,6 +1648,17 @@ apr_rx(const uint8_t *data, uint32_t len)
+ 	uint32_t p0 = len >= hlen + 4 ? *(const uint32_t *)(data + hlen) : 0;
+ 	uint32_t p1 = len >= hlen + 8 ? *(const uint32_t *)(data + hlen + 4) : 0;
+ 
++	{
++		static uint32_t dumps;
++		if (dumps++ < 6) {
++			char hx[200];
++			uint32_t o = 0;
++			for (uint32_t i = 0; i < len && i < 48 && o + 3 < sizeof(hx); i++) {
++				o += (uint32_t)snprintf(hx + o, sizeof(hx) - o, "%02x%s", data[i], (i % 4) == 3 ? " " : "");
++			}
++			LOG("t=%u.%03u apr raw %u B (pkt_size %u): %s", T, len, h->pkt_size, hx);
++		}
++	}
+ 	if (apr_reply(h, data, len)) {
+ 		return;
+ 	}
+@@ -1986,6 +2229,43 @@ lpass_smmu_identity(uint32_t sid)
  	return (smr >> 31) != 0 && (s2cr & 0x3F) == cb;
  }
  
@@ -50,7 +383,111 @@ Subject: [PATCH] j0146: jasmine: LPASS SMMU fault dump around the silent AFE
  /* ---- APR calls: wait for the reply with our token */
  
  static uint32_t acall_token, acall_op, acall_rsp[40], acall_words;
-@@ -2254,6 +2291,7 @@ jas_speaker(void)
+@@ -2018,6 +2298,47 @@ apr_reply(const struct apr_hdr *h, const uint8_t *data, uint32_t len)
+ }
+ 
+ /* a command; true if the ADSP answered with status 0 (APR_BASIC_RSP_RESULT) or the expected response */
++/* j0146: send an APR packet with the ADSP's own 32-byte version-1 header (12 extension bytes) */
++static bool
++apr_call_v1(const char *what, uint8_t svc, uint16_t port, uint32_t opcode, const void *payload, uint32_t len,
++    const uint8_t ext[12])
++{
++	uint8_t buf[32 + 128];
++	struct apr_hdr *h = (struct apr_hdr *)buf;
++
++	if (len > 128) {
++		return false;
++	}
++	bzero(buf, sizeof(buf));
++	h->hdr_field = 0x0181;                      /* version 1, 8-word header, SEQ_CMD */
++	h->pkt_size = (uint16_t)(32 + len);
++	h->src_svc = svc;
++	h->src_domain = APR_DOMAIN_APPS;
++	h->src_port = port;
++	h->dest_svc = svc;
++	h->dest_domain = APR_DOMAIN_ADSP;
++	h->dest_port = port;
++	h->token = acall_token = apr_token++;
++	h->opcode = opcode;
++	memcpy(buf + 20, ext, 12);
++	memcpy(buf + 32, payload, len);
++	acall_done = false;
++	acall_op = 0;
++	glink_send(ACHAN, buf, 32 + len);
++	for (unsigned t = ms(); !acall_done && ms() - t < 1000;) {
++		if (!glink_poll()) {
++			IOSleep(1);
++		}
++	}
++	acall_token = 0;
++	LOG("t=%u.%03u apr v1 %s (%08x): %s op %08x %08x %08x", T, what, opcode, acall_done ? "REPLY" : "no reply", acall_op,
++	    acall_rsp[0], acall_rsp[1]);
++	return acall_done;
++}
++
++static bool afe_assume_ok;                      /* j0146: the ADSP runs AFE commands but never answers them */
++static uint32_t acall_src_port = 0xFFFFFFFFu, acall_tok = 0;   /* j0146 variants: override src port / token once */
++
+ static bool
+ apr_call(const char *what, uint8_t svc, uint16_t port, uint32_t opcode, const void *payload, uint32_t len, uint32_t rsp_op)
+ {
+@@ -2036,12 +2357,28 @@ apr_call(const char *what, uint8_t svc, uint16_t port, uint32_t opcode, const vo
+ 	h->dest_svc = svc;
+ 	h->dest_domain = APR_DOMAIN_ADSP;
+ 	h->dest_port = port;
+-	h->token = acall_token = apr_token++;
++	h->token = acall_token = acall_tok != 0 ? acall_tok : apr_token++;
++	if (acall_src_port != 0xFFFFFFFFu) {
++		h->src_port = (uint16_t)acall_src_port;
++	}
++	acall_src_port = 0xFFFFFFFFu;
++	acall_tok = 0;
+ 	h->opcode = opcode;
+ 	memcpy(buf + sizeof(struct apr_hdr), payload, len);
+ 	acall_done = false;
++	{
++		static uint32_t tdumps;
++		if (tdumps++ < 8) {
++			char hx[200];
++			uint32_t o = 0, tl = (uint32_t)sizeof(struct apr_hdr) + len;
++			for (uint32_t i = 0; i < tl && i < 40 && o + 3 < sizeof(hx); i++) {
++				o += (uint32_t)snprintf(hx + o, sizeof(hx) - o, "%02x%s", buf[i], (i % 4) == 3 ? " " : "");
++			}
++			LOG("t=%u.%03u apr tx %u B: %s", T, tl, hx);
++		}
++	}
+ 	glink_send(svc == APR_SVC_AFE ? afe_chan : ACHAN, buf, (uint32_t)sizeof(struct apr_hdr) + len);
+-	for (unsigned t = ms(); !acall_done && ms() - t < 1000;) {
++	for (unsigned t = ms(); !acall_done && ms() - t < ((svc == APR_SVC_AFE && afe_assume_ok) ? 300u : 1000u);) {
+ 		if (!glink_poll()) {
+ 			IOSleep(1);
+ 		}
+@@ -2049,6 +2386,10 @@ apr_call(const char *what, uint8_t svc, uint16_t port, uint32_t opcode, const vo
+ 	acall_token = 0;
+ 	bool ok;
+ 	if (!acall_done) {
++		if (svc == APR_SVC_AFE && afe_assume_ok) {
++			LOG("t=%u.%03u apr %s (%08x): no reply (AFE never acks here: assumed done)", T, what, opcode);
++			return true;
++		}
+ 		LOG("t=%u.%03u apr %s (%08x): no reply", T, what, opcode);
+ 		return false;
+ 	}
+@@ -2246,6 +2587,13 @@ close_asm:
+ }
+ 
+ /* after q6core READY (adsp=1); boot-arg adsp_tone=N plays N s of 1 kHz through the speaker (default 3, 0 = none) */
++static void
++jas_chan_log(const uint8_t *d, uint32_t len)
++{
++	LOG("t=%u.%03u glink rx on a logged channel: %u B: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x", T,
++	    len, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
++}
++
+ static void
+ jas_speaker(void)
+ {
+@@ -2254,6 +2602,7 @@ jas_speaker(void)
  
  	(void)PE_parse_boot_argn("adsp_tone", &tone, sizeof(tone));
  	(void)PE_parse_boot_argn("adsp_msw", &j_msw, sizeof(j_msw));
@@ -58,9 +495,12 @@ Subject: [PATCH] j0146: jasmine: LPASS SMMU fault dump around the silent AFE
  	amp = j_i2c_init() ? amp_probe() : -1;
  	LOG("speaker: amplifier %s", amp == 0 ? "TFA98xx @34" : amp == 1 ? "TAS2557 @4c" : amp == 2 ? "MAX98927 @3a" : "not found");
  	j_mi2s_pins();
-@@ -2284,6 +2322,17 @@ jas_speaker(void)
+@@ -2283,7 +2632,20 @@ jas_speaker(void)
+ 		}
  		uint16_t st[2] = { AFE_PORT_PRI_MI2S_RX, 0 };
  		acall_op = 0;
++		dg_budget = dg_printed + 600;
++		LOG("t=%u.%03u diag: %u frames so far, %u printed; marking the AFE stop probe", T, dg_frames, dg_printed);
  		(void)apr_call("afe stop probe", APR_SVC_AFE, 0, AFE_PORT_CMD_DEVICE_STOP, st, sizeof(st), 0);
 +		if (acall_op == 0) {
 +			/* j0146: an LPASS master stuck on an SMMU fault? Give its stream an identity bank and ask again */
@@ -76,11 +516,39 @@ Subject: [PATCH] j0146: jasmine: LPASS SMMU fault dump around the silent AFE
  		if (acall_op == 0) {
  			afe_chan = "apr_apps2";
  			LOG("speaker: apr_apps2 %s; AFE commands go there now", glink_chan_up("apr_apps2") ? "up" : "down");
-@@ -2340,6 +2389,7 @@ jas_speaker(void)
+@@ -2339,13 +2701,18 @@ jas_speaker(void)
+ 		clk = afe_clock(true);
  	}
  	if (!clk) {
- 		LOG("t=%u.%03u speaker: AFE silent; trying again in 30 s", T);
+-		LOG("t=%u.%03u speaker: AFE silent; trying again in 30 s", T);
+-		for (unsigned t = ms(); ms() - t < 30000;) {
+-			if (!glink_poll()) {
+-				IOSleep(5);
++		LOG("t=%u.%03u speaker: AFE silent; retrying every 15 s until t=150 s (diag: %u frames, %u printed)", T,
++		    dg_frames, dg_printed);
 +		(void)lpass_smmu_faults("afe silent");
- 		for (unsigned t = ms(); ms() - t < 30000;) {
- 			if (!glink_poll()) {
- 				IOSleep(5);
++		while (!clk && ms() < 150000) {
++			for (unsigned t = ms(); ms() - t < 15000;) {
++				if (!glink_poll()) {
++					IOSleep(5);
++				}
++				qrtr_poll();
+ 			}
++			clk = afe_clock(true);
+ 		}
+-		clk = afe_clock(true);
+ 	}
+ 	if (!clk) {
+ 		return;
+@@ -3089,8 +3456,9 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ 	glink_register(QCHAN, qrtr_rx);
+ 	if (jasmine) {
+-		glink_register(ACHAN, apr_rx);          /* codec and stream: not yet on SDM660 */
+-		glink_register("apr_apps2", apr_rx);    /* j0145: the ADSP opens it too; replies may come there */
++		/* j0146: apr_audio_svc / apr_apps2 are opened from our side only once diag is up (qrtr_poll) */
++		glink_register("glink_ssr", jas_chan_log);              /* j0146: open them fully, as mainline does */
++		glink_register("fastrpcglink-apps-dsp", jas_chan_log);
+ 	} else {
+ 		glink_register(GCHAN, gpr_rx);
+ 	}

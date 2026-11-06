@@ -1,3 +1,24 @@
+### 2026-11-06 ~13:30: j0146 **AFE SOLVED: our APR header said CMD_RSP**; PCM now flows to PRI_MI2S (amp not set up yet)
+- **Root cause:** APR_HDR_FIELD_CMD was 0x0150 = msg type 1, which is APR_MSG_TYPE_CMD_RSP (msm apr.h: EVENT 0,
+  CMD_RSP 1, SEQ_CMD 2, NSEQ_CMD 3). The ADSP executes such packets but never sends APR_BASIC_RSP_RESULT for a
+  "response"; only commands answered by a dedicated response opcode (q6core state/versions, ASM mem map, ADM open)
+  came back. Fix: 0x0250 (SEQ_CMD). Every AFE/ASM/ADM command now acks, status 0.
+- afe146m (temp boot, adsp=1): AFE clock on, I2S config, PRI_MI2S_RX port start ok; ASM map/open write/media fmt/
+  run, ADM open (copp 0) + matrix map ok; **tone 3 s: 30 buffers sent, 30 done, 0 underruns** (ADSP consumes PCM in
+  real time); closes all ok. No sound yet: TAS2557 not initialised.
+- How it was found: j0146 adds a **DIAG client over QRTR** (msm diagfwd_socket: apps serves svc 0x1001 inst 64 cntl /
+  66 data; send feature mask, real-time DIAGMODE, F3 mask ALL_ENABLED per reported SSID range; HDLC-decode data;
+  0x79 = text F3 with file/line, 0x92 = QShrink hash + args). The ADSP log showed AFE executing every command
+  (clock refcount 1,2,3 on retries, LPAIF regs at 0x15120010..20 on port start) and ending, with no packet sent;
+  response headers carry a per-packet sequence byte with no gaps -> acks never generated. Lines "adsp f3 ..." in
+  logs/netlog-afe146*.txt. Firmware F3 strings: partly QShrink-hashed (AFE/ASM core), drivers keep text.
+- Other findings: ADSP APR packets use version 1 / 32-byte headers (12 ext bytes: 02, seq, 00, 04, timestamp, 0);
+  v0 20-byte headers are accepted. apr_apps2 is unused (one glink_rx_done error on it). No LPASS SMMU faults.
+  Reading LPASS SMMU CB2+ from apps stalls the thread (afe146b) and blocks reboot.
+- Still in j0146 (debug, to trim later): raw APR tx/rx dumps, glink raw logs, pd-mapper answers held until diag is
+  up, apr_audio_svc opened from our side only after diag (<= 3 s), glink_ssr/fastrpc channels opened, v1 sender.
+- Next: TAS2557 init (Xiaomi tas2557-core.c + vendor tas2557_uCDSP.bin) -> audible tone -> /dev/redwood-audio.
+
 ### 2026-11-06 ~11:30: j0146 AFE probes (still silent); phone was stuck once (Power+VolDown), now in afe146c
 - xnu/patches/j0146-jasmine-afe-alive-probe.patch (uncommitted-tested, on j0145): LPASS SMMU fault dump
   (sGFSR/sGFSYNR*, CB1 FSR) at q6core READY, after the AFE stop probe and when AFE stays silent; if an unmatched
