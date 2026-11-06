@@ -1,4 +1,4 @@
-### 2026-11-06 ~14:00 local: SpringBoard restart on first unlock = iOS ROOT FULL (17 GiB HFS, 1.4 MiB free)
+### 2026-11-06 ~14:00 local: SpringBoard restart on first unlock = iOS ROOT FULL (17 GiB HFS, 1.4 MiB free) - FIXED
 - User: after boot, the first unlock "crashes SpringBoard" once, then unlock works. Not caused by audio
   (same pid 26 -> new SpringBoard in the 12:50/12:56 boots and idle139g).
 - Observed: launchd (unified log, /var/db/diagnostics/Persist, decoded with scratchpad tv3.py + strings):
@@ -19,12 +19,19 @@
   /private/var/db 2391 (diagnostics 1890: Special 1316 MB in 939 files, Persist 497; uuidtext 433),
   /private/preboot 1623, /usr/local/bin 966 (debug .raw shots, dylib variants), /Applications 723,
   /private/var/mobile 759, /private/var/root 430 (coresymbolicationd cache 329), /private/var/tmp 356.
-- userdata partition is ~107 GiB (LUN0 sda34) and SWEET UFS reports all of it (DKIOCGETBLOCKCOUNT =
-  nblocks), but the HFS+ volume was made 16-17 GiB by tools/mkiosroot.sh: ~90 GiB unused.
-- Proposed (awaiting user): (1) free space: old unified-log files (Special/Persist), coresymbolicationd cache,
-  /var/tmp NSIRD_lsd_*; (2) grow the HFS+ volume online to the whole partition (fsctl HFSIOC_RESIZE_VOLUME
-  from a small on-device tool) - modifies the root file system, needs explicit OK; (3) find why logd's old
-  logs are never purged (guess: CacheDelete/deleted purge path not working on this port).
+- CORRECTION: the "~107 GiB userdata" note further down is the old sweet (UFS) phone. jasmine is eMMC
+  (29820 MiB); userdata = first block 0x16c0000 (512 B), 18171 MiB; the SWEET console log uses its last
+  4096 KiB (block 0x3a3bfde). HFS volume was exactly 17.00 GiB.
+- FIXED (user said "Free space and grow"): deleted 1527 old unified-log files (kept newest 50 Special, 10
+  Persist, 5 Signpost; scratchpad prune.py over sweet-fs RM) + coresymbolicationd/20H392 (329 MB) -> 1.7 GiB
+  free. ios/sweet_growfs.c (new, /usr/local/bin/sweet_growfs; fsctl HFSIOC_RESIZE_VOLUME -> hfs_extendfs;
+  -s BYTES because /dev/ufsroot0 is EBUSY while mounted): `sweet_growfs -y -s 19049459712` (1 MiB below the
+  console log) -> volume 17.74 GiB, 2.47 GiB free. /var/tmp (TransientInfo-*, bgmtl traces, debug raws) and
+  /usr/local/bin debug files left alone.
+- Verified, boot grow151 (exit151c image again): mount clean, no VeryLowDisk line; user unlocked: Spotlight
+  launched, no EXIT line, SpringBoard stayed pid 26 (one exec), no PosterBoard crash; df 2.7 GiB free.
+- Still open: logd never purges old logs here (1.9 GB accumulated; guess: CacheDelete/deleted purge path not
+  working on this port), so the disk will fill again; j0151 is diagnostic only.
 
 ### 2026-11-06 ~17:15: j0150 TAS2557 fault flags + recovery + die temperature (temp boot flt150)
 - User confirmed by ear: the j0149 Tuning Mode beep is audible.
