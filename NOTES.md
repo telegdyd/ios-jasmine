@@ -1,4 +1,4 @@
-### 2026-11-06 ~11:30: j0146 AFE probes (still silent); phone NOT reachable, needs Power+VolDown
+### 2026-11-06 ~11:30: j0146 AFE probes (still silent); phone was stuck once (Power+VolDown), now in afe146c
 - xnu/patches/j0146-jasmine-afe-alive-probe.patch (uncommitted-tested, on j0145): LPASS SMMU fault dump
   (sGFSR/sGFSYNR*, CB1 FSR) at q6core READY, after the AFE stop probe and when AFE stays silent; if an unmatched
   stream faulted, give it an identity bank and retry AFE. Boots afe146 (bogus-opcode variant), afe146b, afe146c.
@@ -16,6 +16,14 @@
   74; ADSPR root_pd, ADSPS sensor_pd); stock adsp-loader does nothing after subsystem_get; stock apr.c header fill is
   identical to ours; CX is already voted (GPU code, 860 mV) so the CX proxy vote is unlikely. Mainline SDM660
   internal sound card series (2026-02, Redmi Note 7 / Pixel 3a) uses q6afe without any extra setup.
+- **afe146c (after the user's Power+VolDown, 2026-11-06 ~11:35): booted fine.** LPASS SMMU sGFSR 0 and CB1 no fault
+  at q6core READY, after the AFE stop probe and when AFE stays silent -> no SMMU fault (non-secure view): SMMU theory
+  out. AFE still silent, ASM map + ADM open still answer. Phone left in the afe146c temp boot.
+- dsp partition (backup/nura-full-20261020/p48_dsp_a.img, ext4 "dsp"): /adsp holds only AVS dynamic decoders and
+  post-proc modules (Alac/Ape/Flac/Heaac/Vorbis/Wma, AudioSphere, DTS_HPX, CFCM, fluence, mmecns), FastRPC skels and
+  fastrpc_shell_0; nothing AFE-like. Mainline SDM660 audio worked while ADSP FastRPC on 660 was still broken
+  (qualcomm/fastrpc issue 269, 2026-04 DT fix), so adsprpcd/hexagonrpcd is not an AFE prerequisite (inference).
+  Mainline sdm630.dtsi ADSP/APR/lpass_smmu nodes have nothing we lack (xo clock, cx domain, smp2p, glink, apr).
 - Ideas left: DIAG over glink (DIAG_CNTL/DIAG_DATA on lpass) to read the ADSP's F3 log (may be qshrink-hashed);
   fastrpc listener (adsprpcd) in case the audio PD waits for a dynamic module; sysmon/SSCTL events; glink_ssr.
 
