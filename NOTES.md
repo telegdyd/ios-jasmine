@@ -1,3 +1,18 @@
+### 2026-11-06 15:14 local: CPU idle power measured unplugged, screen off: ~25-35 mA less (~11-15 %)
+- xnu/patches/j0153-jasmine-cpu-idle-ab.patch (diagnostic, runs only on command): `cpuidle ab CYCLES SECS [WAIT]`
+  alternates WFI and the current idle mode on the phone itself (no USB needed), gauge current averaged per window
+  (first 4 s dropped), results kept for `cpuidle ab` after replug. Temp boot idle153 (all151-slotb cmdline + ADT).
+- Run 14:57:50-15:09:50, user unplugged + Power (screen off), `cpuidle ab 6 60 90`, order flipped every cycle:
+  WFI -243/-258/-225/-222/-229/-223 mA vs mode 3 -196/-192/-365/-207/-204/-198 mA; B-A +47 +66 -140 +15 +25 +25.
+  Mean +6 mA with cycle 2, whose mode-3 window had a background burst (-365 mA); without it +36 mA, median +25 mA.
+  So idle saves ~25-35 mA of ~225 mA screen-off draw. Battery 96 -> 95 %, 41.3 -> 28.3 C (no charging).
+- Late after the timer over the whole boot (~20 min, mostly screen off, low clocks): max 1.68 ms, 114 resumes > 1 ms
+  in total (all CPUs), 0 PSCI failures. Worse than the screen-on 1.17 ms: resume at the lowest DVFS step is slower
+  than the stock latencies (which are for nominal clocks). Possible follow-up: scale the early-fire margin with the
+  cluster clock.
+- Phone: temp boot idle153, plugged in again, lock released. boot_b stays idle152 (same idle behaviour; j0153 only
+  adds the command).
+
 ### 2026-11-06 14:46 local: boot_b = idle152 FLASHED - CPU idle (PSCI ret / core pc / L2 pc) ON BY DEFAULT
 - User: "Continue our work on cpu sleep until we can enable it". xnu/patches/j0152-jasmine-cpu-idle-default.patch on
   top of j0139: the QTimer broadcast SPI is routed to the sleeper with the earliest wake (GICD_IROUTER, as Linux
