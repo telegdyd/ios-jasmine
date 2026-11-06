@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 16:00:00 +0100
+Subject: [PATCH] j0149: jasmine TAS2557 Tuning Mode (speaker protection) with program CRC check
+
+---
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -2652,7 +2652,7 @@ tc_str(struct tas_cur *c)
+ 	tc_skip(c, 1);
+ }
+ 
+-struct tas_blk { uint32_t type, n; const uint8_t *cmds; };
++struct tas_blk { uint32_t type, n; const uint8_t *cmds; uint8_t pchk, pcrc; };
+ #define TAS_MAXBLK 8
+ struct tas_data { uint32_t nb; struct tas_blk b[TAS_MAXBLK]; };
+ 
+@@ -2660,8 +2660,11 @@ static void
+ tc_block(struct tas_cur *c, uint32_t drv, struct tas_blk *b)
+ {
+ 	b->type = tc_u32(c);
++	b->pchk = b->pcrc = 0;
+ 	if (drv >= 0x200) {
+-		tc_skip(c, 4);                          /* P/Y checksum present + value: not verified here */
++		b->pchk = (uint8_t)tc_u8(c);            /* program-RAM CRC present + value (checked by the TAS2557) */
++		b->pcrc = (uint8_t)tc_u8(c);
++		tc_skip(c, 2);                          /* YRAM checksum: computed in software by stock, not here */
+ 	}
+ 	b->n = tc_u32(c);
+ 	b->cmds = c->p;
+@@ -2755,9 +2758,34 @@ tas_fw_select(uint32_t want_prog, uint32_t want_conf)
+ 	return s;
+ }
+ 
+-/* tas2557_load_block, without the CRC verification */
++static int tas_block_once(const struct tas_blk *b);
++
++/* tas2557_load_block: with the device's program-RAM CRC check (TAS2557_CRC_RESET B0 P0 R33, CHECKSUM R32) */
+ static int
+ tas_block(const struct tas_blk *b)
++{
++	for (int tries = 0; tries < 3; tries++) {
++		if (b->pchk && tas_w1(0, 0, 33, 1) != 0) {
++			return -1;
++		}
++		if (tas_block_once(b) != 0) {
++			return -1;
++		}
++		if (!b->pchk) {
++			return 0;
++		}
++		uint8_t crc = 0;
++		(void)tas_r(0, 0, 32, &crc);
++		LOG("tas2557: block %#x CRC %02x (firmware %02x)%s", b->type, crc, b->pcrc, crc == b->pcrc ? "" : " MISMATCH");
++		if (crc == b->pcrc) {
++			return 0;
++		}
++	}
++	return -1;
++}
++
++static int
++tas_block_once(const struct tas_blk *b)
+ {
+ 	const uint8_t *d = b->cmds;
+ 	uint32_t i = 0;
+@@ -3040,8 +3068,14 @@ jas_speaker(void)
+ 	amp = j_i2c_init() ? amp_probe() : -1;
+ 	jas_amp_kind = amp;
+ 	LOG("speaker: amplifier %s", amp == 0 ? "TFA98xx @34" : amp == 1 ? "TAS2557 @4c" : amp == 2 ? "MAX98927 @3a" : "not found");
+-	if (amp == 1 && !tas_setup(1, 4, 60000)) {      /* ROM Mode 1, 48 kHz */
+-		LOG("speaker: TAS2557 setup failed; the tone will be silent");
++	if (amp == 1) {
++		/* Tuning Mode (speaker protection, as stock: program 0, first 48 kHz config, no calibration file on this phone) */
++		uint32_t tp = 0, tc = 0;
++		(void)PE_parse_boot_argn("tas_prog", &tp, sizeof(tp));
++		tc = tp == 1 ? 4 : 0;
++		if (!tas_setup(tp, tc, 60000) && (tp == 1 || !tas_setup(1, 4, 1000))) {
++			LOG("speaker: TAS2557 setup failed; the speaker stays silent");
++		}
+ 	}
+ 	j_mi2s_pins();
+ 	srn_register();

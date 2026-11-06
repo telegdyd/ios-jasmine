@@ -1,3 +1,14 @@
+### 2026-11-06 ~16:30: j0149 TAS2557 Tuning Mode (speaker protection) loads; user confirmed iOS UI sounds play
+- User (16:10): UI sounds play through the speaker (plug148 setup, ROM mode).
+- xnu/patches/j0149-jasmine-tas2557-tuning-mode.patch (on j0148): default program 0 "Tuning Mode" + config 0
+  (48 kHz s1_0), as stock tas2557_fw_ready (first config of program 0). No calibration file on this phone
+  (persist backup has no audio/tas2557_cal.bin), so no calibration block, as stock without the file.
+  Program-RAM CRC checked by the device (CRC_RESET B0P0R33, CHECKSUM R32; up to 3 tries); falls back to ROM Mode 1
+  if Tuning Mode fails; boot-arg tas_prog=1 forces ROM mode.
+- tun149: block 0x1 CRC 5c = firmware 5c, 771 writes 0 errors; sweet_beep 2 s played (96000 in, 0 dropped).
+  Audible in Tuning Mode: not yet confirmed by ear.
+- Still not done: die-temperature timer / IRQ handling of stock Tuning Mode, FLAGS read uses wrong registers.
+
 ### 2026-11-06 ~16:00: **iOS plays through the speaker** (CoreAudio plug-in installed; temp boot of rw148d)
 - tools/mesa-local.sh ios now also builds userland/audio as flat `RedwoodAudio` (+ `RedwoodAudio.Info.plist`);
   tools/vm-mesa.sh ships userland/audio to the VM. Built xnu/out-ios-plug148.
