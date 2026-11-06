@@ -1,0 +1,231 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 16:00:00 +0100
+Subject: [PATCH] j0150: jasmine TAS2557 fault flags (right registers), recovery, die temperature check
+
+---
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -2563,6 +2563,16 @@ tas_r(uint8_t book, uint8_t page, uint8_t reg, uint8_t *v)
+ 	return j_i2c(&reg, 1, v, 1);
+ }
+ 
++static int
++tas_rn(uint8_t book, uint8_t page, uint8_t reg, uint8_t *v, uint32_t n)
++{
++	if (tas_bp(book, page) != 0) {
++		return -1;
++	}
++	j_i2c_addr = TAS_ADDR;
++	return j_i2c(&reg, 1, v, n);
++}
++
+ /* the firmware file, read through the VFS once the root is mounted */
+ static uint8_t *tas_fw;
+ static uint32_t tas_fw_len;
+@@ -2861,6 +2871,15 @@ static const uint8_t tas_shutdown[][4] = {
+ };
+ 
+ static bool tas_loaded;
++static void tas_recover(void);
++static uint32_t tas_cur_prog, tas_cur_conf;
++static bool tas_tuning;                         /* program in Tuning Mode (appmode 2): die temperature check, as stock */
++static uint8_t tas_gain0 = 0xff, tas_gain;      /* DAC gain (SPK_CTRL bits 6:3) as loaded / now */
++static bool tas_on;
++static uint32_t tas_recovers;
++static uint64_t tas_next_flags, tas_next_temp;
++static uint32_t tas_temp_n;
++static int32_t tas_temp_sum, tas_temp_last = 0x7fffffff;
+ 
+ /* program + configuration (device stays powered down); waits up to wait_ms for the root file system */
+ static bool
+@@ -2909,9 +2928,55 @@ tas_setup(uint32_t prog, uint32_t conf, unsigned wait_ms)
+ 	LOG("tas2557: rev/pgid %02x (%d), program %d PLL %d config pre %d coeff %d; %u writes %u errors; safe guard %02x, "
+ 	    "SPK_CTRL %02x", rev, rr, pr, pl, cp, cc, tas_writes, tas_errs, sg, spk);
+ 	tas_loaded = pr == 0 && pl == 0 && cp == 0 && cc == 0 && tas_errs == 0 && sg == 0x5a;
++	if (tas_loaded) {
++		tas_cur_prog = prog;
++		tas_cur_conf = conf;
++		tas_tuning = s.mode == 2;
++		tas_gain = (uint8_t)((spk >> 3) & 0xf);
++		if (tas_gain0 == 0xff) {
++			tas_gain0 = tas_gain;
++		}
++	}
+ 	return tas_loaded;
+ }
+ 
++/*
++ * Fault check, as stock irq_work_routine (polled here: no INT GPIO handler). FLAGS_1 (B0 P0 R104) and FLAGS_2
++ * (R108) are read-to-clear; critical: FLAGS_1 & 0xfc (over current, under voltage, clock halt, die over temperature,
++ * brownout, clock lost), FLAGS_2 & 0x0c (clock detect 1/2), or POWER_UP_FLAG (R100) without both 0xc0 bits.
++ */
++static bool
++tas_flags(const char *why)
++{
++	uint8_t f1 = 0, f2 = 0, pu = 0;
++	int r = tas_r(0, 0, 104, &f1);
++	r |= tas_r(0, 0, 108, &f2);
++	r |= tas_r(0, 0, 100, &pu);
++	for (int i = 0; r == 0 && (pu & 0xc0) != 0xc0 && i < 2; i++) {     /* just after power-up: again after 10 ms */
++		IOSleep(10);
++		r = tas_r(0, 0, 100, &pu);
++	}
++	bool bad = r != 0 || (f1 & 0xfc) != 0 || (f2 & 0x0c) != 0 || (pu & 0xc0) != 0xc0;
++	if (bad || why != NULL) {
++		LOG("tas2557: %s: flags %02x %02x power-up %02x%s%s%s%s%s%s%s%s%s%s", why ? why : "check", f1, f2, pu,
++		    r ? " I2C-ERROR" : "", f1 & 0x80 ? " OVER-CURRENT" : "", f1 & 0x40 ? " UNDER-VOLTAGE" : "",
++		    f1 & 0x20 ? " CLK-HALT" : "", f1 & 0x10 ? " DIE-OVERTEMP" : "", f1 & 0x08 ? " BROWNOUT" : "",
++		    f1 & 0x04 ? " CLK-LOST" : "", f2 & 0x08 ? " CLK-DET1" : "", f2 & 0x04 ? " CLK-DET2" : "",
++		    (pu & 0xc0) != 0xc0 ? " CLASS-D-OFF" : "");
++	}
++	return !bad;
++}
++
++static void
++tas_power_seq(void)
++{
++	uint8_t f = 0;
++	(void)tas_r(0, 0, 104, &f);                 /* clear stale flags (stock clearIRQ) */
++	(void)tas_r(0, 0, 108, &f);
++	tas_seq(tas_startup, sizeof(tas_startup) / sizeof(tas_startup[0]));
++	tas_seq(tas_unmute, sizeof(tas_unmute) / sizeof(tas_unmute[0]));
++}
++
+ static void
+ tas_power(bool on)
+ {
+@@ -2919,20 +2984,115 @@ tas_power(bool on)
+ 		return;
+ 	}
+ 	if (on) {
+-		tas_seq(tas_startup, sizeof(tas_startup) / sizeof(tas_startup[0]));
+-		tas_seq(tas_unmute, sizeof(tas_unmute) / sizeof(tas_unmute[0]));
+-		uint8_t p1 = 0, p2 = 0, st1 = 0, st2 = 0;
+-		(void)tas_r(0, 0, 4, &p1);
+-		(void)tas_r(0, 0, 5, &p2);
+-		(void)tas_r(0, 1, 108, &st1);           /* FLAGS_1 / FLAGS_2 (B0 P1 R0x6c/0x6d) */
+-		(void)tas_r(0, 1, 109, &st2);
+-		LOG("tas2557: powered up: PWR_CTRL1 %02x CTRL2 %02x flags %02x %02x (%u errors)", p1, p2, st1, st2, tas_errs);
++		uint8_t sg = 0;
++		if (tas_r(0, 0, 37, &sg) != 0 || sg != 0x5a) {          /* stock: safe guard before enable */
++			LOG("tas2557: safe guard %02x before power-up: reloading", sg);
++			if (!tas_setup(tas_cur_prog, tas_cur_conf, 0)) {
++				return;
++			}
++		}
++		tas_power_seq();
++		tas_on = true;
++		IOSleep(10);                            /* stock: first check 10 ms after power-up */
++		bool ok = tas_flags("powered up");
++		uint64_t now = mach_absolute_time(), d;
++		nanoseconds_to_absolutetime(1000ull * 1000000, &d);
++		tas_next_flags = now + d;
++		nanoseconds_to_absolutetime(5000ull * 1000000, &d);
++		tas_next_temp = now + d;
++		tas_temp_n = 0;
++		tas_temp_sum = 0;
++		if (!ok) {
++			tas_recover();
++		}
+ 	} else {
+ 		tas_seq(tas_shutdown, sizeof(tas_shutdown) / sizeof(tas_shutdown[0]));
++		tas_on = false;
+ 		LOG("tas2557: shut down");
+ 	}
+ }
+ 
++/* stock: hardware reset, reload program + configuration, power up again; at most 5 times per boot */
++static void
++tas_recover(void)
++{
++	if (tas_recovers >= 5) {
++		LOG("tas2557: %u recoveries already: amp stays off", tas_recovers);
++		tas_seq(tas_shutdown, sizeof(tas_shutdown) / sizeof(tas_shutdown[0]));
++		tas_on = false;
++		tas_loaded = false;
++		return;
++	}
++	tas_recovers++;
++	LOG("tas2557: recovery %u: reset and reload program %u config %u", tas_recovers, tas_cur_prog, tas_cur_conf);
++	tas_on = false;
++	if (!tas_setup(tas_cur_prog, tas_cur_conf, 0)) {
++		return;
++	}
++	tas_power_seq();
++	tas_on = true;
++	IOSleep(10);
++	if (!tas_flags("after recovery")) {
++		tas_recover();
++	}
++}
++
++static void
++tas_set_gain(uint8_t g)
++{
++	uint8_t spk = 0;
++	if (tas_r(0, 0, 6, &spk) == 0 && tas_w1(0, 0, 6, (uint8_t)((spk & ~0x78u) | (uint32_t)(g & 0xf) << 3)) == 0) {
++		tas_gain = g;
++	}
++}
++
++/*
++ * While the amp is on (audio thread): flags every second, die temperature every 5 s (Tuning Mode only, as stock
++ * timer_work_routine: B130 P2 R124, 32-bit, degrees << 23; average of 12 below 0 C -> DAC gain 6, above 5 C -> back).
++ */
++static void
++tas_watch(void)
++{
++	if (!tas_loaded || !tas_on) {
++		return;
++	}
++	uint64_t now = mach_absolute_time(), d;
++	if (now >= tas_next_flags) {
++		nanoseconds_to_absolutetime(1000ull * 1000000, &d);
++		tas_next_flags = now + d;
++		if (!tas_flags(NULL)) {
++			tas_recover();
++			return;
++		}
++	}
++	if (tas_tuning && now >= tas_next_temp) {
++		nanoseconds_to_absolutetime(5000ull * 1000000, &d);
++		tas_next_temp = now + d;
++		uint8_t b[4] = { 0 };
++		if (tas_rn(130, 2, 124, b, 4) != 0) {
++			return;
++		}
++		int32_t raw = (int32_t)((uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3]);
++		int32_t deg = raw >> 23;
++		if (tas_temp_last == 0x7fffffff || deg - tas_temp_last >= 5 || tas_temp_last - deg >= 5) {
++			LOG("tas2557: die temperature %d C (raw %08x)", deg, (uint32_t)raw);
++			tas_temp_last = deg;
++		}
++		tas_temp_sum += deg;
++		if (++tas_temp_n % 12 == 0) {
++			int32_t avg = tas_temp_sum / 12;
++			tas_temp_sum = 0;
++			if (avg < 0 && tas_gain != 6) {
++				tas_set_gain(6);
++				LOG("tas2557: die %d C (cold): DAC gain 6", avg);
++			} else if (avg > 5 && tas_gain != tas_gain0) {
++				tas_set_gain(tas_gain0);
++				LOG("tas2557: die %d C: DAC gain back to %u", avg, tas_gain0);
++			}
++		}
++	}
++}
++
+ static bool
+ jas_tone(unsigned seconds, int amp)
+ {
+@@ -3426,6 +3586,9 @@ jas_stream_poll(void)
+ 		return;
+ 	}
+ 	jas_stream_poll_feed();
++	if (js_amp == 1) {
++		tas_watch();
++	}
+ }
+ 
+ /* hand chunks to ASM: up to JS_INFLIGHT outstanding, silence when the writer is behind */

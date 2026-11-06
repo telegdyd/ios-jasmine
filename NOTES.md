@@ -1,3 +1,18 @@
+### 2026-11-06 ~17:15: j0150 TAS2557 fault flags + recovery + die temperature (temp boot flt150)
+- User confirmed by ear: the j0149 Tuning Mode beep is audible.
+- xnu/patches/j0150-jasmine-tas2557-faults-die-temp.patch (on j0149), as stock irq_work_routine /
+  timer_work_routine but polled from the audio thread (no INT GPIO handler):
+  FLAGS_1 B0P0R104 / FLAGS_2 R108 (read-to-clear; j0149 read wrong P1 regs) + POWER_UP_FLAG R100, cleared before
+  power-up, checked 10 ms after power-up and every 1 s while on; critical (F1 & 0xfc, F2 & 0x0c, R100 & 0xc0 != 0xc0)
+  -> hw reset + reload program/config + power up (max 5 per boot, then amp off). Safe guard 0x5a checked before
+  each power-up. Tuning Mode: die temperature B130P2R124 (32-bit >> 23 = degrees C) every 5 s, logged when it
+  moves 5 C; 12-sample average < 0 C -> DAC gain 6, > 5 C -> back to the loaded gain (SPK_CTRL 7c -> gain 15).
+- flt150 observed: power-up flags 02 00, power-up fc (no faults); die temperature 54 C (raw 1b2e2aaa) while
+  playing. Two 15 s sweet_beep runs at -14 dBFS: no fault lines, no recovery. First run (t=18 s, right after
+  boot) dropped 33600 frames + paused once mid-beep (guess: writer stalled during boot; second run 0 new drops).
+- Not tested: the recovery path (no fault could be induced). 54 C not cross-checked against another sensor.
+- Next: trim j0146 debug output, first-open latency (~0.5 s), microphone (/dev/redwood-mic).
+
 ### 2026-11-06 ~16:30: j0149 TAS2557 Tuning Mode (speaker protection) loads; user confirmed iOS UI sounds play
 - User (16:10): UI sounds play through the speaker (plug148 setup, ROM mode).
 - xnu/patches/j0149-jasmine-tas2557-tuning-mode.patch (on j0148): default program 0 "Tuning Mode" + config 0
