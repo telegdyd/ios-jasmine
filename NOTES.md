@@ -1,3 +1,36 @@
+### 2026-11-06 ~01:45: j0145 sound step 2 (partial): amp = TAS2557, ASM/ADM answer, AFE never answers (BLOCKER)
+- Speaker path facts (stock Android: backup/boot_a.img dtb -> tools/extract-dtb.py, vendor_a mixer_paths.xml,
+  audio_platform_info_intcodec.xml): loudspeaker is NOT on the internal codec; "speaker" = PRI_MI2S_RX to an external
+  smart amp on i2c@c1b6000 (BLSP2 QUP2 "i2c6", GPIO 22/23 func 3). DT lists three second sources: tfa98xx@34,
+  tas2557@4c, max98927@3a; reset GPIO 77, irq GPIO 73, supply pm660l L6 (also DSI vdda-3p3, so on). PRI MI2S pins
+  GPIO 12 (func 2), 13/14/15 (func 3), north tile; SoC is I2S master, SD0, 48 kHz 16-bit (AFE IBIT 1.536 MHz).
+  Vendor firmware: tfa98xx.cnt (decoded with tools/tfa-cnt.py: "bypass" profile = 10 bitfields, no DSP) and
+  tas2557_uCDSP.bin. TAS2557 driver source: MiCode Xiaomi_Kernel_OpenSource jasmine-q-oss
+  sound/soc/codecs/sdm660_cdc/tas2557-*.
+- **This phone has the TAS2557 @0x4c** (ACK only with GPIO 77 HIGH = out of reset, active-low; 0x34/0x3a NACK).
+  The patch's TFA9894 bypass bring-up is therefore unused; TAS2557 init (its uCDSP firmware) is still to write.
+- xnu/patches/j0145-jasmine-speaker-tone.patch (on j0144, adsp=1 only): LPASS SMMU (0x5100000: sCR0 00200626
+  USFCFG=1, 13 SMRs/14 CBs, none used) stream 1 -> identity CB1, done with GDSC 0x7d034 + clk vote 0x7d014 BEFORE
+  the ADSP boot; polled QUP I2C6; amp probe (both reset levels, then TLMM pull-ups); servreg notifier client (svc
+  0x42: msm/adsp/audio_pd state 1fffffff UP at 1.09 s); SLIMbus QMI (svc 0x301: select instance 1 master + power
+  active, both ok); apr_apps2 channel opened too; APR call helper; AFE clock/I2S cfg/port start, ASM mem map/open
+  write/media fmt/run/writes, ADM open + matrix map; tone (default 3 s when adsp=1, cmdline full) with buffer
+  accounting; diagnostics (AVCS_GET_VERSIONS, ASM/AFE/ADM probes). Builds spk145..spk145g, images
+  shim/out/shim-boot-spk145*-tmp.img (fg143 recipe + " adsp=1"), logs/netlog-spk145*.txt, all temp boots.
+- Observed (spk145f/g): q6core READY 1.0 s; AVCS_GET_VERSIONS lists 9 services: 3 core 0x40002, **4 AFE 0x260000**,
+  7 ASM 0x70002, 8 ADM 0x70000, 9, a, b, c, d. **ASM mem map answers** (handle b08e7ff8), **ADM open answers**
+  (status 0, copp 0). **AFE never answers anything** (DEVICE_STOP, SVC_SET_PARAM clock), on apr_audio_svc or
+  apr_apps2, not even after 30 s; the packets do leave (glink tx counts, intents consumed). No ADSP crash
+  (slave-kernel 6). AVCS_CMD_GET_FWK_VERSION (0x1292c) is not supported by this firmware (no reply).
+- Ruled out (each its own boot): audio PD not up; GDSC/SMMU clock off at ADSP boot; missing SLIMbus QMI handshake;
+  replies on apr_apps2; AFE slow to start. Not tried: CX TURBO proxy vote during the ADSP boot (stock PIL does
+  vdd_cx proxy + qcom,mas-crypto bus vote), sysmon/SSCTL events, glink_ssr channel, ADM close needs a different
+  port (no reply to close with port = copp), sending AFE before any ASM/ADM traffic. Guess (unverified): AFE's
+  service thread is blocked on LPASS hardware it touches at its first command.
+- Next: find why AFE is silent (try the untried items above; compare with an SDM660 mainline audio bring-up);
+  then TAS2557 init from tas2557-core.c + tas2557_uCDSP.bin; then the tone; then /dev/redwood-audio.
+- Tools added: tools/fdt-dump.py, tools/fat16-ls.py, tools/tfa-cnt.py. Phone left in the spk145g temp boot.
+
 ### 2026-11-06 ~00:20: j0144 sound step 1: jasmine ADSP boots (PAS), GLINK/QRTR/pd-mapper up, APR q6core READY
 - Choice (user): sound before camera. The iOS side exists (userland/audio plug-in -> /dev/redwood-audio sink API);
   camera would need Apple's closed ISP interface emulated. Speaker work = kernel only.

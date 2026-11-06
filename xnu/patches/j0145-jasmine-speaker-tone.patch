@@ -1,0 +1,1142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 01:30:00 +0100
+Subject: [PATCH] j0145: jasmine speaker: TFA9894 (I2C6) in bypass, AFE
+ PRI_MI2S_RX, ASM/ADM tone (adsp_tone=N), LPASS SMMU stream 1 identity
+
+---
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -1035,6 +1035,124 @@ pdm_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t *
+ 	LOG("t=%u.%03u pd-mapper: msg %x \"%s\" -> %u domain(s)", T, msg, name, cnt);
+ }
+ 
++/*
++ * j0145: servreg notifier client (mainline pdr_interface.c): the stock kernel waits for the
++ * ADSP's msm/adsp/audio_pd to be UP (audio_notifier -> apr_adsp_up) before AFE/ASM/ADM.
++ * REGISTER_LISTENER (0x20) to service 0x42 answers the current state; STATE_UPDATED (0x22)
++ * indications are acked (0x23).
++ */
++#define SVC_SRN             0x42
++#define PORT_SRN            0x4002
++#define SRN_UP              0x1FFFFFFFu
++#define SRN_PATH            "msm/adsp/audio_pd"
++static uint32_t srn_node = 0xFFFFFFFFu, srn_port, srn_state = 0xFFFFFFFFu;
++static uint16_t srn_txn = 1;
++static bool srn_asked;
++
++static void
++srn_send(uint16_t msg, const uint8_t *tlvs, uint32_t n)
++{
++	uint8_t m[128];
++	if (n + 7 > sizeof(m)) {
++		return;
++	}
++	m[0] = QMI_REQ;
++	*(uint16_t *)(m + 1) = srn_txn++;
++	*(uint16_t *)(m + 3) = msg;
++	*(uint16_t *)(m + 5) = (uint16_t)n;
++	memcpy(m + 7, tlvs, n);
++	qrtr_send(QRTR_TYPE_DATA, PORT_SRN, srn_node, srn_port, m, n + 7);
++}
++
++/*
++ * j0145: SLIMbus QMI (service 0x301, slim-msm.c): the stock ngd driver for slim@15240000
++ * (cell-index 3, BT/FM) selects ADSP instance 1 as master and asks for power. Tried because
++ * AFE alone does not answer.
++ */
++#define SVC_SLIM            0x301
++#define PORT_SLIM           0x4003
++static uint32_t slim_node = 0xFFFFFFFFu, slim_port;
++static volatile uint32_t slim_rsp_msg, slim_rsp_res = 0xFFFFFFFFu;
++
++static void
++slim_send(uint16_t msg, const uint8_t *tlvs, uint32_t n)
++{
++	uint8_t m[64];
++	m[0] = QMI_REQ;
++	*(uint16_t *)(m + 1) = srn_txn++;
++	*(uint16_t *)(m + 3) = msg;
++	*(uint16_t *)(m + 5) = (uint16_t)n;
++	memcpy(m + 7, tlvs, n);
++	qrtr_send(QRTR_TYPE_DATA, PORT_SLIM, slim_node, slim_port, m, n + 7);
++}
++
++static void
++slim_rx(uint16_t msg, const uint8_t *d, uint32_t len)
++{
++	uint16_t l = 0;
++	const uint8_t *v = qm_find(d, len, 0x02, &l);
++	slim_rsp_res = v != NULL && l >= 4 ? *(const uint32_t *)v : 0xFFFFFFFEu;
++	slim_rsp_msg = msg;
++	LOG("t=%u.%03u slimbus qmi: msg %x result %08x", T, msg, slim_rsp_res);
++}
++
++static void
++srn_register(void)
++{
++	uint8_t t[96];
++	uint32_t n = 0;
++	uint8_t on = 1;
++
++	if (srn_node == 0xFFFFFFFFu || srn_asked) {
++		return;
++	}
++	srn_asked = true;
++	n = (uint32_t)qm_tlv(t, n, 0x01, &on, 1);
++	n = (uint32_t)qm_tlv(t, n, 0x02, SRN_PATH, (uint16_t)strlen(SRN_PATH));
++	srn_send(0x20, t, n);
++	LOG("t=%u.%03u servreg: register listener for %s (node %u port %x)", T, SRN_PATH, srn_node, srn_port);
++}
++
++static void
++srn_rx(uint8_t type, uint16_t msg, const uint8_t *d, uint32_t len)
++{
++	uint16_t l = 0;
++	const uint8_t *v;
++
++	if (type == QMI_RESP && msg == 0x20) {
++		v = qm_find(d, len, 0x02, &l);
++		uint32_t res = v != NULL && l >= 4 ? *(const uint32_t *)v : 0xFFFFFFFFu;
++		v = qm_find(d, len, 0x10, &l);
++		if (v != NULL && l >= 4) {
++			srn_state = *(const uint32_t *)v;
++		}
++		LOG("t=%u.%03u servreg: register listener: result %08x, %s state %08x%s", T, res, SRN_PATH, srn_state,
++		    srn_state == SRN_UP ? " UP" : "");
++	} else if (msg == 0x22) {
++		uint16_t txn = 0, pl = 0;
++		const uint8_t *path;
++		v = qm_find(d, len, 0x01, &l);
++		if (v != NULL && l >= 4) {
++			srn_state = *(const uint32_t *)v;
++		}
++		path = qm_find(d, len, 0x02, &pl);
++		v = qm_find(d, len, 0x03, &l);
++		if (v != NULL && l >= 2) {
++			txn = *(const uint16_t *)v;
++		}
++		LOG("t=%u.%03u servreg: state update %08x%s (txn %u)", T, srn_state, srn_state == SRN_UP ? " UP" : "", txn);
++		if (path != NULL) {
++			uint8_t t[96];
++			uint32_t n = 0;
++			n = (uint32_t)qm_tlv(t, n, 0x01, path, (uint16_t)MIN(pl, (uint16_t)64));
++			n = (uint32_t)qm_tlv(t, n, 0x02, &txn, 2);
++			srn_send(0x23, t, n);
++		}
++	} else {
++		LOG("t=%u.%03u servreg: type %u msg %x, %u B", T, type, msg, len);
++	}
++}
++
+ static void
+ qrtr_rx(const uint8_t *p, uint32_t len)
+ {
+@@ -1076,6 +1194,14 @@ qrtr_rx(const uint8_t *p, uint32_t len)
+ 			break;
+ 		}
+ 		q_services++;
++		if (c.a == SVC_SLIM && slim_node == 0xFFFFFFFFu) {
++			slim_node = c.c;
++			slim_port = c.d;
++		}
++		if (c.a == SVC_SRN && srn_node == 0xFFFFFFFFu) {
++			srn_node = c.c;
++			srn_port = c.d;
++		}
+ 		LOG("t=%u.%03u ADSP service %x v%u inst %x node %u port %x", T, c.a, c.b & 0xFF, c.b >> 8, c.c, c.d);
+ 		break;
+ 	case QRTR_TYPE_NEW_LOOKUP:
+@@ -1090,7 +1216,11 @@ qrtr_rx(const uint8_t *p, uint32_t len)
+ 			struct qrtr_ctrl r = { QRTR_TYPE_RESUME_TX, QRTR_NODE_APPS, dst_port, 0, 0 };
+ 			qrtr_send(QRTR_TYPE_RESUME_TX, dst_port, src_node, src_port, &r, sizeof(r));
+ 		}
+-		if (dst_port == PORT_PDM && size >= 7 && p[hlen] == QMI_REQ) {
++		if (dst_port == PORT_SLIM && size >= 7) {
++			slim_rx(*(const uint16_t *)(p + hlen + 3), p + hlen, size);
++		} else if (dst_port == PORT_SRN && size >= 7) {
++			srn_rx(p[hlen], *(const uint16_t *)(p + hlen + 3), p + hlen, size);
++		} else if (dst_port == PORT_PDM && size >= 7 && p[hlen] == QMI_REQ) {
+ 			pdm_rx(src_node, src_port, *(const uint16_t *)(p + hlen + 1), *(const uint16_t *)(p + hlen + 3), p + hlen, size);
+ 		} else if (q_other++ < 16) {
+ 			LOG("t=%u.%03u qrtr DATA %u:%x -> port %x, %u B", T, src_node, src_port, dst_port, size);
+@@ -1244,6 +1374,8 @@ struct apr_hdr {
+ } __attribute__((packed));
+ 
+ static uint32_t apr_token = 0x100, apr_state = 0xFFFFFFFFu, apr_asks, apr_rxn;
++static bool apr_reply(const struct apr_hdr *h, const uint8_t *data, uint32_t len);
++static bool lpass_smmu_identity(uint32_t sid);
+ static unsigned apr_last_ask;
+ 
+ static void
+@@ -1284,6 +1416,9 @@ apr_rx(const uint8_t *data, uint32_t len)
+ 	uint32_t p0 = len >= hlen + 4 ? *(const uint32_t *)(data + hlen) : 0;
+ 	uint32_t p1 = len >= hlen + 8 ? *(const uint32_t *)(data + hlen + 4) : 0;
+ 
++	if (apr_reply(h, data, len)) {
++		return;
++	}
+ 	if (h->opcode == AVCS_CMD_RSP_ADSP_EVENT_GET_STATE && len >= hlen + 4) {
+ 		if (p0 != apr_state) {
+ 			LOG("t=%u.%03u *** q6core state = %u%s (after %u asks) ***", T, p0, p0 == 1 ? " READY" : "", apr_asks);
+@@ -1311,6 +1446,926 @@ apr_poll(void)
+ 	}
+ }
+ 
++/* ---------------------------------------------------------------- jasmine speaker (j0145) */
++
++/*
++ * The loudspeaker is not on the SDM660 internal codec: stock mixer_paths routes "speaker" to
++ * PRI_MI2S_RX ("smart PA TFA 9894"). Stock DT (Android boot_a dtb): i2c@c1b6000 (BLSP2 QUP2 =
++ * "i2c6", GPIO 22/23 blsp_i2c6) carries tfa98xx@34, tas2557@4c and max98927@3a (one is fitted),
++ * reset GPIO 77, irq GPIO 73, supply pm660l L6 (also the DSI 3.3 V rail: already on). Pins
++ * GPIO 12-15 pri_mi2s, the SoC is I2S master (qcom,msm-mi2s-master), rx-lines SD0.
++ *
++ * TFA9894 is set up as the NXP driver does for the container's (vendor tfa98xx.cnt) "bypass"
++ * profile: tfa98xx_init (I2CR, DSP reset, tfa9894_specific), the device list's registers and
++ * bitfields, the profile's bitfields (DSP off, amplifier input straight from I2S), INIT_CF,
++ * OPERATING. No CoolFlux patch or speaker model is loaded, so there is no speaker protection:
++ * keep the level low (adsp_tone uses -20 dBFS).
++ *
++ * Playback as the stock qdsp6v2 stack: AFE clock (PRI_MI2S_IBIT 1.536 MHz) + I2S config +
++ * port start (0x1000), ASM shared memory map, ASM open write (PCM v2), ADM open (NULL COPP)
++ * + matrix map, media format, run, ASM writes. Buffers live in the modem pool; the ADSP
++ * reaches them through the LPASS SMMU (0x5100000) stream 1, given an identity bank here
++ * (stock: msm-audio-ion iommus <&lpass_smmu 1>, address msw = SID bits).
++ */
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++#define J_GCC_PA            0x00100000ull
++#define J_TLMM_NORTH        0x03900000ull
++#define J_TLMM_CENTER       0x03500000ull
++#define J_QUP6_PA           0x0C1B6000ull
++#define J_LSMMU_PA          0x05100000ull
++#define J_LSMMU_SIZE        0x00040000u
++#define J_TLMM_DRV(ma)      ((((ma) / 2u) - 1u) << 6)
++#define J_TLMM_OE           (1u << 9)
++
++#define APR_SVC_AFE         4
++#define APR_SVC_ASM         7
++#define APR_SVC_ADM         8
++#define AFE_PORT_PRI_MI2S_RX            0x1000u
++#define AFE_PORT_CMD_SET_PARAM_V2       0x000100EFu
++#define AFE_PORT_CMD_DEVICE_START       0x000100E5u
++#define AFE_PORT_CMD_DEVICE_STOP        0x000100E6u
++#define AFE_SVC_CMD_SET_PARAM           0x000100F3u
++#define AFE_MODULE_AUDIO_DEV_INTERFACE  0x0001020Cu
++#define AFE_PARAM_ID_I2S_CONFIG         0x0001020Du
++#define AFE_MODULE_CLOCK_SET            0x0001028Fu
++#define AFE_PARAM_ID_CLOCK_SET          0x00010290u
++#define LPASS_CLK_ID_PRI_MI2S_IBIT      0x100u
++#define ADM_CMD_DEVICE_OPEN_V5          0x00010326u
++#define ADM_CMD_DEVICE_CLOSE_V5         0x00010327u
++#define ADM_CMDRSP_DEVICE_OPEN_V5       0x00010329u
++#define ADM_CMD_MATRIX_MAP_ROUTINGS_V5  0x00010325u
++#define NULL_COPP_TOPOLOGY              0x00010312u
++#define ASM_CMD_SHARED_MEM_MAP_REGIONS  0x00010D92u
++#define ASM_CMDRSP_SHARED_MEM_MAP_REGIONS 0x00010D93u
++#define ASM_STREAM_CMD_OPEN_WRITE_V3    0x00010DB3u
++#define ASM_STREAM_CMD_CLOSE            0x00010BCDu
++#define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2 0x00010DA5u
++#define ASM_STREAM_POSTPROCOPO_ID_NONE  0x00010C68u
++#define ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2 0x00010D98u
++#define ASM_SESSION_CMD_RUN_V2          0x00010DAAu
++#define ASM_DATA_CMD_WRITE_V2           0x00010DABu
++#define ASM_DATA_EVENT_WRITE_DONE_V2    0x00010D99u
++#define ASM_SESSION_EVENT_RX_UNDERFLOW  0x00010C17u
++#define ASM_SESSION                     1
++#define ASM_PORT                        ((ASM_SESSION << 8) | 1)
++
++static volatile uint8_t *j_gcc, *j_qup;
++static uint32_t j_i2c_addr, j_in_fifo, j_out_fifo;
++static uint32_t j_msw = 1;                      /* boot-arg adsp_msw: upper address word (stock: SID 1) */
++
++static volatile uint32_t *
++j_map(uint64_t pa)
++{
++	return (volatile uint32_t *)(ml_io_map((vm_offset_t)(pa & ~0xfffull), 0x1000) + (pa & 0xfff));
++}
++
++static void
++j_pin(unsigned gpio, uint32_t cfg)
++{
++	uint64_t tile = gpio >= 22 && gpio <= 23 ? J_TLMM_CENTER : J_TLMM_NORTH;
++	volatile uint32_t *p = j_map(tile + 0x1000ull * gpio);
++	p[0] = cfg;
++	mb();
++}
++
++static void
++j_gpio_out(unsigned gpio, bool high)
++{
++	volatile uint32_t *p = j_map(J_TLMM_NORTH + 0x1000ull * gpio);
++	p[1] = high ? 2 : 0;
++	p[0] = J_TLMM_OE | J_TLMM_DRV(2);
++	mb();
++}
++
++/* ---- polled QUP v2 I2C (as bsd/dev/sweet_nvt.c, BLSP2 QUP2) */
++
++#define QUP_CONFIG              0x000
++#define QUP_STATE               0x004
++#define QUP_IO_MODE             0x008
++#define QUP_SW_RESET            0x00c
++#define QUP_OPERATIONAL         0x018
++#define QUP_ERROR_FLAGS         0x01c
++#define QUP_HW_VERSION          0x030
++#define QUP_MX_OUTPUT_CNT       0x100
++#define QUP_OUT_FIFO_BASE       0x110
++#define QUP_MX_WRITE_CNT        0x150
++#define QUP_MX_INPUT_CNT        0x200
++#define QUP_MX_READ_CNT         0x208
++#define QUP_IN_FIFO_BASE        0x218
++#define QUP_I2C_CLK_CTL         0x400
++#define QUP_I2C_STATUS          0x404
++#define QUP_I2C_MASTER_GEN      0x408
++#define QUP_CONFIG_I2C          ((2u << 8) | 7)
++#define QUP_REPACK_EN           (3u << 14)
++#define QUP_I2C_ERRS            0x38000fcu
++#define QUP_I2C_BUS_ACTIVE      (1u << 8)
++#define QUP_ERRS                0x7cu
++#define QUP_CLK_400K            ((14u << 16) | (3u << 8) | 28u)
++
++static inline uint32_t qr(uint32_t o) { return *(volatile uint32_t *)(j_qup + o); }
++static inline void qw(uint32_t o, uint32_t v) { *(volatile uint32_t *)(j_qup + o) = v; }
++
++static int
++qup_wait(uint32_t state, uint32_t mask)
++{
++	for (int i = 0; i < 1000; i++) {
++		uint32_t s = qr(QUP_STATE);
++		if ((s & 4) && (s & mask) == state) {
++			return 0;
++		}
++		IODelay(1);
++	}
++	return -1;
++}
++
++static int
++qup_state(uint32_t state)
++{
++	if (qup_wait(0, 0) != 0) {
++		return -1;
++	}
++	qw(QUP_STATE, state);
++	return qup_wait(state, 3);
++}
++
++static int
++j_i2c(const uint8_t *wbuf, uint32_t wlen, uint8_t *rbuf, uint32_t rlen)
++{
++	uint8_t tags[16];
++	uint32_t nt = 0, got = 0, need = rlen ? rlen + 2 : 0;
++	int err = 0;
++
++	if (wlen + 8 > sizeof(tags) || need > j_in_fifo) {
++		return -1;
++	}
++	tags[nt++] = 0x81;
++	tags[nt++] = (uint8_t)(j_i2c_addr << 1);
++	tags[nt++] = rlen ? 0x82 : 0x83;            /* DATAWR / DATAWR_STOP */
++	tags[nt++] = (uint8_t)wlen;
++	for (uint32_t i = 0; i < wlen; i++) {
++		tags[nt++] = wbuf[i];
++	}
++	if (rlen) {
++		tags[nt++] = 0x81;
++		tags[nt++] = (uint8_t)(j_i2c_addr << 1 | 1);
++		tags[nt++] = 0x87;                      /* DATARD_STOP */
++		tags[nt++] = (uint8_t)rlen;
++	}
++	qw(QUP_SW_RESET, 1);
++	if (qup_wait(0, 3) != 0) {
++		return -3;
++	}
++	qw(QUP_CONFIG, QUP_CONFIG_I2C);
++	qw(QUP_I2C_MASTER_GEN, 1);
++	if (qup_wait(1u << 4, 1u << 4) != 0) {
++		return -4;
++	}
++	qw(QUP_MX_OUTPUT_CNT, 0);
++	qw(QUP_MX_INPUT_CNT, 0);
++	qw(QUP_IO_MODE, QUP_REPACK_EN);
++	qw(QUP_MX_WRITE_CNT, nt);
++	qw(QUP_MX_READ_CNT, need);
++	qw(QUP_CONFIG, QUP_CONFIG_I2C | (rlen ? 0 : (1u << 7)));
++	if (qup_state(1) != 0) {
++		return -5;
++	}
++	qw(QUP_I2C_CLK_CTL, QUP_CLK_400K);
++	if (qup_state(3) != 0) {
++		return -6;
++	}
++	for (uint32_t i = 0; i < nt; i += 4) {
++		uint32_t w = 0;
++		for (uint32_t j = 0; j < 4 && i + j < nt; j++) {
++			w |= (uint32_t)tags[i + j] << (8 * j);
++		}
++		qw(QUP_OUT_FIFO_BASE, w);
++	}
++	if (qup_state(1) != 0) {
++		return -7;
++	}
++	for (int t = 0; t < 400; t++) {
++		uint32_t st = qr(QUP_I2C_STATUS) & QUP_I2C_ERRS, qe = qr(QUP_ERROR_FLAGS) & QUP_ERRS;
++		if (st || qe) {
++			err = (int)(st | qe << 24) | 0x40000000;
++			break;
++		}
++		while (got < need && (qr(QUP_OPERATIONAL) & (1u << 5))) {
++			uint32_t w = qr(QUP_IN_FIFO_BASE);
++			for (int j = 0; j < 4 && got < need; j++, got++, w >>= 8) {
++				if (got >= 2) {
++					rbuf[got - 2] = (uint8_t)w;
++				}
++			}
++		}
++		if (got >= need && !(qr(QUP_I2C_STATUS) & QUP_I2C_BUS_ACTIVE)) {
++			break;
++		}
++		IODelay(50);
++	}
++	if (!err && (got < need || (qr(QUP_I2C_STATUS) & QUP_I2C_BUS_ACTIVE))) {
++		err = -8;
++	}
++	qw(QUP_STATE, 0);
++	return err;
++}
++
++static bool
++j_i2c_init(void)
++{
++	volatile uint32_t *vote = j_map(J_GCC_PA + 0x52004), *rcg = j_map(J_GCC_PA + 0x28020), *cbcr = j_map(J_GCC_PA + 0x28008);
++
++	*vote |= 1u << 15;                          /* gcc_blsp2_ahb_clk */
++	rcg[1] = 1;                                 /* blsp2_qup2_i2c_apps_clk_src: XO, div 1 */
++	rcg[0] |= 1;
++	for (int i = 0; i < 1000 && (rcg[0] & 1); i++) {
++		IODelay(1);
++	}
++	*cbcr |= 1;
++	for (int i = 0; i < 1000 && (*cbcr & (1u << 31)); i++) {
++		IODelay(1);
++	}
++	if (*cbcr & (1u << 31)) {
++		LOG("i2c6: QUP core clock stays off (cbcr %08x)", *cbcr);
++		return false;
++	}
++	j_pin(22, 3u << 2 | J_TLMM_DRV(2));         /* blsp_i2c6 */
++	j_pin(23, 3u << 2 | J_TLMM_DRV(2));
++	j_qup = (volatile uint8_t *)ml_io_map((vm_offset_t)J_QUP6_PA, 0x1000);
++	uint32_t io = qr(QUP_IO_MODE);
++	static const uint32_t blk[] = { 4, 16, 32 };
++	uint32_t ob = (io & 3) < 3 ? blk[io & 3] : 4, ib = ((io >> 5) & 3) < 3 ? blk[(io >> 5) & 3] : 4;
++	j_out_fifo = ob * (2u << ((io >> 2) & 7));
++	j_in_fifo = ib * (2u << ((io >> 7) & 7));
++	LOG("i2c6: QUP version %08x io_mode %08x fifo out %u in %u", qr(QUP_HW_VERSION), io, j_out_fifo, j_in_fifo);
++	return j_in_fifo >= 8 && j_out_fifo >= 12;
++}
++
++/* ---- TFA9894: 16-bit big-endian registers, bitfield 0xRRPL (reg, bit pos, len - 1) */
++
++static int
++tfa_rd(uint8_t reg, uint16_t *v)
++{
++	uint8_t b[2] = { 0, 0 };
++	int r = j_i2c(&reg, 1, b, 2);
++	*v = (uint16_t)(b[0] << 8 | b[1]);
++	return r;
++}
++
++static int
++tfa_wr(uint8_t reg, uint16_t v)
++{
++	uint8_t b[3] = { reg, (uint8_t)(v >> 8), (uint8_t)v };
++	return j_i2c(b, 3, NULL, 0);
++}
++
++static int
++tfa_bf(uint16_t field, uint16_t value)
++{
++	uint8_t reg = (uint8_t)(field >> 8);
++	uint32_t pos = (field >> 4) & 0xF, len = (field & 0xF) + 1;
++	uint16_t mask = (uint16_t)(((1u << len) - 1) << pos), v = 0;
++	int r = tfa_rd(reg, &v);
++	if (r == 0) {
++		r = tfa_wr(reg, (uint16_t)((v & ~mask) | ((value << pos) & mask)));
++	}
++	return r;
++}
++
++static uint16_t
++tfa_bf_get(uint16_t field)
++{
++	uint16_t v = 0;
++	(void)tfa_rd((uint8_t)(field >> 8), &v);
++	return (uint16_t)((v >> ((field >> 4) & 0xF)) & ((1u << ((field & 0xF) + 1)) - 1));
++}
++
++/* vendor tfa98xx.cnt, device "left": bitfields after the 0x0f/0xa1/0xa0 key writes (tfaContWriteRegsDev) */
++static const uint16_t tfa_dev_bf[][2] = {
++	{ 0x2103, 0 }, { 0x2204, 15 }, { 0x22a4, 15 }, { 0x2010, 1 }, { 0x2020, 1 }, { 0x2030, 1 }, { 0x2040, 1 },
++	{ 0x2303, 0 }, { 0x2343, 1 }, { 0x2403, 0 }, { 0x2443, 1 }, { 0x0255, 20 }, { 0x7160, 1 }, { 0x5287, 190 },
++	{ 0x7304, 8 }, { 0x7180, 0 }, { 0x7101, 3 }, { 0x6152, 1 }, { 0x8105, 21 }, { 0x8164, 28 }, { 0x8263, 4 },
++	{ 0x8001, 0 }, { 0x5690, 0 }, { 0x6102, 2 }, { 0x00d0, 0 }, { 0x8901, 2 }, { 0x8310, 1 }, { 0x8250, 0 },
++	{ 0x5743, 4 }, { 0x5703, 4 }, { 0x7204, 9 }, { 0x7254, 5 }, { 0x72a4, 13 }, { 0x7005, 30 }, { 0x7065, 63 },
++};
++/* profile "bypass", items before its Default marker: DCA, AMPINSEL, DCINSEL, HPFBYP, CFE, AMPC, AMPE, MTPEX, LPM1MODE, LNMODE */
++static const uint16_t tfa_bypass_bf[][2] = {
++	{ 0x0040, 1 }, { 0x0101, 0 }, { 0x5781, 0 }, { 0x00d0, 1 }, { 0x0020, 0 }, { 0x0060, 0 }, { 0x0030, 1 },
++	{ 0xf010, 1 }, { 0x5ac1, 0 }, { 0x5881, 0 },
++};
++
++#define TFA_PWDN            0x0000
++#define TFA_SBSL            0x0050
++#define TFA_MANSCONF        0x0120
++#define TFA_CLKS            0x1060
++#define TFA_MANSTATE        0x1433
++#define TFA_CFSM            0x5130
++#define TFA_RST             0x9000
++
++static uint16_t tfa_rev;
++
++static void
++tfa_status(const char *when)
++{
++	uint16_t s0 = 0, s1 = 0, s2 = 0, r0 = 0;
++	(void)tfa_rd(0x10, &s0);
++	(void)tfa_rd(0x11, &s1);
++	(void)tfa_rd(0x13, &s2);
++	(void)tfa_rd(0x00, &r0);
++	LOG("t=%u.%03u tfa %s: SYS_CTRL0 %04x STATUS 10=%04x 11=%04x 13=%04x (CLKS %u MANSTATE %u)", T, when, r0, s0, s1,
++	    s2, (s0 >> 6) & 1, tfa_bf_get(TFA_MANSTATE));
++}
++
++extern "C" int sweet_pmic_peek(uint32_t sid, uint32_t addr, unsigned n, uint32_t *out);
++
++/*
++ * Which amplifier answers. Reset GPIO 77: TFA98xx reset is active high (tfa98xx_reset: high
++ * 10 ms, low 10 ms), TAS2557/MAX98927 reset is active low; try low then high. Pull-ups: the
++ * amps' DT "i2c-pull-up" + vcc_i2c = pm660l L6; second round with the TLMM pull-ups too.
++ */
++static int amp_probe_once(void);
++
++static int
++amp_probe(void)
++{
++	uint32_t a = 0, b = 0, c = 0, d = 0;
++	int r1 = sweet_pmic_peek(3, 0x4508, 4, &a), r2 = sweet_pmic_peek(3, 0x4540, 4, &b);
++	int r3 = sweet_pmic_peek(2, 0x4508, 4, &c), r4 = sweet_pmic_peek(2, 0x4540, 4, &d);
++	LOG("pm660l L6 (0x4500): sid3 status %08x (%d) vset/mode/en %08x (%d); sid2 status %08x (%d) vset %08x (%d)", a, r1,
++	    b, r2, c, r3, d, r4);
++	for (unsigned round = 0; round < 4; round++) {
++		bool high = round & 1, pull = round >= 2;
++		if (pull) {
++			j_pin(22, 3u << 2 | J_TLMM_DRV(2) | 3u);    /* + pull-up */
++			j_pin(23, 3u << 2 | J_TLMM_DRV(2) | 3u);
++		}
++		j_gpio_out(77, !high);
++		IOSleep(10);
++		j_gpio_out(77, high);
++		IOSleep(10);
++		LOG("amp probe round %u: reset gpio77 %s, %s", round, high ? "high" : "low", pull ? "TLMM pull-ups" : "no pull-ups");
++		int f = amp_probe_once();
++		if (f >= 0) {
++			return f;
++		}
++	}
++	j_gpio_out(77, false);
++	return -1;
++}
++
++static int
++amp_probe_once(void)
++{
++	static const uint8_t addr[3] = { 0x34, 0x4c, 0x3a };
++	int found = -1;
++
++	for (unsigned i = 0; i < 3; i++) {
++		uint8_t reg = i == 2 ? 0x01 : 0x03, b[2] = { 0, 0 };
++		j_i2c_addr = addr[i];
++		static const uint8_t max_rev[2] = { 0x01, 0xff };
++		int r = i == 2 ? j_i2c(max_rev, 2, b, 1) : j_i2c(&reg, 1, b, i == 0 ? 2 : 1);
++		LOG("amp probe %02x: %s (%d) %02x %02x", addr[i], r == 0 ? "ACK" : "no answer", r, b[0], b[1]);
++		if (r == 0 && found < 0) {
++			found = i;
++			if (i == 0) {
++				tfa_rev = (uint16_t)(b[0] << 8 | b[1]);
++			}
++		}
++	}
++	return found;
++}
++
++static bool
++tfa_start(void)
++{
++	uint16_t v = 0;
++	int err = 0;
++
++	j_i2c_addr = 0x34;
++	LOG("tfa: rev %04x%s", tfa_rev, (tfa_rev & 0xff) == 0x94 ? " (TFA9894)" : " (not a TFA9894: stop)");
++	if ((tfa_rev & 0xff) != 0x94) {
++		return false;
++	}
++	err |= tfa_wr(0x00, 0x0002);                /* I2CR (whole register, as tfa98xx_init) */
++	IOSleep(2);
++	err |= tfa_bf(TFA_RST, 1);                  /* CoolFlux in reset */
++	err |= tfa_wr(0x0F, 0x5A6B);                /* tfa9894_specific: unlock keys */
++	err |= tfa_rd(0xFB, &v);
++	err |= tfa_wr(0xA0, (uint16_t)(v ^ 0x005A));
++	if (tfa_rev == 0x0a94 || tfa_rev == 0x1a94) {
++		bool v7 = tfa_rev == 0x1a94;
++		err |= tfa_wr(0x00, 0xa245);
++		err |= tfa_wr(0x02, v7 ? 0x5288 : 0x51e8);
++		err |= tfa_wr(0x52, 0xbe17);
++		if (v7) {
++			err |= tfa_wr(0x56, 0x05c3);
++		}
++		err |= tfa_wr(0x57, 0x0344);
++		err |= tfa_wr(0x61, v7 ? 0x0032 : 0x0033);
++		err |= tfa_wr(0x71, 0x00cf);
++		err |= tfa_wr(0x72, 0x34a9);
++		err |= tfa_wr(0x73, 0x3808);
++		err |= tfa_wr(0x76, 0x0067);
++		err |= tfa_wr(0x80, 0x0000);
++		err |= tfa_wr(0x81, 0x5715);
++		err |= tfa_wr(0x82, 0x0104);
++	}
++	err |= tfa_wr(0x0F, 0x5A6B);                /* device list: registers */
++	err |= tfa_wr(0xA1, 0x005A);
++	err |= tfa_wr(0xA0, 0x005A);
++	for (unsigned i = 0; i < sizeof(tfa_dev_bf) / sizeof(tfa_dev_bf[0]); i++) {
++		err |= tfa_bf(tfa_dev_bf[i][0], tfa_dev_bf[i][1]);
++	}
++	for (unsigned i = 0; i < sizeof(tfa_bypass_bf) / sizeof(tfa_bypass_bf[0]); i++) {
++		err |= tfa_bf(tfa_bypass_bf[i][0], tfa_bypass_bf[i][1]);
++	}
++	if (err != 0) {
++		LOG("tfa: register writes failed (%x)", err);
++		return false;
++	}
++	tfa_status("configured");
++	/* INIT_CF: SBSL 0, MANSCONF 1, PWDN 0, wait for CLKS (needs the I2S bit clock) */
++	(void)tfa_bf(TFA_SBSL, 0);
++	(void)tfa_bf(TFA_MANSCONF, 1);
++	(void)tfa_bf(TFA_PWDN, 0);
++	unsigned n;
++	for (n = 0; n < 100 && tfa_bf_get(TFA_CLKS) != 1; n++) {
++		IOSleep(1);
++	}
++	LOG("tfa: clocks %s after %u ms", n < 100 ? "stable" : "NOT stable", n);
++	/* OPERATING, unmuted */
++	(void)tfa_bf(TFA_PWDN, 0);
++	(void)tfa_bf(TFA_MANSCONF, 1);
++	(void)tfa_bf(TFA_SBSL, 1);
++	(void)tfa_bf(TFA_CFSM, 0);
++	IOSleep(20);
++	tfa_status("operating");
++	return n < 100;
++}
++
++static void
++tfa_stop(void)
++{
++	j_i2c_addr = 0x34;
++	(void)tfa_bf(0x0030, 0);                    /* AMPE */
++	(void)tfa_bf(TFA_PWDN, 1);
++	tfa_status("powered down");
++}
++
++/* ---- LPASS SMMU: identity bank for stream 1 (port of TopazModem smmu_identity) */
++
++static bool
++lpass_smmu_identity(uint32_t sid)
++{
++	volatile uint32_t *vote = j_map(J_GCC_PA + 0x7d014), *gdsc = j_map(J_GCC_PA + 0x7d034);
++
++	LOG("lpass smmu: before: clk vote %08x gdsc %08x", *vote, *gdsc);
++	*gdsc &= ~1u;                               /* hlos1_vote_lpass_adsp_gdsc: SW_COLLAPSE off */
++	*vote |= 1u;                                /* hlos1_vote_lpass_adsp_smmu_clk */
++	IOSleep(1);
++	LOG("lpass smmu: after: clk vote %08x gdsc %08x", *vote, *gdsc);
++	volatile uint8_t *s = (volatile uint8_t *)ml_io_map((vm_offset_t)J_LSMMU_PA, J_LSMMU_SIZE);
++#define SR(o)       (*(volatile uint32_t *)(s + (o)))
++	uint32_t cr0 = SR(0x0), id0 = SR(0x20), id1 = SR(0x24);
++	uint32_t nsmr = id0 & 0xFF, ncb = id1 & 0xFF;
++	uint32_t psize = (id1 & (1u << 31)) ? 0x10000 : 0x1000, npage = 1u << (((id1 >> 28) & 7) + 1);
++	uint32_t slot = ~0u, cb = ~0u;
++	uint64_t used = 0;
++
++	LOG("lpass smmu: sCR0 %08x (CLIENTPD %u USFCFG %u) ID0 %08x ID1 %08x: %u SMRs %u CBs page %x x%u", cr0, cr0 & 1,
++	    (cr0 >> 10) & 1, id0, id1, nsmr, ncb, psize, npage);
++	for (uint32_t i = 0; i < nsmr && i < 64; i++) {
++		uint32_t smr = SR(0x800 + 4 * i), s2cr = SR(0xC00 + 4 * i);
++		if (smr >> 31) {
++			LOG("lpass smmu: SMR%u %08x S2CR %08x", i, smr, s2cr);
++			if (((s2cr >> 16) & 3) == 0) {
++				used |= 1ull << (s2cr & 0x3F);
++			}
++			if ((smr & 0x7FFF) == sid) {
++				LOG("lpass smmu: stream %u already has SMR%u: left as it is", sid, i);
++				return true;
++			}
++		} else if (slot == ~0u) {
++			slot = i;
++		}
++	}
++	if (cr0 & 1) {
++		LOG("lpass smmu: client port disabled: bypass, physical addresses");
++		j_msw = 0;
++		return true;
++	}
++	for (uint32_t i = 1; i < ncb && i < 64; i++) {
++		if ((used & (1ull << i)) == 0) {
++			cb = i;
++			break;
++		}
++	}
++	if (slot == ~0u || cb == ~0u || (uint64_t)(npage + cb + 1) * psize > J_LSMMU_SIZE) {
++		LOG("lpass smmu: no free SMR/CB (slot %u cb %u)", slot, cb);
++		return false;
++	}
++	volatile uint8_t *gr1 = s + psize, *cbp = s + (uint64_t)npage * psize + (uint64_t)cb * psize;
++#define W(b, o, v)  do { mb(); *(volatile uint32_t *)((b) + (o)) = (v); } while (0)
++	W(cbp, 0x58, 0xFFFFFFFF);
++	W(cbp, 0x20, 0);
++	W(cbp, 0x24, 0);
++	W(cbp, 0x30, 0);
++	W(cbp, 0x10, 0);
++	W(cbp, 0x38, 0);
++	W(cbp, 0x3C, 0);
++	W(gr1, 0x800 + 4 * cb, 0x00000001);         /* CBA2R VA64 */
++	W(gr1, 0x000 + 4 * cb, 0x0001f000);         /* CBAR S1 trans / S2 fault, WB */
++	W(cbp, 0x0, 0x000000e0);                    /* SCTLR, M=0: no translation */
++	W(s, 0xC00 + 4 * slot, cb);
++	W(s, 0x800 + 4 * slot, (1u << 31) | sid);
++#undef W
++	uint32_t smr = SR(0x800 + 4 * slot), s2cr = SR(0xC00 + 4 * slot);
++	LOG("lpass smmu: stream %u -> identity CB%u via SMR%u: SMR %08x S2CR %08x SCTLR %08x", sid, cb, slot, smr, s2cr,
++	    *(volatile uint32_t *)cbp);
++#undef SR
++	return (smr >> 31) != 0 && (s2cr & 0x3F) == cb;
++}
++
++/* ---- APR calls: wait for the reply with our token */
++
++static uint32_t acall_token, acall_op, acall_rsp[40], acall_words;
++static volatile bool acall_done;
++static const char *afe_chan = ACHAN;          /* the glink channel AFE commands go on */
++static uint32_t asm_done, asm_underruns, asm_events;
++static uint32_t asm_handle;
++
++static bool
++apr_reply(const struct apr_hdr *h, const uint8_t *data, uint32_t len)
++{
++	uint32_t hlen = ((h->hdr_field >> 4) & 0xF) * 4;
++
++	if (h->opcode == ASM_DATA_EVENT_WRITE_DONE_V2) {
++		asm_done++;
++		return true;
++	}
++	if (h->opcode == ASM_SESSION_EVENT_RX_UNDERFLOW) {
++		asm_underruns++;
++		return true;
++	}
++	if (acall_token == 0 || h->token != acall_token || len < hlen) {
++		return false;
++	}
++	acall_op = h->opcode;
++	acall_words = MIN((len - hlen) / 4, (uint32_t)(sizeof(acall_rsp) / 4));
++	memcpy(acall_rsp, data + hlen, acall_words * 4);
++	acall_done = true;
++	return true;
++}
++
++/* a command; true if the ADSP answered with status 0 (APR_BASIC_RSP_RESULT) or the expected response */
++static bool
++apr_call(const char *what, uint8_t svc, uint16_t port, uint32_t opcode, const void *payload, uint32_t len, uint32_t rsp_op)
++{
++	uint8_t buf[sizeof(struct apr_hdr) + 128];
++	struct apr_hdr *h = (struct apr_hdr *)buf;
++
++	if (len > 128) {
++		return false;
++	}
++	bzero(buf, sizeof(buf));
++	h->hdr_field = APR_HDR_FIELD_CMD;
++	h->pkt_size = (uint16_t)(sizeof(struct apr_hdr) + len);
++	h->src_svc = svc;
++	h->src_domain = APR_DOMAIN_APPS;
++	h->src_port = port;
++	h->dest_svc = svc;
++	h->dest_domain = APR_DOMAIN_ADSP;
++	h->dest_port = port;
++	h->token = acall_token = apr_token++;
++	h->opcode = opcode;
++	memcpy(buf + sizeof(struct apr_hdr), payload, len);
++	acall_done = false;
++	glink_send(svc == APR_SVC_AFE ? afe_chan : ACHAN, buf, (uint32_t)sizeof(struct apr_hdr) + len);
++	for (unsigned t = ms(); !acall_done && ms() - t < 1000;) {
++		if (!glink_poll()) {
++			IOSleep(1);
++		}
++	}
++	acall_token = 0;
++	bool ok;
++	if (!acall_done) {
++		LOG("t=%u.%03u apr %s (%08x): no reply", T, what, opcode);
++		return false;
++	}
++	if (acall_op == APR_BASIC_RSP_RESULT) {
++		ok = rsp_op == 0 && acall_words >= 2 && acall_rsp[1] == 0;
++		LOG("t=%u.%03u apr %s: result opcode %08x status %x%s", T, what, acall_rsp[0], acall_rsp[1], ok ? "" : " FAILED");
++	} else {
++		ok = acall_op == rsp_op;
++		LOG("t=%u.%03u apr %s: rsp %08x %08x %08x%s", T, what, acall_op, acall_rsp[0], acall_words > 1 ? acall_rsp[1] : 0,
++		    ok ? "" : " (unexpected)");
++	}
++	return ok;
++}
++
++/* a data command: no reply, the ADSP answers with an event */
++static void
++apr_data(uint8_t svc, uint16_t port, uint32_t opcode, uint32_t token, const void *payload, uint32_t len)
++{
++	uint8_t buf[sizeof(struct apr_hdr) + 64];
++	struct apr_hdr *h = (struct apr_hdr *)buf;
++
++	bzero(buf, sizeof(buf));
++	h->hdr_field = APR_HDR_FIELD_CMD;
++	h->pkt_size = (uint16_t)(sizeof(struct apr_hdr) + len);
++	h->src_svc = svc;
++	h->src_domain = APR_DOMAIN_APPS;
++	h->src_port = port;
++	h->dest_svc = svc;
++	h->dest_domain = APR_DOMAIN_ADSP;
++	h->dest_port = port;
++	h->token = token;
++	h->opcode = opcode;
++	memcpy(buf + sizeof(struct apr_hdr), payload, MIN(len, 64u));
++	glink_send(ACHAN, buf, (uint32_t)sizeof(struct apr_hdr) + len);
++}
++
++/* ---- AFE: PRI_MI2S_RX, 48 kHz 16-bit stereo, SD0, SoC master */
++
++static bool
++afe_clock(bool on)
++{
++	uint32_t p[15] = { 36, 0, 0, 0, AFE_MODULE_CLOCK_SET, AFE_PARAM_ID_CLOCK_SET, 24,
++		               1, LPASS_CLK_ID_PRI_MI2S_IBIT, 1536000, 1 /* attri COUPLE_NO, root 0 */, on ? 1u : 0u };
++	return apr_call(on ? "afe clock on" : "afe clock off", APR_SVC_AFE, 0, AFE_SVC_CMD_SET_PARAM, p, 12 * 4, 0);
++}
++
++static bool
++afe_start(void)
++{
++	struct __attribute__((packed)) {
++		uint16_t port, payload_size;
++		uint32_t lsw, msw, handle;
++		uint32_t module, param;
++		uint16_t psize, rsvd;
++		uint32_t minor;
++		uint16_t bit_width, channel_mode, mono_stereo, ws_src;
++		uint32_t rate;
++		uint16_t data_format, rsvd2;
++	} cfg = { AFE_PORT_PRI_MI2S_RX, 12 + 20, 0, 0, 0, AFE_MODULE_AUDIO_DEV_INTERFACE, AFE_PARAM_ID_I2S_CONFIG, 20, 0,
++		      1, 16, 1 /* SD0 */, 1 /* stereo */, 1 /* WS internal */, 48000, 0, 0 };
++	uint16_t st[2] = { AFE_PORT_PRI_MI2S_RX, 0 };
++
++	return apr_call("afe i2s config", APR_SVC_AFE, 0, AFE_PORT_CMD_SET_PARAM_V2, &cfg, sizeof(cfg), 0) &&
++	       apr_call("afe port start", APR_SVC_AFE, 0, AFE_PORT_CMD_DEVICE_START, st, sizeof(st), 0);
++}
++
++static void
++afe_stop(void)
++{
++	uint16_t st[2] = { AFE_PORT_PRI_MI2S_RX, 0 };
++	(void)apr_call("afe port stop", APR_SVC_AFE, 0, AFE_PORT_CMD_DEVICE_STOP, st, sizeof(st), 0);
++}
++
++static void
++j_mi2s_pins(void)
++{
++	j_pin(12, 2u << 2 | J_TLMM_DRV(8));         /* pri_mi2s sck */
++	j_pin(13, 3u << 2 | J_TLMM_DRV(8));         /* pri_mi2s_ws */
++	j_pin(14, 3u << 2 | J_TLMM_DRV(8));         /* pri_mi2s sd0 */
++	j_pin(15, 3u << 2 | J_TLMM_DRV(8));         /* pri_mi2s sd1 */
++}
++
++/* ---- the tone: ASM -> ADM (NULL COPP) -> AFE PRI_MI2S_RX -> TFA9894 */
++
++#define J_BUFS              4
++#define J_BUF_FRAMES        4800                /* 100 ms */
++#define J_BUF_BYTES         (J_BUF_FRAMES * 4)
++
++static bool
++jas_tone(unsigned seconds, bool amp)
++{
++	uint64_t pa = 0;
++	uint32_t bytes = (J_BUFS * J_BUF_BYTES + 0xfff) & ~0xfffu;
++	int16_t *pcm = (int16_t *)topaz_pool_alloc(bytes, &pa);
++	static const int16_t q[13] = { 0, 428, 848, 1253, 1638, 1997, 2317, 2604, 2838, 3020, 3165, 3240, 3277 };
++	uint16_t copp = 0;
++	bool ok = false;
++
++	if (pcm == NULL) {
++		LOG("tone: no pool memory");
++		return false;
++	}
++	for (uint32_t f = 0; f < J_BUFS * J_BUF_FRAMES; f++) {  /* 1 kHz at -20 dBFS, both channels */
++		uint32_t k = f % 48, a = k % 24;
++		int16_t v = a <= 12 ? q[a] : q[24 - a];
++		v = k < 24 ? v : (int16_t)-v;
++		pcm[2 * f] = v;
++		pcm[2 * f + 1] = v;
++	}
++	mb();
++	LOG("tone: %u bytes of PCM at %llx, address msw %x", bytes, pa, j_msw);
++
++	struct __attribute__((packed)) { uint16_t pool, nreg; uint32_t prop; uint32_t lsw, msw, size; } mm =
++	{ 3, 1, 0, (uint32_t)pa, (uint32_t)(pa >> 32) | j_msw, bytes };
++	if (!apr_call("asm mem map", APR_SVC_ASM, 0, ASM_CMD_SHARED_MEM_MAP_REGIONS, &mm, sizeof(mm),
++	    ASM_CMDRSP_SHARED_MEM_MAP_REGIONS)) {
++		return false;
++	}
++	asm_handle = acall_rsp[0];
++	struct __attribute__((packed)) { uint32_t mode; uint16_t sink, bps; uint32_t popp, fmt; } ow =
++	{ 0, 0, 16, ASM_STREAM_POSTPROCOPO_ID_NONE, ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2 };
++	if (!apr_call("asm open write", APR_SVC_ASM, ASM_PORT, ASM_STREAM_CMD_OPEN_WRITE_V3, &ow, sizeof(ow), 0)) {
++		return false;
++	}
++	struct __attribute__((packed)) {
++		uint16_t flags, mode, ep1, ep2;
++		uint32_t topology;
++		uint16_t channels, bit_width;
++		uint32_t rate;
++		uint8_t map[8];
++	} ao = { 0, 1 /* RX */, AFE_PORT_PRI_MI2S_RX, 0xFFFF, NULL_COPP_TOPOLOGY, 2, 16, 48000, { 1, 2 } };
++	if (!apr_call("adm open", APR_SVC_ADM, AFE_PORT_PRI_MI2S_RX, ADM_CMD_DEVICE_OPEN_V5, &ao, sizeof(ao),
++	    ADM_CMDRSP_DEVICE_OPEN_V5) || acall_rsp[0] != 0) {
++		goto close_asm;
++	}
++	copp = (uint16_t)acall_rsp[1];
++	{
++		struct __attribute__((packed)) { uint32_t matrix, nsess; uint16_t sess, ncopp, copp, pad; } mx =
++		{ 0, 1, ASM_SESSION, 1, copp, 0 };
++		if (!apr_call("adm matrix map", APR_SVC_ADM, 0, ADM_CMD_MATRIX_MAP_ROUTINGS_V5, &mx, sizeof(mx), 0)) {
++			goto close_adm;
++		}
++	}
++	{
++		struct __attribute__((packed)) { uint32_t blk; uint16_t ch, bps; uint32_t rate; uint16_t sgn, rsvd; uint8_t map[8]; } mf =
++		{ 20, 2, 16, 48000, 1, 0, { 1, 2 } };
++		apr_data(APR_SVC_ASM, ASM_PORT, ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2, 0x7000, &mf, sizeof(mf));
++	}
++	asm_done = asm_underruns = 0;
++	{
++		uint32_t run[3] = { 0, 0, 0 };
++		if (!apr_call("asm run", APR_SVC_ASM, ASM_PORT, ASM_SESSION_CMD_RUN_V2, run, sizeof(run), 0)) {
++			goto close_adm;
++		}
++	}
++	if (amp) {
++		(void)tfa_start();
++	}
++	{
++		uint32_t sent = 0, want = seconds * 10;     /* 100 ms buffers */
++		unsigned t0ms = ms(), last_log = ms();
++		while (ms() - t0ms < seconds * 1000 + 500) {
++			while (sent < want && sent - asm_done < J_BUFS) {
++				uint32_t b = sent % J_BUFS;
++				uint64_t ba = pa + (uint64_t)b * J_BUF_BYTES;
++				uint32_t wr[8] = { (uint32_t)ba, (uint32_t)(ba >> 32) | j_msw, asm_handle, J_BUF_BYTES, sent, 0, 0, 0 };
++				apr_data(APR_SVC_ASM, ASM_PORT, ASM_DATA_CMD_WRITE_V2, sent, wr, sizeof(wr));
++				sent++;
++			}
++			if (!glink_poll()) {
++				IOSleep(2);
++			}
++			if (ms() - last_log >= 1000) {
++				last_log = ms();
++				LOG("t=%u.%03u tone: %u buffers sent, %u done, %u underruns", T, sent, asm_done, asm_underruns);
++				if (amp && last_log - t0ms < 2500) {
++					tfa_status("playing");
++				}
++			}
++		}
++		ok = asm_done > 0;
++		LOG("t=%u.%03u tone: end, %u sent, %u done, %u underruns -> %s", T, sent, asm_done, asm_underruns,
++		    ok ? "the ADSP consumed PCM" : "NOTHING consumed");
++	}
++	if (amp) {
++		tfa_stop();
++	}
++close_adm:
++	{
++		(void)apr_call("adm close", APR_SVC_ADM, copp, ADM_CMD_DEVICE_CLOSE_V5, NULL, 0, 0);
++	}
++close_asm:
++	(void)apr_call("asm close", APR_SVC_ASM, ASM_PORT, ASM_STREAM_CMD_CLOSE, NULL, 0, 0);
++	return ok;
++}
++
++/* after q6core READY (adsp=1); boot-arg adsp_tone=N plays N s of 1 kHz through the speaker (default 3, 0 = none) */
++static void
++jas_speaker(void)
++{
++	uint32_t tone = 3;                          /* the command line is full: on by default for now */
++	int amp;
++
++	(void)PE_parse_boot_argn("adsp_tone", &tone, sizeof(tone));
++	(void)PE_parse_boot_argn("adsp_msw", &j_msw, sizeof(j_msw));
++	amp = j_i2c_init() ? amp_probe() : -1;
++	LOG("speaker: amplifier %s", amp == 0 ? "TFA98xx @34" : amp == 1 ? "TAS2557 @4c" : amp == 2 ? "MAX98927 @3a" : "not found");
++	j_mi2s_pins();
++	srn_register();
++	for (unsigned t = ms(); srn_state != SRN_UP && ms() - t < 20000;) {
++		if (!glink_poll()) {
++			IOSleep(5);
++		}
++		qrtr_poll();
++	}
++	LOG("t=%u.%03u speaker: %s %s", T, SRN_PATH, srn_state == SRN_UP ? "UP" : "not UP (going on anyway)");
++	/* diagnostics: which APR services the ADSP has, whether ASM and AFE answer at all */
++	if (apr_call("core versions", APR_SVC_CORE, 0, 0x00012905u, NULL, 0, 0x00012906u) && acall_words >= 2) {
++		LOG("avcs: words %u: %08x %08x %08x %08x", acall_words, acall_rsp[0], acall_rsp[1], acall_rsp[2], acall_rsp[3]);
++		for (uint32_t i = 0; i + 1 < acall_words && i < 38; i += 2) {
++			LOG("avcs:   %08x %08x", acall_rsp[i], acall_rsp[i + 1]);
++		}
++	}
++	{
++		uint64_t tpa = 0;
++		void *tb = topaz_pool_alloc(0x1000, &tpa);
++		struct __attribute__((packed)) { uint16_t pool, nreg; uint32_t prop; uint32_t lsw, msw, size; } tm =
++		{ 3, 1, 0, (uint32_t)tpa, (uint32_t)(tpa >> 32) | j_msw, 0x1000 };
++		if (tb != NULL) {
++			(void)apr_call("asm mem map probe", APR_SVC_ASM, 0, ASM_CMD_SHARED_MEM_MAP_REGIONS, &tm, sizeof(tm),
++			    ASM_CMDRSP_SHARED_MEM_MAP_REGIONS);
++		}
++		uint16_t st[2] = { AFE_PORT_PRI_MI2S_RX, 0 };
++		acall_op = 0;
++		(void)apr_call("afe stop probe", APR_SVC_AFE, 0, AFE_PORT_CMD_DEVICE_STOP, st, sizeof(st), 0);
++		if (acall_op == 0) {
++			afe_chan = "apr_apps2";
++			LOG("speaker: apr_apps2 %s; AFE commands go there now", glink_chan_up("apr_apps2") ? "up" : "down");
++			acall_op = 0;
++			(void)apr_call("afe stop probe (apr_apps2)", APR_SVC_AFE, 0, AFE_PORT_CMD_DEVICE_STOP, st, sizeof(st), 0);
++			if (acall_op == 0) {
++				afe_chan = ACHAN;
++			}
++		}
++	}
++	{
++		/* ADM answers? (a COPP on a port that is not started: expect an error, but an answer) */
++		struct __attribute__((packed)) {
++			uint16_t flags, mode, ep1, ep2;
++			uint32_t topology;
++			uint16_t channels, bit_width;
++			uint32_t rate;
++			uint8_t map[8];
++		} ao = { 0, 1, AFE_PORT_PRI_MI2S_RX, 0xFFFF, NULL_COPP_TOPOLOGY, 2, 16, 48000, { 1, 2 } };
++		acall_op = 0;
++		(void)apr_call("adm open probe", APR_SVC_ADM, AFE_PORT_PRI_MI2S_RX, ADM_CMD_DEVICE_OPEN_V5, &ao, sizeof(ao),
++		    ADM_CMDRSP_DEVICE_OPEN_V5);
++		if (acall_op == ADM_CMDRSP_DEVICE_OPEN_V5 && acall_rsp[0] == 0) {
++			(void)apr_call("adm close probe", APR_SVC_ADM, (uint16_t)acall_rsp[1], ADM_CMD_DEVICE_CLOSE_V5, NULL, 0, 0);
++		}
++	}
++	if (slim_node != 0xFFFFFFFFu) {
++		static const uint16_t msgs[2] = { 0x20, 0x21 };
++		for (unsigned k = 0; k < 2; k++) {
++			uint8_t t[32];
++			uint32_t n = 0, inst = 1, mode = 2 /* ADSP is master */, pm = 2 /* active */;
++			if (k == 0) {
++				n = (uint32_t)qm_tlv(t, n, 0x01, &inst, 4);
++				n = (uint32_t)qm_tlv(t, n, 0x10, &mode, 4);
++			} else {
++				n = (uint32_t)qm_tlv(t, n, 0x01, &pm, 4);
++			}
++			slim_rsp_msg = 0;
++			slim_send(msgs[k], t, n);
++			for (unsigned w = ms(); slim_rsp_msg == 0 && ms() - w < 2000;) {
++				if (!glink_poll()) {
++					IOSleep(2);
++				}
++			}
++			LOG("t=%u.%03u slimbus qmi %s: %s", T, k == 0 ? "select instance 1 (master)" : "power active",
++			    slim_rsp_msg == 0 ? "no answer" : slim_rsp_res == 0 ? "ok" : "error");
++		}
++	} else {
++		LOG("speaker: no SLIMbus QMI service seen");
++	}
++	bool clk = false;
++	for (unsigned i = 0; i < 3 && !clk; i++) {
++		clk = afe_clock(true);
++	}
++	if (!clk) {
++		LOG("t=%u.%03u speaker: AFE silent; trying again in 30 s", T);
++		for (unsigned t = ms(); ms() - t < 30000;) {
++			if (!glink_poll()) {
++				IOSleep(5);
++			}
++		}
++		clk = afe_clock(true);
++	}
++	if (!clk) {
++		return;
++	}
++	if (!afe_start()) {
++		(void)afe_clock(false);
++		return;
++	}
++	if (tone != 0) {
++		(void)jas_tone(MIN(tone, 10u), amp == 0);
++	} else if (amp == 0) {
++		bool up = tfa_start();
++		LOG("tfa: bypass start %s (no tone: adsp_tone=0)", up ? "OK" : "FAILED");
++		tfa_stop();
++	}
++	afe_stop();
++	(void)afe_clock(false);
++	LOG("t=%u.%03u speaker: done", T);
++}
++
+ /* ---------------------------------------------------------------- GPR calls (wait for the reply) */
+ 
+ extern "C" bool topaz_rpm_write(uint32_t set, uint32_t type, uint32_t id, uint32_t key, uint32_t value);
+@@ -2010,6 +3065,14 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ 	*stop_entry = 0;
+ 	topaz_apcs_kick(ADSP_SMP2P_BIT);
++	if (jasmine) {
++		/*
++		 * j0145: LPASS ADSP GDSC + SMMU clock and the audio stream's SMMU bank before the boot, as
++		 * stock (the lpass_q6 SMMU driver powers them at kernel start, the ADSP loads later). Booted
++		 * with the GDSC collapsed, the ADSP's AFE never answered (ASM did).
++		 */
++		(void)lpass_smmu_identity(1);
++	}
+ 	t0 = mach_absolute_time();
+ 	if (!adsp_load()) {
+ 		goto out;
+@@ -2027,6 +3090,7 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 	glink_register(QCHAN, qrtr_rx);
+ 	if (jasmine) {
+ 		glink_register(ACHAN, apr_rx);          /* codec and stream: not yet on SDM660 */
++		glink_register("apr_apps2", apr_rx);    /* j0145: the ADSP opens it too; replies may come there */
+ 	} else {
+ 		glink_register(GCHAN, gpr_rx);
+ 	}
+@@ -2035,6 +3099,10 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 		qrtr_poll();
+ 		if (jasmine) {
+ 			apr_poll();
++			if (apr_state == 1 && !codec_tried) {
++				codec_tried = true;
++				jas_speaker();
++			}
+ 		} else {
+ 			gpr_poll();
+ 			stream_poll();
