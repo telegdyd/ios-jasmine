@@ -1,0 +1,203 @@
+From: telegdyd <telegdyd93@gmail.com>
+Subject: [PATCH] jasmine: Wi-Fi with the screen off: station power save, scan back-off
+
+Power plan item 6. Screen on: unchanged (power save off, every wifid scan runs).
+Screen off and joined: WMI station power save on as ath10k sets it up (RX wake policy WAKE,
+TX wake threshold ALWAYS, PS-poll count no max, inactivity 100 ms = mac80211's dynamic PS
+timeout, then STA_PS_MODE enabled); off again when the screen comes on and before a leave.
+Screen off and not joined: wifid's scans back off: a real scan at most after 30 s, then 60,
+120, 240, 300 s; requests in between get the last scan's results. Screen on starts over.
+SweetFramebuffer calls topaz_wlan_display(on) on each display change. wifi_screenoff=0: off.
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -5802,6 +5802,61 @@
+ 	return topaz_wlan_scan_on(NULL, 0, true, 0, NULL, 0);
+ }
+ 
++/*
++ * j0158: Wi-Fi with the screen off (SweetFramebuffer calls topaz_wlan_display). Joined: station
++ * power save on (radio_poll; off again with the screen). Not joined: wifid's scans back off: a real
++ * scan at most after 30 s, then 60, 120, 240, 300 s; a request in between is answered with the
++ * results of the last real scan (sta_heard still drops what is older than a minute). The screen
++ * coming on starts over, so the first scan with the screen on always runs. wifi_screenoff=0: off.
++ */
++extern "C" void topaz_wlan_display(int on);
++static int w_so_enabled = -1;
++static volatile bool w_screen_off;
++static uint32_t w_so_since, w_bo_next, w_bo_step, w_bo_asked, w_bo_cached, w_so_ps_ms, w_ps_since;
++
++void
++topaz_wlan_display(int on)
++{
++	if (w_so_enabled < 0) {
++		uint32_t v = 1;
++		(void)PE_parse_boot_argn("wifi_screenoff", &v, sizeof(v));
++		w_so_enabled = v != 0;
++		LOG("wifi: screen-off power save and scan back-off %s (wifi_screenoff=%u)", v ? "on" : "off", v);
++	}
++	if (!w_so_enabled || w_screen_off == !on) {
++		return;
++	}
++	if (on) {
++		w_screen_off = false;
++		if (api_ready) {
++			LOG("t=%u ms: wifi: screen was off %u s: power save %u s, wifid scans %u (%u answered from the last results)",
++			    g_ms, (g_ms - w_so_since) / 1000, (w_so_ps_ms + (w_ps_since ? g_ms - w_ps_since : 0)) / 1000,
++			    w_bo_asked, w_bo_cached);
++		}
++	} else {
++		w_so_since = g_ms;
++		w_bo_next = w_bo_step = w_bo_asked = w_bo_cached = w_so_ps_ms = 0;
++		w_screen_off = true;
++	}
++	mw_kick();
++}
++
++static bool
++w_scan_backoff(void)
++{
++	if (!w_screen_off || s_state != S_IDLE) {
++		return false;
++	}
++	w_bo_asked++;
++	if (w_bo_step != 0 && (int32_t)(g_ms - w_bo_next) < 0) {
++		w_bo_cached++;
++		return true;
++	}
++	w_bo_step = w_bo_step ? MIN(w_bo_step * 2, 300000u) : 30000u;
++	w_bo_next = g_ms + w_bo_step;
++	return false;
++}
++
+ int
+ topaz_wlan_scan_on(const uint16_t *freqs, unsigned nfreq, bool passive, unsigned dwell_ms, const uint8_t *ssid,
+     unsigned ssid_len)
+@@ -5809,6 +5864,9 @@
+ 	if (!api_ready) {
+ 		return ENXIO;
+ 	}
++	if (w_scan_backoff()) {
++		return 0;                               /* j0158: the last results stand */
++	}
+ 	struct w_scan_req *q = &api_scan_req;      /* (one asker at a time: redwood_sta's thread) */
+ 	bzero(q, sizeof(*q));
+ 	q->nfreq = freqs != NULL ? MIN(nfreq, 64u) : 0;
+@@ -6144,6 +6202,7 @@
+ #define CMD_PEER_ASSOC          0x6005
+ #define CMD_MGMT_TX_SEND        0x7008
+ #define CMD_STA_PS_MODE         0x9001
++#define CMD_STA_PS_PARAM        0x9002
+ #define TAG_VDEV_START          0x58
+ #define TAG_VDEV_UP             0x5c
+ #define TAG_VDEV_STOP           0x5d
+@@ -6155,6 +6214,7 @@
+ #define TAG_PEER_ASSOC          0x65
+ #define TAG_VHT_RATE_SET        0x66
+ #define TAG_STA_PS_MODE         0x6c
++#define TAG_STA_PS_PARAM        0x6d
+ #define TAG_MGMT_TX             0x1a6
+ #define PEER_FLAG_AUTH          0x1
+ #define PEER_FLAG_NEED_PTK_4WAY 0x4
+@@ -6356,15 +6416,49 @@
+ 	return wmi_send(CMD_PEER_SET_PARAM, m, sizeof(m));
+ }
+ 
++static bool w_ps_now;                       /* j0158: station power save is on in the firmware */
++
+ static bool
+ w_ps_off(void)
+ {
+ 	uint8_t m[12], *p = wmi_put_tlv(m, TAG_STA_PS_MODE, 8);
+ 	p = w_p32(p, 0);
+ 	w_p32(p, 0);
++	w_ps_now = false;
+ 	return wmi_send(CMD_STA_PS_MODE, m, sizeof(m));
+ }
+ 
++/*
++ * j0158: station power save while the screen is off, as ath10k sets it up (ath10k_mac_vif_setup_ps,
++ * the STA params from ath10k_add_interface): wake for received unicast as the TIM says, wake for
++ * every transmit, no PS-poll limit, back to sleep after a beacon interval without traffic. The
++ * radio then sleeps between beacons; the AP buffers frames for it meanwhile.
++ */
++static bool
++w_ps_param(uint32_t param, uint32_t value)
++{
++	uint8_t m[16], *p = wmi_put_tlv(m, TAG_STA_PS_PARAM, 12);
++	p = w_p32(p, 0);                            /* vdev 0 */
++	p = w_p32(p, param);
++	w_p32(p, value);
++	return wmi_send(CMD_STA_PS_PARAM, m, sizeof(m));
++}
++
++static bool
++w_ps_on(uint32_t inactivity_ms)
++{
++	bool ok = w_ps_param(0, 0);                 /* RX_WAKE_POLICY = WAKE */
++	ok &= w_ps_param(1, 1);                     /* TX_WAKE_THRESHOLD = ALWAYS */
++	ok &= w_ps_param(2, 0);                     /* PSPOLL_COUNT = NO_MAX */
++	ok &= w_ps_param(3, inactivity_ms);         /* INACTIVITY_TIME */
++	uint8_t m[12], *p = wmi_put_tlv(m, TAG_STA_PS_MODE, 8);
++	p = w_p32(p, 0);
++	w_p32(p, 1);                                /* WMI_STA_PS_MODE_ENABLED */
++	ok &= wmi_send(CMD_STA_PS_MODE, m, sizeof(m));
++	w_ps_now = ok;
++	return ok;
++}
++
+ static bool
+ w_mgmt_tx(const uint8_t *f, uint32_t len)
+ {
+@@ -6710,6 +6804,9 @@
+ 		return;
+ 	}
+ 	l_from = s_state;
++	if (w_ps_now) {
++		(void)w_ps_off();                       /* j0158 */
++	}
+ 	s_state = S_LEAVE;
+ 	s_ptk_set = false;
+ 	if (l_from == S_UP) {
+@@ -7316,6 +7413,21 @@
+ 		}
+ 		w_tx_pump();
+ 	}
++	/* j0158: station power save with the screen off while joined */
++	static uint32_t ps_retry_ms;
++	bool ps_want = w_screen_off && s_state == S_UP && !w_off_asked;
++	if (ps_want != w_ps_now && s_state == S_UP && (ps_retry_ms == 0 || g_ms >= ps_retry_ms)) {
++		bool ok = ps_want ? w_ps_on(100) : w_ps_off();  /* (mac80211's dynamic_ps_timeout 100 ms) */
++		LOG("t=%u ms: wifi: power save %s (screen %s)%s", g_ms, ps_want ? "on" : "off", w_screen_off ? "off" : "on",
++		    ok ? "" : ": WMI send FAILED, again in 5 s");
++		ps_retry_ms = ok ? 0 : g_ms + 5000;
++	}
++	if (w_ps_now && w_ps_since == 0) {
++		w_ps_since = g_ms ? g_ms : 1;
++	} else if (!w_ps_now && w_ps_since != 0) {
++		w_so_ps_ms += g_ms - w_ps_since;
++		w_ps_since = 0;
++	}
+ 	if (wifi_diag && s_state == S_UP && g_ms >= data_stat_ms) {
+ 		data_stat_ms = g_ms + 10000;
+ 		LOG("t=%u ms: wifi data: tx queued %u sent %u done %u (ok %u, st1 %u st2 %u st3 %u st4+ %u) drops %u; "
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -43,6 +43,7 @@
+ extern "C" void sweet_ddrgov_activity(int src, int sync);       /* bsd/dev/sweet_ddrgov.c (j0114) */
+ extern "C" void sweet_ddrgov_display(int on);
+ extern "C" void sweet_nvt_display(int on);       /* j0154: touch (same chip as the panel) pauses */
++extern "C" void topaz_wlan_display(int on);      /* j0158: Wi-Fi power save / scan back-off */
+ extern "C" void sweet_fb_submit_fault(uint32_t reason);
+ 
+ #include <pexpert/pexpert.h>
+@@ -4670,6 +4671,7 @@
+ 				}
+ 			}
+ 			if (off) { sweet_ddrgov_display(0); }
++			if (changed) { topaz_wlan_display(!off); }
+ 			sweet_fb_trace_power(fFB, off, SWEET_FB_TR_PWR_EXIT, changed, scope.owned, ret);
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
+ 		}

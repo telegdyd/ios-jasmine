@@ -1,0 +1,65 @@
+From: telegdyd <telegdyd93@gmail.com>
+Subject: [PATCH] jasmine: modem metadata in a 16 KiB-aligned block (Wi-Fi was down with adsp=1)
+
+Since adsp144 (cmdline adsp=1, slot b too) TopazAudio takes the first pages of the shared pool,
+the modem metadata moved from a1000000 to a1002000 / a1032000 and the MBA failed it (status -14):
+no modem, no Wi-Fi. Linux has it in a 16 KiB block on a 16 KiB boundary (DT mpss-metadata size
+0x4000; msm-4.4 dma_alloc_attrs order-2 block). pool_alloc_aligned() gives that.
+
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -163,22 +163,29 @@
+ }
+ 
+ static void *
+-pool_alloc(uint64_t size, uint64_t *pa)
++pool_alloc_aligned(uint64_t size, uint64_t align, uint64_t *pa)
+ {
+ 	size = (size + 0xfff) & ~0xfffull;
+ 	IOLockLock(soc_lock);
+-	if (pool == NULL || pool_used + size > MODEM_POOL_SIZE) {
++	uint64_t at = ((MODEM_POOL_BASE + pool_used + align - 1) & ~(align - 1)) - MODEM_POOL_BASE;
++	if (pool == NULL || at + size > MODEM_POOL_SIZE) {
+ 		IOLockUnlock(soc_lock);
+ 		return NULL;
+ 	}
+-	*pa = MODEM_POOL_BASE + pool_used;
+-	void *va = pool + pool_used;
+-	pool_used += size;
++	*pa = MODEM_POOL_BASE + at;
++	void *va = pool + at;
++	pool_used = at + size;
+ 	IOLockUnlock(soc_lock);
+ 	bzero(va, size);                            /* Normal NC: DC ZVA is fine */
+ 	return va;
+ }
+ 
++static void *
++pool_alloc(uint64_t size, uint64_t *pa)
++{
++	return pool_alloc_aligned(size, 0x1000, pa);
++}
++
+ /* ---------------------------------------------------------------- TrustZone */
+ 
+ static uint64_t
+@@ -8252,10 +8259,16 @@
+ 			goto out;
+ 		}
+ 
+-		/* qcom_mdt_read_metadata: ELF header (phdr 0's filesz) + the hash segment */
++		/*
++		 * qcom_mdt_read_metadata: ELF header (phdr 0's filesz) + the hash segment.
++		 * j0157: in a 16 KiB block on a 16 KiB boundary, as Linux has it (DT mpss-metadata
++		 * size 0x4000; msm-4.4 dma_alloc_attrs gives an order-2 block, naturally aligned).
++		 * The MBA failed the metadata (status -14) at a1002000 and a1032000, where it landed
++		 * once TopazAudio (adsp=1) took the first pool pages; it passed at a1000000.
++		 */
+ 		uint32_t ehdr_size = ph[0].p_filesz, hash_size = ph[hash].p_filesz;
+ 		uint64_t meta_size = (uint64_t)ehdr_size + hash_size;
+-		meta = (uint8_t *)pool_alloc(meta_size, &meta_pa);
++		meta = (uint8_t *)pool_alloc_aligned((meta_size + 0x3fff) & ~0x3fffull, 0x4000, &meta_pa);
+ 		if (meta == NULL || ehdr_size > (uint64_t)mdt_size) {
+ 			LOG("mba: metadata: %llu bytes, no room", meta_size);
+ 			goto out;

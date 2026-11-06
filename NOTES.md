@@ -1,3 +1,24 @@
+### 2026-11-06 17:04 local: boot_b = wifi158 FLASHED - Wi-Fi back (modem metadata fix) + Wi-Fi screen-off power save (power plan item 6)
+- Found while starting item 6: the modem had not booted on ANY boot since adsp144 (00:21 today, slot b included since
+  idle152-slotb): `mba: metadata ... authentication: status -14`, so no Wi-Fi. With adsp=1 TopazAudio takes the first
+  pages of the shared pool, the modem metadata moved from a1000000 (status 3) to a1002000 / a1032000 (-14).
+  xnu/patches/j0157-jasmine-modem-metadata-aligned.patch: pool_alloc_aligned(); metadata in a 16 KiB block on a 16 KiB
+  boundary as Linux has it (DT mpss-metadata size 0x4000; msm-4.4 dma_alloc order-2 block). Now @a1034000: status 3,
+  MODEM READY, joined TelekNet at 8 s, with the ADSP up as before.
+- xnu/patches/j0158-jasmine-wifi-screen-off.patch (TopazModem.cpp, SweetFramebuffer.cpp calls topaz_wlan_display on each
+  display change). Screen on: unchanged (PS off, every wifid scan runs). Screen off + joined: WMI STA power save as
+  ath10k (STA_POWERSAVE_PARAM 0x9002 / tag 0x6d: rx wake WAKE, tx wake ALWAYS, pspoll no max, inactivity 100 ms; then
+  STA_PS_MODE enabled); off with the screen and before a leave. Screen off + not joined: wifid scans back off (real scan
+  at most after 30, 60, 120, 240, 300 s; in between the last results). Line at screen on: `screen was off N s: power
+  save N s, wifid scans N (N answered from the last results)`. `wifi_screenoff=0` = old behaviour.
+- Checked (temp boot wifi158, all151-slotb cmdline + ADT): PC ping over Wi-Fi (192.168.1.186) 4-10 ms screen on,
+  20-100 ms screen off (radio sleeps between beacons; 0 lost), user pressed Power twice: `power save on (screen off)`
+  at 495 s, off at 627 s, 4-10 ms again after. Joined screen off wifid asked 0 scans; the not-joined back-off path was
+  not exercised (needs the phone away from a known network). Flashed shim/out/shim-boot-wifi158-slotb.img (= temp
+  image), first boot: modem up, joined, CPUIDLE mode 3 OK. Rollback: usb156-slotb (but that has no Wi-Fi).
+- Not done: the modem/Wi-Fi watch loop still polls every 5 ms when idle (CE + GLINK polled, no interrupts); that is
+  the next big wakeup source and part of system sleep (item 4). Power not measured (at the end).
+
 ### 2026-11-06 16:33 local: boot_b = usb156 FLASHED - USB controller, PHY and clocks off while unplugged (power plan item 8)
 - xnu/patches/j0156-jasmine-usb-off-unplugged.patch (bsd/dev/sweet_usb.c). Before: ud_thread read GEVNTCOUNT every 5 ms
   (200 wakeups/s) plugged or not, controller, QUSB2 PHY and clocks always on.
