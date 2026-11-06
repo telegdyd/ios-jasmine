@@ -1,3 +1,25 @@
+### 2026-11-06 16:02 local: boot_b = irq155 FLASHED - touch and keys on interrupts (power plan item 7)
+- xnu/patches/j0155-jasmine-touch-keys-irq.patch. Before: touch thread read the NT36672A over I2C every 10 ms and the
+  key thread read PON + PM660L GPIO7 over SPMI every 20 ms, screen on or off (~150 wakeups/s).
+- pe_fiq.c: sweet_spi_register/dispatch/count/disable, a 4-entry SPI table; sleh_irq calls it for SPIs it does not
+  know, before the EOI. Both device SPIs routed to Silver cpu4 (MPIDR 0x0).
+- Touch: GPIO 67 INTR_CFG 0xe2 -> 0x7b (target apps, raw status, falling edge = chip irq type 1, enable), TLMM summary
+  SPI 208 (INTID 240). No finger: thread sleeps until the interrupt (1 s fallback); finger down: 10 ms reads as
+  before. Seen: ~1 chip interrupt/s with no finger (reads == interrupts, so no fallback timeouts), 0 other GPIOs.
+- Keys: PMIC INT_SET_TYPE/POL_HIGH/POL_LOW/LATCHED_CLR/EN_SET for PON bits 0x3 (apid 4) and GPIO7 bit 0 (apid 167),
+  arbiter v3 intr block 0xa400000: ACC_ENABLE 0x1000*apid, STATUS +4, CLEAR +8, EE0 OWNER_ACC_STATUS +0x200000;
+  arbiter SPI 326 (INTID 358). Handler masks ACC + clears the arbiter status only (no SPMI, no lock); the thread
+  clears the PMIC latch, unmasks, reads, and loops if a latch is set again. Seen: 17 interrupts for 16 key changes,
+  0 other APIDs, 0 relatched.
+- First build panicked at 120 s: kmem_alloc ... failed with 3 = the I/O submap was full after mapping the whole 2 MiB
+  intr block. Now only the owner-status page and the two APID pages are mapped. The io submap has little headroom
+  left (worth a look sometime: something keeps mapping).
+- Storm guards: 64 interrupts in a row that are not ours -> SPI off, back to polling. sweettouchirq=0 /
+  sweetkeyirq=0: polling as before.
+- Checked: temp boot irq155 (all151-slotb cmdline + ADT), user swiped/tapped, Vol up/down, Power off/on: "All good".
+  Flashed shim/out/shim-boot-irq155-slotb.img (= the tested temp image). Rollback: pipe154-slotb. Power not measured
+  (measure at the end). Next: USB off when unplugged, Wi-Fi screen-off behaviour, then system sleep.
+
 ### 2026-11-06 15:34 local: boot_b = pipe154 FLASHED - screen off sleeps the panel and stops the MDP (power plan item 5)
 - User: do the remaining power items without ranking measurements. xnu/patches/j0154-jasmine-display-pipeline-off.patch:
   jasmine display off = WLED 0, DCS 0x28, 20 ms, 0x10 sleep in, 120 ms, INTF_1 timing engine (0xc96b800) off (stock

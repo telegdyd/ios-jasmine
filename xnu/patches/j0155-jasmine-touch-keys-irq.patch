@@ -1,0 +1,501 @@
+Subject: [PATCH] jasmine-j0155: touch and keys on interrupts instead of 100 Hz / 50 Hz polling
+
+The touch thread read the NT36672A over I2C every 10 ms and the PMIC key thread read PON and
+PM660L GPIO7 over SPMI every 20 ms, screen on or off, so two threads woke ~150 times a second.
+Now: a small SPI table in pe_fiq.c (sweet_spi_register/dispatch, called from sleh_irq for SPIs
+it does not know); touch arms its GPIO 67 interrupt (falling edge, the chip's irq type) through
+the TLMM summary interrupt (SPI 208) and only reads while a finger is down; keys arm both edges
+in the PMIC (INT_SET_TYPE/POLARITY/EN) and the arbiter's ACC_ENABLE (v3 intr block), arbiter
+interrupt SPI 326. Handlers only quiet their source and wake the thread; the PMIC latch is
+cleared by the thread under the PMIC lock. Both keep a 1 s fallback read and storm guards that
+fall back to polling. sweettouchirq=0 / sweetkeyirq=0: polling as before.
+
+diff --git a/bsd/dev/sweet_nvt.c b/bsd/dev/sweet_nvt.c
+--- a/bsd/dev/sweet_nvt.c
++++ b/bsd/dev/sweet_nvt.c
+@@ -80,6 +80,105 @@ static uint32_t nvt_addr, nvt_clk_ctl, in_fifo_sz, out_fifo_sz;
+ static bool nvt_started;
+ static int nvt_sleep_chan;
+ 
++/*
++ * j0155: the touch interrupt (GPIO 67, NT36672A irq type from its parameters) through
++ * the TLMM summary interrupt (GIC SPI 208, level high), set up as Linux pinctrl-msm.c
++ * does for SDM660: INTR_CFG (CTL + 8) enable 0, polarity 1, detection 3:2 (width 2),
++ * raw status 4, target 7:5 = 3 (apps); INTR_STATUS (CTL + 0xc) bit 0, write 0 to clear.
++ * With no finger down the thread sleeps until the chip pulls the line (1 s fallback
++ * read); with a finger down it reads every 10 ms as before. Level types are masked in
++ * the handler until the thread has read the records. sweettouchirq=0: 100 Hz polling.
++ */
++#define NVT_TLMM_SPI            (32u + 208u)
++#define TLMM_INTR_ENABLE        (1u << 0)
++#define TLMM_INTR_POL_HIGH      (1u << 1)
++#define TLMM_INTR_RAW_EN        (1u << 4)
++#define TLMM_INTR_TARGET_APPS   (3u << 5)
++extern void sweet_mmio_w32(vm_offset_t addr, uint32_t v);
++extern int sweet_spi_register(uint32_t intid, void (*fn)(void *), void *arg, uint64_t mpidr);
++static void nvt_sleep_ms(uint32_t ms);
++extern uint64_t sweet_spi_count(uint32_t intid);
++extern void sweet_spi_disable(uint32_t intid);
++static unsigned nvt_irq_storm;
++static bool nvt_irq_on, nvt_irq_level;
++static uint32_t nvt_irq_cfg;
++static volatile int nvt_irq_pending;
++static uint64_t nvt_irq_other;
++
++static void
++nvt_irq(void *arg)
++{
++	(void)arg;
++	if ((pin_irq[3] & 1u) == 0) {
++		nvt_irq_other++;        /* another GPIO (left armed by the boot chain) */
++		if (++nvt_irq_storm > 64) {
++			sweet_spi_disable(NVT_TLMM_SPI);        /* it cannot be quieted from here */
++			nvt_irq_on = false;
++			thread_wakeup((event_t)&nvt_irq_pending);
++		}
++		return;
++	}
++	nvt_irq_storm = 0;
++	if (nvt_irq_level) {
++		sweet_mmio_w32((vm_offset_t)&pin_irq[2], nvt_irq_cfg & ~TLMM_INTR_ENABLE);
++	}
++	sweet_mmio_w32((vm_offset_t)&pin_irq[3], 0);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	nvt_irq_pending = 1;
++	thread_wakeup((event_t)&nvt_irq_pending);
++}
++
++/* irq type as mainline novatek-nvt-ts.c: 0 rising, 1 falling, 2 low, 3 high */
++static void
++nvt_irq_setup(int type)
++{
++	uint32_t on = 1;
++	(void)PE_parse_boot_argn("sweettouchirq", &on, sizeof(on));
++	if (!on || type < 0 || type > 3) {
++		printf("SWEET NVT: polling (sweettouchirq=%u, irq type %d)\n", on, type);
++		return;
++	}
++	uint32_t det = type == 0 ? 1u : (type == 1 ? 2u : 0u);
++	nvt_irq_level = type >= 2;
++	nvt_irq_cfg = TLMM_INTR_TARGET_APPS | TLMM_INTR_RAW_EN | det << 2 |
++	    (type == 2 ? 0u : TLMM_INTR_POL_HIGH) | TLMM_INTR_ENABLE;
++	uint32_t before = pin_irq[2];
++	sweet_mmio_w32((vm_offset_t)&pin_irq[2], nvt_irq_cfg & ~TLMM_INTR_ENABLE);
++	sweet_mmio_w32((vm_offset_t)&pin_irq[3], 0);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	sweet_mmio_w32((vm_offset_t)&pin_irq[2], nvt_irq_cfg);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	int r = sweet_spi_register(NVT_TLMM_SPI, nvt_irq, NULL, 0x0 /* Silver cpu4 */);
++	nvt_irq_on = r == 0;
++	printf("SWEET NVT: interrupt %s: INTR_CFG %#x -> %#x, TLMM summary INTID %u (%d)\n",
++	    nvt_irq_on ? "on" : "NOT ON, polling", before, pin_irq[2], NVT_TLMM_SPI, r);
++	if (!nvt_irq_on) {
++		sweet_mmio_w32((vm_offset_t)&pin_irq[2], before);
++	}
++}
++
++/* no finger down: until the touch interrupt, at most 1 s */
++static void
++nvt_wait_touch(void)
++{
++	if (!nvt_irq_on) {
++		nvt_sleep_ms(10);
++		return;
++	}
++	if (nvt_irq_level) {
++		sweet_mmio_w32((vm_offset_t)&pin_irq[3], 0);
++		sweet_mmio_w32((vm_offset_t)&pin_irq[2], nvt_irq_cfg);   /* fires again if still low */
++	}
++	uint64_t deadline;
++	clock_interval_to_deadline(1000, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline((event_t)&nvt_irq_pending, THREAD_UNINT, deadline);
++	if (nvt_irq_pending) {
++		clear_wait(current_thread(), THREAD_AWAKENED);
++	} else {
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
+ static void
+ nvt_sleep_ms(uint32_t ms)
+ {
+@@ -291,6 +390,8 @@ nvt_thread(void *arg, wait_result_t result)
+ 	int pw = video.v_width ? (int)video.v_width : w, ph = video.v_height ? (int)video.v_height : h;
+ 	printf("SWEET NVT: %dx%d, %d touches, irq type %d, wake %#x, panel %dx%d\n",
+ 	    w, h, max, irq_type, p[0x0c], pw, ph);
++	nvt_irq_setup(irq_type);
++	uint64_t nvt_reads = 0, nvt_idle_reads = 0;
+ 
+ 	unsigned errors = 0;
+ 	bool any = false;
+@@ -322,7 +423,10 @@ nvt_thread(void *arg, wait_result_t result)
+ 					nvt_reset_pulse();
+ 				}
+ 			}
+-			printf("SWEET NVT: display on, touch %s (chip id %#x)\n", pr == 0 && p[0x0e] == 0x08 ? "back" : "NOT BACK", p[0x0e]);
++			printf("SWEET NVT: display on, touch %s (chip id %#x); %llu reads, %llu with no finger, %llu interrupts, %llu other GPIO\n",
++			    pr == 0 && p[0x0e] == 0x08 ? "back" : "NOT BACK", p[0x0e], nvt_reads, nvt_idle_reads,
++			    sweet_spi_count(NVT_TLMM_SPI), nvt_irq_other);
++			nvt_irq_pending = 1;    /* read once now */
+ 			continue;
+ 		}
+ 		/*
+@@ -330,6 +434,9 @@ nvt_thread(void *arg, wait_result_t result)
+ 		 * finger down: all records, so releases and other fingers are seen.
+ 		 */
+ 		uint32_t n = any ? (uint32_t)max : 1;
++		nvt_irq_pending = 0;            /* edges from here on wake the next wait */
++		nvt_reads++;
++		nvt_idle_reads += !any;
+ 		r = nvt_read_records(buf, n);
+ 		if (r != 0) {
+ 			if ((errors++ % 500u) == 0) {
+@@ -369,7 +476,11 @@ nvt_thread(void *arg, wait_result_t result)
+ 			}
+ 			any |= down[s];
+ 		}
+-		nvt_sleep_ms(10);
++		if (any) {
++			nvt_sleep_ms(10);
++		} else {
++			nvt_wait_touch();
++		}
+ 	}
+ }
+ 
+diff --git a/bsd/dev/sweet_pmic.c b/bsd/dev/sweet_pmic.c
+--- a/bsd/dev/sweet_pmic.c
++++ b/bsd/dev/sweet_pmic.c
+@@ -228,15 +228,203 @@ pmic_sleep_ms(uint32_t ms)
+ 
+ extern void sweet_poll_thread_to_e(bool *on_e);     /* osfmk/kern/sched_prim.c, j0120 */
+ 
++/*
++ * j0155: key interrupts instead of the 20 ms poll, as Linux spmi-pmic-arb.c (v3) and
++ * qpnp-power-on / pinctrl-spmi-gpio set them up: per key bit in the peripheral
++ * INT_SET_TYPE 0x11 (edge), INT_POLARITY_HIGH 0x12 and _LOW 0x13 (both edges),
++ * INT_LATCHED_CLR 0x14, INT_EN_SET 0x15; in the arbiter's interrupt block (intr,
++ * 0xa400000) ACC_ENABLE intr + 0x1000 * apid (bit 0), IRQ_STATUS + 4, IRQ_CLEAR + 8,
++ * and the EE 0 summary OWNER_ACC_STATUS intr + 0x200000 + 4 * (apid / 32). The arbiter
++ * interrupt is GIC SPI 326. The handler only masks ACC_ENABLE and clears the arbiter
++ * status (no SPMI command, no lock); the thread clears the PMIC latch, unmasks, reads
++ * the keys and loops while a latch is set again. Fallback read every 1 s. Only APIDs
++ * owned by EE 0 (cnfg + 0x700 + 4 * apid, bits 2:0) and RT_STS (0x10) keys. Only the
++ * pages used are mapped (the whole 2 MiB block ran the I/O submap out of space). sweetkeyirq=0: the 20 ms poll as before.
++ */
++#define PMIC_INTR_PA            0x0a400000ull
++#define PMIC_CNFG_PA            0x0800a000ull
++#define PMIC_ARB_SPI            (32u + 326u)
++#define PMIC_MAX_IRQ_APIDS      PMIC_MAX_KEYS
++extern void sweet_mmio_w32(vm_offset_t addr, uint32_t v);
++extern int sweet_spi_register(uint32_t intid, void (*fn)(void *), void *arg, uint64_t mpidr);
++extern uint64_t sweet_spi_count(uint32_t intid);
++extern void sweet_spi_disable(uint32_t intid);
++static int pmic_write(volatile uint32_t *ch, uint32_t addr, uint8_t val);
++static volatile uint32_t *pmic_wchannel(uint16_t apid);
++static unsigned pmic_irq_storm;
++static volatile uint32_t *pmic_intr_owner;    /* EE 0 OWNER_ACC_STATUS words (one page) */
++static bool pmic_irq_on;
++static struct {
++	uint16_t apid;
++	uint8_t bits;
++	vm_offset_t acc;                        /* this APID's page of the intr block */
++	volatile uint32_t *rd, *wr;
++	uint32_t base;
++} pmic_irq_apid[PMIC_MAX_IRQ_APIDS];
++static unsigned pmic_nirq;
++static volatile int pmic_irq_pending;
++static uint64_t pmic_irq_other, pmic_irq_relatch;
++
++static void
++pmic_arb_irq(void *arg)
++{
++	(void)arg;
++	bool seen = false;
++	for (unsigned i = 0; i < pmic_nirq; i++) {
++		uint32_t apid = pmic_irq_apid[i].apid;
++		if ((pmic_intr_owner[apid / 32] & (1u << (apid % 32))) == 0) {
++			continue;
++		}
++		vm_offset_t a = pmic_irq_apid[i].acc;
++		uint32_t bits = *(volatile uint32_t *)(a + 4);
++		sweet_mmio_w32(a, 0);                   /* ACC_ENABLE off until the thread is done */
++		sweet_mmio_w32(a + 8, bits ? bits : 0xff);
++		seen = true;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	if (!seen) {
++		pmic_irq_other++;               /* an APID that is not ours: cannot be quieted here */
++		if (++pmic_irq_storm > 64) {
++			sweet_spi_disable(PMIC_ARB_SPI);        /* back to polling */
++			pmic_irq_on = false;
++		}
++	} else {
++		pmic_irq_storm = 0;
++	}
++	pmic_irq_pending = 1;
++	thread_wakeup((event_t)&pmic_irq_pending);
++}
++
++/* thread, pmic lock held: clear the PMIC latches of our bits, unmask in the arbiter */
++static void
++pmic_irq_rearm(void)
++{
++	for (unsigned i = 0; i < pmic_nirq; i++) {
++		(void)pmic_write(pmic_irq_apid[i].wr, pmic_irq_apid[i].base | 0x14, pmic_irq_apid[i].bits);
++		sweet_mmio_w32(pmic_irq_apid[i].acc, 1);
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++/* thread, pmic lock held: a latch set again since the rearm (an edge raced it) */
++static bool
++pmic_irq_latched(void)
++{
++	for (unsigned i = 0; i < pmic_nirq; i++) {
++		uint32_t v = 0;
++		if (pmic_read(pmic_irq_apid[i].rd, pmic_irq_apid[i].base | 0x18, 1, &v) == 0 &&
++		    (v & pmic_irq_apid[i].bits) != 0) {
++			return true;
++		}
++	}
++	return false;
++}
++
++static void
++pmic_irq_setup(void)
++{
++	uint32_t on = 1;
++	(void)PE_parse_boot_argn("sweetkeyirq", &on, sizeof(on));
++	volatile uint32_t *cnfg = on ? (volatile uint32_t *)ml_io_map(PMIC_CNFG_PA, 0x1000) : NULL;
++	pmic_intr_owner = on ? (volatile uint32_t *)ml_io_map(PMIC_INTR_PA + 0x200000, 0x1000) : NULL;
++	if (cnfg == NULL || pmic_intr_owner == NULL || pmic_core_size < 0x1000 || pmic_core == NULL) {
++		printf("SWEET PMIC: keys polled every 20 ms (sweetkeyirq=%u)\n", on);
++		return;
++	}
++	for (unsigned k = 0; k < pmic_nkeys; k++) {
++		struct pmic_key *key = &pmic_keys[k];
++		uint32_t owner = key->apid < 512 ? cnfg[(0x700 + 4 * key->apid) / 4] & 7u : 7u;
++		if ((key->addr & 0xff) != 0x10 || owner != 0 || key->bit > 7) {
++			printf("SWEET PMIC: key %u apid %u owner %u reg %#x: no interrupt, keys polled\n",
++			    key->hid, key->apid, owner, key->addr);
++			pmic_nirq = 0;
++			return;
++		}
++		unsigned i = 0;
++		while (i < pmic_nirq && pmic_irq_apid[i].apid != key->apid) {
++			i++;
++		}
++		if (i == pmic_nirq) {
++			pmic_irq_apid[i].apid = key->apid;
++			pmic_irq_apid[i].rd = key->ch;
++			pmic_irq_apid[i].wr = pmic_wchannel(key->apid);
++			pmic_irq_apid[i].base = key->addr & ~0xffu;
++			pmic_irq_apid[i].bits = 0;
++			pmic_irq_apid[i].acc = key->apid < 512 ? ml_io_map(PMIC_INTR_PA + 0x1000ull * key->apid, 0x1000) : 0;
++			pmic_nirq++;
++			if (pmic_irq_apid[i].wr == NULL || pmic_irq_apid[i].acc == 0) {
++				printf("SWEET PMIC: no write channel for apid %u, keys polled\n", key->apid);
++				pmic_nirq = 0;
++				return;
++			}
++		}
++		pmic_irq_apid[i].bits |= (uint8_t)(1u << key->bit);
++	}
++	int r = 0;
++	lck_spin_lock(&sweet_pmic_lock);
++	for (unsigned i = 0; i < pmic_nirq && r == 0; i++) {
++		uint32_t b = pmic_irq_apid[i].base, m = pmic_irq_apid[i].bits;
++		volatile uint32_t *rd = pmic_irq_apid[i].rd, *wr = pmic_irq_apid[i].wr;
++		for (uint32_t reg = 0x11; reg <= 0x13 && r == 0; reg++) {
++			uint32_t v = 0;
++			r = pmic_read(rd, b | reg, 1, &v);
++			r = r ? r : pmic_write(wr, b | reg, (uint8_t)(v | m));
++		}
++		r = r ? r : pmic_write(wr, b | 0x14, (uint8_t)m);
++		r = r ? r : pmic_write(wr, b | 0x15, (uint8_t)m);
++	}
++	if (r == 0) {
++		pmic_irq_rearm();
++	}
++	lck_spin_unlock(&sweet_pmic_lock);
++	r = r ? r : sweet_spi_register(PMIC_ARB_SPI, pmic_arb_irq, NULL, 0x0 /* Silver cpu4 */);
++	pmic_irq_on = r == 0;
++	printf("SWEET PMIC: key interrupts %s: apid %u bits %#x, apid %u bits %#x, INTID %u (%d)\n",
++	    pmic_irq_on ? "on" : "NOT ON, keys polled",
++	    pmic_irq_apid[0].apid, pmic_irq_apid[0].bits, pmic_nirq > 1 ? pmic_irq_apid[1].apid : 0,
++	    pmic_nirq > 1 ? pmic_irq_apid[1].bits : 0, PMIC_ARB_SPI, r);
++	if (!pmic_irq_on) {
++		for (unsigned i = 0; i < pmic_nirq; i++) {
++			sweet_mmio_w32(pmic_irq_apid[i].acc, 0);
++		}
++		pmic_nirq = 0;
++	}
++}
++
++static void
++pmic_keys_wait(void)
++{
++	if (!pmic_irq_on) {
++		pmic_wait();
++		return;
++	}
++	uint64_t deadline;
++	clock_interval_to_deadline(1000, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline((event_t)&pmic_irq_pending, THREAD_UNINT, deadline);
++	if (pmic_irq_pending) {
++		clear_wait(current_thread(), THREAD_AWAKENED);
++	} else {
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
+ static void
+ pmic_keys_thread(void *arg, wait_result_t result)
+ {
+-	unsigned errors = 0;
++	unsigned errors = 0, presses = 0, loops = 0;
+ 	bool on_e = false;
+ 	(void)arg;
+ 	(void)result;
++	pmic_irq_setup();
+ 	for (;;) {
+ 		sweet_poll_thread_to_e(&on_e);
++		bool again = false;
++		if (pmic_irq_on) {
++			pmic_irq_pending = 0;
++			lck_spin_lock(&sweet_pmic_lock);
++			pmic_irq_rearm();
++			lck_spin_unlock(&sweet_pmic_lock);
++		}
+ 		for (unsigned k = 0; k < pmic_nkeys; k++) {
+ 			struct pmic_key *key = &pmic_keys[k];
+ 			uint32_t v = 0;
+@@ -252,11 +440,26 @@ pmic_keys_thread(void *arg, wait_result_t result)
+ 			int down = !!(v & (1u << key->bit)) != !!key->active_low;
+ 			if (down != key->state) {
+ 				key->state = down;
+-				printf("SWEET PMIC: key %u %s (%#x)\n", key->hid, down ? "down" : "up", v);
++				printf("SWEET PMIC: key %u %s (%#x)%s\n", key->hid, down ? "down" : "up", v,
++				    pmic_irq_on ? "" : ", polled");
++				if (pmic_irq_on && (presses++ % 16u) == 0) {
++					printf("SWEET PMIC: key interrupts %llu, other apids %llu, relatched %llu\n",
++					    sweet_spi_count(PMIC_ARB_SPI), pmic_irq_other, pmic_irq_relatch);
++				}
+ 				sweet_hid_key((int)key->hid, down);
+ 			}
+ 		}
+-		pmic_wait();
++		if (pmic_irq_on) {
++			lck_spin_lock(&sweet_pmic_lock);
++			again = pmic_irq_latched();
++			lck_spin_unlock(&sweet_pmic_lock);
++		}
++		if (again && ++loops < 8) {
++			pmic_irq_relatch++;
++			continue;
++		}
++		loops = 0;
++		pmic_keys_wait();
+ 	}
+ }
+ 
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1951,6 +1951,7 @@ sleh_irq(arm_saved_state_t *state)
+ 	 */
+ 	extern uint32_t sweet_bc_irq_intid(void);
+ 	extern void sweet_bc_irq(void);
++	extern int sweet_spi_dispatch(uint32_t intid);   /* j0155 */
+ 	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+ 	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
+ 
+@@ -1977,7 +1978,9 @@ sleh_irq(arm_saved_state_t *state)
+ 		cpu_signal_handler();
+ 	} else {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+-		if (cdp->interrupt_handler) {
++		if (sweet_spi_dispatch(intid)) {
++			/* j0155: touch / PMIC keys (pexpert/arm/pe_fiq.c) */
++		} else if (cdp->interrupt_handler) {
+ 			cdp->interrupt_handler(cdp->interrupt_target,
+ 			    cdp->interrupt_refCon,
+ 			    cdp->interrupt_nub,
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -340,6 +340,73 @@ sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3])
+ 	}
+ 	return 0;
+ }
++
++/*
++ * j0155: device SPIs for drivers without an IOInterruptController (touch, PMIC keys).
++ * sweet_spi_register() stores the handler, then routes and enables the SPI on the core
++ * with that MPIDR; sleh_irq calls sweet_spi_dispatch() for every SPI it does not know,
++ * interrupts masked, before the EOI. A handler must quiet its source (level SPIs).
++ */
++#define SWEET_SPI_MAX   4
++static struct {
++	uint32_t intid;
++	void (*fn)(void *);
++	void *arg;
++	uint64_t count;
++} sweet_spi_tab[SWEET_SPI_MAX];
++static uint32_t sweet_spi_n;
++
++int sweet_spi_register(uint32_t intid, void (*fn)(void *), void *arg, uint64_t mpidr);
++int
++sweet_spi_register(uint32_t intid, void (*fn)(void *), void *arg, uint64_t mpidr)
++{
++	if (gicd_base == 0 || fn == NULL || sweet_spi_n >= SWEET_SPI_MAX) {
++		return -1;
++	}
++	uint32_t i = sweet_spi_n;
++	sweet_spi_tab[i].intid = intid;
++	sweet_spi_tab[i].arg = arg;
++	sweet_spi_tab[i].fn = fn;
++	__builtin_arm_dmb(DMB_ISH);
++	sweet_spi_n = i + 1;
++	return sweet_gic_spi_route(intid, mpidr, NULL);
++}
++
++int sweet_spi_dispatch(uint32_t intid);
++int
++sweet_spi_dispatch(uint32_t intid)
++{
++	for (uint32_t i = 0; i < sweet_spi_n; i++) {
++		if (sweet_spi_tab[i].intid == intid) {
++			sweet_spi_tab[i].count++;
++			sweet_spi_tab[i].fn(sweet_spi_tab[i].arg);
++			return 1;
++		}
++	}
++	return 0;
++}
++
++/* j0155: a source that cannot be quieted (storm guard) */
++void sweet_spi_disable(uint32_t intid);
++void
++sweet_spi_disable(uint32_t intid)
++{
++	if (gicd_base != 0 && intid >= 32 && intid < 1020) {
++		sweet_mmio_w32(gicd_base + 0x180 + 4 * (intid / 32), 1U << (intid % 32));
++	}
++}
++
++uint64_t sweet_spi_count(uint32_t intid);
++uint64_t
++sweet_spi_count(uint32_t intid)
++{
++	for (uint32_t i = 0; i < sweet_spi_n; i++) {
++		if (sweet_spi_tab[i].intid == intid) {
++			return sweet_spi_tab[i].count;
++		}
++	}
++	return 0;
++}
+ #endif /* SWEET */
+ #else
+ void
