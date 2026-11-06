@@ -1,0 +1,1408 @@
+From: telegdyd <telegdyd93@gmail.com>
+Subject: [PATCH] jasmine: system sleep (stock system-pc + RPM sleep set), modem watch on interrupts
+
+Power plan item 4. When the last core goes down, both L2s are down, the display is off and every
+core's next timer is at least 15.3 ms away (stock sdm660 lpm-levels "system-pc": entry 10831 us
++ exit 4506 us), cpuidle asks PSCI for the system level (StateID 0x42000343, notify-rpm). As
+qcom-mpm.c the vMPM in RPM message RAM (0x7781b8) gets the broadcast timer's compare value as
+the wake time and the SPMI arbiter pin 87 (Power key, charger) as a wake pin, then APCS IPC bit 1.
+The RPM applies the AP's sleep set: sweet_rpm_sleep_votes() level 1 sets every RPM clock off
+there but rf_clk1_pin (Linux after boot, so XO can shut down), level 2 also VDD_CX/MX at
+retention (VDD min). The active set never changes. `cpuidle sys N` (0 off, 1 system level,
+2 + XO shutdown votes, 3 + rails), boot-arg sweetsys=; `cpuidle sys` shows the census (why the
+system level was not taken, which timer was too soon) and the RPM master stats (shutdowns, XO
+shutdowns per master).
+
+The modem watch loop's idle step polled every 5 ms, which alone kept the system level away.
+Now the GLINK interrupt from the modem (SPI 452, edge) and the copy-complete interrupts of the
+host receive CEs (SPI 413-425, HOST_IE bit 0, HOST_IS cleared before the sleep, lines unmasked
+only while the loop sleeps) wake it, and with the screen off the step is a 1 s fallback.
+modem_irq=0: polling as before. The WCN3990 LDO votes go to both sets (as icnss's regulators),
+so the chip keeps power while the AP sleeps.
+
+diff --git a/bsd/dev/redwood_net.c b/bsd/dev/redwood_net.c
+index 49f8745..80f1bf2 100644
+--- a/bsd/dev/redwood_net.c
++++ b/bsd/dev/redwood_net.c
+@@ -283,13 +283,14 @@ net_thread(__unused void *parameter, __unused wait_result_t result)
+ 		quiet = net_link->poll != NULL && net_link->poll() ? 0 : quiet + 1;
+ 		/* about once a minute, if anything has moved since */
+ 		total = net_count.sent + net_count.received + net_count.dropped_out + net_count.dropped_in;
+-		if (tick % 8192 == 0 && total != said) {
++		if (tick % (net_link->poll != NULL ? 8192u : 64u) == 0 && total != said) {
+ 			said = total;
+ 			printf("net: so far %llu frames sent (%llu bytes), %llu received (%llu bytes); dropped: %llu out, %llu in\n",
+ 			    net_count.sent, net_count.sent_bytes, net_count.received, net_count.received_bytes,
+ 			    net_count.dropped_out, net_count.dropped_in);
+ 		}
+-		delay_for_interval(quiet < 100 ? 2 : 10, NSEC_PER_MSEC);
++		/* j0159: a link without poll (Wi-Fi delivers frames itself): only the log line, once a second */
++		delay_for_interval(net_link->poll == NULL ? 1000 : quiet < 100 ? 2 : 10, NSEC_PER_MSEC);
+ 	}
+ }
+ 
+diff --git a/bsd/dev/sweet_ddrgov.c b/bsd/dev/sweet_ddrgov.c
+index 06aebd5..2b832dd 100644
+--- a/bsd/dev/sweet_ddrgov.c
++++ b/bsd/dev/sweet_ddrgov.c
+@@ -346,7 +346,8 @@ gov_thread(__unused void *arg, __unused wait_result_t wr)
+ 				}
+ 			}
+ 		}
+-		uint32_t period = g.state == G_IDLE_ON ? 10 : 50;
++		/* j0159: idle with the display off: 500 ms (a kick still wakes it at once), else as before */
++		uint32_t period = g.state == G_IDLE_ON ? 10 : g.state == G_IDLE_OFF ? 500 : 50;
+ 		lck_mtx_unlock(&gov_lock);
+ 		uint64_t deadline;
+ 		clock_interval_to_deadline(period, NSEC_PER_MSEC, &deadline);
+diff --git a/bsd/dev/sweet_rpm.c b/bsd/dev/sweet_rpm.c
+index 05103b4..469a81e 100644
+--- a/bsd/dev/sweet_rpm.c
++++ b/bsd/dev/sweet_rpm.c
+@@ -26,6 +26,7 @@
+ #include <kern/locks.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
++#include <os/atomic_private.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ bool sweet_rpm_level(uint32_t type, uint32_t level);
+@@ -77,6 +78,7 @@ struct rpm_fifo {
+ static struct {
+ 	struct rpm_fifo tx, rx;
+ 	vm_offset_t ipc;
++	vm_offset_t ram;                /* j0159: message RAM (vMPM, master stats) */
+ 	bool mapped, up, remote_open, open_acked;
+ 	uint32_t rcid, msg_id;
+ 	uint32_t resp[64];              /* last complete TX_DATA payload */
+@@ -298,6 +300,7 @@ rpm_open(void)
+ 			printf("SWEET RPM: MMIO mapping failed\n");
+ 			return false;
+ 		}
++		rpm.ram = ram;
+ 		volatile uint32_t *toc = (volatile uint32_t *)(ram + RPM_MSGRAM_SIZE - 256);
+ 		uint32_t count = toc[1];
+ 		if (toc[0] != RPM_TOC_MAGIC || count > 20) {
+@@ -339,8 +342,46 @@ rpm_open(void)
+  * value} records. Lock held. True if the RPM acked it ("msg#" = our id)
+  * without "err".
+  */
++static volatile uint32_t rpm_inflight;          /* j0159: requests sent and not answered yet */
++static bool rpm_request_one(const char *what, uint32_t set, uint32_t type, uint32_t id, const uint32_t *kv, unsigned nkvp);
++
+ static bool
+ rpm_request(const char *what, uint32_t set, uint32_t type, uint32_t id, const uint32_t *kv, unsigned nkvp)
++{
++	os_atomic_inc(&rpm_inflight, relaxed);
++	__asm__ volatile ("dmb ish" ::: "memory");
++	bool ok = rpm_request_one(what, set, type, id, kv, nkvp);
++	os_atomic_dec(&rpm_inflight, relaxed);
++	return ok;
++}
++
++/*
++ * j0159: what the system level needs from here (cpu.c, interrupts masked, no lock): no request
++ * waiting for its answer (msm_rpm_waiting_for_ack), and the message RAM for the vMPM.
++ */
++bool sweet_rpm_busy(void);
++bool
++sweet_rpm_busy(void)
++{
++	return os_atomic_load(&rpm_inflight, relaxed) != 0;
++}
++
++vm_offset_t sweet_rpm_msgram_va(void);
++vm_offset_t
++sweet_rpm_msgram_va(void)
++{
++	return rpm.mapped ? rpm.ram : 0;
++}
++
++vm_offset_t sweet_rpm_ipc_va(void);
++vm_offset_t
++sweet_rpm_ipc_va(void)
++{
++	return rpm.mapped ? rpm.ipc : 0;
++}
++
++static bool
++rpm_request_one(const char *what, uint32_t set, uint32_t type, uint32_t id, const uint32_t *kv, unsigned nkvp)
+ {
+ 	if (!rpm_open()) {
+ 		return false;
+@@ -402,6 +443,8 @@ rpm_request(const char *what, uint32_t set, uint32_t type, uint32_t id, const ui
+  * no client voting the last vote stays (nothing ever voted the rail off).
+  */
+ #define RPM_LEVEL_CLIENTS 2
++#define RPM_LEVEL_RETENTION 0x10u       /* j0159: RPM_SMD_LEVEL_RETENTION */
++static unsigned rpm_sleep_level;        /* j0159: sweet_rpm_sleep_votes */
+ static struct {
+ 	uint32_t type, level[RPM_LEVEL_CLIENTS], sent;
+ } rpm_rails[2] = { {0x78637772u /* rwcx */}, {0x786d7772u /* rwmx */} };
+@@ -428,8 +471,10 @@ sweet_rpm_level_client(unsigned client, uint32_t type, uint32_t level)
+ 			sent = &rpm_rails[r].sent;
+ 		}
+ 	}
+-	uint32_t kv[4] = {KEY_SWEN, 1u, KEY_VLVL, vote};
+-	bool ok = rpm_request("level sleep", 1, type, 0, kv, 2) && rpm_request("level active", 0, type, 0, kv, 2);
++	uint32_t kv[4] = {KEY_SWEN, 1u, KEY_VLVL, rpm_sleep_level >= 2 ? RPM_LEVEL_RETENTION : vote};
++	bool ok = rpm_request("level sleep", 1, type, 0, kv, 2);
++	kv[3] = vote;
++	ok = ok && rpm_request("level active", 0, type, 0, kv, 2);
+ 	if (ok && sent != NULL) {
+ 		*sent = vote;
+ 	}
+@@ -514,12 +559,19 @@ sweet_rpm_cpu_probe(uint32_t id)
+  * rate. "clk2" id 0 is bimc_clk = the DDR rate (GCC's debug mux counts half
+  * of it, sel 0x19d). Takes effect only once scaling is on.
+  */
++static uint32_t rpm_bimc_khz = 2147484u;       /* j0159: bimc's both-sets vote, for sleep votes off again */
++
+ bool
+ sweet_rpm_clk(uint32_t type, uint32_t id, uint32_t khz)
+ {
+-	uint32_t kv[2] = {KEY_KHZ, khz};
++	uint32_t kv[2] = {KEY_KHZ, rpm_sleep_level >= 1 ? 0u : khz};   /* j0159: no bus in the sleep set */
+ 	lck_mtx_lock(&sweet_rpm_lock);
+-	bool ok = rpm_request("clk sleep", 1, type, id, kv, 1) && rpm_request("clk active", 0, type, id, kv, 1);
++	if (type == TYPE_CLK2 && id == 0) {
++		rpm_bimc_khz = khz;
++	}
++	bool ok = rpm_request("clk sleep", 1, type, id, kv, 1);
++	kv[1] = khz;
++	ok = ok && rpm_request("clk active", 0, type, id, kv, 1);
+ 	lck_mtx_unlock(&sweet_rpm_lock);
+ 	printf("SWEET RPM: clock %.4s id %u %u kHz: %s\n", (const char *)&type, id, khz, ok ? "ok" : "FAILED");
+ 	return ok;
+@@ -608,4 +660,95 @@ sweet_rpm_clk_scaling(void)
+ 	    (unsigned)(sizeof(rpm_handoff_660) / sizeof(rpm_handoff_660[0])), failed ? "FAILED" : "ok", failed);
+ 	return (int)failed;
+ }
++
++/*
++ * j0159: the AP's sleep set, which the RPM applies only while the AP is in the system level
++ * (cpu.c). 0: as the active set (the handoff maxima, rails at their active level: XO stays on).
++ * 1: as Linux after boot with nothing awake, so the RPM may shut XO down: every RPM clock off in
++ * the sleep set (cxo, the bus and memory clocks, qdss, the XO buffers' software enables and the
++ * unused pin-controlled ones) but rf_clk1_pin, which the WCN3990 drives itself (icnss
++ * cxo_ref_clk_pin). 2: also VDD_CX and VDD_MX at retention in the sleep set (VDD min). The
++ * active set never changes. Returns the failed requests.
++ */
++int sweet_rpm_sleep_votes(unsigned level);
++int
++sweet_rpm_sleep_votes(unsigned level)
++{
++	unsigned failed = 0;
++	lck_mtx_lock(&sweet_rpm_lock);
++	if (rpm_scaling_failed != 0) {
++		lck_mtx_unlock(&sweet_rpm_lock);
++		printf("SWEET RPM: sleep votes %u: clock scaling is not on\n", level);
++		return -1;
++	}
++	for (unsigned i = 0; i < sizeof(rpm_handoff_660) / sizeof(rpm_handoff_660[0]); i++) {
++		uint32_t v = rpm_handoff_660[i].value;
++		if (rpm_handoff_660[i].type == TYPE_CLK2 && rpm_handoff_660[i].id == 0) {
++			v = rpm_bimc_khz;
++		}
++		if (level >= 1 && !(rpm_handoff_660[i].type == TYPE_CLKA && rpm_handoff_660[i].id == 4 &&
++		    rpm_handoff_660[i].key == KEY_PCCB)) {
++			v = 0;
++		}
++		uint32_t kv[2] = {rpm_handoff_660[i].key, v};
++		failed += !rpm_request("sleep vote", 1, rpm_handoff_660[i].type, rpm_handoff_660[i].id, kv, 1);
++	}
++	for (unsigned r = 0; r < 2; r++) {
++		if (rpm_rails[r].sent != 0) {
++			uint32_t kv[4] = {KEY_SWEN, 1u, KEY_VLVL, level >= 2 ? RPM_LEVEL_RETENTION : rpm_rails[r].sent};
++			failed += !rpm_request("rail sleep vote", 1, rpm_rails[r].type, 0, kv, 2);
++		}
++	}
++	if (failed == 0) {
++		rpm_sleep_level = level;
++	}
++	lck_mtx_unlock(&sweet_rpm_lock);
++	printf("SWEET RPM: sleep votes level %u (%s): %s (%u failed); rails cx %#x mx %#x\n", level,
++	    level == 0 ? "as active" : level == 1 ? "XO shutdown" : "XO shutdown + rails retention",
++	    failed ? "FAILED" : "ok", failed, rpm_rails[0].sent, rpm_rails[1].sent);
++	return (int)failed;
++}
++
++/*
++ * j0159: RPM master stats (DT qcom,rpm-master-stats@778150, version 2, one per 0x1000:
++ * APSS, MPSS, ADSP, CDSP, TZ): shutdowns and XO shutdowns while each master slept.
++ * Message RAM: 32-bit reads only.
++ */
++/* j0159: a master's total XO-shutdown time (ms) from its RPM master stats, 0 if unknown */
++uint64_t sweet_rpm_xo_ms(unsigned master);
++uint64_t
++sweet_rpm_xo_ms(unsigned master)
++{
++	if (!rpm.mapped || master >= 5) {
++		return 0;
++	}
++	volatile uint32_t *w = (volatile uint32_t *)(rpm.ram + 0x150 + 0x1000 * master);
++	uint32_t hi = w[19], lo = w[18];
++	if (hi != w[19]) {
++		lo = w[18];
++		hi = w[19];
++	}
++	return (((uint64_t)hi << 32) | lo) / 19200;
++}
++
++int sweet_rpm_master_stats(char *out, size_t len);
++int
++sweet_rpm_master_stats(char *out, size_t len)
++{
++	static const char *names[5] = {"APSS", "MPSS", "ADSP", "CDSP", "TZ"};
++	int n = 0;
++	if (!rpm.mapped) {
++		return snprintf(out, len, "  rpm: message RAM not mapped\n");
++	}
++	for (unsigned m = 0; m < 5 && n >= 0 && (size_t)n < len; m++) {
++		volatile uint32_t *w = (volatile uint32_t *)(rpm.ram + 0x150 + 0x1000 * m);
++		uint64_t xo_acc = ((uint64_t)w[19] << 32) | w[18];
++		uint64_t xo_last_in = ((uint64_t)w[15] << 32) | w[14], xo_last_out = ((uint64_t)w[17] << 32) | w[16];
++		n += snprintf(out + n, len - (size_t)n,
++		    "  rpm %s: active cores %#x, shutdowns %u, wakeup reason %u (1 scheduled), XO shutdowns %u (%llu ms total, last %llu ms)\n",
++		    names[m], w[0], w[1], w[10], w[13], xo_acc / 19200,
++		    xo_last_out > xo_last_in ? (xo_last_out - xo_last_in) / 19200 : 0);
++	}
++	return n;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index c12daa8..9b3aa0d 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -44,6 +44,43 @@ extern "C" void sweet_ddrgov_activity(int src, int sync);       /* bsd/dev/sweet
+ extern "C" void sweet_ddrgov_display(int on);
+ extern "C" void sweet_nvt_display(int on);       /* j0154: touch (same chip as the panel) pauses */
+ extern "C" void topaz_wlan_display(int on);      /* j0158: Wi-Fi power save / scan back-off */
++extern "C" void sweet_sys_display(int on);       /* j0159: system sleep only with the screen off */
++#include <IOKit/IOTimerEventSource.h>
++extern "C" void vc_enable_progressmeter(int new_value);
++
++/*
++ * j0159: XNU's boot progress meter (video_console.c, kernel mode) kept stepping behind the UI,
++ * a thread call every few ms for a long time after boot; off at the first display change, when
++ * the UI has had the display for long.
++ */
++static void
++sweet_fb_progressmeter_off(void)
++{
++	static bool done;
++	if (!done) {
++		done = true;
++		vc_enable_progressmeter(0);
++	}
++}
++
++/*
++ * j0159: for the system-sleep census (arm_timer.c): the owner's action of an IOTimerEventSource
++ * behind a thread call, read from the event source's fields (no call into it: it may be gone).
++ */
++extern "C" void sweet_tes_timeout_and_release(void *, void *) __asm("__ZN18IOTimerEventSource17timeoutAndReleaseEPvS0_");
++class SweetPeekEventSource : public IOEventSource {
++public:
++	static uintptr_t peek(IOEventSource *e) { return (uintptr_t)((SweetPeekEventSource *)e)->action; }
++};
++extern "C" uintptr_t sweet_iotes_action(uintptr_t func, uintptr_t p0);
++extern "C" uintptr_t
++sweet_iotes_action(uintptr_t func, uintptr_t p0)
++{
++	if (func != (uintptr_t)&sweet_tes_timeout_and_release || p0 == 0) {
++		return 0;
++	}
++	return SweetPeekEventSource::peek((IOEventSource *)p0);
++}
+ extern "C" void sweet_fb_submit_fault(uint32_t reason);
+ 
+ #include <pexpert/pexpert.h>
+@@ -349,6 +386,7 @@ enum {
+ #define SWEET_FB_NOTIFY_TYPES           8
+ #define SWEET_FB_NOTIFY_VSYNC           5
+ #define SWEET_FB_VSYNC_US               16667
++#define SWEET_FB_DARK_VSYNC_US          1000000     /* j0159: panel dark (jasmine) */
+ #define SWEET_FB_DOT_PITCH              458     /* ppi, as the iPhone X panel */
+ /*
+  * The iOS userland only has status bar / layout data for real iPhone
+@@ -381,6 +419,8 @@ class AppleCLCD : public IOMobileFramebuffer {
+ 	void publishModes(void);
+ 
+ public:
++	/* j0159: the next vsync now (display on: out of the dark 1 s tick) */
++	void vsyncNow(void) { if (fVsync != NULL) { fVsync->setTimeoutUS(1); } }
+ 	uint64_t      fPhys;
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+@@ -1166,9 +1206,12 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		 * Fading the uncached boot framebuffer in place crawled down the panel.
+ 		 */
+ 		if (fb->fWled) {
+-			/* jasmine: the panel is dark (WLED off); keep the last frame */
++			/*
++			 * jasmine: the panel is dark (WLED off); keep the last frame. j0159: and tick once a
++			 * second (the 60 Hz timer alone kept system sleep away); display on restarts it at once.
++			 */
+ 			IOLockUnlock(fb->fLock);
+-			sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++			sender->setTimeoutUS(SWEET_FB_DARK_VSYNC_US);
+ 			return;
+ 		}
+ 		/*
+@@ -4657,6 +4700,9 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				fFB->fFadeStep = 0;
+ 				fFB->fDirty = true;     /* on: redraw the latest frame */
+ 			}
++			if (changed && !off) {
++				fFB->vsyncNow();                /* j0159: out of the dark 1 s tick now */
++			}
+ 			uint32_t level = fFB->fBlLevel;
+ 			IOLockUnlock(fFB->fLock);
+ 			if (changed && (fFB->fDsi != NULL || fFB->fWled)) {
+@@ -4671,7 +4717,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				}
+ 			}
+ 			if (off) { sweet_ddrgov_display(0); }
+-			if (changed) { topaz_wlan_display(!off); }
++			if (changed) { topaz_wlan_display(!off); sweet_sys_display(!off); sweet_fb_progressmeter_off(); }
+ 			sweet_fb_trace_power(fFB, off, SWEET_FB_TR_PWR_EXIT, changed, scope.owned, ret);
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
+ 		}
+diff --git a/iokit/Kernel/arm/TopazAudio.cpp b/iokit/Kernel/arm/TopazAudio.cpp
+index 8adf6d8..52f304b 100644
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -4113,6 +4113,32 @@ static uint64_t frames_in, frames_dropped, underruns;
+ static IOLock *stream_lock;
+ static bool stream_wake_flag;
+ 
++/*
++ * j0159: the ADSP's GLINK interrupt (DT glink "adsp" SPI 157, rising edge) wakes the idle wait, so
++ * with the display off it can be 1 s instead of 20 ms (system sleep needs 15 ms and more of quiet).
++ */
++#define ADSP_GLINK_INTID    (32u + 157u)
++extern "C" int sweet_spi_register(uint32_t intid, void (*fn)(void *), void *arg, uint64_t mpidr);
++extern "C" void sweet_spi_set_edge(uint32_t intid);
++extern "C" boolean_t sweet_screen_off(void);
++static bool adsp_irq_ok;
++static volatile uint32_t adsp_irqs;
++
++static void
++adsp_glink_irq(void *arg)
++{
++	(void)arg;
++	adsp_irqs++;
++	thread_wakeup((event_t)&js_wake);
++	thread_wakeup((event_t)&stream_wake_flag);
++}
++
++static uint32_t
++idle_wait_ms(void)
++{
++	return adsp_irq_ok && sweet_screen_off() ? 1000 : 20;
++}
++
+ static bool
+ stream_open(void)
+ {
+@@ -4395,6 +4421,9 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 	} else {
+ 		glink_register(GCHAN, gpr_rx);
+ 	}
++	sweet_spi_set_edge(ADSP_GLINK_INTID);
++	adsp_irq_ok = sweet_spi_register(ADSP_GLINK_INTID, adsp_glink_irq, NULL, 0x0) == 0;
++	LOG("t=%u.%03u adsp GLINK interrupt (INTID %u) %s", T, ADSP_GLINK_INTID, adsp_irq_ok ? "on" : "NOT registered");
+ 	for (;;) {
+ 		bool busy = glink_poll();
+ 		qrtr_poll();
+@@ -4433,17 +4462,17 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 		if (ms() - last_status >= 60000) {
+ 			last_status = ms();
+ 			LOG("t=%u.%03u status: slave-kernel %08x, qrtr node %x hello %u, %u services, %u lookups, pd-mapper %u, "
+-			    "SPF %d APR %d/%u rx", T, *adsp_state, q_node, q_hello_rx, q_services, q_lookups, q_pdreqs, (int)spf_state,
+-			    (int)apr_state, apr_rxn);
++			    "SPF %d APR %d/%u rx, glink interrupts %u", T, *adsp_state, q_node, q_hello_rx, q_services, q_lookups,
++			    q_pdreqs, (int)spf_state, (int)apr_state, apr_rxn, adsp_irqs);
+ 			glink_summary();
+ 		}
+ 		if (busy) {
+ 			IODelay(200);
+ 		} else if (jasmine && js_ready && !js_playing) {
+-			assert_wait_timeout((event_t)&js_wake, THREAD_UNINT, 20, 1000 * NSEC_PER_USEC);
++			assert_wait_timeout((event_t)&js_wake, THREAD_UNINT, idle_wait_ms(), 1000 * NSEC_PER_USEC);
+ 			thread_block(THREAD_CONTINUE_NULL);
+ 		} else if (stream_ready && !playing) {
+-			assert_wait_timeout((event_t)&stream_wake_flag, THREAD_UNINT, 20, 1000 * NSEC_PER_USEC);
++			assert_wait_timeout((event_t)&stream_wake_flag, THREAD_UNINT, idle_wait_ms(), 1000 * NSEC_PER_USEC);
+ 			thread_block(THREAD_CONTINUE_NULL);
+ 		} else {
+ 			IOSleep(2);
+diff --git a/iokit/Kernel/arm/TopazModem.cpp b/iokit/Kernel/arm/TopazModem.cpp
+index a999c1a..db10efe 100644
+--- a/iokit/Kernel/arm/TopazModem.cpp
++++ b/iokit/Kernel/arm/TopazModem.cpp
+@@ -4471,6 +4471,8 @@ ce_post(uint32_t c)
+ 	s->dst_wr = (slot + 1) & (s->dst_n - 1);
+ }
+ 
++static void mw_ce_irq_setup(void);          /* j0159, below */
++
+ static bool
+ ce_start(void)
+ {
+@@ -4559,11 +4561,24 @@ ce_start(void)
+ 	}
+ 	ce_up = true;
+ 	LOG("t=%u ms: ce: %u rings programmed, rx posted", g_ms, CE_COUNT);
++	mw_ce_irq_setup();
+ 	return true;
+ }
+ 
+ static void htc_rx(uint32_t c, const uint8_t *d, uint32_t len);
+ 
++/* j0159: a host receive ring has a completed descriptor waiting */
++static bool
++ce_rx_pending(void)
++{
++	for (uint32_t c = 0; c < CE_COUNT; c++) {
++		if (ce_host_rx(c) && ce[c].dst[ce[c].dst_sw].nbytes != 0) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ static bool
+ ce_poll(void)
+ {
+@@ -5812,11 +5827,13 @@ topaz_wlan_scan(void)
+ extern "C" void topaz_wlan_display(int on);
+ static int w_so_enabled = -1;
+ static volatile bool w_screen_off;
++static volatile bool mw_display_off;        /* j0159: the watch loop's long idle step (any wifi_screenoff) */
+ static uint32_t w_so_since, w_bo_next, w_bo_step, w_bo_asked, w_bo_cached, w_so_ps_ms, w_ps_since;
+ 
+ void
+ topaz_wlan_display(int on)
+ {
++	mw_display_off = !on;
+ 	if (w_so_enabled < 0) {
+ 		uint32_t v = 1;
+ 		(void)PE_parse_boot_argn("wifi_screenoff", &v, sizeof(v));
+@@ -7566,6 +7583,89 @@ mw_kick(void)
+ 	}
+ }
+ 
++/*
++ * j0159: interrupts end the watch loop's idle sleep, which is then 1 s with the screen off (system
++ * sleep needs every core quiet for 15 ms and more; the 5 ms poll alone kept it away). GLINK from
++ * the modem: DT glink "modem" SPI 452, rising edge, always enabled. Copy engines with a host
++ * receive ring: icnss DT SPIs 413-418, 420-425 (CE0-11), level high while HOST_IS & HOST_IE copy
++ * complete (ath10k wcn3990_ce_regs: HOST_IE 0x2c bit 0, HOST_IS 0x30 write 1 to clear, as
++ * ath10k_ce_per_engine_service); unmasked in the GIC only while the loop sleeps, the handler masks
++ * its line again. modem_irq=0: polling as before.
++ */
++#define MW_GLINK_INTID      (32u + 452u)
++#define CE_HOST_IE          0x2C
++#define CE_HOST_IS          0x30
++static const uint16_t mw_ce_spi[CE_COUNT] = { 413, 414, 415, 416, 417, 418, 420, 421, 422, 423, 424, 425 };
++extern "C" int sweet_spi_register(uint32_t intid, void (*fn)(void *), void *arg, uint64_t mpidr);
++extern "C" void sweet_spi_disable(uint32_t intid);
++extern "C" void sweet_spi_enable(uint32_t intid);
++extern "C" void sweet_spi_set_edge(uint32_t intid);
++static unsigned mw_irq_on = 1;
++static bool mw_glink_irq_ok;
++static uint32_t mw_ce_irq_mask;             /* CEs whose line is registered */
++static volatile bool mw_irq_flag;
++static volatile uint32_t mw_glink_irqs, mw_ce_irqs, mw_irq_wakes;
++
++static void
++mw_irq_wake(void)
++{
++	mw_irq_flag = true;
++	if (mw_sleeping_long) {
++		mw_irq_wakes++;
++		thread_wakeup((event_t)&mw_chan);
++	}
++}
++
++static void
++mw_glink_irq(void *arg)
++{
++	(void)arg;
++	mw_glink_irqs++;
++	mw_irq_wake();
++}
++
++static void
++mw_ce_irq(void *arg)
++{
++	uint32_t c = (uint32_t)(uintptr_t)arg;
++	sweet_spi_disable(32u + mw_ce_spi[c]);      /* level: quiet until the loop runs */
++	mw_ce_irqs++;
++	mw_irq_wake();
++}
++
++static void
++mw_glink_irq_setup(void)
++{
++	(void)PE_parse_boot_argn("modem_irq", &mw_irq_on, sizeof(mw_irq_on));
++	if (!mw_irq_on) {
++		LOG("modem watch: interrupts off (modem_irq=0), polling");
++		return;
++	}
++	sweet_spi_set_edge(MW_GLINK_INTID);
++	mw_glink_irq_ok = sweet_spi_register(MW_GLINK_INTID, mw_glink_irq, NULL, 0x0) == 0;
++	LOG("modem watch: GLINK interrupt (INTID %u) %s", MW_GLINK_INTID, mw_glink_irq_ok ? "on" : "NOT registered");
++}
++
++static void
++mw_ce_irq_setup(void)
++{
++	if (!mw_irq_on || !mw_glink_irq_ok || mw_ce_irq_mask != 0) {
++		return;
++	}
++	for (uint32_t c = 0; c < CE_COUNT; c++) {
++		if (!ce_host_rx(c)) {
++			continue;
++		}
++		ce_wr(c, CE_HOST_IE, (ce_rd(c, CE_HOST_IE) & ~0x1Eu) | 1u);     /* copy complete, no watermarks */
++		ce_wr(c, CE_HOST_IS, 0x1Fu);
++		if (sweet_spi_register(32u + mw_ce_spi[c], mw_ce_irq, (void *)(uintptr_t)c, 0x0) == 0) {
++			sweet_spi_disable(32u + mw_ce_spi[c]);
++			mw_ce_irq_mask |= 1u << c;
++		}
++	}
++	LOG("t=%u ms: ce: copy-complete interrupts for CEs %#x", g_ms, mw_ce_irq_mask);
++}
++
+ static bool
+ mw_busy(void)
+ {
+@@ -7612,8 +7712,10 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 	uint32_t act_last = 0;
+ 	uint64_t t0 = mach_absolute_time();
+ 	(void)PE_parse_boot_argn("modem_idle_ms", &mw_idle_ms, sizeof(mw_idle_ms));
++	mw_glink_irq_setup();
+ 	for (unsigned ms = 0; seconds == 0 || ms < seconds * 1000;) {
+ 		sweet_poll_thread_to_e(&on_e);
++		mw_irq_flag = false;                    /* j0159: an interrupt from here on skips the sleep below */
+ 		if (mss_stopping) {
+ 			break;                          /* topaz_modem_stop: the reboot takes it from here */
+ 		}
+@@ -7634,8 +7736,9 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 		}
+ 		if (glink && ms >= next_alive) {
+ 			next_alive += 60000;
+-			LOG("t=%u ms: modem alive: slave-kernel %08x, glink rx %u msgs, diag cntl %u; polls %u (%u idle)", ms, sk_last,
+-			    g_rx_msgs, diag_q_cntl, mw_polls, mw_idle_polls);
++			LOG("t=%u ms: modem alive: slave-kernel %08x, glink rx %u msgs, diag cntl %u; polls %u (%u idle); "
++			    "interrupt wakes %u (glink %u, ce %u)", ms, sk_last, g_rx_msgs, diag_q_cntl, mw_polls, mw_idle_polls,
++			    mw_irq_wakes, mw_glink_irqs, mw_ce_irqs);
+ 		}
+ 		if (in == NULL) {
+ 			uint32_t sz = 0;
+@@ -7701,17 +7804,49 @@ modem_watch(struct smem_part_hdr *part, unsigned seconds)
+ 			quiet_since = ms;
+ 		}
+ 		unsigned step = (mw_idle_ms > 1 && ms - quiet_since >= 50) ? mw_idle_ms : 1;
++		/* j0159: woken by interrupts: with the screen off the poll step is a 1 s fallback */
++		bool irq_sleep = step > 1 && mw_glink_irq_ok && (!ce_up || mw_ce_irq_mask != 0);
++		if (irq_sleep && mw_display_off) {
++			step = 1000;
++		}
+ 		mw_polls++;
+ 		if (step > 1) {
+ 			uint64_t deadline;
++			uint32_t lines = 0;
+ 			mw_idle_polls++;
+ 			clock_interval_to_deadline(step, NSEC_PER_MSEC, &deadline);
+ 			mw_sleeping_long = true;
+-			if (etxq_head == etxq_tail) {          /* (a frame queued in between: at most one step late) */
++			if (irq_sleep && ce_up) {
++				for (uint32_t c = 0; c < CE_COUNT; c++) {
++					if (mw_ce_irq_mask & (1u << c)) {
++						ce_wr(c, CE_HOST_IS, 0x1Fu);
++					}
++				}
++				if (ce_rx_pending()) {
++					mw_irq_flag = true;         /* completed before the clear: no sleep */
++				} else {
++					lines = mw_ce_irq_mask;
++					for (uint32_t c = 0; c < CE_COUNT; c++) {
++						if (lines & (1u << c)) {
++							sweet_spi_enable(32u + mw_ce_spi[c]);
++						}
++					}
++				}
++			}
++			if (etxq_head == etxq_tail && !mw_irq_flag) {  /* (a frame queued in between: at most one step late) */
+ 				(void)assert_wait_deadline((event_t)&mw_chan, THREAD_UNINT, deadline);
+-				(void)thread_block(THREAD_CONTINUE_NULL);
++				if (mw_irq_flag) {
++					clear_wait(current_thread(), THREAD_AWAKENED);
++				} else {
++					(void)thread_block(THREAD_CONTINUE_NULL);
++				}
+ 			}
+ 			mw_sleeping_long = false;
++			for (uint32_t c = 0; c < CE_COUNT; c++) {
++				if (lines & (1u << c)) {
++					sweet_spi_disable(32u + mw_ce_spi[c]);
++				}
++			}
+ 		} else {
+ 			IOSleep(1);
+ 		}
+@@ -7930,8 +8065,9 @@ wcn_power_on(void)
+ 	};
+ 	bool ok = true;
+ 	for (unsigned i = 0; i < sizeof(vreg) / sizeof(vreg[0]); i++) {
+-		bool v = sweet_rpm_kvp(1, RPM_LDOA, vreg[i].ldo, RPM_KEY_UV, vreg[i].uv) &&
+-		    sweet_rpm_kvp(1, RPM_LDOA, vreg[i].ldo, RPM_KEY_SWEN, 1);
++		/* j0159: both sets (sleep first), as icnss's regulator votes: the chip stays powered in system sleep */
++		bool v = sweet_rpm_kvp(3, RPM_LDOA, vreg[i].ldo, RPM_KEY_UV, vreg[i].uv) &&
++		    sweet_rpm_kvp(3, RPM_LDOA, vreg[i].ldo, RPM_KEY_SWEN, 1);
+ 		LOG("wcn3990: %s (pm660 L%u) %u uV: %s", vreg[i].name, vreg[i].ldo, vreg[i].uv, v ? "on" : "FAILED");
+ 		ok = ok && v;
+ 	}
+diff --git a/osfmk/arm/arm_timer.c b/osfmk/arm/arm_timer.c
+index 72f7209..b06f094 100644
+--- a/osfmk/arm/arm_timer.c
++++ b/osfmk/arm/arm_timer.c
+@@ -244,6 +244,45 @@ timer_queue_cpu(int cpu)
+ 	return &cpu_datap(cpu)->rtclock_timer.queue;
+ }
+ 
++#if defined(SWEET)
++/*
++ * j0159: the first timer on this CPU's queue (its function, and the thread id for a thread's
++ * wait timer), for the system-sleep census of what keeps every core from sleeping long. Read
++ * without the queue lock from the CPU itself going idle: diagnostics only.
++ */
++extern void thread_timer_expire(void *p0, void *p1);
++extern void thread_call_delayed_timer(void *p0, void *p1);
++extern uintptr_t sweet_thread_call_first(void *group, void *flavor, uintptr_t *param0);
++extern uintptr_t sweet_iotes_action(uintptr_t func, uintptr_t p0);
++void sweet_timer_head(int cpu, uint64_t *deadline, uintptr_t *func, uint64_t *tid);
++void
++sweet_timer_head(int cpu, uint64_t *deadline, uintptr_t *func, uint64_t *tid)
++{
++	mpqueue_head_t *q = timer_queue_cpu(cpu);
++	timer_call_t c = priority_queue_min(&q->mpq_pqhead, struct timer_call, tc_pqlink);
++	*deadline = 0;
++	*func = 0;
++	*tid = 0;
++	if (c == NULL) {
++		return;
++	}
++	*deadline = c->tc_pqlink.deadline;
++	*func = (uintptr_t)c->tc_func;
++	if (c->tc_func == (timer_call_func_t)thread_timer_expire && c->tc_param0 != NULL) {
++		*tid = thread_tid((thread_t)c->tc_param0);
++	} else if (c->tc_func == (timer_call_func_t)thread_call_delayed_timer) {
++		/* the thread call behind the group's timer: its function, param0 in tid's place */
++		uintptr_t p0 = 0;
++		uintptr_t f = sweet_thread_call_first(c->tc_param0, c->tc_param1, &p0);
++		if (f != 0) {
++			uintptr_t a = sweet_iotes_action(f, p0);
++			*func = a != 0 ? a : f;
++			*tid = a != 0 ? (1ULL << 62) : (1ULL << 63);
++		}
++	}
++}
++#endif
++
+ void
+ timer_call_cpu(int cpu, void (*fn)(void *), void *arg)
+ {
+diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
+index 4aa8b3a..7c4d482 100644
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -1024,6 +1024,7 @@ sweet_cpu_signal_is_enabled(unsigned int cpu)
+ #define SWEET_IDLE_RET          0x00000002U
+ #define SWEET_IDLE_PC           0x40000003U
+ #define SWEET_IDLE_PC_L2        0x41000043U
++#define SWEET_IDLE_SYS          0x42000343U     /* j0159: + system pc (shift 8, mode 3), affinity level 2 */
+ #define SWEET_BC_FRAME_PA       0x17921000UL
+ #define SWEET_BC_INTID          40U
+ #define SWEET_BC_TARGET_MPIDR   0x0ULL          /* first Silver core */
+@@ -1034,6 +1035,10 @@ sweet_cpu_signal_is_enabled(unsigned int cpu)
+ #define QT_CNTP_CTL             0x2C
+ #define QT_CNTV_TVAL            0x38
+ #define QT_CNTV_CTL             0x3C
++#define QT_CNTP_CVAL_LO         0x20
++#define QT_CNTP_CVAL_HI         0x24
++#define QT_CNTV_CVAL_LO         0x30
++#define QT_CNTV_CVAL_HI         0x34
+ 
+ unsigned sweet_cpuidle_mode;            /* 0 WFI, 1 ret, 2 + core pc, 3 + core and L2 pc */
+ unsigned sweet_idle_flush = 1;          /* mode 0: XNU's L1 flush before WFI (old behaviour) */
+@@ -1056,8 +1061,8 @@ static uint64_t sweet_cpuidle_entry_pa;
+ static boolean_t sweet_cpuidle_ready;
+ 
+ struct sweet_idle_stat {
+-	uint64_t n[4];          /* entries: wfi, ret, pc, pc+L2 */
+-	uint64_t t[4];          /* abs time spent */
++	uint64_t n[5];          /* entries: wfi, ret, pc, pc+L2, j0159: + system */
++	uint64_t t[5];          /* abs time spent */
+ 	uint64_t pc_ret;        /* pc call returned without collapsing (wake pending) */
+ 	uint64_t fail;          /* negative PSCI result */
+ 	int32_t  last_rc;
+@@ -1093,6 +1098,79 @@ static int32_t sweet_psci_mode_rc = -99;
+ static uint8_t sweet_cpu_cluster[MAX_CPUS];     /* j0152: cpu_cluster_id & 3 per CPU */
+ static uint64_t sweet_cpu_mpidr[MAX_CPUS];      /* j0152: cpu_phys_id (Aff1:Aff0) per CPU */
+ 
++/*
++ * j0159: system sleep, the stock lpm-levels "system" cluster level "system-pc" (psci-mode 3 at
++ * shift 8, qcom,notify-rpm; DT dtb0.dts 7419ff): when the last core goes down, both clusters'
++ * L2s are down and every core's next timer is at least the min residency away (entry 10831 us +
++ * exit 4506 us), it asks for the system level. The firmware then hands the AP to the RPM, which
++ * applies the AP's sleep set (sweet_rpm_sleep_votes) and, with every other master asleep too,
++ * shuts XO down (and with the rails at retention, VDD min). While XO is off the QTimer and the
++ * GIC see nothing, so as qcom-mpm.c system_pm_enter_sleep / update_wakeup the vMPM in RPM message
++ * RAM (DT wake-gic 0x7781b8) gets the broadcast timer's compare value as the wake time and the
++ * wake pins (mpm-sdm660.c: pin 87 = ee0 SPMI arbiter, INTID 358: Power key, charger), then the
++ * APCS IPC bit 1 tells the RPM. Only with the display off (the screen-on behaviour stays as it
++ * was). `cpuidle sys N`: 0 off, 1 system level, 2 + XO shutdown sleep votes, 3 + rails at
++ * retention; boot-arg sweetsys= (default below). `cpuidle rpm`: the RPM's master stats.
++ */
++#define SWEET_SYS_RES_US        15337U
++#define SWEET_SYS_EXIT_US       4506U
++#define SWEET_MPM_OFF           0x1b8U          /* vMPM in the message RAM page */
++#define SWEET_MPM_PIN_SPMI      87U
++static uint32_t sweet_sys_mode;                 /* j0159: as `cpuidle sys` */
++static uint32_t sweet_sys_boot_mode = 3;           /* default on: system level, XO shutdown and rail votes */
++static volatile boolean_t sweet_sys_display_off;
++static uint64_t sweet_sys_res_abs, sweet_sys_exit_abs;
++static boolean_t sweet_bc_sys;                  /* the system level was asked: every sleeper wakes its exit early */
++static uint32_t sweet_all_cpus;
++static vm_offset_t sweet_mpm, sweet_mpm_ipc;
++static int sweet_sys_votes_rc = -99;
++static struct {
++	uint64_t all_down;      /* last core down with every other core in pc */
++	uint64_t other_up;      /* ... but another cluster's L2 still up */
++	uint64_t short_l2;      /* ... our L2 not even (cluster wake too close) */
++	uint64_t short_sys;     /* ... the earliest wake closer than the system residency */
++	uint64_t long_ok;       /* ... far enough */
++	uint64_t screen_on, rpm_busy, asked, denied, resumed;
++	uint64_t t_abs;         /* time in the system level (from the asking core's view) */
++} sweet_sys;
++#define SWEET_SYS_WHO 12
++static struct {
++	uintptr_t func;
++	uint64_t tid;
++	uint64_t n;
++} sweet_sys_who[SWEET_SYS_WHO];
++static uint64_t sweet_sys_who_other;
++static uintptr_t sweet_cpu_tfunc[MAX_CPUS];     /* the timer a core in pc sleeps for (1: the idle timer) */
++static uint64_t sweet_cpu_ttid[MAX_CPUS];
++extern void sweet_timer_head(int cpu, uint64_t *deadline, uintptr_t *func, uint64_t *tid);
++extern bool sweet_rpm_busy(void);
++extern vm_offset_t sweet_rpm_msgram_va(void);
++extern vm_offset_t sweet_rpm_ipc_va(void);
++extern int sweet_rpm_sleep_votes(unsigned level);
++extern int sweet_rpm_master_stats(char *out, size_t len);
++
++/* SweetFramebuffer, on every display change */
++void sweet_sys_display(int on);
++void
++sweet_sys_display(int on)
++{
++	if (!on && !sweet_sys_display_off) {
++		/* the census counts the screen-off time only (racy against idle cores: counts only) */
++		bzero(&sweet_sys, sizeof(sweet_sys));
++		bzero(sweet_sys_who, sizeof(sweet_sys_who));
++		sweet_sys_who_other = 0;
++	}
++	sweet_sys_display_off = !on;
++}
++
++/* for the periodic samplers (DVFS, audio) that step slower with the screen off */
++boolean_t sweet_screen_off(void);
++boolean_t
++sweet_screen_off(void)
++{
++	return sweet_sys_display_off;
++}
++
+ extern void sweet_gic_cpu_resume(void);
+ extern int sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3]);
+ extern void sweet_gic_spi_retarget(uint32_t intid, uint64_t mpidr);
+@@ -1160,6 +1238,9 @@ sweet_bc_fire_locked(unsigned i)
+ 	if (sweet_bc_l2[sweet_cpu_cluster[i]]) {
+ 		lat = sweet_idle_exit_abs[SWEET_CPU_KIND(i)][2];
+ 	}
++	if (sweet_bc_sys && sweet_sys_exit_abs > lat) {
++		lat = sweet_sys_exit_abs;               /* j0159 */
++	}
+ 	return sweet_bc_deadline[i] - lat;
+ }
+ 
+@@ -1210,6 +1291,7 @@ sweet_bc_cancel(unsigned cpu)
+ {
+ 	sweet_bc_acquire();
+ 	sweet_bc_l2[sweet_cpu_cluster[cpu]] = FALSE;
++	sweet_bc_sys = FALSE;                   /* j0159: the system is up again */
+ 	if (sweet_bc_deadline[cpu] != 0) {      /* else the broadcast handler woke us and cleared it */
+ 		sweet_bc_deadline[cpu] = 0;
+ 		sweet_bc_program_locked(qt_now());
+@@ -1319,6 +1401,11 @@ sweet_cpuidle_setup(boolean_t force, boolean_t need_bc)
+ 				}
+ 			}
+ 		}
++		for (unsigned k = 0; k < 4; k++) {
++			sweet_all_cpus |= sweet_cluster_cpus[k];
++		}
++		nanoseconds_to_absolutetime((uint64_t)SWEET_SYS_RES_US * NSEC_PER_USEC, &sweet_sys_res_abs);
++		nanoseconds_to_absolutetime((uint64_t)SWEET_SYS_EXIT_US * NSEC_PER_USEC, &sweet_sys_exit_abs);
+ 		sweet_cpuidle_entry_pa = ml_static_vtop((vm_offset_t)&sweet_secondary_entry);
+ 		sweet_cpuidle_clean_reset_data();
+ 		sweet_cpuidle_ready = TRUE;     /* enough for ret (mode 1) */
+@@ -1369,6 +1456,139 @@ sweet_cpuidle_setup(boolean_t force, boolean_t need_bc)
+ 	return "QTimer frame 0 interrupt (INTID 40 / 39) never arrived";
+ }
+ 
++static inline uint32_t
++sweet_mpm_r(unsigned w)
++{
++	return *(volatile uint32_t *)(sweet_mpm + 4 * w);
++}
++
++static inline void
++sweet_mpm_w(unsigned w, uint32_t v)
++{
++	sweet_mmio_w32(sweet_mpm + 4 * w, v);
++}
++
++/* qcom-mpm.c MPM_REGISTER: 64-bit wake timer, then ENABLE, FALLING, RISING, POLARITY, STATUS x 3 words */
++#define SWEET_MPM_REG(reg, i)   ((reg) * 3U + (i) + 2U)
++
++/* Thread context: the vMPM and the IPC, the wake pin (as msm_mpm_enable_irq + set_type, level high). */
++static const char *
++sweet_sys_setup(void)
++{
++	if (sweet_mpm != 0) {
++		return NULL;
++	}
++	vm_offset_t ram = sweet_rpm_msgram_va(), ipc = sweet_rpm_ipc_va();
++	if (ram == 0 || ipc == 0) {
++		return "RPM message RAM not mapped yet";
++	}
++	sweet_mpm = ram + SWEET_MPM_OFF;
++	unsigned w = SWEET_MPM_PIN_SPMI / 32, bit = 1U << (SWEET_MPM_PIN_SPMI % 32);
++	sweet_mpm_w(SWEET_MPM_REG(1, w), sweet_mpm_r(SWEET_MPM_REG(1, w)) & ~bit);     /* not falling */
++	sweet_mpm_w(SWEET_MPM_REG(2, w), sweet_mpm_r(SWEET_MPM_REG(2, w)) & ~bit);     /* not rising */
++	sweet_mpm_w(SWEET_MPM_REG(3, w), sweet_mpm_r(SWEET_MPM_REG(3, w)) | bit);      /* level high */
++	sweet_mpm_w(SWEET_MPM_REG(0, w), sweet_mpm_r(SWEET_MPM_REG(0, w)) | bit);      /* enabled */
++	sweet_mpm_w(0, 0xFFFFFFFFU);
++	sweet_mpm_w(1, 0xFFFFFFFFU);
++	__builtin_arm_dsb(DSB_SY);
++	sweet_mpm_ipc = ipc + 8;
++	return NULL;
++}
++
++/* Lock held, broadcast programmed: tell the RPM when to wake us (qcom-mpm.c system_pm_*). */
++static void
++sweet_sys_mpm_enter_locked(void)
++{
++	uint32_t lo = 0xFFFFFFFFU, hi = 0xFFFFFFFFU;
++	uint32_t ctl = qt_read(sweet_bc_ctl);
++	if (ctl & 1) {
++		boolean_t virt = sweet_bc_ctl == QT_CNTV_CTL;
++		do {
++			hi = qt_read(virt ? QT_CNTV_CVAL_HI : QT_CNTP_CVAL_HI);
++			lo = qt_read(virt ? QT_CNTV_CVAL_LO : QT_CNTP_CVAL_LO);
++		} while (hi != qt_read(virt ? QT_CNTV_CVAL_HI : QT_CNTP_CVAL_HI));
++	}
++	sweet_mpm_w(0, lo);
++	sweet_mpm_w(1, hi);
++	for (unsigned i = 0; i < 3; i++) {
++		sweet_mpm_w(SWEET_MPM_REG(4, i), 0);    /* status */
++	}
++	__builtin_arm_dsb(DSB_SY);
++	sweet_mmio_w32(sweet_mpm_ipc, 2);           /* msm_mpm_send_interrupt */
++	__builtin_arm_dsb(DSB_SY);
++}
++
++/* Lock held: what keeps the system level away (the earliest sleeper's timer). */
++static void
++sweet_sys_note_locked(unsigned who)
++{
++	uintptr_t f = sweet_cpu_tfunc[who];
++	uint64_t tid = sweet_cpu_ttid[who];
++	for (unsigned k = 0; k < SWEET_SYS_WHO; k++) {
++		if (sweet_sys_who[k].n != 0 && sweet_sys_who[k].func == f && sweet_sys_who[k].tid == tid) {
++			sweet_sys_who[k].n++;
++			return;
++		}
++	}
++	for (unsigned k = 0; k < SWEET_SYS_WHO; k++) {
++		if (sweet_sys_who[k].n == 0) {
++			sweet_sys_who[k].func = f;
++			sweet_sys_who[k].tid = tid;
++			sweet_sys_who[k].n = 1;
++			return;
++		}
++	}
++	sweet_sys_who_other++;
++}
++
++/*
++ * Lock held, the last core going down with every other core in pc: TRUE to ask for the system
++ * level (as lpm-levels cluster_select for the "system" cluster: every child in sync, both L2s at
++ * pc, the sleep long enough, sys_pm_ops->sleep_allowed).
++ */
++static boolean_t
++sweet_sys_pick_locked(uint32_t cl, boolean_t our_l2, uint64_t now)
++{
++	sweet_sys.all_down++;
++	for (unsigned c = 0; c < 4; c++) {
++		if (c != cl && sweet_cluster_cpus[c] != 0 && !sweet_bc_l2[c]) {
++			sweet_sys.other_up++;
++			return FALSE;
++		}
++	}
++	if (!our_l2) {
++		sweet_sys.short_l2++;
++		return FALSE;
++	}
++	uint64_t first = 0;
++	unsigned who = 0;
++	for (unsigned i = 0; i < MAX_CPUS; i++) {
++		uint64_t d = sweet_bc_deadline[i];
++		if (d != 0 && (first == 0 || d < first)) {
++			first = d;
++			who = i;
++		}
++	}
++	if (first <= now || first - now < sweet_sys_res_abs) {
++		sweet_sys.short_sys++;
++		sweet_sys_note_locked(who);
++		return FALSE;
++	}
++	sweet_sys.long_ok++;
++	if (sweet_sys_mode == 0 || sweet_mpm == 0) {
++		return FALSE;
++	}
++	if (!sweet_sys_display_off) {
++		sweet_sys.screen_on++;
++		return FALSE;
++	}
++	if (sweet_rpm_busy()) {
++		sweet_sys.rpm_busy++;
++		return FALSE;
++	}
++	return TRUE;
++}
++
+ /* cpu_idle, interrupts masked, after the DSB; replaces the WFI. */
+ static void
+ sweet_cpu_idle_enter(cpu_data_t *cdp)
+@@ -1407,6 +1627,17 @@ sweet_cpu_idle_enter(cpu_data_t *cdp)
+ 	}
+ 	if (mode >= 2 && sweet_bc_intid != 0 && (sweet_cpuidle_pc_mask & (1U << cpu)) && idle >= pc_min) {
+ 		uint32_t cl = sweet_cpu_cluster[cpu];
++		/* j0159: which timer this core sleeps for (system-level census) */
++		uint64_t hd = 0, htid = 0;
++		uintptr_t hf = 0;
++		sweet_timer_head((int)cpu, &hd, &hf, &htid);
++		if (cdp->idle_timer_notify != NULL && cdp->idle_timer_deadline != 0 &&
++		    (hd == 0 || cdp->idle_timer_deadline < hd)) {
++			hf = 1;                                 /* the platform's idle timer, not a timer call */
++			htid = 0;
++		}
++		sweet_cpu_tfunc[cpu] = hf;
++		sweet_cpu_ttid[cpu] = htid;
+ 		sweet_bc_acquire();
+ 		uint64_t now = qt_now();
+ 		sweet_bc_deadline[cpu] = now + idle;
+@@ -1428,18 +1659,37 @@ sweet_cpu_idle_enter(cpu_data_t *cdp)
+ 					first = d;
+ 				}
+ 			}
+-			if (first > now && first - now >= sweet_idle_res_abs[kind][2]) {
++			boolean_t l2 = first > now && first - now >= sweet_idle_res_abs[kind][2];
++			if (l2) {
+ 				state = SWEET_IDLE_PC_L2;
+ 				idx = 3;
+ 				sweet_bc_l2[cl] = TRUE;         /* every sleeper here now wakes the L2 exit early */
+ 			}
++			/* j0159: the last core of all: the system level? */
++			if (sweet_pc_now == sweet_all_cpus && sweet_sys_pick_locked(cl, l2, now)) {
++				state = SWEET_IDLE_SYS;
++				idx = 4;
++				sweet_bc_sys = TRUE;
++			}
+ 		}
+ 		sweet_bc_program_locked(now);
++		if (idx == 4) {
++			sweet_sys_mpm_enter_locked();
++			sweet_sys.asked++;
++		}
+ 		sweet_bc_release();
+ 	}
+ 	st->cur = idx;
+ 	st->enter_t = t0;
+ 	int32_t rc = sweet_psci_call(SWEET_PSCI_CPU_SUSPEND, state, sweet_cpuidle_entry_pa, 0);
++	if (rc < 0 && idx == 4) {
++		/* j0159: the firmware said no to the system level: the cluster level */
++		sweet_sys.denied++;
++		st->last_rc = rc;
++		idx = 3;
++		st->cur = 3;
++		rc = sweet_psci_call(SWEET_PSCI_CPU_SUSPEND, SWEET_IDLE_PC_L2, sweet_cpuidle_entry_pa, 0);
++	}
+ 	if (rc < 0 && idx == 3) {
+ 		/* A sibling woke between our check and the call: core-only collapse. */
+ 		sweet_l2_denied++;
+@@ -1480,6 +1730,10 @@ sweet_cpu_idle_resumed(cpu_data_t *cdp)
+ 	uint64_t t = mach_absolute_time();
+ 	if (st->enter_t != 0) {
+ 		st->t[idx] += t - st->enter_t;
++		if (idx == 4) {
++			sweet_sys.resumed++;            /* j0159 */
++			sweet_sys.t_abs += t - st->enter_t;
++		}
+ 	}
+ 	/* j0152: how late the core runs after the timer it slept for (0 if woken early) */
+ 	if (st->pop != 0 && t > st->pop) {
+@@ -1588,6 +1842,97 @@ sweet_ab_thread(void *arg, wait_result_t wr)
+ 	sweet_ab_running = FALSE;
+ }
+ 
++/*
++ * j0159: one power reading over a window, as the power plan's end measurement: `cpuidle meter
++ * SECS [WAIT]` waits WAIT s (default 60: unplug, screen off), then averages the gauge current
++ * once a second for SECS s (default 600), with the AP's XO-off time over the same window and
++ * whether the screen stayed off and USB unplugged throughout. `cpuidle meter`: the result.
++ */
++extern uint64_t sweet_rpm_xo_ms(unsigned master);
++static char sweet_meter_out[512];
++static uint32_t sweet_meter_secs, sweet_meter_wait;
++static boolean_t sweet_meter_running;
++
++static void
++sweet_meter_thread(void *arg, wait_result_t wr)
++{
++	(void)arg; (void)wr;
++	struct sweet_fg_ab f;
++	delay_for_interval(sweet_meter_wait, NSEC_PER_SEC);
++	int s0 = sweet_fg_read(&f) == 0 ? f.fg_soc : -1, t0 = f.temp_dc;
++	uint64_t xo0 = sweet_rpm_xo_ms(0), sys0 = sweet_sys.t_abs, t_start = mach_absolute_time();
++	int64_t sum = 0;
++	int n = 0, mv = 0, online = 0, min_ma = 0, max_ma = 0;
++	boolean_t dark = TRUE;
++	for (uint32_t t = 0; t < sweet_meter_secs; t++) {
++		delay_for_interval(1, NSEC_PER_SEC);
++		dark = dark && sweet_sys_display_off;
++		if (sweet_fg_read(&f) != 0) {
++			continue;
++		}
++		if (n == 0 || f.ma < min_ma) {
++			min_ma = f.ma;
++		}
++		if (n == 0 || f.ma > max_ma) {
++			max_ma = f.ma;
++		}
++		sum += f.ma;
++		n++;
++		online |= f.online;
++		mv = f.mv;
++	}
++	uint64_t ns, sys_ns;
++	absolutetime_to_nanoseconds(mach_absolute_time() - t_start, &ns);
++	absolutetime_to_nanoseconds(sweet_sys.t_abs - sys0, &sys_ns);
++	uint64_t xo = sweet_rpm_xo_ms(0) - xo0;
++	snprintf(sweet_meter_out, sizeof(sweet_meter_out),
++	    "cpuidle meter: %u s after %u s: mean %lld mA (min %d, max %d, %d samples) at %d mV; screen %s, USB %s; "
++	    "AP XO off %llu ms of %llu ms (%llu %%), system level %llu ms; soc %d -> %d %%, %d.%d -> %d.%d C\n",
++	    sweet_meter_secs, sweet_meter_wait, n ? sum / n : 0, min_ma, max_ma, n, mv,
++	    dark ? "off throughout" : "ON at some point", online ? "CONNECTED at some point" : "unplugged throughout",
++	    xo, ns / NSEC_PER_MSEC, ns ? xo * 100 / (ns / NSEC_PER_MSEC) : 0, sys_ns / NSEC_PER_MSEC,
++	    s0, f.fg_soc, t0 / 10, t0 % 10, f.temp_dc / 10, f.temp_dc % 10);
++	printf("SWEET METER: %s", sweet_meter_out);
++	sweet_meter_running = FALSE;
++}
++
++static const char *
++sweet_meter_start(const char *p)
++{
++	uint32_t v[2] = { 0, 60 };
++	for (int k = 0; k < 2; k++) {
++		while (*p == ' ') {
++			p++;
++		}
++		if (*p < '0' || *p > '9') {
++			break;
++		}
++		uint32_t x = 0;
++		for (; *p >= '0' && *p <= '9'; p++) {
++			x = x * 10 + (uint32_t)(*p - '0');
++		}
++		v[k] = x;
++	}
++	if (v[0] == 0) {
++		return NULL;            /* show the result */
++	}
++	if (sweet_meter_running) {
++		return "meter already running";
++	}
++	sweet_meter_secs = v[0] < 10 ? 10 : (v[0] > 7200 ? 7200 : v[0]);
++	sweet_meter_wait = v[1] > 600 ? 600 : v[1];
++	snprintf(sweet_meter_out, sizeof(sweet_meter_out), "cpuidle meter: running, %u s after %u s\n",
++	    sweet_meter_secs, sweet_meter_wait);
++	thread_t thread;
++	sweet_meter_running = TRUE;
++	if (kernel_thread_start(sweet_meter_thread, NULL, &thread) != KERN_SUCCESS) {
++		sweet_meter_running = FALSE;
++		return "no thread";
++	}
++	thread_deallocate(thread);
++	return NULL;
++}
++
+ static const char *
+ sweet_ab_start(const char *p)
+ {
+@@ -1641,6 +1986,12 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 	while (*p == ' ') {
+ 		p++;
+ 	}
++	if (strncmp(p, "meter", 5) == 0 && (p[5] == 0 || p[5] == ' ')) {
++		const char *e = sweet_meter_start(p + 5);
++		int m = snprintf(out, len, "%s%s%s%s", e ? "ERROR " : "", e ? e : "", e ? "\n" : "",
++		    sweet_meter_out[0] ? sweet_meter_out : "cpuidle meter: no result yet\n");
++		return m < (int)len ? m : (int)len - 1;
++	}
+ 	if (strncmp(p, "ab", 2) == 0 && (p[2] == 0 || p[2] == ' ')) {
+ 		const char *e = sweet_ab_start(p + 2);
+ 		int m = snprintf(out, len, "%s%s%s%s", e ? "ERROR " : "", e ? e : "", e ? "\n" : "",
+@@ -1650,6 +2001,61 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 		}
+ 		return m < (int)len ? m : (int)len - 1;
+ 	}
++	if (strncmp(p, "sys", 3) == 0 && (p[3] == 0 || p[3] == ' ')) {
++		/* j0159: `cpuidle sys [N]` */
++		const char *e = NULL;
++		const char *q = p + 3;
++		while (*q == ' ') {
++			q++;
++		}
++		if (*q >= '0' && *q <= '3') {
++			uint32_t want = (uint32_t)(*q - '0');
++			if (want != 0 && (e = sweet_sys_setup()) != NULL) {
++				want = 0;
++			}
++			if (e == NULL) {
++				sweet_sys_votes_rc = sweet_rpm_sleep_votes(want >= 2 ? want - 1 : 0);
++				os_atomic_store(&sweet_sys_mode, want, relaxed);
++			}
++		} else if (strncmp(q, "reset", 5) == 0) {
++			bzero(&sweet_sys, sizeof(sweet_sys));
++			bzero(sweet_sys_who, sizeof(sweet_sys_who));
++			sweet_sys_who_other = 0;
++		}
++		uint64_t ns;
++		absolutetime_to_nanoseconds(sweet_sys.t_abs, &ns);
++		int m = snprintf(out, len, "%scpuidle sys: mode %u (0 off, 1 system level, 2 + XO shutdown votes, 3 + rails retention), "
++		    "votes rc %d, display %s, vMPM %s; all cores down %llu: other cluster up %llu, own L2 short %llu, "
++		    "wake < %u us %llu, long enough %llu (screen on %llu, RPM busy %llu); asked %llu, denied %llu, resumed %llu, %llu ms\n",
++		    e ? "ERROR " : "OK ", sweet_sys_mode, sweet_sys_votes_rc, sweet_sys_display_off ? "off" : "on",
++		    sweet_mpm ? "set" : "not set", sweet_sys.all_down, sweet_sys.other_up, sweet_sys.short_l2, SWEET_SYS_RES_US,
++		    sweet_sys.short_sys, sweet_sys.long_ok, sweet_sys.screen_on, sweet_sys.rpm_busy, sweet_sys.asked,
++		    sweet_sys.denied, sweet_sys.resumed, ns / NSEC_PER_MSEC);
++		if (e != NULL && m > 0 && (size_t)m < len) {
++			m += snprintf(out + m, len - (size_t)m, "  %s\n", e);
++		}
++		for (unsigned k = 0; k < SWEET_SYS_WHO && m > 0 && (size_t)m < len; k++) {
++			if (sweet_sys_who[k].n != 0) {
++				uint64_t t = sweet_sys_who[k].tid;
++				boolean_t call = (t >> 63) != 0, tes = ((t >> 62) & 1) != 0;
++				t &= ~(3ULL << 62);
++				m += snprintf(out + m, len - (size_t)m, "  too soon: %llu x %s%#lx %s %#llx\n", sweet_sys_who[k].n,
++				    sweet_sys_who[k].func == 1 ? "idle timer " : tes ? "IOTimerEventSource action " : call ? "thread call " : "timer ",
++				    sweet_sys_who[k].func > 1 ? (unsigned long)VM_KERNEL_UNSLIDE(sweet_sys_who[k].func) : 0UL,
++				    call ? "param0" : "tid", call ? (unsigned long long)VM_KERNEL_UNSLIDE(t) : t);
++			}
++		}
++		if (m > 0 && (size_t)m < len) {
++			m += snprintf(out + m, len - (size_t)m, "  too soon, other: %llu\n", sweet_sys_who_other);
++		}
++		if (m > 0 && (size_t)m < len) {
++			m += sweet_rpm_master_stats(out + m, len - (size_t)m);
++		}
++		if (m < 0) {
++			m = 0;
++		}
++		return m < (int)len ? m : (int)len - 1;
++	}
+ 	if (strncmp(p, "gic", 3) == 0) {
+ 		extern int sweet_gic_dump(char *out, size_t len);
+ 		int m = snprintf(out, len, "cpuidle gic:\n");
+@@ -1698,9 +2104,9 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 	}
+ 
+ 	static const char *names[4] = { "wfi", "ret", "pc", "pcL2" };
+-	int n = snprintf(out, len, "%scpuidle: mode %u (%s), pc from %u us, pc mask 0x%02x, flush %u, "
++	int n = snprintf(out, len, "%scpuidle: mode %u (%s), sys %u, pc from %u us, pc mask 0x%02x, flush %u, "
+ 	    "PSCI features %d, clusters 0x%02x 0x%02x, ready %d; broadcast INTID %u (IGROUPR1 0x%08x ISENABLER1 0x%08x GICD_CTLR 0x%08x) irqs %llu wakes %llu spurious %llu late max %llu us, route 0x%llx reroutes %llu; L2 denied %llu, set-mode rc %d\n",
+-	    err ? "ERROR " : "OK ", sweet_cpuidle_mode, names[sweet_cpuidle_mode & 3], sweet_cpuidle_pc_us,
++	    err ? "ERROR " : "OK ", sweet_cpuidle_mode, names[sweet_cpuidle_mode & 3], sweet_sys_mode, sweet_cpuidle_pc_us,
+ 	    sweet_cpuidle_pc_mask, sweet_idle_flush, sweet_cpuidle_features, sweet_cluster_cpus[0], sweet_cluster_cpus[1], sweet_cpuidle_ready,
+ 	    sweet_bc_intid, sweet_bc_group1[0], sweet_bc_group1[1], sweet_bc_group1[2], sweet_bc_irqs, sweet_bc_wakes, sweet_bc_spurious, sweet_bc_late_max / 19, sweet_bc_route, sweet_bc_reroutes, sweet_l2_denied, sweet_psci_mode_rc);
+ 	if (err && n > 0 && (size_t)n < len) {
+@@ -1711,15 +2117,15 @@ sweet_cpuidle_command(const char *args, char *out, size_t len)
+ 		if (CpuDataEntries[i].cpu_data_vaddr == NULL) {
+ 			continue;
+ 		}
+-		uint64_t ms[4];
+-		for (int k = 0; k < 4; k++) {
++		uint64_t ms[5];
++		for (int k = 0; k < 5; k++) {
+ 			uint64_t ns;
+ 			absolutetime_to_nanoseconds(st->t[k], &ns);
+ 			ms[k] = ns / NSEC_PER_MSEC;
+ 		}
+ 		n += snprintf(out + n, len - (size_t)n,
+-		    "  cpu%u: wfi %llu/%llu ms ret %llu/%llu ms pc %llu/%llu ms pcL2 %llu/%llu ms; pc returned %llu, fail %llu (rc %d); late max %llu us, >1 ms %llu\n",
+-		    i, st->n[0], ms[0], st->n[1], ms[1], st->n[2], ms[2], st->n[3], ms[3], st->pc_ret, st->fail, st->last_rc,
++		    "  cpu%u: wfi %llu/%llu ms ret %llu/%llu ms pc %llu/%llu ms pcL2 %llu/%llu ms sys %llu/%llu ms; pc returned %llu, fail %llu (rc %d); late max %llu us, >1 ms %llu\n",
++		    i, st->n[0], ms[0], st->n[1], ms[1], st->n[2], ms[2], st->n[3], ms[3], st->n[4], ms[4], st->pc_ret, st->fail, st->last_rc,
+ 		    st->late_max / 19, st->late_1ms);
+ 	}
+ 	if (n < 0) {
+@@ -1759,6 +2165,11 @@ sweet_cpuidle_boot_thread(void *arg, wait_result_t wr)
+ 	}
+ 	sweet_cpuidle_command(cmd, reply, sizeof(reply));
+ 	printf("SWEET CPUIDLE: boot mode %u (%u of %u CPUs): %s", sweet_cpuidle_boot_mode, up, real_ncpus, reply);
++	if (sweet_sys_boot_mode != 0 && sweet_cpuidle_boot_mode >= 3) {
++		char sc[8] = { 's', 'y', 's', ' ', (char)('0' + (sweet_sys_boot_mode > 3 ? 3 : sweet_sys_boot_mode)), 0 };
++		sweet_cpuidle_command(sc, reply, sizeof(reply));
++		printf("SWEET CPUIDLE: boot system level (sweetsys=%u): %s", sweet_sys_boot_mode, reply);
++	}
+ }
+ 
+ void sweet_cpuidle_boot(void);
+@@ -1766,6 +2177,7 @@ void
+ sweet_cpuidle_boot(void)
+ {
+ 	(void)PE_parse_boot_argn("sweetidle", &sweet_cpuidle_boot_mode, sizeof(sweet_cpuidle_boot_mode));
++	(void)PE_parse_boot_argn("sweetsys", &sweet_sys_boot_mode, sizeof(sweet_sys_boot_mode));
+ 	if (sweet_cpuidle_boot_mode == 0 || sweet_cpuidle_boot_mode > 3) {
+ 		printf("SWEET CPUIDLE: sweetidle=%u, WFI only\n", sweet_cpuidle_boot_mode);
+ 		return;
+diff --git a/osfmk/arm64/sweet_dvfs.h b/osfmk/arm64/sweet_dvfs.h
+index 24b83e3..62b1b4e 100644
+--- a/osfmk/arm64/sweet_dvfs.h
++++ b/osfmk/arm64/sweet_dvfs.h
+@@ -341,7 +341,11 @@ dvfs_worker(void *arg, wait_result_t result)
+ 			}
+ 		}
+ 		lck_mtx_unlock(&cpuvolt_lock);
+-		clock_interval_to_deadline(20,NSEC_PER_MSEC,&deadline);
++		/* j0159: display off: sample every 250 ms, 500 ms with both clusters idle (system sleep
++		 * needs 15 ms and more of quiet); display on: every 20 ms as before */
++		extern boolean_t sweet_screen_off(void);
++		bool dark=sweet_screen_off(), quiet=dark && peak[0]<10 && peak[1]<10;
++		clock_interval_to_deadline(quiet ? 500 : dark ? 250 : 20,NSEC_PER_MSEC,&deadline);
+ 		(void)assert_wait_deadline(&dvfs_ready,THREAD_UNINT,deadline);
+ 		thread_block(THREAD_CONTINUE_NULL);
+ 	}
+diff --git a/osfmk/console/serial_general.c b/osfmk/console/serial_general.c
+index b1ca47a..47789ad 100644
+--- a/osfmk/console/serial_general.c
++++ b/osfmk/console/serial_general.c
+@@ -89,7 +89,12 @@ serial_keyboard_poll(void)
+ 		cons_cinput((char)chr); /* Buffer up the character */
+ 	}
+ 
++#if defined(SWEET)
++	/* j0159: no UART to type into on the phone; every 16 ms kept system sleep away */
++	clock_interval_to_deadline(1000, 1000000, &next);
++#else
+ 	clock_interval_to_deadline(16, 1000000, &next); /* Get time of pop */
++#endif
+ 
+ 	assert_wait_deadline((event_t)serial_keyboard_poll, THREAD_UNINT, next); /* Show we are "waiting" */
+ 	thread_block((thread_continue_t)serial_keyboard_poll); /* Wait for it */
+diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
+index 5235e40..114c892 100644
+--- a/osfmk/kern/thread_call.c
++++ b/osfmk/kern/thread_call.c
+@@ -2113,6 +2113,26 @@ thread_call_delayed_timer_rescan(thread_call_group_t group,
+ 	enable_ints_and_unlock(group, s);
+ }
+ 
++#if defined(SWEET)
++/* j0159: the earliest delayed call of a group's timer (arm_timer.c sweet_timer_head), no lock: diagnostics */
++uintptr_t sweet_thread_call_first(void *g, void *fl, uintptr_t *param0);
++uintptr_t
++sweet_thread_call_first(void *g, void *fl, uintptr_t *param0)
++{
++	thread_call_group_t group = (thread_call_group_t)g;
++	thread_call_flavor_t flavor = (thread_call_flavor_t)(uintptr_t)fl;
++	if (group == NULL || flavor >= TCF_COUNT) {
++		return 0;
++	}
++	thread_call_t call = priority_queue_min(&group->delayed_pqueues[flavor], struct thread_call, tc_pqlink);
++	if (call == NULL) {
++		return 0;
++	}
++	*param0 = (uintptr_t)call->tc_param0;
++	return (uintptr_t)call->tc_func;
++}
++#endif
++
+ void
+ thread_call_delayed_timer_rescan_all(void)
+ {
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 7326b2a..15438be 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -347,7 +347,7 @@ sweet_gic_spi_route(uint32_t intid, uint64_t mpidr, uint32_t group_word[3])
+  * with that MPIDR; sleh_irq calls sweet_spi_dispatch() for every SPI it does not know,
+  * interrupts masked, before the EOI. A handler must quiet its source (level SPIs).
+  */
+-#define SWEET_SPI_MAX   4
++#define SWEET_SPI_MAX   24             /* j0159: + GLINK and the copy engines */
+ static struct {
+ 	uint32_t intid;
+ 	void (*fn)(void *);
+@@ -396,6 +396,33 @@ sweet_spi_disable(uint32_t intid)
+ 	}
+ }
+ 
++/* j0159: enable again (a level source the handler masked, once it is quiet) */
++void sweet_spi_enable(uint32_t intid);
++void
++sweet_spi_enable(uint32_t intid)
++{
++	if (gicd_base != 0 && intid >= 32 && intid < 1020) {
++		sweet_mmio_w32(gicd_base + 0x100 + 4 * (intid / 32), 1U << (intid % 32));
++	}
++}
++
++/* j0159: edge-triggered (GICD_ICFGR bit 1 of the pair), as Linux for an IRQ_TYPE_EDGE_RISING SPI;
++ * before sweet_spi_register, with the SPI disabled */
++void sweet_spi_set_edge(uint32_t intid);
++void
++sweet_spi_set_edge(uint32_t intid)
++{
++	if (gicd_base == 0 || intid < 32 || intid >= 1020) {
++		return;
++	}
++	sweet_mmio_w32(gicd_base + 0x180 + 4 * (intid / 32), 1U << (intid % 32));      /* ICENABLER */
++	while (gicd_read32(GICD_CTLR) & GICD_CTLR_RWP) {
++		;
++	}
++	vm_offset_t cfg = gicd_base + 0xC00 + 4 * (intid / 16);
++	sweet_mmio_w32(cfg, _gic_read32(cfg) | (2U << (2 * (intid % 16))));
++}
++
+ uint64_t sweet_spi_count(uint32_t intid);
+ uint64_t
+ sweet_spi_count(uint32_t intid)

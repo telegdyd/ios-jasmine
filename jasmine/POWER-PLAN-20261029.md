@@ -55,3 +55,11 @@ comparison (no regression). DDR stays at 1804 MHz whenever there is work: the ph
    keep j0113's replug behaviour.
 9. **Always-busy kernel threads, a few mA now, more after item 3.** Identify tids 158/174/221; several
    likely go with item 7.
+
+## Result (2026-11-06 19:15)
+
+Items 1-8 done and on slot b (DDR governor j0114, GPU idle j0115, CPU idle j0152, display off j0154, touch/keys
+interrupts j0155, USB off unplugged j0156, Wi-Fi screen off j0158, system sleep j0159). One measurement at the end,
+boot_b sys159, `cpuidle meter 600 60`, screen off and unplugged throughout: **mean -123 mA at 4.18 V (~0.51 W)**, AP XO
+off 25 % of the window. Start: -437 mA (~1.7 W). About 24 h standby on 3000 mAh instead of ~7 h. Details: NOTES.md
+2026-11-06 18:59, research/sys-sleep-20261106.

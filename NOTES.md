@@ -1,3 +1,32 @@
+### 2026-11-06 18:59 local: boot_b = sys159 FLASHED - system sleep (power plan item 4); screen-off drain -437 -> -123 mA
+- xnu/patches/j0159-jasmine-system-sleep.patch. cpu.c: the last core down, both L2s at pc, display off, every core's
+  next timer >= 15337 us away (stock lpm-levels system-pc entry 10831 + exit 4506 us) -> PSCI CPU_SUSPEND 0x42000343
+  (system mode 3 at shift 8, affinity level 2; firmware DENIED -> L2 state, then pc). As qcom-mpm.c: vMPM at RPM msg
+  RAM 0x7781b8 gets the broadcast QTimer CVAL as the wake time, pin 87 (ee0 SPMI arbiter, INTID 358: Power key,
+  charger) enabled level high, status cleared, then APCS IPC (0x17911008) value 2. Broadcast fires the system exit
+  latency early. sweet_rpm_sleep_votes: level 1 = every RPM clock off in the SLEEP set (cxo, buses, bimc, qdss, XO
+  buffer swen, unused pccb) except rf_clk1_pin; level 2 + rwcx retention (0x10) in the sleep set (AP never votes rwmx).
+  Active set unchanged. WCN3990 LDO votes now both sets (as icnss). `cpuidle sys N` (0-3, boot-arg sweetsys=, default
+  3), `cpuidle sys` = census (why the system level was not taken, which timer was too soon: thread tid / thread call /
+  IOTimerEventSource action) + RPM master stats (msg RAM 0x778150 + 0x1000 * APSS/MPSS/ADSP/CDSP/TZ).
+- Wakeups removed with the screen off (found by the census, research/sys-sleep-20261106): modem watch 5 ms poll ->
+  GLINK SPI 452 (edge) + host-rx CE copy-complete SPIs 413-425 (HOST_IE 0x2c bit 0, HOST_IS 0x30 W1C; lines unmasked
+  only while the loop sleeps), 1 s fallback with the screen off; AppleCLCD software vsync 60 Hz -> 1 Hz while the
+  panel is dark (display on restarts it at once); XNU serial_keyboard_poll 16 ms -> 1 s (no UART); redwood net_thread
+  10 ms -> 1 s for a link without poll (Wi-Fi); boot progress meter thread call (kept stepping after boot) off at the
+  first display change; DDR governor 50 -> 500 ms in G_IDLE_OFF; DVFS worker 20 -> 250 ms (500 quiet) with the screen
+  off; TopazAudio idle wait 20 ms -> 1 s with the ADSP GLINK SPI 157 as wake. Screen on: all as before.
+- Checked (4 temp boots, user unplugged + screen off ~3 min each, Wi-Fi ping from the PC throughout): woke with Power
+  every time; UI smooth right after wake (round 4); pings answered (25 / 125 ms screen off, 1-4 lost of ~290).
+  Round 2: APSS 6677 RPM shutdowns, 6662 XO shutdowns (75 s); round 4: 3341 XO shutdowns, 164 s. Firmware denies
+  ~10-40 % of system asks (falls back to L2, harmless). Left in the census: userland kqueue / mach timers, the DVFS
+  worker, the governor.
+- MEASURED once (the plan's end measurement, slot b sys159, `cpuidle meter 600 60`): screen off and unplugged
+  throughout, mean -123 mA at 4182 mV (~0.51 W; min -797, max -55, 600 samples), AP XO off 25 % of the window.
+  Plan start 2026-10-29: -437 mA (~1.7 W) -> ~7 h standby; now ~24 h on 3000 mAh.
+- Not tested: XO-shutdown wake by the charger plug while asleep (SPMI pin; USB replug after screen-on worked),
+  VDD min itself (no rail stats read; CX retention vote sent). Rollback: wifi158-slotb.
+
 ### 2026-11-06 17:04 local: boot_b = wifi158 FLASHED - Wi-Fi back (modem metadata fix) + Wi-Fi screen-off power save (power plan item 6)
 - Found while starting item 6: the modem had not booted on ANY boot since adsp144 (00:21 today, slot b included since
   idle152-slotb): `mba: metadata ... authentication: status -14`, so no Wi-Fi. With adsp=1 TopazAudio takes the first
