@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: telegdyd <telegdyd93@gmail.com>
 Date: Fri, 6 Nov 2026 14:00:00 +0100
-Subject: [PATCH] j0146: jasmine: AFE bring-up probes (LPASS SMMU fault dump, glink_ssr/fastrpc
- channels, AFE retries)
+Subject: [PATCH] j0147: jasmine TAS2557 smart amp (ROM mode 1, firmware read from the iOS
+ root)
 
 ---
 --- a/iokit/Kernel/arm/TopazAudio.cpp

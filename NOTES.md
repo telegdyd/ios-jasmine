@@ -1,3 +1,16 @@
+### 2026-11-06 ~15:30: j0148 /dev/redwood-audio plays through the speaker (ASM stream); ios/sweet_beep
+- xnu/patches/j0148-jasmine-redwood-audio-stream.patch (on j0147): jasmine back end for topaz_audio_write/volume:
+  1 s ring of 20 ms chunks in pool memory (ASM-mapped once at boot, whole 4 KB pages or ASM says EBADPARAM),
+  writer copies + software gain (Q15, dB table from the volume ioctl), audio thread opens AFE clock/port + ASM
+  open/media fmt/run + ADM COPP/matrix + TAS2557 on at the first write, feeds WRITE_V2 (6 in flight, silence
+  when the writer is behind), pauses (amp off, ASM PAUSE) 0.5 s after the last write, resumes in ~10 ms, closes
+  everything after 120 s idle. Boot tone now off by default (adsp_tone=N to play it).
+- First open costs ~0.5 s (AFE ~0.1, ASM open ~0.2, ADM ~0.1 s); only the last 100 ms written meanwhile are kept.
+- ios/sweet_beep.c (built by tools/vm-mesa.sh ios; installed /usr/local/bin/sweet_beep): paced tone or raw file
+  into /dev/redwood-audio, -v sets the volume ioctl. rw148d: two 1 s beeps, 96000 frames in, 0 dropped.
+- Next: install the CoreAudio plug-in (userland/audio -> RedwoodAudio.driver in /System/Library/Audio/Plug-Ins/HAL;
+  no build recipe in the repo yet) so iOS itself plays through the speaker.
+
 ### 2026-11-06 ~14:30: j0147 **SPEAKER MAKES SOUND** (user heard the 1 kHz tone, temp boot tas147b)
 - xnu/patches/j0147-jasmine-tas2557.patch (on j0146, adsp=1): TAS2557 @ I2C6 0x4c bring-up as Xiaomi tas2557-core.c
   set_program + enable: GPIO77 reset pulse, SW reset, default data, ASI1 16-bit, program "ROM Mode 1" (index 1,

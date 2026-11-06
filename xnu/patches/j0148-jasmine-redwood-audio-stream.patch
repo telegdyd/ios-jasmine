@@ -1,0 +1,370 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: telegdyd <telegdyd93@gmail.com>
+Date: Fri, 6 Nov 2026 15:00:00 +0100
+Subject: [PATCH] j0148: jasmine /dev/redwood-audio -> ASM stream on the ADSP -> speaker
+
+---
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -3026,16 +3026,19 @@ jas_chan_log(const uint8_t *d, uint32_t len)
+ 	    len, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
+ }
+ 
++static int jas_amp_kind = -1;
++
+ static void
+ jas_speaker(void)
+ {
+-	uint32_t tone = 3;                          /* the command line is full: on by default for now */
++	uint32_t tone = 0;                          /* j0148: /dev/redwood-audio plays now; adsp_tone=N for the test tone */
+ 	int amp;
+ 
+ 	(void)PE_parse_boot_argn("adsp_tone", &tone, sizeof(tone));
+ 	(void)PE_parse_boot_argn("adsp_msw", &j_msw, sizeof(j_msw));
+ 	(void)lpass_smmu_faults("at q6core ready");
+ 	amp = j_i2c_init() ? amp_probe() : -1;
++	jas_amp_kind = amp;
+ 	LOG("speaker: amplifier %s", amp == 0 ? "TFA98xx @34" : amp == 1 ? "TAS2557 @4c" : amp == 2 ? "MAX98927 @3a" : "not found");
+ 	if (amp == 1 && !tas_setup(1, 4, 60000)) {      /* ROM Mode 1, 48 kHz */
+ 		LOG("speaker: TAS2557 setup failed; the tone will be silent");
+@@ -3168,6 +3171,297 @@ jas_speaker(void)
+ 	LOG("t=%u.%03u speaker: done", T);
+ }
+ 
++static void audio_dev_init(void);
++static void jas_stream_poll_feed(void);
++
++/* ---------------------------------------------------------------- jasmine stream: /dev/redwood-audio -> ASM (j0148) */
++
++/*
++ * The iOS side writes 48 kHz 16-bit stereo to /dev/topaz-audio (alias /dev/redwood-audio) and never waits.
++ * Here: a 1 s ring of 20 ms chunks in pool memory, mapped to ASM once. The writer copies into the ring
++ * (software gain from the volume ioctl); the audio thread opens the session when data comes (AFE clock +
++ * PRI_MI2S_RX port, ASM open write + media format + run, ADM COPP + matrix, TAS2557 on), hands chunks to
++ * ASM (WRITE_V2, at most JS_INFLIGHT outstanding, silence when the writer falls behind), and closes it all
++ * 0.5 s after the last write.
++ */
++#define JS_CHUNK            (960u * 4)                  /* 20 ms */
++#define JS_RING             (JS_CHUNK * 50)             /* 1 s */
++#define JS_MAP              ((JS_RING + 0xfffu) & ~0xfffu)  /* ASM maps whole 4 KB pages */
++#define JS_INFLIGHT         6                           /* 120 ms queued in the ADSP */
++#define JS_QUIET_MS         500
++#define JS_LINGER_MS        120000                     /* session stays open (paused, amp off) this long */
++#define ASM_SESSION_CMD_PAUSE 0x00010BD3u
++
++static uint8_t *js_ring;
++static uint64_t js_ring_pa;
++static uint32_t js_handle;
++static bool js_ready;
++static volatile bool js_playing;
++static bool js_open;                                    /* AFE port + ASM/ADM session up (maybe paused) */
++static volatile uint64_t js_wpos, js_spos;             /* bytes written / handed to ASM (monotonic) */
++static uint32_t js_done0, js_sent;                      /* asm_done at session start, chunks handed over */
++static volatile uint64_t js_last_write;                 /* mach_absolute_time() */
++static volatile uint32_t js_gain = 32767;               /* Q15 */
++static uint64_t js_frames_in, js_dropped, js_fill;
++static IOLock *js_lock;
++static int js_amp = -1;
++static uint16_t js_copp;
++static bool js_wake;
++
++static const uint16_t js_db_q15[85] = {
++	32767, 29205, 26029, 23198, 20675, 18427, 16423, 14637, 13045, 11627, 10362, 9235, 8231, 7336, 6538, 5827, 5193,
++	4629, 4125, 3677, 3277, 2920, 2603, 2320, 2068, 1843, 1642, 1464, 1305, 1163, 1036, 924, 823, 734, 654, 583, 519,
++	463, 413, 368, 328, 292, 260, 232, 207, 184, 164, 146, 130, 116, 104, 92, 82, 73, 65, 58, 52, 46, 41, 37, 33, 29,
++	26, 23, 21, 18, 16, 15, 13, 12, 10, 9, 8, 7, 7, 6, 5, 5, 4, 4, 3, 3, 3, 2, 2,
++};
++
++static bool
++jas_stream_open(int amp)
++{
++	js_amp = amp;
++	js_lock = IOLockAlloc();
++	js_ring = (uint8_t *)topaz_pool_alloc(JS_MAP, &js_ring_pa);
++	if (js_ring == NULL || js_lock == NULL) {
++		LOG("jstream: no memory");
++		return false;
++	}
++	bzero(js_ring, JS_RING);
++	struct __attribute__((packed)) { uint16_t pool, nreg; uint32_t prop; uint32_t lsw, msw, size; } mm =
++	{ 3, 1, 0, (uint32_t)js_ring_pa, (uint32_t)(js_ring_pa >> 32) | j_msw, JS_MAP };
++	if (!apr_call("jstream mem map", APR_SVC_ASM, 0, ASM_CMD_SHARED_MEM_MAP_REGIONS, &mm, sizeof(mm),
++	    ASM_CMDRSP_SHARED_MEM_MAP_REGIONS)) {
++		return false;
++	}
++	js_handle = acall_rsp[0];
++	js_ready = true;
++	LOG("jstream: ring %u bytes at %llx, handle %x; /dev/redwood-audio feeds the speaker", JS_RING, js_ring_pa, js_handle);
++	return true;
++}
++
++static bool
++jas_stream_start(void)
++{
++	if (!afe_clock(true)) {
++		return false;
++	}
++	if (!afe_start()) {
++		(void)afe_clock(false);
++		return false;
++	}
++	struct __attribute__((packed)) { uint32_t mode; uint16_t sink, bps; uint32_t popp, fmt; } ow =
++	{ 0, 0, 16, ASM_STREAM_POSTPROCOPO_ID_NONE, ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2 };
++	if (!apr_call("jstream asm open", APR_SVC_ASM, ASM_PORT, ASM_STREAM_CMD_OPEN_WRITE_V3, &ow, sizeof(ow), 0)) {
++		goto afe_off;
++	}
++	{
++		struct __attribute__((packed)) {
++			uint16_t flags, mode, ep1, ep2;
++			uint32_t topology;
++			uint16_t channels, bit_width;
++			uint32_t rate;
++			uint8_t map[8];
++		} ao = { 0, 1, AFE_PORT_PRI_MI2S_RX, 0xFFFF, NULL_COPP_TOPOLOGY, 2, 16, 48000, { 1, 2 } };
++		if (!apr_call("jstream adm open", APR_SVC_ADM, AFE_PORT_PRI_MI2S_RX, ADM_CMD_DEVICE_OPEN_V5, &ao, sizeof(ao),
++		    ADM_CMDRSP_DEVICE_OPEN_V5) || acall_rsp[0] != 0) {
++			goto asm_close;
++		}
++		js_copp = (uint16_t)acall_rsp[1];
++	}
++	{
++		struct __attribute__((packed)) { uint32_t matrix, nsess; uint16_t sess, ncopp, copp, pad; } mx =
++		{ 0, 1, ASM_SESSION, 1, js_copp, 0 };
++		if (!apr_call("jstream matrix", APR_SVC_ADM, 0, ADM_CMD_MATRIX_MAP_ROUTINGS_V5, &mx, sizeof(mx), 0)) {
++			goto adm_close;
++		}
++	}
++	{
++		struct __attribute__((packed)) { uint32_t blk; uint16_t ch, bps; uint32_t rate; uint16_t sgn, rsvd; uint8_t map[8]; } mf =
++		{ 20, 2, 16, 48000, 1, 0, { 1, 2 } };
++		apr_data(APR_SVC_ASM, ASM_PORT, ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2, 0x7000, &mf, sizeof(mf));
++	}
++	js_done0 = asm_done;
++	js_sent = 0;
++	IOLockLock(js_lock);
++	{
++		/* start with at most 100 ms of what was written while the session opened */
++		uint64_t from = js_wpos > 5 * JS_CHUNK ? js_wpos - 5 * JS_CHUNK : 0;
++		from -= from % JS_CHUNK;
++		js_spos = MAX(js_spos, from);
++	}
++	IOLockUnlock(js_lock);
++	{
++		uint32_t run[3] = { 0, 0, 0 };
++		if (!apr_call("jstream run", APR_SVC_ASM, ASM_PORT, ASM_SESSION_CMD_RUN_V2, run, sizeof(run), 0)) {
++			goto adm_close;
++		}
++	}
++	if (js_amp == 1) {
++		tas_power(true);
++	}
++	js_playing = true;
++	js_open = true;
++	LOG("t=%u.%03u jstream: playing", T);
++	return true;
++adm_close:
++	(void)apr_call("jstream adm close", APR_SVC_ADM, js_copp, ADM_CMD_DEVICE_CLOSE_V5, NULL, 0, 0);
++asm_close:
++	(void)apr_call("jstream asm close", APR_SVC_ASM, ASM_PORT, ASM_STREAM_CMD_CLOSE, NULL, 0, 0);
++afe_off:
++	afe_stop();
++	(void)afe_clock(false);
++	return false;
++}
++
++/* quiet: amp off, ASM paused, the rest stays open so the next sound starts at once */
++static void
++jas_stream_pause(void)
++{
++	js_playing = false;
++	if (js_amp == 1) {
++		tas_power(false);                       /* soft mute + power down first: no pop */
++	}
++	(void)apr_call("jstream pause", APR_SVC_ASM, ASM_PORT, ASM_SESSION_CMD_PAUSE, NULL, 0, 0);
++	LOG("t=%u.%03u jstream: paused (%llu frames in, %llu dropped, %llu silence chunks)", T, js_frames_in, js_dropped,
++	    js_fill);
++}
++
++static bool
++jas_stream_resume(void)
++{
++	IOLockLock(js_lock);
++	{
++		uint64_t from = js_wpos > 2 * JS_CHUNK ? js_wpos - 2 * JS_CHUNK : 0;   /* at most 40 ms behind */
++		from -= from % JS_CHUNK;
++		js_spos = MAX(js_spos, from);
++	}
++	IOLockUnlock(js_lock);
++	jas_stream_poll_feed();                     /* queue before RUN: no underflow at the start */
++	uint32_t run[3] = { 0, 0, 0 };
++	if (!apr_call("jstream resume", APR_SVC_ASM, ASM_PORT, ASM_SESSION_CMD_RUN_V2, run, sizeof(run), 0)) {
++		return false;
++	}
++	if (js_amp == 1) {
++		tas_power(true);
++	}
++	js_playing = true;
++	LOG("t=%u.%03u jstream: resumed", T);
++	return true;
++}
++
++static void
++jas_stream_stop(void)
++{
++	js_playing = false;
++	js_open = false;
++	(void)apr_call("jstream adm close", APR_SVC_ADM, js_copp, ADM_CMD_DEVICE_CLOSE_V5, NULL, 0, 0);
++	(void)apr_call("jstream asm close", APR_SVC_ASM, ASM_PORT, ASM_STREAM_CMD_CLOSE, NULL, 0, 0);
++	afe_stop();
++	(void)afe_clock(false);
++	LOG("t=%u.%03u jstream: stopped (%llu frames in, %llu dropped, %llu silence chunks, %u done)", T, js_frames_in,
++	    js_dropped, js_fill, asm_done - js_done0);
++}
++
++/* the audio thread, between GLINK polls */
++static void
++jas_stream_poll(void)
++{
++	uint64_t now = mach_absolute_time(), quiet, linger;
++
++	if (!js_ready) {
++		return;
++	}
++	nanoseconds_to_absolutetime((uint64_t)JS_QUIET_MS * 1000000, &quiet);
++	nanoseconds_to_absolutetime((uint64_t)JS_LINGER_MS * 1000000, &linger);
++	if (!js_playing) {
++		bool fresh = js_last_write != 0 && now - js_last_write < quiet;
++		if (fresh && !js_open) {
++			if (!jas_stream_start()) {
++				js_last_write = 0;      /* failed: wait for the next write */
++			}
++		} else if (fresh) {
++			if (!jas_stream_resume()) {
++				jas_stream_stop();
++			}
++		} else if (js_open && now - js_last_write >= linger) {
++			jas_stream_stop();
++		}
++		return;
++	}
++	if (now - js_last_write >= quiet) {
++		jas_stream_pause();
++		return;
++	}
++	jas_stream_poll_feed();
++}
++
++/* hand chunks to ASM: up to JS_INFLIGHT outstanding, silence when the writer is behind */
++static void
++jas_stream_poll_feed(void)
++{
++	for (;;) {
++		uint32_t done = asm_done - js_done0;
++		if (js_sent - done >= JS_INFLIGHT) {
++			break;
++		}
++		IOLockLock(js_lock);
++		uint64_t avail = js_wpos - js_spos;
++		if (avail < JS_CHUNK) {
++			if (js_sent - done >= 2) {          /* enough queued: wait for the writer */
++				IOLockUnlock(js_lock);
++				break;
++			}
++			uint32_t n = (uint32_t)(JS_CHUNK - avail), o = (uint32_t)(js_wpos % JS_RING), n1 = MIN(n, JS_RING - o);
++			bzero(js_ring + o, n1);
++			bzero(js_ring, n - n1);
++			js_wpos += n;
++			js_fill++;
++		}
++		uint32_t off = (uint32_t)(js_spos % JS_RING);
++		js_spos += JS_CHUNK;
++		IOLockUnlock(js_lock);
++		uint64_t ba = js_ring_pa + off;
++		uint32_t wr[8] = { (uint32_t)ba, (uint32_t)(ba >> 32) | j_msw, js_handle, JS_CHUNK, js_sent, 0, 0, 0 };
++		apr_data(APR_SVC_ASM, ASM_PORT, ASM_DATA_CMD_WRITE_V2, js_sent, wr, sizeof(wr));
++		js_sent++;
++	}
++}
++
++/* frames from /dev/redwood-audio (any thread): never waits; returns how many were taken */
++static uint32_t
++jas_audio_write(const int16_t *frames, uint32_t count)
++{
++	if (!js_ready || count == 0) {
++		return 0;
++	}
++	IOLockLock(js_lock);
++	uint64_t inflight = js_playing ? (uint64_t)(js_sent - (asm_done - js_done0)) * JS_CHUNK : 0;
++	uint64_t oldest = js_spos - MIN(inflight, js_spos);
++	uint64_t used = js_wpos - oldest, room = used < JS_RING - JS_CHUNK ? JS_RING - JS_CHUNK - used : 0;
++	uint32_t bytes = (uint32_t)MIN((uint64_t)count * 4, room & ~3ull);
++	uint32_t o = (uint32_t)(js_wpos % JS_RING), g = js_gain;
++	for (uint32_t i = 0; i < bytes / 2; i++) {
++		int32_t v = ((int32_t)frames[i] * (int32_t)g) >> 15;
++		*(int16_t *)(js_ring + ((o + 2 * i) % JS_RING)) = (int16_t)v;
++	}
++	js_wpos += bytes;
++	js_frames_in += bytes / 4;
++	js_dropped += count - bytes / 4;
++	js_last_write = mach_absolute_time();
++	IOLockUnlock(js_lock);
++	if (!js_playing) {
++		thread_wakeup((event_t)&js_wake);
++	}
++	return bytes / 4;
++}
++
++static void
++jas_audio_volume(uint32_t below, uint32_t muted)
++{
++	uint32_t db = (below + 4) / 8;
++	js_gain = muted ? 0 : js_db_q15[MIN(db, 84u)];
++	LOG("jstream: volume %u/8 dB under the top%s -> gain %u/32768", below, muted ? " (muted)" : "", js_gain);
++}
++
+ /* ---------------------------------------------------------------- GPR calls (wait for the reply) */
+ 
+ extern "C" bool topaz_rpm_write(uint32_t set, uint32_t type, uint32_t id, uint32_t key, uint32_t value);
+@@ -3709,6 +4003,9 @@ stream_poll(void)
+ extern "C" uint32_t
+ topaz_audio_write(const int16_t *frames, uint32_t count)
+ {
++	if (jasmine) {
++		return jas_audio_write(frames, count);
++	}
+ 	if (!stream_ready || count == 0) {
+ 		return 0;
+ 	}
+@@ -3750,6 +4047,10 @@ topaz_audio_write(const int16_t *frames, uint32_t count)
+ extern "C" void
+ topaz_audio_volume(uint32_t below, uint32_t muted)
+ {
++	if (jasmine) {
++		jas_audio_volume(below, muted);
++		return;
++	}
+ 	vol_below = below;
+ 	vol_muted = muted;
+ 	vol_gen++;
+@@ -3905,7 +4206,11 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 			if (apr_state == 1 && !codec_tried) {
+ 				codec_tried = true;
+ 				jas_speaker();
++				if (jas_stream_open(jas_amp_kind)) {
++					audio_dev_init();
++				}
+ 			}
++			jas_stream_poll();
+ 		} else {
+ 			gpr_poll();
+ 			stream_poll();
+@@ -3937,6 +4242,9 @@ topaz_audio_thread(void *arg __unused, wait_result_t wr __unused)
+ 		}
+ 		if (busy) {
+ 			IODelay(200);
++		} else if (jasmine && js_ready && !js_playing) {
++			assert_wait_timeout((event_t)&js_wake, THREAD_UNINT, 20, 1000 * NSEC_PER_USEC);
++			thread_block(THREAD_CONTINUE_NULL);
+ 		} else if (stream_ready && !playing) {
+ 			assert_wait_timeout((event_t)&stream_wake_flag, THREAD_UNINT, 20, 1000 * NSEC_PER_USEC);
+ 			thread_block(THREAD_CONTINUE_NULL);
