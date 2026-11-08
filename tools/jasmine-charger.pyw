@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Mi A2 (jasmine) charger: one-window Windows app.
+"""Mi A2 (jasmine) and POCO X3 Pro (vayu) charger: one-window Windows app.
 
 Finds the phone in iOS (USB Ethernet command port), fastboot or the Linux charging
 shell, moves it into the fast charging shell (shim/out/charge-shell.img, see
 tools/charge-shell/) and shows the charge state; "Boot iOS" sends it back. Under iOS
 (j0114+ kernels) the battery comes from the command port's `batt` line.
+
+vayu (tools/vayu_charger.py): read only, under ios-vayu's iOS through sweetd -- the
+battery, what the charger chip detected and why it limits the input, every warning
+it raises, and a Details panel with all its registers decoded. In Xiaomi's fastboot
+only the battery voltage. No charging shell and no buttons for it.
 
 Run with pythonw (no console): the desktop shortcut "Mi A2 Charger" does that.
 Every phone action takes the shared phone lock first (PHONE_LOCK, same file as
@@ -20,10 +25,14 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import vayu_charger  # noqa: E402  (POCO X3 Pro)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 IMAGE = REPO / 'shim' / 'out' / 'charge-shell.img'
@@ -239,7 +248,8 @@ class App:
         self.busy = False
         self.state = 'unknown'
         self.fast = False
-        root.title('Mi A2 Charger')
+        root.title('Phone Charger (Mi A2 / POCO X3 Pro)')
+        self.report = ''
         root.resizable(False, False)
         root.protocol('WM_DELETE_WINDOW', self.close)
 
@@ -262,17 +272,35 @@ class App:
         self.detail = tk.StringVar(value='')
         ttk.Label(frm, textvariable=self.detail, foreground='#444', justify='left').grid(
             row=3, column=0, columnspan=3, sticky='w', pady=(8, 0))
+        # vayu: the verdict (what limits the input) and the chip's warnings, apart from the rest
+        self.verdict = tk.StringVar(value='')
+        self.verdict_lbl = ttk.Label(frm, textvariable=self.verdict, foreground='#0b5394', wraplength=520,
+                                     justify='left', font=('Segoe UI', 10, 'bold'))
+        self.verdict_lbl.grid(row=4, column=0, columnspan=3, sticky='w', pady=(8, 0))
+        self.warn = tk.StringVar(value='')
+        ttk.Label(frm, textvariable=self.warn, foreground='#b00020', wraplength=520,
+                  justify='left').grid(row=5, column=0, columnspan=3, sticky='w', pady=(4, 0))
 
         btns = ttk.Frame(frm)
-        btns.grid(row=4, column=0, columnspan=3, sticky='w', pady=(12, 0))
+        btns.grid(row=6, column=0, columnspan=3, sticky='w', pady=(12, 0))
         self.b_charge = ttk.Button(btns, text='Charging shell', command=self.to_shell)
         self.b_charge.grid(row=0, column=0, padx=(0, 8))
         self.b_ios = ttk.Button(btns, text='Boot iOS', command=self.to_ios)
-        self.b_ios.grid(row=0, column=1)
+        self.b_ios.grid(row=0, column=1, padx=(0, 8))
+        self.b_details = ttk.Button(btns, text='Details ▸', command=self.toggle_details)
+        self.b_details.grid(row=0, column=2, padx=(0, 8))
+        self.b_copy = ttk.Button(btns, text='Copy report', command=self.copy_report)
+        self.b_copy.grid(row=0, column=3)
 
         self.msg = tk.StringVar(value='')
-        ttk.Label(frm, textvariable=self.msg, foreground='#a05000', wraplength=420,
-                  justify='left').grid(row=5, column=0, columnspan=3, sticky='w', pady=(10, 0))
+        ttk.Label(frm, textvariable=self.msg, foreground='#a05000', wraplength=520,
+                  justify='left').grid(row=7, column=0, columnspan=3, sticky='w', pady=(10, 0))
+
+        # Details: one tab per part of the charger chip (vayu), shown on demand
+        self.details_open = False
+        self.tabs = ttk.Notebook(frm)
+        self.tab_text = {}
+        self.frm = frm
 
         self.update_buttons()
         threading.Thread(target=self.poller, daemon=True).start()
@@ -299,7 +327,20 @@ class App:
         self.fast = state == 'shell' and info.get('fast') == '1'
         holder = lock_holder()
         lock_txt = f'\nPhone lock: {holder}' if holder and not holder.startswith(LOCK_TAG) else ''
-        if state == 'shell':
+        if state != 'vayu':
+            self.verdict.set('')
+            self.warn.set('')
+            self.report = ''
+        if state == 'vayu':
+            self.show_vayu(info)
+        elif state == 'vayu-fastboot':
+            self.state_var.set("POCO X3 Pro: Xiaomi's fastboot")
+            self.volt.set(info.get('volt', '-'))
+            self.amps.set('-')
+            self.pct.set('-')
+            self.detail.set('Battery voltage only (fastboot getvar). Charger details need iOS.')
+            self.report = ''
+        elif state == 'shell':
             s = info
             try:
                 v = int(s.get('voltage_now', '')) / 1e6
@@ -365,12 +406,77 @@ class App:
             self.detail.set(extra + lock_txt)
         self.update_buttons()
 
+    # --- vayu ---------------------------------------------------------------------
+    def show_vayu(self, d):
+        dec = vayu_charger.decode(d)
+        ver = d['sysctl'].get('kern.version', '')
+        built = re.search(r'Version [\d.]+: (.*?);', ver)
+        self.state_var.set('POCO X3 Pro: iOS running')
+        self.volt.set(f"{dec['mv'] / 1000:.3f} V" if dec['mv'] and dec['mv'] > 0 else '-')
+        self.amps.set(f"{dec['ma'] / 1000:+.2f} A" if dec['ma'] is not None else '-')
+        self.pct.set(f"{dec['soc']} %" if dec['soc'] is not None and dec['soc'] >= 0 else '-')
+        lines = list(dec['summary'])
+        if dec['temp'] is not None:
+            lines.append(f"Battery temp: {dec['temp']} °C")
+        if dec['ma'] is not None and dec['ma'] < 0 and 'no USB power' not in lines[0]:
+            lines.append(f"Battery is DRAINING {-dec['ma']} mA while plugged in: the input does not cover the phone's use.")
+        if built:
+            lines.append(f'Kernel built {built.group(1)}')
+        self.detail.set('\n'.join(lines))
+        self.verdict.set(dec['verdict'])
+        self.warn.set('\n'.join('⚠ ' + w for w in dec['warnings']))
+        self.fill_tabs(dec['sections'])
+        self.report = '\n'.join([time.strftime('%Y-%m-%d %H:%M:%S') + '  POCO X3 Pro charger report',
+                                 f"Battery {self.volt.get()}, {self.amps.get()}, {self.pct.get()}",
+                                 *lines, '', 'Verdict: ' + dec['verdict'],
+                                 *('Warning: ' + w for w in dec['warnings'])] +
+                                [f'\n== {t} ==\n' + '\n'.join(body) for t, body in dec['sections']])
+
+    def fill_tabs(self, sections):
+        for title, body in sections:
+            if title not in self.tab_text:
+                f = ttk.Frame(self.tabs)
+                t = tk.Text(f, width=96, height=22, font=('Consolas', 9), wrap='none', borderwidth=0)
+                sb = ttk.Scrollbar(f, orient='vertical', command=t.yview)
+                t.configure(yscrollcommand=sb.set)
+                t.grid(row=0, column=0, sticky='nsew')
+                sb.grid(row=0, column=1, sticky='ns')
+                self.tabs.add(f, text=title)
+                self.tab_text[title] = t
+            t = self.tab_text[title]
+            top = t.yview()[0]
+            t.configure(state='normal')
+            t.delete('1.0', 'end')
+            t.insert('1.0', '\n'.join(body))
+            t.configure(state='disabled')
+            t.yview_moveto(top)
+
+    def toggle_details(self):
+        self.details_open = not self.details_open
+        if self.details_open:
+            self.tabs.grid(row=8, column=0, columnspan=3, sticky='w', pady=(10, 0))
+            self.b_details.configure(text='Details ▾')
+        else:
+            self.tabs.grid_remove()
+            self.b_details.configure(text='Details ▸')
+
+    def copy_report(self):
+        if not self.report:
+            self.msg.set('Nothing to copy yet (the full report is for the POCO X3 Pro under iOS).')
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.report)
+        self.msg.set(f'{time.strftime("%H:%M:%S")}  Report copied to the clipboard.')
+
     def update_buttons(self):
         free = not self.busy
+        vayu = self.state.startswith('vayu')
         self.b_charge.state(['!disabled'] if free and self.state in ('ios', 'fastboot', 'shell')
                             and not self.fast else ['disabled'])
         self.b_ios.state(['!disabled'] if free and self.state in ('shell', 'fastboot')
                          else ['disabled'])
+        self.b_details.state(['!disabled'] if self.tab_text else ['disabled'])
+        self.b_copy.state(['!disabled'] if vayu and self.report else ['disabled'])
 
     def close(self):
         release_lock()
@@ -385,12 +491,20 @@ class App:
                 pass
         if fastboot_present():
             info = {}
+            if fastboot_var('product') == 'vayu':
+                v = fastboot_var('battery-voltage')
+                info['volt'] = f'{int(v) / 1000:.3f} V' if v and v.isdigit() else '-'
+                return 'vayu-fastboot', info
             if not self.busy and lock_holder() is None:
                 v = fastboot_var('battery-voltage')
                 info['volt'] = f'{int(v) / 1000:.3f} V' if v and v.isdigit() else '-'
                 info['slot'] = fastboot_var('current-slot') or '?'
             return 'fastboot', info
         if ios_up():
+            # both phones answer on 169.254.7.2: vayu is the one whose sweetd knows kern.hakios.battery_soc
+            vd = vayu_charger.read_all()
+            if vd is not None:
+                return 'vayu', vd
             # the command port is shared with other sessions' tests: only read it when free
             if self.busy or lock_holder() is not None:
                 return 'ios', {'skipped': True}
