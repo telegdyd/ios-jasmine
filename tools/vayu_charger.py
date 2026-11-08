@@ -181,6 +181,12 @@ def decode(d):
         res['verdict'] = 'No USB power coming in.'
     elif ppath is not None and ppath & 0x40:
         res['verdict'] = 'USB input is SUSPENDED: the chip takes nothing from the cable.'
+    elif aicl_icl is not None and icl_max is not None and aicl_icl < icl_max - 50:
+        # (before the BC1.2 check: an ICL raised past the detection, e.g. by charger_fix, and AICL then cutting it
+        # is a voltage problem, not a detection one -- the in-use limit is AICL's)
+        res['verdict'] = (f'Input current is being cut by AICL to {aicl_icl} mA (allowed {icl_max} mA): the cable's '
+                          'voltage drops below the chip's threshold whenever it draws more, so it backs off. Weak or '
+                          'current-limited source (a PC port gives 500 mA as plain USB), long/thin cable, or meter resistance.')
     elif apsd is not None and apsd & 0x11 and limit is not None and limit <= 500:
         typec_a = 3000 if snk and snk & 0x02 else 1500 if snk and snk & 0x04 else None
         res['verdict'] = ('Stuck at 500 mA (2-2.5 W) because the data-pin check (BC1.2) found a '
@@ -188,9 +194,6 @@ def decode(d):
                           + (f' The USB-C pins say {typec_a / 1000:.1f} A is allowed, so the port itself could do more:'
                              ' the D+/D- detection is what failed (cable/meter data wires, or the port\'s data pins).'
                              if typec_a else ''))
-    elif aicl_icl is not None and icl_max is not None and aicl_icl < icl_max - 50:
-        res['verdict'] = (f'Input current is being cut by AICL to {aicl_icl} mA (allowed {icl_max} mA): '
-                          'the input voltage sags under load (weak charger, long/thin cable, or meter resistance).')
     elif st1 is not None and (st1 & 7) in (0, 6, 7) and in_plug:
         res['verdict'] = f'Charging is {state} (not the cable): see Temps & protections.'
     elif limit is not None:
